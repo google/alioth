@@ -1,0 +1,15 @@
+[package]
+name = "alioth-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4"
+flexi_logger = "0.26"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+alioth = { path = "../alioth" }
+
+[[bin]]
+path = "src/main.rs"
+name = "alioth"

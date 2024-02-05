@@ -1,0 +1,14 @@
+[package]
+name = "alioth"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1"
+zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
+bitflags = "2.4.0"
+bitfield = "0.14.0"
+log = "0.4"
+mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
+rand = "0.8.5"
+libc = "0.2.150"
