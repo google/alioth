@@ -9,7 +9,7 @@ detailed steps for building a type-2 hypervisor and booting a Linux guest kernel
 * Build Alioth from source,
 
     ```sh
-    cargo +nightly build --release --target x86_64-unknown-linux-gnu
+    cargo build --release --target x86_64-unknown-linux-gnu
     ```
 
 * Make an initramfs with [u-root](https://github.com/u-root/u-root?tab=readme-ov-file#examples),
@@ -17,7 +17,7 @@ detailed steps for building a type-2 hypervisor and booting a Linux guest kernel
 * Boot a Linux kernel with 2 CPUs and 4 GiB memory:
 
   ```sh
-  cargo +nightly run --release --target x86_64-unknown-linux-gnu -- \
+  cargo run --release --target x86_64-unknown-linux-gnu -- \
       -l info \
       --log-to-file \
       run \
