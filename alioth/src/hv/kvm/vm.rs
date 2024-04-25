@@ -162,7 +162,7 @@ impl Vm for KvmVm {
 
 #[cfg(test)]
 mod test {
-    use std::assert_matches::assert_matches;
+    use assert_matches::assert_matches;
     use std::ptr::null_mut;
 
     use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
