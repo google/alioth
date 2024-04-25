@@ -1,0 +1,28 @@
+name: Rust
+
+permissions: read-all
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@1d96c772d19495a3b5c517cd2bc0cb401ea0529f
+      - name: Build
+        run: cargo build --verbose
+      - name: Format
+        run: cargo fmt --check
+      # TODO: some KVM related tests cannot run in github runners.
+      # - name: Run tests
+      #   run: cargo test --verbose
+      - name: Clippy
+        run: cargo clippy
