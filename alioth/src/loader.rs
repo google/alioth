@@ -38,18 +38,10 @@ pub struct InitState {
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io: {0}")]
-    Io(
-        #[backtrace]
-        #[from]
-        std::io::Error,
-    ),
+    Io(#[from] std::io::Error),
 
     #[error("mem: {0}")]
-    Mem(
-        #[backtrace]
-        #[from]
-        crate::mem::Error,
-    ),
+    Mem(#[from] crate::mem::Error),
 
     #[error("msssing magic number {magic:#x}, found {found:#x}")]
     MissingMagic { magic: u64, found: u64 },

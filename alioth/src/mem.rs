@@ -17,7 +17,6 @@ pub mod io;
 pub mod mmio;
 pub mod ram;
 
-use std::backtrace::Backtrace;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
@@ -53,7 +52,6 @@ pub enum Error {
     Io {
         #[from]
         source: std::io::Error,
-        backtrace: Backtrace,
     },
     #[error("mmap: {0}")]
     Mmap(#[source] std::io::Error),
@@ -66,15 +64,11 @@ pub enum Error {
     #[error("lock poisoned")]
     LockPoisoned,
     #[error("cannot allocate")]
-    CanotAllocate { backtrace: Backtrace },
+    CanotAllocate,
     #[error("cannot register MMIO notifier: {0}")]
     Notifier(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("{0}")]
-    Hv(
-        #[from]
-        #[backtrace]
-        hv::Error,
-    ),
+    Hv(#[from] hv::Error),
     #[error("cannot handle action: {0:x?}")]
     Action(Action),
     #[error("not aligned")]
@@ -187,9 +181,7 @@ impl Memory {
             }
             Ok(aligned_start)
         } else {
-            Err(Error::CanotAllocate {
-                backtrace: Backtrace::force_capture(),
-            })
+            Err(Error::CanotAllocate)
         }
     }
 

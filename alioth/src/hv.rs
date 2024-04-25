@@ -21,7 +21,6 @@ pub(crate) mod test;
 #[cfg(target_os = "linux")]
 pub use kvm::Kvm;
 
-use std::backtrace::Backtrace;
 use std::fmt::Debug;
 use std::sync::{Arc, PoisonError};
 use std::thread::JoinHandle;
@@ -44,8 +43,6 @@ pub enum Error {
     StdIo {
         #[from]
         source: std::io::Error,
-        #[backtrace]
-        backtrace: Backtrace,
     },
     #[error("{msg}")]
     Unexpected { msg: String },

@@ -36,32 +36,16 @@ use x86_64::ArchBoard;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("hypervisor: {0}")]
-    Hv(
-        #[from]
-        #[backtrace]
-        hv::Error,
-    ),
+    Hv(#[from] hv::Error),
 
     #[error("memory: {0}")]
-    Memory(
-        #[from]
-        #[backtrace]
-        mem::Error,
-    ),
+    Memory(#[from] mem::Error),
 
     #[error("host io: {0}")]
-    HostIo(
-        #[from]
-        #[backtrace]
-        std::io::Error,
-    ),
+    HostIo(#[from] std::io::Error),
 
     #[error("loader: {0}")]
-    Loader(
-        #[from]
-        #[backtrace]
-        loader::Error,
-    ),
+    Loader(#[from] loader::Error),
 
     #[error("rwlock poisoned")]
     RwLockPoisoned,
