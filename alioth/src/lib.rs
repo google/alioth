@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(error_generic_member_access)]
-
 pub mod acpi;
 pub mod action;
 pub mod arch;
