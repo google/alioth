@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #![feature(error_generic_member_access)]
-#![feature(pointer_is_aligned)]
 
 pub mod acpi;
 pub mod action;
