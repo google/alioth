@@ -156,7 +156,7 @@ impl Vcpu for KvmVcpu {
 
 #[cfg(test)]
 mod test {
-    use std::assert_matches::assert_matches;
+    use assert_matches::assert_matches;
     use std::mem::size_of_val;
     use std::ptr::null_mut;
 

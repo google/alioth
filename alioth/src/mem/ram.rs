@@ -560,7 +560,7 @@ impl RamBus {
 
 #[cfg(test)]
 mod test {
-    use std::assert_matches::assert_matches;
+    use assert_matches::assert_matches;
     use std::io::{Read, Write};
     use std::mem::size_of;
     use std::ptr::null_mut;
