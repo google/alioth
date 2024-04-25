@@ -17,7 +17,7 @@ use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::ptr::{null_mut, NonNull};
@@ -315,7 +315,8 @@ impl Addressable<UserMem> {
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
         if host_ref.len() != total_len {
             Err(Error::NotContinuous)
-        } else if !ptr.is_aligned() {
+        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
+            // TODO: use is_aligned
             Err(Error::NotAligned)
         } else {
             Ok(unsafe { &*core::ptr::slice_from_raw_parts(ptr, len) })
@@ -327,7 +328,8 @@ impl Addressable<UserMem> {
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
         if host_ref.len() != size_of::<T>() {
             Err(Error::NotContinuous)
-        } else if !ptr.is_aligned() {
+        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
+            // TODO: use is_aligned
             Err(Error::NotAligned)
         } else {
             Ok(unsafe { &*ptr })
