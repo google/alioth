@@ -75,6 +75,8 @@ pub enum Error {
     NotAligned,
     #[error("not backed by continuous host memory")]
     NotContinuous,
+    #[error("adding a slot of size 0")]
+    ZeroSizedSlot,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
