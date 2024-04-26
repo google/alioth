@@ -34,7 +34,9 @@ where
     B: SlotBackend,
 {
     fn new(addr: usize, backend: B) -> Result<Self> {
-        debug_assert_ne!(backend.size(), 0);
+        if backend.size() == 0 {
+            return Err(Error::ZeroSizedSlot);
+        }
         match (backend.size() - 1).checked_add(addr) {
             None => Err(Error::OutOfRange {
                 addr,
@@ -99,7 +101,6 @@ where
     B: SlotBackend,
 {
     pub fn add(&mut self, addr: usize, backend: B) -> Result<&mut B> {
-        assert_ne!(backend.size(), 0);
         let slot = Slot::new(addr, backend)?;
         let result = match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Err(&self.slots[index]),
@@ -169,7 +170,7 @@ mod test {
     }
 
     #[test]
-    fn test_overflow() {
+    fn test_new_slot() {
         assert_matches!(
             Slot::new(usize::MAX, Backend { size: 0x10 }),
             Err(Error::OutOfRange {
@@ -177,6 +178,7 @@ mod test {
                 addr: usize::MAX,
             })
         );
+        assert_matches!(Slot::new(0, Backend { size: 0 }), Err(Error::ZeroSizedSlot));
     }
 
     #[test]
