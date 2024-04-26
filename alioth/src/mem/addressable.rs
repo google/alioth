@@ -49,32 +49,6 @@ where
     }
 }
 
-pub struct Iter<'a, B>
-where
-    B: SlotBackend,
-{
-    iter: std::slice::Iter<'a, Slot<B>>,
-}
-
-impl<'a, B> Iterator for Iter<'a, B>
-where
-    B: SlotBackend,
-{
-    type Item = (usize, &'a B);
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|slot| (slot.addr, &slot.backend))
-    }
-}
-
-impl<'a, B> DoubleEndedIterator for Iter<'a, B>
-where
-    B: SlotBackend,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter.next_back().map(|slot| (slot.addr, &slot.backend))
-    }
-}
-
 #[derive(Debug)]
 pub struct Addressable<B>
 where
@@ -100,16 +74,14 @@ where
         Self::default()
     }
 
-    pub fn iter(&self) -> Iter<'_, B> {
-        Iter {
-            iter: self.slots.iter(),
-        }
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (usize, &B)> {
+        self.slots.iter().map(|slot| (slot.addr, &slot.backend))
     }
 
     pub fn drain(
         &mut self,
         range: impl RangeBounds<usize>,
-    ) -> impl Iterator<Item = (usize, B)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (usize, B)> + '_ {
         self.slots.drain(range).map(|s| (s.addr, s.backend))
     }
 
@@ -270,6 +242,7 @@ mod test {
             Some((memory.slots[1].addr, &memory.slots[1].backend))
         );
         assert_eq!(iter.next(), None);
+        drop(iter);
 
         assert_matches!(memory.remove(0x1000), Ok(Backend { size: 0x1000 }));
         assert_matches!(memory.remove(0x2001), Err(Error::NotMapped(0x2001)));
