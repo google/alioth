@@ -13,7 +13,6 @@
 // limitations under the License.
 
 mod addressable;
-pub mod io;
 pub mod mmio;
 pub mod ram;
 
@@ -27,11 +26,8 @@ use crate::hv::{self, VmEntry, VmMemory};
 use ram::UserMem;
 
 use addressable::{Addressable, SlotBackend};
-use io::IoBus;
-use mmio::{Mmio, MmioBus};
+use mmio::{Mmio, MmioBus, MmioRegion};
 use ram::RamBus;
-
-use self::io::IoDev;
 
 use crate::arch::layout::{
     MEM_64_START, MMIO_32_START, PCIE_CONFIG_END, PCIE_CONFIG_START, RAM_32_END,
@@ -98,7 +94,7 @@ pub struct Allocator {
 pub struct Memory {
     ram_bus: Arc<RamBus>,
     mmio_bus: MmioBus,
-    io_bus: IoBus,
+    io_bus: MmioBus,
     // TODO do we need a global lock?
     allocator: Mutex<Allocator>,
 }
@@ -125,7 +121,7 @@ impl Memory {
             ram_bus: Arc::new(RamBus::new(vm_memory)),
             mmio_bus: MmioBus::new(),
             allocator: Mutex::new(Allocator::default()),
-            io_bus: IoBus::new(),
+            io_bus: MmioBus::new(),
         }
     }
 
@@ -197,7 +193,7 @@ impl Memory {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub fn add_io_dev(&self, port: Option<u16>, dev: IoDev) -> Result<u16, Error> {
+    pub fn add_io_dev(&self, port: Option<u16>, dev: MmioRegion) -> Result<u16, Error> {
         let mut allocator = self.allocator.lock()?;
         let port = match port {
             Some(port) => {
@@ -221,7 +217,7 @@ impl Memory {
                 port as u16
             }
         };
-        self.io_bus.add(port, dev)?;
+        self.io_bus.add(port as usize, dev)?;
         Ok(port)
     }
 
@@ -306,13 +302,13 @@ impl Memory {
             }
         }
         if let Some(val) = write {
-            match self.io_bus.write(port, size, val) {
+            match self.io_bus.write(port as usize, size, val as u64) {
                 Ok(()) => Ok(VmEntry::None),
                 Err(Error::Action(action)) => self.handle_action(action),
                 Err(e) => Err(e),
             }
         } else {
-            let data = self.io_bus.read(port, size)?;
+            let data = self.io_bus.read(port as usize, size)? as u32;
             Ok(VmEntry::Io { data })
         }
     }
