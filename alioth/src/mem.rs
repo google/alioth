@@ -39,12 +39,10 @@ use crate::arch::layout::{
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("[{new_addr:#x}, {new_end:#x}) overlaps with [{curr_addr:#x}, {curr_end:#x})")]
+    #[error("{new_item:#x?} overlaps with {exist_item:#x?}")]
     Overlap {
-        new_addr: usize,
-        new_end: usize,
-        curr_addr: usize,
-        curr_end: usize,
+        new_item: [usize; 2],
+        exist_item: [usize; 2],
     },
     #[error("(addr={addr:#x}, size={size:#x}) is out of range")]
     OutOfRange { addr: usize, size: usize },

@@ -46,8 +46,8 @@ where
         }
     }
 
-    fn addr_end(&self) -> usize {
-        self.addr.wrapping_add(self.backend.size())
+    fn max_addr(&self) -> usize {
+        (self.backend.size() - 1) + self.addr
     }
 }
 
@@ -105,9 +105,9 @@ where
         let result = match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Err(&self.slots[index]),
             Err(index) => {
-                if index < self.slots.len() && self.slots[index].addr < slot.addr_end() {
+                if index < self.slots.len() && self.slots[index].addr <= slot.max_addr() {
                     Err(&self.slots[index])
-                } else if index > 0 && slot.addr < self.slots[index - 1].addr_end() {
+                } else if index > 0 && slot.addr <= self.slots[index - 1].max_addr() {
                     Err(&self.slots[index - 1])
                 } else {
                     Ok(index)
@@ -116,10 +116,8 @@ where
         };
         match result {
             Err(curr_slot) => Err(Error::Overlap {
-                new_addr: slot.addr,
-                new_end: slot.addr_end(),
-                curr_addr: curr_slot.addr,
-                curr_end: curr_slot.addr_end(),
+                new_item: [slot.addr, slot.max_addr()],
+                exist_item: [curr_slot.addr, curr_slot.max_addr()],
             }),
             Ok(index) => {
                 self.slots.insert(index, slot);
@@ -142,7 +140,7 @@ where
             Err(0) => None,
             Err(index) => {
                 let candidate = &self.slots[index - 1];
-                if addr < candidate.addr_end() {
+                if addr <= candidate.max_addr() {
                     Some((candidate.addr, &candidate.backend))
                 } else {
                     None
@@ -179,6 +177,9 @@ mod test {
             })
         );
         assert_matches!(Slot::new(0, Backend { size: 0 }), Err(Error::ZeroSizedSlot));
+
+        let slot = Slot::new(0x1000, Backend { size: 0x1000 }).unwrap();
+        assert_eq!(slot.max_addr(), 0x1fff);
     }
 
     #[test]
@@ -194,28 +195,22 @@ mod test {
         assert_matches!(
             memory.add(0x1000, Backend { size: 0x2000 }),
             Err(Error::Overlap {
-                new_addr: 0x1000,
-                new_end: 0x3000,
-                curr_addr: 0x1000,
-                curr_end: 0x2000
+                new_item: [0x1000, 0x2fff],
+                exist_item: [0x1000, 0x1fff]
             })
         );
         assert_matches!(
             memory.add(0x0, Backend { size: 0x2000 }),
             Err(Error::Overlap {
-                new_addr: 0x0,
-                new_end: 0x2000,
-                curr_addr: 0x1000,
-                curr_end: 0x2000
+                new_item: [0x0, 0x1fff],
+                exist_item: [0x1000, 0x1fff]
             })
         );
         assert_matches!(
             memory.add(0x3000, Backend { size: 0x1000 }),
             Err(Error::Overlap {
-                new_addr: 0x3000,
-                new_end: 0x4000,
-                curr_addr: 0x2000,
-                curr_end: 0x4000
+                new_item: [0x3000, 0x3fff],
+                exist_item: [0x2000, 0x3fff]
             })
         );
 
