@@ -248,5 +248,14 @@ mod test {
 
         assert_matches!(memory.remove(0x1000), Ok(Backend { size: 0x1000 }));
         assert_matches!(memory.remove(0x2001), Err(Error::NotMapped(0x2001)));
+
+        assert_matches!(
+            memory.add(0usize.wrapping_sub(0x2000), Backend { size: 0x2000 }),
+            Ok(_)
+        );
+        assert_matches!(
+            memory.add(0usize.wrapping_sub(0x1000), Backend { size: 0x1000 }),
+            Err(_)
+        )
     }
 }
