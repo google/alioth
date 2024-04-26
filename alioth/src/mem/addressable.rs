@@ -200,6 +200,17 @@ mod test {
             })
         );
         assert_matches!(
+            memory.add(0x1, Backend { size: 0x1000 }),
+            Err(Error::Overlap {
+                new_item: [0x1, 0x1000],
+                exist_item: [0x1000, 0x1fff]
+            })
+        );
+
+        assert_matches!(memory.add(0x1, Backend { size: 0xfff }), Ok(_));
+        assert_matches!(memory.remove(0x1), Ok(_));
+
+        assert_matches!(
             memory.add(0x0, Backend { size: 0x2000 }),
             Err(Error::Overlap {
                 new_item: [0x0, 0x1fff],
@@ -213,6 +224,23 @@ mod test {
                 exist_item: [0x2000, 0x3fff]
             })
         );
+
+        assert_matches!(
+            memory.add(0x4000, Backend { size: 0x1001 }),
+            Err(Error::Overlap {
+                new_item: [0x4000, 0x5000],
+                exist_item: [0x5000, 0x5fff]
+            })
+        );
+        assert_matches!(
+            memory.add(0x3fff, Backend { size: 0x1000 }),
+            Err(Error::Overlap {
+                new_item: [0x3fff, 0x4ffe],
+                exist_item: [0x2000, 0x3fff]
+            })
+        );
+        memory.add(0x4000, Backend { size: 0x1000 }).unwrap();
+        memory.remove(0x4000).unwrap();
 
         assert_eq!(
             memory.search(0x1000),
