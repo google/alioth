@@ -407,3 +407,72 @@ impl Memory {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use crate::hv::test::FakeVmMemory;
+    use crate::mem::mmio::Mmio;
+    use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory, Result, MMIO_32_START};
+
+    #[test]
+    fn test_memory_add_remove() {
+        #[derive(Debug)]
+        struct TestMmio {
+            size: usize,
+        }
+
+        impl Mmio for TestMmio {
+            fn read(&self, _offset: usize, _size: u8) -> Result<u64> {
+                Ok(0)
+            }
+            fn write(&self, _offset: usize, _size: u8, _val: u64) -> Result<()> {
+                Ok(())
+            }
+            fn size(&self) -> usize {
+                self.size
+            }
+        }
+
+        let memory = Memory::new(FakeVmMemory);
+        assert_eq!(
+            memory
+                .add_region(
+                    AddrOpt::Below4G,
+                    Arc::new(MemRegion::with_emuldated(
+                        Arc::new(TestMmio { size: 0x1000 }),
+                        MemRegionType::Reserved
+                    )),
+                )
+                .unwrap(),
+            MMIO_32_START
+        );
+        assert_eq!(
+            memory
+                .add_region(
+                    AddrOpt::Below4G,
+                    Arc::new(MemRegion::with_emuldated(
+                        Arc::new(TestMmio { size: 0x1000 }),
+                        MemRegionType::Reserved
+                    )),
+                )
+                .unwrap(),
+            MMIO_32_START + 0x1000,
+        );
+        memory.remove_region(MMIO_32_START).unwrap();
+
+        assert_eq!(
+            memory
+                .add_region(
+                    AddrOpt::Below4G,
+                    Arc::new(MemRegion::with_emuldated(
+                        Arc::new(TestMmio { size: 0x1000 }),
+                        MemRegionType::Reserved
+                    )),
+                )
+                .unwrap(),
+            MMIO_32_START,
+        );
+    }
+}
