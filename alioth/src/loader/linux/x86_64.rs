@@ -21,7 +21,7 @@ use crate::arch::msr::Efer;
 use crate::arch::paging::Entry;
 use crate::arch::reg::{Cr0, Cr4, Rflags, SegAccess};
 use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
-use crate::mem::ram::RamBus;
+use crate::mem::mapped::RamBus;
 use zerocopy::{AsBytes, FromZeroes};
 
 use crate::arch::layout::{
