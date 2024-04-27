@@ -16,7 +16,6 @@
 mod x86_64;
 
 use std::fmt::Debug;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
@@ -27,7 +26,7 @@ use thiserror::Error;
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
-use crate::loader::{self, linux, InitState};
+use crate::loader::{self, linux, ExecType, InitState, Payload};
 use crate::mem;
 use crate::mem::Memory;
 
@@ -56,19 +55,6 @@ pub enum Error {
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-#[derive(Debug)]
-pub struct Payload {
-    pub executable: PathBuf,
-    pub exec_type: ExecType,
-    pub initramfs: Option<PathBuf>,
-    pub cmd_line: Option<String>,
-}
-
-#[derive(Debug)]
-pub enum ExecType {
-    Linux,
-}
 
 pub struct Machine<H>
 where
