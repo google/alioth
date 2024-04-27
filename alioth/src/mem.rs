@@ -16,8 +16,9 @@ mod addressable;
 pub mod mmio;
 pub mod ram;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use thiserror::Error;
 
 use crate::action::Action;
@@ -75,12 +76,6 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-impl<T> From<PoisonError<T>> for Error {
-    fn from(_: PoisonError<T>) -> Self {
-        Error::LockPoisoned
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Allocator {
     ram32: Addressable<MemRegion>,
@@ -131,7 +126,7 @@ impl Memory {
 
     pub fn to_mem_regions(&self) -> Result<Vec<(usize, MemRegion)>, Error> {
         let mut regions = Vec::new();
-        let allocator = self.allocator.lock()?;
+        let allocator = self.allocator.lock();
         for (addr, region) in allocator.ram32.iter() {
             regions.push((addr, *region));
         }
@@ -194,7 +189,7 @@ impl Memory {
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_io_dev(&self, port: Option<u16>, dev: MmioRegion) -> Result<u16, Error> {
-        let mut allocator = self.allocator.lock()?;
+        let mut allocator = self.allocator.lock();
         let port = match port {
             Some(port) => {
                 allocator.io.add(
@@ -228,7 +223,7 @@ impl Memory {
         is_dev: bool,
         regions: &[(usize, MemRegionType)],
     ) -> Result<usize, Error> {
-        let mut allocator = self.allocator.lock()?;
+        let mut allocator = self.allocator.lock();
         let addr_start = match gpa {
             AddrOpt::Fixed(gpa) => {
                 let below_4g = gpa + size <= u32::MAX as usize;

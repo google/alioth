@@ -22,12 +22,13 @@ use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::Arc;
 
 use libc::{
     c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MS_ASYNC, PROT_EXEC,
     PROT_READ, PROT_WRITE,
 };
+use parking_lot::{RwLock, RwLockReadGuard};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::ffi;
@@ -102,13 +103,13 @@ impl UserMem {
         &self,
         f: Box<dyn MmapCallback + Sync + Send + 'static>,
     ) -> Result<(), Error> {
-        let mut callbacks = self.inner.map_callback.write()?;
+        let mut callbacks = self.inner.map_callback.write();
         callbacks.push(f);
         Ok(())
     }
 
     fn mapped_to_guest(&self, gpa: usize) -> Result<(), Error> {
-        let callbacks = self.inner.map_callback.read()?;
+        let callbacks = self.inner.map_callback.read();
         for callback in callbacks.iter() {
             callback.mapped(gpa)?;
         }
@@ -116,7 +117,7 @@ impl UserMem {
     }
 
     fn unmapped_from_guest(&self) -> Result<(), Error> {
-        let callbacks = self.inner.map_callback.read()?;
+        let callbacks = self.inner.map_callback.read();
         for callback in callbacks.iter() {
             callback.unmapped()?;
         }
@@ -411,7 +412,7 @@ impl Drop for RamBus {
 impl RamBus {
     pub fn lock_layout(&self) -> Result<RamLayoutGuard<'_>, Error> {
         let guard = RamLayoutGuard {
-            inner: self.inner.read()?,
+            inner: self.inner.read(),
         };
         Ok(guard)
     }
@@ -470,7 +471,7 @@ impl RamBus {
     }
 
     pub(crate) fn add(&self, gpa: usize, user_mem: UserMem) -> Result<(), Error> {
-        let mut inner = self.inner.write()?;
+        let mut inner = self.inner.write();
         let mem = inner.add(gpa, user_mem)?;
         let mut slot_id = mem.inner.slot_id.load(Ordering::Acquire);
         if slot_id == UNASSIGNED_SLOT_ID {
@@ -483,7 +484,7 @@ impl RamBus {
     }
 
     fn clear(&self) -> Result<()> {
-        let mut innter = self.inner.write()?;
+        let mut innter = self.inner.write();
         for (gpa, user_mem) in innter.drain(..) {
             self.unmap_from_vm(&user_mem, gpa)?;
             user_mem.unmapped_from_guest()?;
@@ -492,7 +493,7 @@ impl RamBus {
     }
 
     pub(super) fn remove(&self, gpa: usize) -> Result<UserMem, Error> {
-        let mut inner = self.inner.write()?;
+        let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
         mem.unmapped_from_guest()?;
@@ -503,7 +504,7 @@ impl RamBus {
     where
         T: FromBytes + AsBytes,
     {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         inner.read(gpa)
     }
 
@@ -511,12 +512,12 @@ impl RamBus {
     where
         T: AsBytes,
     {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         inner.write(gpa, val)
     }
 
     pub fn read_range(&self, gpa: usize, len: usize, dst: &mut impl Write) -> Result<()> {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         for r in inner.slice_iter(gpa, len) {
             dst.write_all(r?)?;
         }
@@ -524,7 +525,7 @@ impl RamBus {
     }
 
     pub fn write_range(&self, gpa: usize, len: usize, mut src: impl Read) -> Result<()> {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         for r in inner.slice_iter_mut(gpa, len) {
             src.read_exact(r?)?;
         }
@@ -535,7 +536,7 @@ impl RamBus {
     where
         F: FnOnce(&[IoSlice<'_>]) -> T,
     {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         let mut iov = vec![];
         for (gpa, len) in bufs {
             for r in inner.slice_iter(*gpa, *len) {
@@ -549,7 +550,7 @@ impl RamBus {
     where
         F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
     {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         let mut iov = vec![];
         for (gpa, len) in bufs {
             for r in inner.slice_iter_mut(*gpa, *len) {

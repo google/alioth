@@ -14,7 +14,9 @@
 
 use std::any::type_name;
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use super::addressable::{Addressable, SlotBackend};
 use super::{Error, Result};
@@ -149,26 +151,26 @@ impl MmioBus {
     }
 
     pub(super) fn add(&self, addr: usize, dev: MmioRegion) -> Result<()> {
-        let mut inner = self.inner.write()?;
+        let mut inner = self.inner.write();
         let dev = inner.add(addr, dev)?;
         dev.mapped(addr)?;
         Ok(())
     }
 
     pub(super) fn remove(&self, addr: usize) -> Result<MmioRegion> {
-        let mut inner = self.inner.write()?;
+        let mut inner = self.inner.write();
         let dev = inner.remove(addr)?;
         dev.unmapped()?;
         Ok(dev)
     }
 
     pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         inner.read(addr, size)
     }
 
     pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
-        let inner = self.inner.read()?;
+        let inner = self.inner.read();
         inner.write(addr, size, val)
     }
 }

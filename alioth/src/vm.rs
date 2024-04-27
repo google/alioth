@@ -18,7 +18,7 @@ mod x86_64;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Barrier, PoisonError};
+use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 
 use mio::{Events, Poll, Token, Waker};
@@ -47,9 +47,6 @@ pub enum Error {
     #[error("loader: {0}")]
     Loader(#[from] loader::Error),
 
-    #[error("rwlock poisoned")]
-    RwLockPoisoned,
-
     #[error("ACPI bytes exceed EBDA area")]
     AcpiTooLong,
 
@@ -58,12 +55,6 @@ pub enum Error {
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
-impl<T> From<PoisonError<T>> for Error {
-    fn from(_: PoisonError<T>) -> Self {
-        Error::RwLockPoisoned
-    }
-}
 
 #[derive(Debug)]
 pub struct Payload {

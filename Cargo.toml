@@ -1,9 +1,9 @@
 [workspace]
-members = [
-    "alioth",
-    "alioth-cli",
-]
+members = ["alioth", "alioth-cli"]
 resolver = "2"
+
+[workspace.dependencies]
+parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 
 [profile.release]
 lto = true

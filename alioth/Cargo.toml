@@ -12,6 +12,7 @@ log = "0.4"
 mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 rand = "0.8.5"
 libc = "0.2.150"
+parking_lot.workspace = true
 
 [dev-dependencies]
 assert_matches = "1"

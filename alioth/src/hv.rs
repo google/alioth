@@ -22,7 +22,7 @@ pub(crate) mod test;
 pub use kvm::Kvm;
 
 use std::fmt::Debug;
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use arch::Reg;
@@ -37,8 +37,6 @@ pub enum Error {
         option: MemMapOption,
         hypervisor: &'static str,
     },
-    #[error("lock poisoned")]
-    RwLockPoisoned,
     #[error("IO error: {source}")]
     StdIo {
         #[from]
@@ -50,12 +48,6 @@ pub enum Error {
     LackCap { cap: String },
     #[error("creating multipe memory")]
     CreatingMultipleMemory,
-}
-
-impl<T> From<PoisonError<T>> for Error {
-    fn from(_: PoisonError<T>) -> Self {
-        Self::RwLockPoisoned
-    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
