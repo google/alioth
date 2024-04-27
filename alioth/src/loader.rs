@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use thiserror::Error;
 
@@ -22,6 +23,19 @@ use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod linux;
+
+#[derive(Debug)]
+pub struct Payload {
+    pub executable: PathBuf,
+    pub exec_type: ExecType,
+    pub initramfs: Option<PathBuf>,
+    pub cmd_line: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ExecType {
+    Linux,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct InitState {

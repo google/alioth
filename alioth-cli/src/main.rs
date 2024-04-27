@@ -16,7 +16,8 @@ use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
 use alioth::hv::Kvm;
-use alioth::vm::{ExecType, Machine, Payload};
+use alioth::loader::{ExecType, Payload};
+use alioth::vm::Machine;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
