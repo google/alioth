@@ -36,13 +36,10 @@ use crate::hv::{MemMapOption, VmMemory};
 use super::addressable::{Addressable, SlotBackend};
 use super::{Error, Result};
 
-const UNASSIGNED_SLOT_ID: u32 = u32::MAX;
-
 #[derive(Debug)]
 struct MemPages {
     addr: NonNull<c_void>,
     len: usize,
-    slot_id: AtomicU32,
 }
 
 unsafe impl Send for MemPages {}
@@ -66,7 +63,7 @@ impl Drop for MemPages {
 pub struct ArcMemPages {
     addr: usize,
     size: usize,
-    inner: Arc<MemPages>,
+    _inner: Arc<MemPages>,
 }
 
 impl SlotBackend for ArcMemPages {
@@ -94,11 +91,7 @@ impl ArcMemPages {
         ArcMemPages {
             addr: addr.as_ptr() as usize,
             size: len,
-            inner: Arc::new(MemPages {
-                addr,
-                len,
-                slot_id: AtomicU32::new(UNASSIGNED_SLOT_ID),
-            }),
+            _inner: Arc::new(MemPages { addr, len }),
         }
     }
 
@@ -182,27 +175,39 @@ impl ArcMemPages {
 }
 
 #[derive(Debug)]
+pub struct MappedSlot {
+    pub pages: ArcMemPages,
+    slot_id: u32,
+}
+
+impl SlotBackend for MappedSlot {
+    fn size(&self) -> usize {
+        self.pages.size
+    }
+}
+
+#[derive(Debug)]
 pub struct RamBus {
-    inner: RwLock<Addressable<ArcMemPages>>,
+    inner: RwLock<Addressable<MappedSlot>>,
     vm_memory: Box<dyn VmMemory>,
     next_slot_id: AtomicU32,
     max_mem_slots: u32,
 }
 
 pub struct RamLayoutGuard<'a> {
-    inner: RwLockReadGuard<'a, Addressable<ArcMemPages>>,
+    inner: RwLockReadGuard<'a, Addressable<MappedSlot>>,
 }
 
 impl Deref for RamLayoutGuard<'_> {
-    type Target = Addressable<ArcMemPages>;
+    type Target = Addressable<MappedSlot>;
 
-    fn deref(&self) -> &Addressable<ArcMemPages> {
+    fn deref(&self) -> &Addressable<MappedSlot> {
         &self.inner
     }
 }
 
 struct Iter<'a> {
-    inner: &'a Addressable<ArcMemPages>,
+    inner: &'a Addressable<MappedSlot>,
     gpa: usize,
     remain: usize,
 }
@@ -223,7 +228,7 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 struct IterMut<'a> {
-    inner: &'a Addressable<ArcMemPages>,
+    inner: &'a Addressable<MappedSlot>,
     gpa: usize,
     remain: usize,
 }
@@ -243,7 +248,7 @@ impl<'a> Iterator for IterMut<'a> {
     }
 }
 
-impl Addressable<ArcMemPages> {
+impl Addressable<MappedSlot> {
     fn slice_iter(&self, gpa: usize, len: usize) -> Iter {
         Iter {
             inner: self,
@@ -264,14 +269,14 @@ impl Addressable<ArcMemPages> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.get_partial_slice(gpa - start, len)
+        user_mem.pages.get_partial_slice(gpa - start, len)
     }
 
     fn get_partial_slice_mut(&self, gpa: usize, len: usize) -> Result<&mut [u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.get_partial_slice_mut(gpa - start, len)
+        user_mem.pages.get_partial_slice_mut(gpa - start, len)
     }
 
     pub fn get_slice<T>(&self, gpa: usize, len: usize) -> Result<&[UnsafeCell<T>], Error> {
@@ -403,46 +408,49 @@ impl RamBus {
         }
     }
 
-    fn map_to_vm(&self, user_mem: &ArcMemPages, addr: usize) -> Result<(), Error> {
+    fn map_to_vm(&self, user_mem: &MappedSlot, addr: usize) -> Result<(), Error> {
         let mem_options = MemMapOption {
             read: true,
             write: true,
             exec: true,
             log_dirty: false,
         };
-        let slot_id = user_mem.inner.slot_id.load(Ordering::Acquire);
-        self.vm_memory
-            .mem_map(slot_id, addr, user_mem.size(), user_mem.addr(), mem_options)?;
+        self.vm_memory.mem_map(
+            user_mem.slot_id,
+            addr,
+            user_mem.pages.size,
+            user_mem.pages.addr,
+            mem_options,
+        )?;
         log::trace!(
-            "user memory {} mapped: {:#x} -> {:#x}",
-            slot_id,
-            user_mem.addr,
-            addr
+            "user memory {} mapped: {:#018x} -> {addr:#018x}, size = {:#x}",
+            user_mem.slot_id,
+            user_mem.pages.addr,
+            user_mem.pages.size
         );
         Ok(())
     }
 
-    fn unmap_from_vm(&self, user_mem: &ArcMemPages, addr: usize) -> Result<(), Error> {
-        let slot_id = user_mem.inner.slot_id.load(Ordering::Acquire);
-        self.vm_memory.unmap(slot_id, addr, user_mem.size())?;
+    fn unmap_from_vm(&self, user_mem: &MappedSlot, addr: usize) -> Result<(), Error> {
+        self.vm_memory
+            .unmap(user_mem.slot_id, addr, user_mem.size())?;
         log::trace!(
-            "user memory {} unmapped: {:#x} -> {:#x}",
-            slot_id,
-            user_mem.addr,
-            addr
+            "user memory {} unmapped: {:#018x} -> {addr:#018x}, size = {:#x}",
+            user_mem.slot_id,
+            user_mem.pages.addr,
+            user_mem.pages.size
         );
         Ok(())
     }
 
     pub(crate) fn add(&self, gpa: usize, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
-        let mem = inner.add(gpa, user_mem)?;
-        let mut slot_id = mem.inner.slot_id.load(Ordering::Acquire);
-        if slot_id == UNASSIGNED_SLOT_ID {
-            slot_id = self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots;
-            mem.inner.slot_id.store(slot_id, Ordering::Release);
-        }
-        self.map_to_vm(mem, gpa)?;
+        let slot = MappedSlot {
+            slot_id: self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots,
+            pages: user_mem,
+        };
+        let slot = inner.add(gpa, slot)?;
+        self.map_to_vm(slot, gpa)?;
         Ok(())
     }
 
@@ -458,7 +466,7 @@ impl RamBus {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
-        Ok(mem)
+        Ok(mem.pages)
     }
 
     pub fn read<T>(&self, gpa: usize) -> Result<T, Error>
