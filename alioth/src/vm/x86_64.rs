@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
 use crate::acpi::create_acpi_tables;
-use crate::arch::layout::{
-    BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_END, RAM_32_SIZE,
-};
+use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 use crate::hv::arch::Cpuid;
 use crate::hv::{Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::ram::ArcMemPages;
-use crate::mem::{AddrOpt, MemRegionType};
+use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::vm::{Board, Error, Machine, Result};
 
 pub struct ArchBoard {
@@ -80,33 +82,37 @@ where
     pub fn create_ram(&self) -> Result<()> {
         let config = &self.board.config;
         let memory = &self.board.memory;
+
+        let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
+        let pages_low = ArcMemPages::new_anon(low_mem_size)?;
+        let region_low = MemRegion {
+            size: low_mem_size,
+            ranges: vec![MemRange::Mapped(pages_low)],
+            entries: vec![
+                MemRegionEntry {
+                    size: BIOS_DATA_END,
+                    type_: MemRegionType::Reserved,
+                },
+                MemRegionEntry {
+                    size: EBDA_START - BIOS_DATA_END,
+                    type_: MemRegionType::Ram,
+                },
+                MemRegionEntry {
+                    size: EBDA_END - EBDA_START,
+                    type_: MemRegionType::Acpi,
+                },
+                MemRegionEntry {
+                    size: low_mem_size - EBDA_END,
+                    type_: MemRegionType::Ram,
+                },
+            ],
+            callbacks: Mutex::new(vec![]),
+        };
+        memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
         if config.mem_size > RAM_32_SIZE {
-            memory.add_ram(
-                AddrOpt::Fixed(0),
-                ArcMemPages::new_anon(RAM_32_SIZE)?,
-                &[
-                    (BIOS_DATA_END, MemRegionType::Reserved),
-                    (EBDA_START - BIOS_DATA_END, MemRegionType::Ram),
-                    (EBDA_END - EBDA_START, MemRegionType::Acpi),
-                    (RAM_32_END - EBDA_END, MemRegionType::Ram),
-                ],
-            )?;
-            memory.add_ram(
-                AddrOpt::Fixed(MEM_64_START),
-                ArcMemPages::new_anon(config.mem_size - RAM_32_END)?,
-                &[(config.mem_size - RAM_32_END, MemRegionType::Ram)],
-            )?;
-        } else {
-            memory.add_ram(
-                AddrOpt::Fixed(0),
-                ArcMemPages::new_anon(config.mem_size)?,
-                &[
-                    (BIOS_DATA_END, MemRegionType::Reserved),
-                    (EBDA_START - BIOS_DATA_END, MemRegionType::Ram),
-                    (EBDA_END - EBDA_START, MemRegionType::Acpi),
-                    (config.mem_size - EBDA_END, MemRegionType::Ram),
-                ],
-            )?;
+            let mem_hi = ArcMemPages::new_anon(config.mem_size - RAM_32_SIZE)?;
+            let region_hi = MemRegion::with_mapped(mem_hi, MemRegionType::Ram);
+            memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
         }
         Ok(())
     }

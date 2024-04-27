@@ -25,9 +25,9 @@ pub trait Mmio: Debug + Send + Sync + 'static {
     fn size(&self) -> usize;
 }
 
-pub type MmioRegion = Arc<dyn Mmio>;
+pub type MmioRange = Arc<dyn Mmio>;
 
-impl Mmio for MmioRegion {
+impl Mmio for MmioRange {
     fn read(&self, offset: usize, size: u8) -> Result<u64> {
         Mmio::read(self.as_ref(), offset, size)
     }
@@ -41,14 +41,14 @@ impl Mmio for MmioRegion {
     }
 }
 
-impl SlotBackend for MmioRegion {
+impl SlotBackend for MmioRange {
     fn size(&self) -> usize {
         Mmio::size(self.as_ref())
     }
 }
 
 #[derive(Debug)]
-pub struct MmioBus<R = MmioRegion>
+pub struct MmioBus<R = MmioRange>
 where
     R: Debug + SlotBackend,
 {
