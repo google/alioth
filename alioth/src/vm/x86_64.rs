@@ -21,7 +21,7 @@ use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM
 use crate::hv::arch::Cpuid;
 use crate::hv::{Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
-use crate::mem::ram::ArcMemPages;
+use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::vm::{Board, Error, Machine, Result};
 

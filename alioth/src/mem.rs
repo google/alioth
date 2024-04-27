@@ -24,11 +24,11 @@ use crate::hv::{self, VmEntry, VmMemory};
 
 pub mod addressable;
 pub mod emulated;
-pub mod ram;
+pub mod mapped;
 
 use addressable::{Addressable, SlotBackend};
 use emulated::{MmioBus, MmioRange};
-use ram::{ArcMemPages, RamBus};
+use mapped::{ArcMemPages, RamBus};
 
 #[derive(Debug)]
 pub enum Action {
