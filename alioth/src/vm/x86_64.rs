@@ -18,52 +18,11 @@ use parking_lot::Mutex;
 
 use crate::acpi::create_acpi_tables;
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
-use crate::hv::arch::Cpuid;
-use crate::hv::{Hypervisor, Vcpu, Vm};
+use crate::hv::Hypervisor;
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
-use crate::vm::{Board, Error, Machine, Result};
-
-pub struct ArchBoard {
-    cpuids: Vec<Cpuid>,
-}
-
-impl ArchBoard {
-    pub fn new<H: Hypervisor>(hv: &H) -> Result<Self> {
-        let mut cpuids = hv.get_supported_cpuids()?;
-        for cpuid in &mut cpuids {
-            if cpuid.func == 0x1 {
-                cpuid.ecx |= (1 << 24) | (1 << 31);
-            }
-        }
-        Ok(Self { cpuids })
-    }
-}
-
-impl<V> Board<V>
-where
-    V: Vm,
-{
-    pub fn init_vcpu(&self, id: u32, init_state: &InitState) -> Result<<V as Vm>::Vcpu, Error> {
-        let mut vcpu = self.vm.create_vcpu(id)?;
-        if id == 0 {
-            vcpu.set_regs(&init_state.regs)?;
-            vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
-        }
-        let mut cpuids = self.arch.cpuids.clone();
-        for cpuid in &mut cpuids {
-            if cpuid.func == 0x1 {
-                cpuid.ebx &= 0x00ff_ffff;
-                cpuid.ebx |= id << 24;
-            } else if cpuid.func == 0xb {
-                cpuid.edx = id;
-            }
-        }
-        vcpu.set_cpuids(cpuids)?;
-        Ok(vcpu)
-    }
-}
+use crate::vm::{Error, Machine, Result};
 
 impl<H> Machine<H>
 where

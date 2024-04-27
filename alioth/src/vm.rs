@@ -24,14 +24,12 @@ use std::thread::{self, JoinHandle};
 use mio::{Events, Poll, Token, Waker};
 use thiserror::Error;
 
+use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::serial::Serial;
-use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
+use crate::hv::{self, Hypervisor, Vm};
 use crate::loader::{self, linux, InitState};
 use crate::mem;
 use crate::mem::Memory;
-
-#[cfg(target_arch = "x86_64")]
-use x86_64::ArchBoard;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -46,6 +44,9 @@ pub enum Error {
 
     #[error("loader: {0}")]
     Loader(#[from] loader::Error),
+
+    #[error("board: {0}")]
+    Board(#[from] board::Error),
 
     #[error("ACPI bytes exceed EBDA area")]
     AcpiTooLong,
@@ -64,11 +65,6 @@ pub struct Payload {
     pub cmd_line: Option<String>,
 }
 
-pub struct BoardConfig {
-    pub mem_size: usize,
-    pub num_cpu: u32,
-}
-
 #[derive(Debug)]
 pub enum ExecType {
     Linux,
@@ -76,78 +72,17 @@ pub enum ExecType {
 
 pub struct Machine<H>
 where
-    H: crate::hv::Hypervisor,
+    H: Hypervisor,
 {
-    vcpu_threads: Vec<JoinHandle<Result<(), Error>>>,
+    vcpu_threads: Vec<JoinHandle<Result<(), board::Error>>>,
     board: Arc<Board<H::Vm>>,
-    // board_config: BoardConfig,
     payload: Option<Payload>,
     poll: Poll,
 }
 
-const STATE_CREATED: u8 = 0;
-const STATE_RUNNING: u8 = 1;
-const STATE_SHUTDOWN: u8 = 2;
-
-struct Board<V>
-where
-    V: crate::hv::Vm,
-{
-    vm: V,
-    memory: Memory,
-    arch: ArchBoard,
-    config: BoardConfig,
-    waker: Waker,
-    state: AtomicU8,
-}
-
-impl<V> Board<V>
-where
-    V: crate::hv::Vm,
-{
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<(), Error> {
-        let mut vm_entry = VmEntry::None;
-        loop {
-            // TODO is there any race here?
-            if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
-                vm_entry = VmEntry::Shutdown;
-            }
-            let vm_exit = vcpu.run(vm_entry)?;
-            vm_entry = match vm_exit {
-                VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
-                VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
-                VmExit::Shutdown => {
-                    log::info!("vcpu {id} requested shutdown");
-                    break Ok(());
-                }
-                VmExit::Interrupted => VmEntry::None,
-                VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
-            };
-        }
-    }
-
-    fn run_vcpu_inner(
-        &self,
-        id: u32,
-        init_state: &InitState,
-        barrier: &Barrier,
-    ) -> Result<(), Error> {
-        let mut vcpu = self.init_vcpu(id, init_state)?;
-        barrier.wait();
-        self.vcpu_loop(&mut vcpu, id)
-    }
-
-    fn run_vcpu(&self, id: u32, init_state: &InitState, barrier: &Barrier) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(id, init_state, barrier);
-        self.state.store(STATE_SHUTDOWN, Ordering::Release);
-        self.waker.wake()?;
-        ret
-    }
-}
-
 impl<H> Machine<H>
 where
-    H: crate::hv::Hypervisor + 'static,
+    H: Hypervisor + 'static,
 {
     pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
         let mut vm = hv.create_vm()?;
@@ -237,7 +172,7 @@ where
                         log::error!("cannot join vcpu {}: {:?}", id, e);
                         Ok(())
                     }
-                    Ok(r) => r,
+                    Ok(r) => r.map_err(Error::Board),
                 }
             })
             .collect()
