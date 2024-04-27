@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::type_name;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
@@ -43,7 +42,6 @@ const UNASSIGNED_SLOT_ID: u32 = u32::MAX;
 struct MemPages {
     addr: NonNull<c_void>,
     len: usize,
-    map_callback: RwLock<Vec<Box<dyn MmapCallback + Sync + Send + 'static>>>,
     slot_id: AtomicU32,
 }
 
@@ -60,18 +58,6 @@ impl Drop for MemPages {
         }
     }
 }
-
-pub trait MmapCallback: Debug {
-    fn mapped(&self, addr: usize) -> Result<(), Error> {
-        log::trace!("{:#x} -> {}", addr, type_name::<Self>());
-        Ok(())
-    }
-    fn unmapped(&self) -> Result<(), Error> {
-        log::trace!("{} unmapped", type_name::<Self>());
-        Ok(())
-    }
-}
-
 // ArcMemPages uses Arc to manage the underlying memory and caches
 // the address and size on the stack. Compared with using Arc<MemPages>,
 // it avoids a memory load when a caller tries to read/write the pages.
@@ -103,31 +89,6 @@ impl ArcMemPages {
         Ok(())
     }
 
-    pub fn add_map_callback(
-        &self,
-        f: Box<dyn MmapCallback + Sync + Send + 'static>,
-    ) -> Result<(), Error> {
-        let mut callbacks = self.inner.map_callback.write();
-        callbacks.push(f);
-        Ok(())
-    }
-
-    fn mapped_to_guest(&self, gpa: usize) -> Result<(), Error> {
-        let callbacks = self.inner.map_callback.read();
-        for callback in callbacks.iter() {
-            callback.mapped(gpa)?;
-        }
-        Ok(())
-    }
-
-    fn unmapped_from_guest(&self) -> Result<(), Error> {
-        let callbacks = self.inner.map_callback.read();
-        for callback in callbacks.iter() {
-            callback.unmapped()?;
-        }
-        Ok(())
-    }
-
     fn new_raw(addr: *mut c_void, len: usize) -> Self {
         let addr = NonNull::new(addr).expect("address from mmap() should not be null");
         ArcMemPages {
@@ -136,7 +97,6 @@ impl ArcMemPages {
             inner: Arc::new(MemPages {
                 addr,
                 len,
-                map_callback: RwLock::new(Vec::new()),
                 slot_id: AtomicU32::new(UNASSIGNED_SLOT_ID),
             }),
         }
@@ -483,7 +443,6 @@ impl RamBus {
             mem.inner.slot_id.store(slot_id, Ordering::Release);
         }
         self.map_to_vm(mem, gpa)?;
-        mem.mapped_to_guest(gpa)?;
         Ok(())
     }
 
@@ -491,7 +450,6 @@ impl RamBus {
         let mut innter = self.inner.write();
         for (gpa, user_mem) in innter.drain(..) {
             self.unmap_from_vm(&user_mem, gpa)?;
-            user_mem.unmapped_from_guest()?;
         }
         Ok(())
     }
@@ -500,7 +458,6 @@ impl RamBus {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
-        mem.unmapped_from_guest()?;
         Ok(mem)
     }
 
@@ -571,15 +528,13 @@ mod test {
     use std::io::{Read, Write};
     use std::mem::size_of;
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     use libc::{mmap, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
     use crate::hv::test::FakeVmMemory;
 
-    use super::{ArcMemPages, MmapCallback, RamBus, Result};
+    use super::{ArcMemPages, RamBus};
 
     #[derive(Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
     #[repr(C)]
@@ -602,28 +557,7 @@ mod test {
         let mem2_addr = unsafe { addr.add(2 * PAGE_SIZE) };
         let mem2 = ArcMemPages::new_raw(mem2_addr, PAGE_SIZE);
 
-        #[derive(Debug)]
-        struct Callback {
-            mapped: Arc<AtomicBool>,
-        }
-        impl MmapCallback for Callback {
-            fn mapped(&self, _addr: usize) -> Result<()> {
-                self.mapped.store(true, Ordering::Release);
-                Ok(())
-            }
-
-            fn unmapped(&self) -> Result<()> {
-                self.mapped.store(false, Ordering::Release);
-                Ok(())
-            }
-        }
-        let mem1_mapped = Arc::new(AtomicBool::new(false));
-        let mem1_callback = Callback {
-            mapped: mem1_mapped.clone(),
-        };
-        mem1.add_map_callback(Box::new(mem1_callback)).unwrap();
         bus.add(0x0, mem1).unwrap();
-        assert!(mem1_mapped.load(Ordering::Acquire));
         bus.add(PAGE_SIZE, mem2).unwrap();
 
         let data = MyStruct {
@@ -672,6 +606,5 @@ mod test {
         println!("{:?}", bufs);
         drop(locked_bus);
         bus.remove(0x0).unwrap();
-        assert!(!mem1_mapped.load(Ordering::Acquire));
     }
 }
