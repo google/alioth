@@ -14,6 +14,7 @@
 
 pub mod acpi;
 pub mod arch;
+pub mod board;
 pub mod device;
 pub mod hv;
 pub mod loader;
