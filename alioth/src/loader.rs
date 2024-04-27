@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::hv::arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
-use crate::mem::{MemRegion, MemRegionType};
+use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod linux;
 
@@ -77,18 +77,18 @@ pub enum Error {
 }
 
 pub fn search_initramfs_address(
-    mem_regions: &[(usize, MemRegion)],
+    entries: &[(usize, MemRegionEntry)],
     size: usize,
     addr_max: usize,
 ) -> Result<usize, Error> {
-    for (start, region) in mem_regions.iter().rev() {
-        let region_max = region.size - 1 + start;
+    for (start, entry) in entries.iter().rev() {
+        let region_max = entry.size - 1 + start;
         let limit = std::cmp::min(region_max, addr_max);
         if limit < size - 1 {
             continue;
         }
         let load_addr = (limit - (size - 1)) & !0xfff;
-        if region.type_ == MemRegionType::Ram && load_addr >= *start {
+        if entry.type_ == MemRegionType::Ram && load_addr >= *start {
             return Ok(load_addr);
         }
     }

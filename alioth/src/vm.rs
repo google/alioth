@@ -191,10 +191,10 @@ where
         let Some(payload) = &self.payload else {
             return Ok(InitState::default());
         };
-        let mem_regions = self.board.memory.to_mem_regions()?;
+        let mem_regions = self.board.memory.mem_region_entries();
         let init_state = match payload.exec_type {
             ExecType::Linux => linux::load(
-                self.board.memory.ram_bus(),
+                &self.board.memory.ram_bus(),
                 &mem_regions,
                 &payload.executable,
                 payload.cmd_line.as_deref(),

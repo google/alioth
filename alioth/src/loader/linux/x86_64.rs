@@ -28,7 +28,7 @@ use crate::arch::layout::{
     BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
     KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
-use crate::mem::{MemRegion, MemRegionType};
+use crate::mem::{MemRegionEntry, MemRegionType};
 
 use crate::loader::linux::bootparams::{
     BootE820Entry, BootParams, XLoadFlags, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
@@ -41,7 +41,7 @@ const MINIMAL_VERSION: u16 = 0x020c;
 
 pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
-    mem_regions: &[(usize, MemRegion)],
+    mem_regions: &[(usize, MemRegionEntry)],
     kernel: P,
     cmd_line: Option<&str>,
     initramfs: Option<P>,
@@ -133,18 +133,21 @@ pub fn load<P: AsRef<Path>>(
     }
 
     // setup e820 table
-    for (index, (addr, region)) in mem_regions.iter().enumerate() {
+    let mut region_index = 0;
+    for (addr, region) in mem_regions.iter() {
         let type_ = match region.type_ {
             MemRegionType::Ram => E820_RAM,
             MemRegionType::Reserved => E820_RESERVED,
             MemRegionType::Acpi => E820_ACPI,
             MemRegionType::Pmem => E820_PMEM,
+            MemRegionType::Hidden => continue,
         };
-        boot_params.e820_table[index] = BootE820Entry {
+        boot_params.e820_table[region_index] = BootE820Entry {
             addr: *addr as u64,
             size: region.size as u64,
             type_,
         };
+        region_index += 1;
     }
     boot_params.e820_entries = mem_regions.len() as u8;
 
