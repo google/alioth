@@ -13,7 +13,6 @@
 // limitations under the License.
 
 pub mod acpi;
-pub mod action;
 pub mod arch;
 pub mod device;
 pub mod hv;
