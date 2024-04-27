@@ -195,7 +195,7 @@ impl Memory {
                 allocator.io.add(
                     port as usize,
                     MemRegion {
-                        size: dev.size(),
+                        size: Mmio::size(&dev),
                         type_: MemRegionType::Reserved,
                     },
                 )?;
@@ -203,11 +203,11 @@ impl Memory {
             }
             None => {
                 let port = Self::alloc_sub(
-                    dev.size(),
+                    Mmio::size(&dev),
                     &mut allocator.io,
                     0x1000,
                     0xffff,
-                    &[(dev.size(), MemRegionType::Reserved)],
+                    &[(Mmio::size(&dev), MemRegionType::Reserved)],
                 )?;
                 port as u16
             }
