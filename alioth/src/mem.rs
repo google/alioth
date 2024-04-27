@@ -23,11 +23,11 @@ use crate::arch::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 use crate::hv::{self, VmEntry, VmMemory};
 
 pub mod addressable;
-pub mod mmio;
+pub mod emulated;
 pub mod ram;
 
 use addressable::{Addressable, SlotBackend};
-use mmio::{MmioBus, MmioRange};
+use emulated::{MmioBus, MmioRange};
 use ram::{ArcMemPages, RamBus};
 
 #[derive(Debug)]
@@ -413,7 +413,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::hv::test::FakeVmMemory;
-    use crate::mem::mmio::Mmio;
+    use crate::mem::emulated::Mmio;
     use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory, Result, MMIO_32_START};
 
     #[test]

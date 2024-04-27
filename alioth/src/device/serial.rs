@@ -29,7 +29,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use parking_lot::Mutex;
 
 use crate::hv::IntxSender;
-use crate::mem::mmio::Mmio;
+use crate::mem::emulated::Mmio;
 use crate::{ffi, mem};
 
 const TX_HOLDING_REGISTER: u16 = 0x0;
