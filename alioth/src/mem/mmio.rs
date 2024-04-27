@@ -12,30 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::type_name;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::mem::addressable::{Addressable, SlotBackend};
+use crate::mem::Result;
 use parking_lot::RwLock;
 
-use super::addressable::{Addressable, SlotBackend};
-use super::{Error, Result};
-
-pub trait Mmio: Debug {
+pub trait Mmio: Debug + Send + Sync + 'static {
     fn read(&self, offset: usize, size: u8) -> Result<u64>;
     fn write(&self, offset: usize, size: u8, val: u64) -> Result<()>;
-    fn mapped(&self, addr: usize) -> Result<()> {
-        log::trace!("{:#x} -> {}", addr, type_name::<Self>());
-        Ok(())
-    }
-    fn unmapped(&self) -> Result<()> {
-        log::trace!("{} unmapped", type_name::<Self>());
-        Ok(())
-    }
     fn size(&self) -> usize;
 }
 
-pub type MmioRegion = Arc<dyn Mmio + Send + Sync + 'static>;
+pub type MmioRegion = Arc<dyn Mmio>;
+
+impl Mmio for MmioRegion {
+    fn read(&self, offset: usize, size: u8) -> Result<u64> {
+        Mmio::read(self.as_ref(), offset, size)
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> Result<()> {
+        Mmio::write(self.as_ref(), offset, size, val)
+    }
+
+    fn size(&self) -> usize {
+        Mmio::size(self.as_ref())
+    }
+}
 
 impl SlotBackend for MmioRegion {
     fn size(&self) -> usize {
@@ -44,133 +48,60 @@ impl SlotBackend for MmioRegion {
 }
 
 #[derive(Debug)]
-pub struct MmioRange {
-    limit: usize,
-    inner: Addressable<MmioRegion>,
+pub struct MmioBus<R = MmioRegion>
+where
+    R: Debug + SlotBackend,
+{
+    inner: RwLock<Addressable<R>>,
 }
 
-impl MmioRange {
-    pub fn with_size(size: usize) -> Self {
-        assert_ne!(size, 0);
-        MmioRange {
-            limit: size - 1,
-            inner: Addressable::new(),
-        }
+impl<R> Default for MmioBus<R>
+where
+    R: Debug + SlotBackend + Mmio,
+{
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    fn new() -> Self {
-        MmioRange {
-            limit: usize::MAX,
-            inner: Addressable::new(),
+impl<R> MmioBus<R>
+where
+    R: Debug + SlotBackend + Mmio,
+{
+    pub fn new() -> MmioBus<R> {
+        Self {
+            inner: RwLock::new(Addressable::new()),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.inner.read().is_empty()
     }
 
-    pub fn add(&mut self, offset: usize, dev: MmioRegion) -> Result<&mut MmioRegion> {
-        let in_range = (dev.size() - 1)
-            .checked_add(offset)
-            .map(|max| max <= self.limit);
-        match in_range {
-            Some(true) => self.inner.add(offset, dev),
-            Some(false) | None => Err(Error::OutOfRange {
-                addr: offset,
-                size: dev.size(),
-            }),
-        }
+    pub fn add(&self, addr: usize, range: R) -> Result<()> {
+        let mut inner = self.inner.write();
+        inner.add(addr, range)?;
+        Ok(())
     }
 
-    pub fn remove(&mut self, addr: usize) -> Result<MmioRegion> {
-        self.inner.remove(addr)
+    pub(super) fn remove(&self, addr: usize) -> Result<R> {
+        let mut inner = self.inner.write();
+        inner.remove(addr)
     }
 
     pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
-        match self.inner.search(addr) {
+        let inner = self.inner.read();
+        match inner.search(addr) {
             Some((start, dev)) => dev.read(addr - start, size),
             None => Ok(0),
         }
     }
 
     pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
-        match self.inner.search(addr) {
+        let inner = self.inner.read();
+        match inner.search(addr) {
             Some((start, dev)) => dev.write(addr - start, size, val),
             None => Ok(()),
         }
-    }
-}
-
-impl Mmio for MmioRange {
-    fn size(&self) -> usize {
-        // Overflow happens when limit = usize::MAX, which is only possible when
-        // it was constructed through MmioRange::new(). MmioRange::new() is private
-        // and only MmioBus uses it.
-        self.limit.wrapping_add(1)
-    }
-
-    fn read(&self, offset: usize, size: u8) -> Result<u64> {
-        self.read(offset, size)
-    }
-
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<()> {
-        self.write(offset, size, val)
-    }
-
-    fn mapped(&self, addr: usize) -> Result<()> {
-        for (offset, range) in self.inner.iter() {
-            range.mapped(addr + offset)?;
-        }
-        Ok(())
-    }
-
-    fn unmapped(&self) -> Result<()> {
-        for (_, range) in self.inner.iter() {
-            range.unmapped()?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct MmioBus {
-    inner: RwLock<MmioRange>,
-}
-
-impl Default for MmioBus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MmioBus {
-    pub fn new() -> MmioBus {
-        Self {
-            inner: RwLock::new(MmioRange::new()),
-        }
-    }
-
-    pub(super) fn add(&self, addr: usize, dev: MmioRegion) -> Result<()> {
-        let mut inner = self.inner.write();
-        let dev = inner.add(addr, dev)?;
-        dev.mapped(addr)?;
-        Ok(())
-    }
-
-    pub(super) fn remove(&self, addr: usize) -> Result<MmioRegion> {
-        let mut inner = self.inner.write();
-        let dev = inner.remove(addr)?;
-        dev.unmapped()?;
-        Ok(dev)
-    }
-
-    pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
-        let inner = self.inner.read();
-        inner.read(addr, size)
-    }
-
-    pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
-        let inner = self.inner.read();
-        inner.write(addr, size, val)
     }
 }
