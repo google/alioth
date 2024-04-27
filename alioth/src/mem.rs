@@ -21,7 +21,6 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::action::Action;
 use crate::align_up;
 use crate::hv::{self, VmEntry, VmMemory};
 use ram::ArcMemPages;
@@ -33,6 +32,11 @@ use ram::RamBus;
 use crate::arch::layout::{
     MEM_64_START, MMIO_32_START, PCIE_CONFIG_END, PCIE_CONFIG_START, RAM_32_END,
 };
+
+#[derive(Debug)]
+pub enum Action {
+    Shutdown,
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
