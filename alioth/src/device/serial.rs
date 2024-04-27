@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind};
 use std::mem::MaybeUninit;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use bitfield::bitfield;
@@ -26,6 +26,7 @@ use libc::{
 };
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
+use parking_lot::Mutex;
 
 use crate::hv::IntxSender;
 use crate::mem::mmio::Mmio;
@@ -205,7 +206,7 @@ where
     }
 
     fn read(&self, offset: usize, _size: u8) -> Result<u64, mem::Error> {
-        let mut reg = self.reg.lock()?;
+        let mut reg = self.reg.lock();
         let ret = match offset as u16 {
             DIVISOR_LATCH_LSB if reg.line_control.divisor_latch_access() => reg.divisor as u8,
             DIVISOR_LATCH_MSB if reg.line_control.divisor_latch_access() => {
@@ -242,7 +243,7 @@ where
 
     fn write(&self, offset: usize, _size: u8, val: u64) -> Result<(), mem::Error> {
         let byte = val as u8;
-        let mut reg = self.reg.lock()?;
+        let mut reg = self.reg.lock();
         match offset as u16 {
             DIVISOR_LATCH_LSB if reg.line_control.divisor_latch_access() => {
                 reg.divisor = (reg.divisor & 0xff00) | byte as u16;
@@ -406,10 +407,7 @@ where
                 if event.token() == TOKEN_SHUTDOWN {
                     return Ok(());
                 }
-                let Ok(mut reg) = self.reg.lock() else {
-                    log::error!("Serial {:#x}: mutex poisoned", self.base_port);
-                    return Ok(());
-                };
+                let mut reg = self.reg.lock();
                 if Self::read_input(&mut reg.data)? == 0 {
                     continue;
                 }
