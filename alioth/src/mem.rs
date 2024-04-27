@@ -24,7 +24,7 @@ use thiserror::Error;
 use crate::action::Action;
 use crate::align_up;
 use crate::hv::{self, VmEntry, VmMemory};
-use ram::UserMem;
+use ram::ArcMemPages;
 
 use addressable::{Addressable, SlotBackend};
 use mmio::{Mmio, MmioBus, MmioRegion};
@@ -103,7 +103,7 @@ pub enum AddrOpt {
 
 #[derive(Debug)]
 pub enum DevMem {
-    UserMem(UserMem),
+    UserMem(ArcMemPages),
     Mmio(Arc<dyn Mmio + Send + Sync>),
 }
 
@@ -179,7 +179,7 @@ impl Memory {
     pub fn add_ram(
         &self,
         gpa: AddrOpt,
-        user_mem: UserMem,
+        user_mem: ArcMemPages,
         regions: &[(usize, MemRegionType)],
     ) -> Result<usize, Error> {
         let addr = self.alloc(gpa, user_mem.size(), false, regions)?;

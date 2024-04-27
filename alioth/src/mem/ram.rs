@@ -40,17 +40,17 @@ use super::{Error, Result};
 const UNASSIGNED_SLOT_ID: u32 = u32::MAX;
 
 #[derive(Debug)]
-struct UserMemInner {
+struct MemPages {
     addr: NonNull<c_void>,
     len: usize,
     map_callback: RwLock<Vec<Box<dyn MmapCallback + Sync + Send + 'static>>>,
     slot_id: AtomicU32,
 }
 
-unsafe impl Send for UserMemInner {}
-unsafe impl Sync for UserMemInner {}
+unsafe impl Send for MemPages {}
+unsafe impl Sync for MemPages {}
 
-impl Drop for UserMemInner {
+impl Drop for MemPages {
     fn drop(&mut self) {
         let ret = unsafe { munmap(self.addr.as_ptr(), self.len) };
         if ret != 0 {
@@ -72,20 +72,24 @@ pub trait MmapCallback: Debug {
     }
 }
 
+// ArcMemPages uses Arc to manage the underlying memory and caches
+// the address and size on the stack. Compared with using Arc<MemPages>,
+// it avoids a memory load when a caller tries to read/write the pages.
+// TODO: is it really necessary?
 #[derive(Debug, Clone)]
-pub struct UserMem {
+pub struct ArcMemPages {
     addr: usize,
     size: usize,
-    inner: Arc<UserMemInner>,
+    inner: Arc<MemPages>,
 }
 
-impl SlotBackend for UserMem {
+impl SlotBackend for ArcMemPages {
     fn size(&self) -> usize {
         self.size
     }
 }
 
-impl UserMem {
+impl ArcMemPages {
     pub fn addr(&self) -> usize {
         self.addr
     }
@@ -126,10 +130,10 @@ impl UserMem {
 
     fn new_raw(addr: *mut c_void, len: usize) -> Self {
         let addr = NonNull::new(addr).expect("address from mmap() should not be null");
-        UserMem {
+        ArcMemPages {
             addr: addr.as_ptr() as usize,
             size: len,
-            inner: Arc::new(UserMemInner {
+            inner: Arc::new(MemPages {
                 addr,
                 len,
                 map_callback: RwLock::new(Vec::new()),
@@ -219,26 +223,26 @@ impl UserMem {
 
 #[derive(Debug)]
 pub struct RamBus {
-    inner: RwLock<Addressable<UserMem>>,
+    inner: RwLock<Addressable<ArcMemPages>>,
     vm_memory: Box<dyn VmMemory>,
     next_slot_id: AtomicU32,
     max_mem_slots: u32,
 }
 
 pub struct RamLayoutGuard<'a> {
-    inner: RwLockReadGuard<'a, Addressable<UserMem>>,
+    inner: RwLockReadGuard<'a, Addressable<ArcMemPages>>,
 }
 
 impl Deref for RamLayoutGuard<'_> {
-    type Target = Addressable<UserMem>;
+    type Target = Addressable<ArcMemPages>;
 
-    fn deref(&self) -> &Addressable<UserMem> {
+    fn deref(&self) -> &Addressable<ArcMemPages> {
         &self.inner
     }
 }
 
 struct Iter<'a> {
-    inner: &'a Addressable<UserMem>,
+    inner: &'a Addressable<ArcMemPages>,
     gpa: usize,
     remain: usize,
 }
@@ -259,7 +263,7 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 struct IterMut<'a> {
-    inner: &'a Addressable<UserMem>,
+    inner: &'a Addressable<ArcMemPages>,
     gpa: usize,
     remain: usize,
 }
@@ -279,7 +283,7 @@ impl<'a> Iterator for IterMut<'a> {
     }
 }
 
-impl Addressable<UserMem> {
+impl Addressable<ArcMemPages> {
     fn slice_iter(&self, gpa: usize, len: usize) -> Iter {
         Iter {
             inner: self,
@@ -439,7 +443,7 @@ impl RamBus {
         }
     }
 
-    fn map_to_vm(&self, user_mem: &UserMem, addr: usize) -> Result<(), Error> {
+    fn map_to_vm(&self, user_mem: &ArcMemPages, addr: usize) -> Result<(), Error> {
         let mem_options = MemMapOption {
             read: true,
             write: true,
@@ -458,7 +462,7 @@ impl RamBus {
         Ok(())
     }
 
-    fn unmap_from_vm(&self, user_mem: &UserMem, addr: usize) -> Result<(), Error> {
+    fn unmap_from_vm(&self, user_mem: &ArcMemPages, addr: usize) -> Result<(), Error> {
         let slot_id = user_mem.inner.slot_id.load(Ordering::Acquire);
         self.vm_memory.unmap(slot_id, addr, user_mem.size())?;
         log::trace!(
@@ -470,7 +474,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub(crate) fn add(&self, gpa: usize, user_mem: UserMem) -> Result<(), Error> {
+    pub(crate) fn add(&self, gpa: usize, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
         let mem = inner.add(gpa, user_mem)?;
         let mut slot_id = mem.inner.slot_id.load(Ordering::Acquire);
@@ -492,7 +496,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub(super) fn remove(&self, gpa: usize) -> Result<UserMem, Error> {
+    pub(super) fn remove(&self, gpa: usize) -> Result<ArcMemPages, Error> {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
@@ -575,7 +579,7 @@ mod test {
 
     use crate::hv::test::FakeVmMemory;
 
-    use super::{MmapCallback, RamBus, Result, UserMem};
+    use super::{ArcMemPages, MmapCallback, RamBus, Result};
 
     #[derive(Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
     #[repr(C)]
@@ -594,9 +598,9 @@ mod test {
         assert_ne!(addr, MAP_FAILED);
         let munmap_ret = unsafe { munmap(addr.add(PAGE_SIZE), PAGE_SIZE) };
         assert_ne!(munmap_ret, -1);
-        let mem1 = UserMem::new_raw(addr, PAGE_SIZE);
+        let mem1 = ArcMemPages::new_raw(addr, PAGE_SIZE);
         let mem2_addr = unsafe { addr.add(2 * PAGE_SIZE) };
-        let mem2 = UserMem::new_raw(mem2_addr, PAGE_SIZE);
+        let mem2 = ArcMemPages::new_raw(mem2_addr, PAGE_SIZE);
 
         #[derive(Debug)]
         struct Callback {

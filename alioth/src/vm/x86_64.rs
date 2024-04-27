@@ -19,7 +19,7 @@ use crate::arch::layout::{
 use crate::hv::arch::Cpuid;
 use crate::hv::{Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
-use crate::mem::ram::UserMem;
+use crate::mem::ram::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegionType};
 use crate::vm::{Board, Error, Machine, Result};
 
@@ -83,7 +83,7 @@ where
         if config.mem_size > RAM_32_SIZE {
             memory.add_ram(
                 AddrOpt::Fixed(0),
-                UserMem::new_anon(RAM_32_SIZE)?,
+                ArcMemPages::new_anon(RAM_32_SIZE)?,
                 &[
                     (BIOS_DATA_END, MemRegionType::Reserved),
                     (EBDA_START - BIOS_DATA_END, MemRegionType::Ram),
@@ -93,13 +93,13 @@ where
             )?;
             memory.add_ram(
                 AddrOpt::Fixed(MEM_64_START),
-                UserMem::new_anon(config.mem_size - RAM_32_END)?,
+                ArcMemPages::new_anon(config.mem_size - RAM_32_END)?,
                 &[(config.mem_size - RAM_32_END, MemRegionType::Ram)],
             )?;
         } else {
             memory.add_ram(
                 AddrOpt::Fixed(0),
-                UserMem::new_anon(config.mem_size)?,
+                ArcMemPages::new_anon(config.mem_size)?,
                 &[
                     (BIOS_DATA_END, MemRegionType::Reserved),
                     (EBDA_START - BIOS_DATA_END, MemRegionType::Ram),
