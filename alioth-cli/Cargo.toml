@@ -2,13 +2,17 @@
 name = "alioth-cli"
 version = "0.1.0"
 edition = "2021"
+description = "a KVM-based toy virtual machine monitor"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 log = "0.4"
 flexi_logger = "0.28"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-alioth = { path = "../alioth" }
+alioth = { version = "0.1.0", path = "../alioth" }
 
 [[bin]]
 path = "src/main.rs"
