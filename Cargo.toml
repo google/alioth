@@ -2,6 +2,11 @@
 members = ["alioth", "alioth-cli"]
 resolver = "2"
 
+[workspace.package]
+authors = ["Changyuan Lyu <changyuan.lv@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/google/alioth"
+
 [workspace.dependencies]
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 
