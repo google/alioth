@@ -22,6 +22,7 @@ use crate::hv::arch::Reg;
 use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
+#[path = "linux/linux.rs"]
 pub mod linux;
 
 #[derive(Debug)]

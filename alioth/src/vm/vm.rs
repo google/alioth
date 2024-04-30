@@ -72,8 +72,8 @@ where
 {
     pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
         let mut vm = hv.create_vm()?;
-        let vm_mmemory = vm.create_vm_memory()?;
-        let memory = Memory::new(vm_mmemory);
+        let vm_memory = vm.create_vm_memory()?;
+        let memory = Memory::new(vm_memory);
         let arch = ArchBoard::new(&hv)?;
 
         let poll = Poll::new()?;

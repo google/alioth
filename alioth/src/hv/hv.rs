@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "arch/arch.rs"]
 pub mod arch;
 
 #[cfg(target_os = "linux")]
+#[path = "kvm/kvm.rs"]
 mod kvm;
 #[cfg(test)]
 pub(crate) mod test;

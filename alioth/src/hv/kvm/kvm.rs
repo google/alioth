@@ -14,6 +14,7 @@
 
 mod bindings;
 mod ioctls;
+#[path = "vcpu/vcpu.rs"]
 mod vcpu;
 mod vm;
 mod vmentry;
