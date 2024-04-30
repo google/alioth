@@ -140,7 +140,7 @@ impl MemRegion {
         }
     }
 
-    pub fn with_emuldated(range: MmioRange, type_: MemRegionType) -> MemRegion {
+    pub fn with_emulated(range: MmioRange, type_: MemRegionType) -> MemRegion {
         let size = range.size();
         MemRegion {
             size,
@@ -440,7 +440,7 @@ mod test {
             memory
                 .add_region(
                     AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emuldated(
+                    Arc::new(MemRegion::with_emulated(
                         Arc::new(TestMmio { size: 0x1000 }),
                         MemRegionType::Reserved
                     )),
@@ -452,7 +452,7 @@ mod test {
             memory
                 .add_region(
                     AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emuldated(
+                    Arc::new(MemRegion::with_emulated(
                         Arc::new(TestMmio { size: 0x1000 }),
                         MemRegionType::Reserved
                     )),
@@ -466,7 +466,7 @@ mod test {
             memory
                 .add_region(
                     AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emuldated(
+                    Arc::new(MemRegion::with_emulated(
                         Arc::new(TestMmio { size: 0x1000 }),
                         MemRegionType::Reserved
                     )),
