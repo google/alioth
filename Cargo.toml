@@ -1,5 +1,5 @@
 [workspace]
-members = ["alioth", "alioth-cli"]
+members = ["alioth", "alioth-cli", "macros"]
 resolver = "2"
 
 [workspace.package]
