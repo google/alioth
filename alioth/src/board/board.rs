@@ -13,9 +13,8 @@
 // limitations under the License.
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Barrier;
+use std::sync::mpsc::{Receiver, Sender};
 
-use mio::Waker;
 use parking_lot::RwLock;
 use thiserror::Error;
 
@@ -74,7 +73,6 @@ where
     pub memory: Memory,
     pub arch: ArchBoard,
     pub config: BoardConfig,
-    pub waker: Waker,
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
 }
@@ -132,10 +130,19 @@ where
         }
     }
 
-    fn run_vcpu_inner(&self, id: u32, barrier: &Barrier) -> Result<(), Error> {
+    fn run_vcpu_inner(
+        &self,
+        id: u32,
+        event_tx: &Sender<u32>,
+        boot_rx: &Receiver<()>,
+    ) -> Result<(), Error> {
         let mut vcpu = self.vm.create_vcpu(id)?;
+        event_tx.send(id).unwrap();
         self.init_vcpu(id, &mut vcpu)?;
-        barrier.wait();
+        boot_rx.recv().unwrap();
+        if self.state.load(Ordering::Acquire) != STATE_RUNNING {
+            return Ok(());
+        }
         if id == 0 {
             self.create_ram()?;
             let init_state = self.load_payload()?;
@@ -145,10 +152,15 @@ where
         self.vcpu_loop(&mut vcpu, id)
     }
 
-    pub fn run_vcpu(&self, id: u32, barrier: &Barrier) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(id, barrier);
+    pub fn run_vcpu(
+        &self,
+        id: u32,
+        event_tx: Sender<u32>,
+        boot_rx: Receiver<()>,
+    ) -> Result<(), Error> {
+        let ret = self.run_vcpu_inner(id, &event_tx, &boot_rx);
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
-        self.waker.wake()?;
+        event_tx.send(id).unwrap();
         ret
     }
 }
