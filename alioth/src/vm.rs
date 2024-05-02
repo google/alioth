@@ -12,21 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 
 use mio::{Events, Poll, Token, Waker};
+use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
-use crate::loader::{self, linux, ExecType, InitState, Payload};
+use crate::loader::{self, Payload};
 use crate::mem;
 use crate::mem::Memory;
 
@@ -62,7 +60,6 @@ where
 {
     vcpu_threads: Vec<JoinHandle<Result<(), board::Error>>>,
     board: Arc<Board<H::Vm>>,
-    payload: Option<Payload>,
     poll: Poll,
 }
 
@@ -85,11 +82,11 @@ where
             config,
             waker,
             state: AtomicU8::new(STATE_CREATED),
+            payload: RwLock::new(None),
         };
 
         let machine = Machine {
             board: Arc::new(board),
-            payload: None,
             vcpu_threads: Vec::new(),
             poll,
         };
@@ -105,39 +102,18 @@ where
     }
 
     pub fn add_payload(&mut self, payload: Payload) {
-        self.payload = Some(payload)
-    }
-
-    fn load_payload(&self) -> Result<InitState, Error> {
-        let Some(payload) = &self.payload else {
-            return Ok(InitState::default());
-        };
-        let mem_regions = self.board.memory.mem_region_entries();
-        let init_state = match payload.exec_type {
-            ExecType::Linux => linux::load(
-                &self.board.memory.ram_bus(),
-                &mem_regions,
-                &payload.executable,
-                payload.cmd_line.as_deref(),
-                payload.initramfs.as_ref(),
-            )?,
-        };
-        Ok(init_state)
+        *self.board.payload.write() = Some(payload)
     }
 
     pub fn boot(&mut self) -> Result<(), Error> {
-        self.create_ram()?;
-        let init_state = Arc::new(self.load_payload()?);
-        self.create_firmware_data(&init_state)?;
         self.board.state.store(STATE_RUNNING, Ordering::Release);
         let barrier = Arc::new(Barrier::new(self.board.config.num_cpu as usize));
         for vcpu_id in 0..self.board.config.num_cpu {
-            let init_state = init_state.clone();
             let barrier = barrier.clone();
             let board = self.board.clone();
             let handle = thread::Builder::new()
                 .name(format!("vcpu_{}", vcpu_id))
-                .spawn(move || board.run_vcpu(vcpu_id, &init_state, &barrier))?;
+                .spawn(move || board.run_vcpu(vcpu_id, &barrier))?;
             self.vcpu_threads.push(handle);
         }
         Ok(())

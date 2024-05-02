@@ -16,10 +16,13 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Barrier;
 
 use mio::Waker;
+use parking_lot::RwLock;
 use thiserror::Error;
 
+use crate::acpi::create_acpi_tables;
+use crate::arch::layout::{EBDA_END, EBDA_START};
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
-use crate::loader::{self, InitState};
+use crate::loader::{self, linux, ExecType, InitState, Payload};
 use crate::mem::{self, Memory};
 
 #[cfg(target_arch = "x86_64")]
@@ -73,12 +76,41 @@ where
     pub config: BoardConfig,
     pub waker: Waker,
     pub state: AtomicU8,
+    pub payload: RwLock<Option<Payload>>,
 }
 
 impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
+        let acpi_bytes = create_acpi_tables(EBDA_START, self.config.num_cpu);
+        if acpi_bytes.len() > EBDA_END - EBDA_START {
+            return Err(Error::AcpiTooLong);
+        }
+        let ram = self.memory.ram_bus();
+        ram.write_range(EBDA_START, acpi_bytes.len(), &*acpi_bytes)?;
+        Ok(())
+    }
+
+    fn load_payload(&self) -> Result<InitState, Error> {
+        let payload = self.payload.read();
+        let Some(payload) = payload.as_ref() else {
+            return Ok(InitState::default());
+        };
+        let mem_regions = self.memory.mem_region_entries();
+        let init_state = match payload.exec_type {
+            ExecType::Linux => linux::load(
+                &self.memory.ram_bus(),
+                &mem_regions,
+                &payload.executable,
+                payload.cmd_line.as_deref(),
+                payload.initramfs.as_ref(),
+            )?,
+        };
+        Ok(init_state)
+    }
+
     fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<(), Error> {
         let mut vm_entry = VmEntry::None;
         loop {
@@ -100,24 +132,21 @@ where
         }
     }
 
-    fn run_vcpu_inner(
-        &self,
-        id: u32,
-        init_state: &InitState,
-        barrier: &Barrier,
-    ) -> Result<(), Error> {
-        let mut vcpu = self.init_vcpu(id, init_state)?;
+    fn run_vcpu_inner(&self, id: u32, barrier: &Barrier) -> Result<(), Error> {
+        let mut vcpu = self.vm.create_vcpu(id)?;
+        self.init_vcpu(id, &mut vcpu)?;
         barrier.wait();
+        if id == 0 {
+            self.create_ram()?;
+            let init_state = self.load_payload()?;
+            self.init_boot_vcpu(&mut vcpu, &init_state)?;
+            self.create_firmware_data(&init_state)?;
+        }
         self.vcpu_loop(&mut vcpu, id)
     }
 
-    pub fn run_vcpu(
-        &self,
-        id: u32,
-        init_state: &InitState,
-        barrier: &Barrier,
-    ) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(id, init_state, barrier);
+    pub fn run_vcpu(&self, id: u32, barrier: &Barrier) -> Result<(), Error> {
+        let ret = self.run_vcpu_inner(id, barrier);
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
         self.waker.wake()?;
         ret
