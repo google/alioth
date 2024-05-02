@@ -12,12 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
+use std::sync::Arc;
 
 use bitfield::bitfield;
+use thiserror::Error;
 
+use crate::mem;
+
+pub mod bus;
 pub mod cap;
 pub mod config;
+pub mod segment;
+
+use config::PciConfig;
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
@@ -32,4 +40,29 @@ impl Display for Bdf {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:02x}:{:02x}.{:x}", self.bus(), self.dev(), self.func())
     }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("memory: {0}")]
+    Memory(#[from] mem::Error),
+
+    #[error("{0:?} already exists")]
+    BdfExists(Bdf),
+
+    #[error("cannot find appropriate bdf")]
+    NoBdfSlots,
+
+    #[error("invalid bar index {0}")]
+    InvalidBar(usize),
+
+    #[error("reset failed")]
+    ResetFailed,
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+pub trait Pci: Debug + Send + Sync + 'static {
+    fn config(&self) -> Arc<dyn PciConfig>;
+    fn reset(&self) -> Result<()>;
 }

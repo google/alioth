@@ -203,3 +203,5 @@ impl Mmio for EmulatedHeader {
         Ok(())
     }
 }
+
+pub trait PciConfig: Mmio {}
