@@ -28,5 +28,4 @@ pub mod loader;
 pub mod mem;
 #[path = "utils/utils.rs"]
 pub(crate) mod utils;
-#[path = "vm/vm.rs"]
 pub mod vm;

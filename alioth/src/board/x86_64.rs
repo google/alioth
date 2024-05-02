@@ -12,10 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::board::{Board, Error, Result};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
+use crate::board::{Board, Result};
 use crate::hv::arch::Cpuid;
 use crate::hv::{Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
+use crate::mem::mapped::ArcMemPages;
+use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 
 pub struct ArchBoard {
     cpuids: Vec<Cpuid>,
@@ -37,12 +44,13 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub fn init_vcpu(&self, id: u32, init_state: &InitState) -> Result<<V as Vm>::Vcpu, Error> {
-        let mut vcpu = self.vm.create_vcpu(id)?;
-        if id == 0 {
-            vcpu.set_regs(&init_state.regs)?;
-            vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
-        }
+    pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
+        vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
+        vcpu.set_regs(&init_state.regs)?;
+        Ok(())
+    }
+
+    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
@@ -53,6 +61,44 @@ where
             }
         }
         vcpu.set_cpuids(cpuids)?;
-        Ok(vcpu)
+        Ok(())
+    }
+
+    pub fn create_ram(&self) -> Result<()> {
+        let config = &self.config;
+        let memory = &self.memory;
+
+        let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
+        let pages_low = ArcMemPages::new_anon(low_mem_size)?;
+        let region_low = MemRegion {
+            size: low_mem_size,
+            ranges: vec![MemRange::Mapped(pages_low)],
+            entries: vec![
+                MemRegionEntry {
+                    size: BIOS_DATA_END,
+                    type_: MemRegionType::Reserved,
+                },
+                MemRegionEntry {
+                    size: EBDA_START - BIOS_DATA_END,
+                    type_: MemRegionType::Ram,
+                },
+                MemRegionEntry {
+                    size: EBDA_END - EBDA_START,
+                    type_: MemRegionType::Acpi,
+                },
+                MemRegionEntry {
+                    size: low_mem_size - EBDA_END,
+                    type_: MemRegionType::Ram,
+                },
+            ],
+            callbacks: Mutex::new(vec![]),
+        };
+        memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
+        if config.mem_size > RAM_32_SIZE {
+            let mem_hi = ArcMemPages::new_anon(config.mem_size - RAM_32_SIZE)?;
+            let region_hi = MemRegion::with_mapped(mem_hi, MemRegionType::Ram);
+            memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
+        }
+        Ok(())
     }
 }
