@@ -51,6 +51,9 @@ struct RunArgs {
     #[arg(short, long)]
     kernel: Option<PathBuf>,
 
+    #[arg(long)]
+    pvh: Option<PathBuf>,
+
     #[arg(short, long)]
     cmd_line: Option<String>,
 
@@ -86,6 +89,13 @@ fn main_run(args: RunArgs) -> Result<()> {
         Some(Payload {
             exec_type: ExecType::Linux,
             executable: kernel,
+            initramfs: args.initramfs,
+            cmd_line: args.cmd_line,
+        })
+    } else if let Some(pvh_kernel) = args.pvh {
+        Some(Payload {
+            executable: pvh_kernel,
+            exec_type: ExecType::Pvh,
             initramfs: args.initramfs,
             cmd_line: args.cmd_line,
         })

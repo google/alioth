@@ -39,6 +39,7 @@ pub struct Payload {
 #[derive(Debug)]
 pub enum ExecType {
     Linux,
+    Pvh,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -93,6 +94,8 @@ pub enum Error {
         found: u64,
     },
 }
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn search_initramfs_address(
     entries: &[(usize, MemRegionEntry)],
