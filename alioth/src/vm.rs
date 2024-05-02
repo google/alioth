@@ -14,10 +14,10 @@
 
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use mio::{Events, Poll, Token, Waker};
 use parking_lot::RwLock;
 use thiserror::Error;
 
@@ -58,9 +58,10 @@ pub struct Machine<H>
 where
     H: Hypervisor,
 {
-    vcpu_threads: Vec<JoinHandle<Result<(), board::Error>>>,
+    vcpu_threads: Vec<(JoinHandle<Result<(), board::Error>>, Sender<()>)>,
     board: Arc<Board<H::Vm>>,
-    poll: Poll,
+    event_rx: Receiver<u32>,
+    event_tx: Sender<u32>,
 }
 
 impl<H> Machine<H>
@@ -73,22 +74,21 @@ where
         let memory = Memory::new(vm_memory);
         let arch = ArchBoard::new(&hv)?;
 
-        let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), Token(0))?;
         let board = Board {
             vm,
             memory,
             arch,
             config,
-            waker,
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
         };
 
+        let (event_tx, event_rx) = mpsc::channel();
         let machine = Machine {
             board: Arc::new(board),
             vcpu_threads: Vec::new(),
-            poll,
+            event_rx,
+            event_tx,
         };
         Ok(machine)
     }
@@ -106,28 +106,29 @@ where
     }
 
     pub fn boot(&mut self) -> Result<(), Error> {
-        self.board.state.store(STATE_RUNNING, Ordering::Release);
-        let barrier = Arc::new(Barrier::new(self.board.config.num_cpu as usize));
         for vcpu_id in 0..self.board.config.num_cpu {
-            let barrier = barrier.clone();
+            let (boot_tx, boot_rx) = mpsc::channel();
+            let event_tx = self.event_tx.clone();
             let board = self.board.clone();
             let handle = thread::Builder::new()
                 .name(format!("vcpu_{}", vcpu_id))
-                .spawn(move || board.run_vcpu(vcpu_id, &barrier))?;
-            self.vcpu_threads.push(handle);
+                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
+            self.event_rx.recv().unwrap();
+            self.vcpu_threads.push((handle, boot_tx));
+        }
+        self.board.state.store(STATE_RUNNING, Ordering::Release);
+        for (_, boot_tx) in self.vcpu_threads.iter() {
+            boot_tx.send(()).unwrap();
         }
         Ok(())
     }
 
     pub fn wait(&mut self) -> Vec<Result<()>> {
-        let mut events = Events::with_capacity(8);
-        if let Err(e) = self.poll.poll(&mut events, None) {
-            return vec![Err(e.into())];
-        }
+        self.event_rx.recv().unwrap();
         self.vcpu_threads
             .drain(..)
             .enumerate()
-            .map(|(id, handle)| {
+            .map(|(id, (handle, _))| {
                 <H::Vm>::stop_vcpu(id as u32, &handle)?;
                 match handle.join() {
                     Err(e) => {
