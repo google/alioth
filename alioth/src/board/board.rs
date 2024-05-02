@@ -23,7 +23,7 @@ use thiserror::Error;
 use crate::acpi::create_acpi_tables;
 use crate::arch::layout::{EBDA_END, EBDA_START};
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
-use crate::loader::{self, linux, ExecType, InitState, Payload};
+use crate::loader::{self, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, Memory};
 
@@ -106,6 +106,13 @@ where
         let mem_regions = self.memory.mem_region_entries();
         let init_state = match payload.exec_type {
             ExecType::Linux => linux::load(
+                &self.memory.ram_bus(),
+                &mem_regions,
+                &payload.executable,
+                payload.cmd_line.as_deref(),
+                payload.initramfs.as_ref(),
+            )?,
+            ExecType::Pvh => xen::load(
                 &self.memory.ram_bus(),
                 &mem_regions,
                 &payload.executable,

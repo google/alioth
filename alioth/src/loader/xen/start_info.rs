@@ -11,12 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 pub const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
 pub const XEN_HVM_START_INFO_V1: u32 = 1;
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
 pub struct HvmStartInfo {
     pub magic: u32,
     pub version: u32,
@@ -31,7 +32,7 @@ pub struct HvmStartInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
 pub struct HvmModlistEntry {
     pub paddr: u64,
     pub size: u64,
@@ -48,7 +49,7 @@ pub const XEN_HVM_MEMMAP_TYPE_DISABLED: u32 = 6;
 pub const XEN_HVM_MEMMAP_TYPE_PMEM: u32 = 7;
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
 pub struct HvmMemmapTableEntry {
     pub addr: u64,
     pub size: u64,

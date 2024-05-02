@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
+
 pub const ELF_HEADER_MAGIC: [u8; 4] = *b"\x7fELF";
 pub const ELF_IDENT_CLASS_64: u8 = 2;
 pub const ELF_IDENT_LITTLE_ENDIAN: u8 = 1;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 pub struct Elf64Header {
     pub ident_magic: [u8; 4],
     pub ident_class: u8,
@@ -41,7 +43,7 @@ pub struct Elf64Header {
     pub sh_str_ndx: u16,
 }
 #[repr(C)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 pub struct Elf64ProgramHeader {
     pub type_: u32,
     pub flags: u32,
@@ -56,7 +58,7 @@ pub struct Elf64ProgramHeader {
 pub const SHT_NOTE: u32 = 7;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 pub struct Elf64SectionHeader {
     pub name: u32,
     pub type_: u32,
@@ -74,7 +76,7 @@ pub const PT_LOAD: u32 = 1;
 pub const PT_NOTE: u32 = 4;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 pub struct Elf64Note {
     pub name_sz: u32,
     pub desc_sz: u32,
