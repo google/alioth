@@ -14,6 +14,8 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use parking_lot::RwLock;
 use thiserror::Error;
@@ -71,6 +73,7 @@ where
 {
     pub vm: V,
     pub memory: Memory,
+    pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
     pub arch: ArchBoard,
     pub config: BoardConfig,
     pub state: AtomicU8,
@@ -149,7 +152,29 @@ where
             self.init_boot_vcpu(&mut vcpu, &init_state)?;
             self.create_firmware_data(&init_state)?;
         }
-        self.vcpu_loop(&mut vcpu, id)
+        self.vcpu_loop(&mut vcpu, id)?;
+        let vcpus = self.vcpus.read();
+        match self.state.compare_exchange(
+            STATE_RUNNING,
+            STATE_SHUTDOWN,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(STATE_RUNNING) => {
+                for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
+                    if id != vcpu_id as u32 {
+                        log::info!("vcpu{id} to kill {vcpu_id}");
+                        V::stop_vcpu(vcpu_id as u32, handle)?;
+                    }
+                }
+            }
+            Err(STATE_SHUTDOWN) => {}
+            Ok(s) | Err(s) => {
+                log::error!("unexpected state: {s}");
+            }
+        }
+        log::info!("vcpu {id} is done");
+        Ok(())
     }
 
     pub fn run_vcpu(

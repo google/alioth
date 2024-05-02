@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 use parking_lot::RwLock;
 use thiserror::Error;
@@ -58,7 +58,6 @@ pub struct Machine<H>
 where
     H: Hypervisor,
 {
-    vcpu_threads: Vec<(JoinHandle<Result<(), board::Error>>, Sender<()>)>,
     board: Arc<Board<H::Vm>>,
     event_rx: Receiver<u32>,
     event_tx: Sender<u32>,
@@ -81,12 +80,12 @@ where
             config,
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
+            vcpus: Arc::new(RwLock::new(Vec::new())),
         };
 
         let (event_tx, event_rx) = mpsc::channel();
         let machine = Machine {
             board: Arc::new(board),
-            vcpu_threads: Vec::new(),
             event_rx,
             event_tx,
         };
@@ -106,6 +105,7 @@ where
     }
 
     pub fn boot(&mut self) -> Result<(), Error> {
+        let mut vcpus = self.board.vcpus.write();
         for vcpu_id in 0..self.board.config.num_cpu {
             let (boot_tx, boot_rx) = mpsc::channel();
             let event_tx = self.event_tx.clone();
@@ -114,10 +114,10 @@ where
                 .name(format!("vcpu_{}", vcpu_id))
                 .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
             self.event_rx.recv().unwrap();
-            self.vcpu_threads.push((handle, boot_tx));
+            vcpus.push((handle, boot_tx));
         }
         self.board.state.store(STATE_RUNNING, Ordering::Release);
-        for (_, boot_tx) in self.vcpu_threads.iter() {
+        for (_, boot_tx) in vcpus.iter() {
             boot_tx.send(()).unwrap();
         }
         Ok(())
@@ -125,18 +125,21 @@ where
 
     pub fn wait(&mut self) -> Vec<Result<()>> {
         self.event_rx.recv().unwrap();
-        self.vcpu_threads
+        let vcpus = self.board.vcpus.read();
+        for _ in 1..vcpus.len() {
+            self.event_rx.recv().unwrap();
+        }
+        drop(vcpus);
+        let mut vcpus = self.board.vcpus.write();
+        vcpus
             .drain(..)
             .enumerate()
-            .map(|(id, (handle, _))| {
-                <H::Vm>::stop_vcpu(id as u32, &handle)?;
-                match handle.join() {
-                    Err(e) => {
-                        log::error!("cannot join vcpu {}: {:?}", id, e);
-                        Ok(())
-                    }
-                    Ok(r) => r.map_err(Error::Board),
+            .map(|(id, (handle, _))| match handle.join() {
+                Err(e) => {
+                    log::error!("cannot join vcpu {}: {:?}", id, e);
+                    Ok(())
                 }
+                Ok(r) => r.map_err(Error::Board),
             })
             .collect()
     }
