@@ -25,6 +25,8 @@ use crate::mem::{MemRegionEntry, MemRegionType};
 pub mod elf;
 #[path = "linux/linux.rs"]
 pub mod linux;
+#[path = "xen/xen.rs"]
+pub mod xen;
 
 #[derive(Debug)]
 pub struct Payload {
