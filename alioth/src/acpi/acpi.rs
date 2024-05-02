@@ -130,6 +130,14 @@ pub fn create_fadt(dsdt_addr: usize) -> AcpiTableFadt {
             length: size_of::<AcpiTableFadt>() as u32,
             ..default_header()
         },
+        reset_register: AcpiGenericAddress {
+            space_id: 1,
+            bit_width: 8,
+            bit_offset: 0,
+            access_width: 1,
+            address: encode_addr64(0x604),
+        },
+        reset_value: 0x1,
         sleep_control: AcpiGenericAddress {
             space_id: 1,
             bit_width: 8,
@@ -144,7 +152,7 @@ pub fn create_fadt(dsdt_addr: usize) -> AcpiTableFadt {
             access_width: 1,
             address: encode_addr64(0x601),
         },
-        flags: (1 << 20),
+        flags: (1 << 20) | (1 << 10),
         minor_revision: FADT_MINOR_VERSION,
         hypervisor_id: *b"ALIOTH  ",
         xdsdt: encode_addr64(dsdt_addr),

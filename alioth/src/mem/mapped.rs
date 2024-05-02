@@ -190,7 +190,7 @@ impl SlotBackend for MappedSlot {
 pub struct RamBus {
     inner: RwLock<Addressable<MappedSlot>>,
     vm_memory: Box<dyn VmMemory>,
-    next_slot_id: AtomicU32,
+    pub(super) next_slot_id: AtomicU32,
     max_mem_slots: u32,
 }
 

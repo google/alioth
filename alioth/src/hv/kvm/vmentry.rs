@@ -25,8 +25,8 @@ impl KvmVcpu {
         kvm_mmio.data = data.to_ne_bytes();
     }
 
-    pub(super) fn immediate_exit(&mut self) {
-        self.kvm_run.immediate_exit = 1;
+    pub(super) fn set_immediate_exit(&mut self, enable: bool) {
+        self.kvm_run.immediate_exit = enable as u8;
     }
 
     pub(super) fn entry_io(&mut self, data: u32) {

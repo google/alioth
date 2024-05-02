@@ -18,7 +18,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
-use parking_lot::RwLock;
+use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
@@ -81,6 +81,8 @@ where
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
             vcpus: Arc::new(RwLock::new(Vec::new())),
+            mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
+            io_devs: RwLock::new(Vec::new()),
         };
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -96,7 +98,7 @@ where
     pub fn add_com1(&self) -> Result<(), Error> {
         let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
         let com1 = Serial::new(0x3f8, com1_intx_sender)?;
-        self.board.memory.add_io_dev(Some(0x3f8), Arc::new(com1))?;
+        self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
         Ok(())
     }
 

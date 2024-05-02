@@ -17,13 +17,14 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use parking_lot::RwLock;
+use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::acpi::create_acpi_tables;
 use crate::arch::layout::{EBDA_END, EBDA_START};
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, linux, ExecType, InitState, Payload};
+use crate::mem::emulated::Mmio;
 use crate::mem::{self, Memory};
 
 #[cfg(target_arch = "x86_64")]
@@ -61,6 +62,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 pub const STATE_CREATED: u8 = 0;
 pub const STATE_RUNNING: u8 = 1;
 pub const STATE_SHUTDOWN: u8 = 2;
+pub const STATE_REBOOT_PENDING: u8 = 3;
 
 pub struct BoardConfig {
     pub mem_size: usize,
@@ -78,6 +80,8 @@ where
     pub config: BoardConfig,
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
+    pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
+    pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
 }
 
 impl<V> Board<V>
@@ -112,22 +116,28 @@ where
         Ok(init_state)
     }
 
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<(), Error> {
+    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
-            // TODO is there any race here?
-            if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
-                vm_entry = VmEntry::Shutdown;
-            }
             let vm_exit = vcpu.run(vm_entry)?;
             vm_entry = match vm_exit {
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
                 VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
                 VmExit::Shutdown => {
                     log::info!("vcpu {id} requested shutdown");
-                    break Ok(());
+                    break Ok(false);
                 }
-                VmExit::Interrupted => VmEntry::None,
+                VmExit::Reboot => {
+                    break Ok(true);
+                }
+                VmExit::Interrupted => {
+                    let state = self.state.load(Ordering::Acquire);
+                    match state {
+                        STATE_SHUTDOWN => VmEntry::Shutdown,
+                        STATE_REBOOT_PENDING => VmEntry::Reboot,
+                        _ => VmEntry::None,
+                    }
+                }
                 VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
             };
         }
@@ -146,35 +156,73 @@ where
         if self.state.load(Ordering::Acquire) != STATE_RUNNING {
             return Ok(());
         }
-        if id == 0 {
-            self.create_ram()?;
-            let init_state = self.load_payload()?;
-            self.init_boot_vcpu(&mut vcpu, &init_state)?;
-            self.create_firmware_data(&init_state)?;
-        }
-        self.vcpu_loop(&mut vcpu, id)?;
-        let vcpus = self.vcpus.read();
-        match self.state.compare_exchange(
-            STATE_RUNNING,
-            STATE_SHUTDOWN,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(STATE_RUNNING) => {
-                for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
-                    if id != vcpu_id as u32 {
-                        log::info!("vcpu{id} to kill {vcpu_id}");
-                        V::stop_vcpu(vcpu_id as u32, handle)?;
+        loop {
+            if id == 0 {
+                self.create_ram()?;
+                for (port, dev) in self.io_devs.read().iter() {
+                    self.memory.add_io_dev(Some(*port), dev.clone())?;
+                }
+                let init_state = self.load_payload()?;
+                self.init_boot_vcpu(&mut vcpu, &init_state)?;
+                self.create_firmware_data(&init_state)?;
+            }
+
+            let reboot = self.vcpu_loop(&mut vcpu, id)?;
+
+            let new_state = if reboot {
+                STATE_REBOOT_PENDING
+            } else {
+                STATE_SHUTDOWN
+            };
+            let vcpus = self.vcpus.read();
+            match self.state.compare_exchange(
+                STATE_RUNNING,
+                new_state,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(STATE_RUNNING) => {
+                    for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
+                        if id != vcpu_id as u32 {
+                            log::info!("vcpu{id} to kill {vcpu_id}");
+                            V::stop_vcpu(vcpu_id as u32, handle)?;
+                        }
                     }
                 }
+                Err(s) if s == new_state => {}
+                Ok(s) | Err(s) => {
+                    log::error!("unexpected state: {s}");
+                }
             }
-            Err(STATE_SHUTDOWN) => {}
-            Ok(s) | Err(s) => {
-                log::error!("unexpected state: {s}");
+
+            let (lock, cvar) = &*self.mp_sync;
+            let mut count = lock.lock();
+            *count += 1;
+            if *count == vcpus.len() as u32 {
+                *count = 0;
+                cvar.notify_all();
+            } else {
+                cvar.wait(&mut count)
+            }
+
+            if new_state == STATE_SHUTDOWN {
+                break Ok(());
+            }
+
+            match self.state.compare_exchange(
+                STATE_REBOOT_PENDING,
+                STATE_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(STATE_REBOOT_PENDING) | Err(STATE_RUNNING) => {}
+                _ => break Ok(()),
+            }
+
+            if id == 0 {
+                self.memory.reset()?;
             }
         }
-        log::info!("vcpu {id} is done");
-        Ok(())
     }
 
     pub fn run_vcpu(

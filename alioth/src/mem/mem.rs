@@ -14,6 +14,7 @@
 
 use std::any::type_name;
 use std::fmt::Debug;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -218,6 +219,12 @@ impl Memory {
         }
     }
 
+    pub fn reset(&self) -> Result<()> {
+        self.clear()?;
+        self.ram_bus.next_slot_id.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub fn ram_bus(&self) -> Arc<RamBus> {
         self.ram_bus.clone()
     }
@@ -394,6 +401,10 @@ impl Memory {
             if write == Some(0x34) {
                 return Ok(VmEntry::Shutdown);
             }
+        }
+        // TODO: add an IO device
+        if port == 0x604 && write == Some(0x1) {
+            return Ok(VmEntry::Reboot);
         }
         if let Some(val) = write {
             match self.io_bus.write(port as usize, size, val as u64) {

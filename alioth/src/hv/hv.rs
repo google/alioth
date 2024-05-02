@@ -162,6 +162,7 @@ pub enum VmExit {
         size: u8,
     },
     Shutdown,
+    Reboot,
     Unknown(String),
     Interrupted,
 }
@@ -170,6 +171,7 @@ pub enum VmExit {
 pub enum VmEntry {
     None,
     Shutdown,
+    Reboot,
     Io { data: u32 },
     Mmio { data: u64 },
 }
