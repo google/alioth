@@ -125,13 +125,20 @@ impl Vcpu for KvmVcpu {
             VmEntry::None => {}
             VmEntry::Io { data } => self.entry_io(data),
             VmEntry::Mmio { data } => self.entry_mmio(data),
-            VmEntry::Shutdown => self.immediate_exit(),
+            VmEntry::Shutdown | VmEntry::Reboot => self.set_immediate_exit(true),
         };
         let ret = unsafe { kvm_run(&self.fd) };
         match ret {
             Err(e) => match (e.kind(), entry) {
                 (ErrorKind::WouldBlock, _) => Ok(VmExit::Interrupted),
-                (ErrorKind::Interrupted, VmEntry::Shutdown) => Ok(VmExit::Shutdown),
+                (ErrorKind::Interrupted, VmEntry::Shutdown) => {
+                    self.set_immediate_exit(false);
+                    Ok(VmExit::Shutdown)
+                }
+                (ErrorKind::Interrupted, VmEntry::Reboot) => {
+                    self.set_immediate_exit(false);
+                    Ok(VmExit::Reboot)
+                }
                 (ErrorKind::Interrupted, _) => Ok(VmExit::Interrupted),
                 _ => Err(e.into()),
             },
