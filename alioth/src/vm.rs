@@ -25,9 +25,10 @@ use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUN
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
 use crate::loader::{self, Payload};
-use crate::mem;
 use crate::mem::Memory;
 use crate::pci::bus::PciBus;
+use crate::pci::PciDevice;
+use crate::{mem, pci};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -45,6 +46,9 @@ pub enum Error {
 
     #[error("board: {0}")]
     Board(#[from] board::Error),
+
+    #[error("PCI bus: {0}")]
+    PciBus(#[from] pci::Error),
 
     #[error("ACPI bytes exceed EBDA area")]
     AcpiTooLong,
@@ -85,6 +89,7 @@ where
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
             io_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
+            pci_devs: RwLock::new(Vec::new()),
         };
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -101,6 +106,16 @@ where
         let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
         let com1 = Serial::new(0x3f8, com1_intx_sender)?;
         self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
+        Ok(())
+    }
+
+    pub fn add_pci_dev(&mut self, dev: PciDevice) -> Result<(), Error> {
+        let config = dev.dev.config();
+        let bdf = self.board.pci_bus.add(None, config.clone())?;
+        let header = config.get_header();
+        header.set_bdf(bdf);
+        log::info!("{} located at {bdf}", dev.name);
+        self.board.pci_devs.write().push(dev);
         Ok(())
     }
 

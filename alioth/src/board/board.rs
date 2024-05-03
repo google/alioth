@@ -27,6 +27,8 @@ use crate::loader::{self, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::{PciBus, CONFIG_ADDRESS};
+use crate::pci::config::Command;
+use crate::pci::{self, PciBar, PciDevice};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -41,6 +43,9 @@ pub enum Error {
 
     #[error("memory: {0}")]
     Memory(#[from] mem::Error),
+
+    #[error("PCI bus: {0}")]
+    PciBus(#[from] pci::Error),
 
     #[error("loader: {0}")]
     Loader(#[from] loader::Error),
@@ -84,6 +89,7 @@ where
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     pub pci_bus: PciBus,
+    pub pci_devs: RwLock<Vec<PciDevice>>,
 }
 
 impl<V> Board<V>
@@ -123,6 +129,41 @@ where
             )?,
         };
         Ok(init_state)
+    }
+
+    fn add_pci_devs(&self) -> Result<()> {
+        self.memory
+            .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
+        self.memory.add_region(
+            AddrOpt::Fixed(PCIE_CONFIG_START),
+            Arc::new(MemRegion::with_emulated(
+                self.pci_bus.segment.clone(),
+                MemRegionType::Reserved,
+            )),
+        )?;
+        for dev in self.pci_devs.read().iter() {
+            let config = dev.dev.config();
+            let header = config.get_header();
+            for (index, bar) in header.bars.iter().enumerate() {
+                match bar {
+                    PciBar::Empty => {}
+                    PciBar::Mem32(region) => {
+                        let addr = self.memory.add_region(AddrOpt::Below4G, region.clone())?;
+                        log::info!("{}: BAR {index} located at {addr:#x}", dev.name);
+                    }
+                    PciBar::Mem64(region) => {
+                        let addr = self.memory.add_region(AddrOpt::Above4G, region.clone())?;
+                        log::info!("{}: BAR {index} located at {addr:#x}", dev.name);
+                    }
+                    PciBar::Io(region) => {
+                        let addr = self.memory.add_io_region(None, region.clone())?;
+                        log::info!("{}: IO BAR {index} located at {addr:#x}", dev.name);
+                    }
+                }
+            }
+            header.set_command(Command::MEM | Command::IO);
+        }
+        Ok(())
     }
 
     fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
@@ -171,15 +212,7 @@ where
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
                 }
-                self.memory
-                    .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
-                self.memory.add_region(
-                    AddrOpt::Fixed(PCIE_CONFIG_START),
-                    Arc::new(MemRegion::with_emulated(
-                        self.pci_bus.segment.clone(),
-                        MemRegionType::Reserved,
-                    )),
-                )?;
+                self.add_pci_devs()?;
                 let init_state = self.load_payload()?;
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
