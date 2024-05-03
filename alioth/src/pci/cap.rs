@@ -16,6 +16,10 @@ use std::fmt::Debug;
 
 use bitfield::bitfield;
 
+use crate::mem;
+use crate::mem::addressable::SlotBackend;
+use crate::mem::emulated::{Mmio, MmioBus};
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub enum PciCapId {
@@ -109,5 +113,66 @@ impl Default for MsixTableEntry {
             data: 0,
             control: MsixVectorCtrl(1),
         }
+    }
+}
+
+pub trait PciCap: Mmio {
+    fn set_next(&mut self, val: u8);
+}
+
+impl SlotBackend for Box<dyn PciCap> {
+    fn size(&self) -> usize {
+        Mmio::size(self.as_ref())
+    }
+}
+
+impl Mmio for Box<dyn PciCap> {
+    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+        Mmio::read(self.as_ref(), offset, size)
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+        Mmio::write(self.as_ref(), offset, size, val)
+    }
+
+    fn size(&self) -> usize {
+        Mmio::size(self.as_ref())
+    }
+}
+
+#[derive(Debug)]
+pub struct PciCapList {
+    inner: MmioBus<Box<dyn PciCap>>,
+}
+
+impl Default for PciCapList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PciCapList {
+    pub fn new() -> PciCapList {
+        Self {
+            inner: MmioBus::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl Mmio for PciCapList {
+    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+        self.inner.read(offset, size)
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+        self.inner.write(offset, size, val)
+    }
+
+    fn size(&self) -> usize {
+        4096
     }
 }
