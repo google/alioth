@@ -24,6 +24,20 @@ macro_rules! align_up {
 }
 
 #[macro_export]
+macro_rules! assign_bits {
+    ($dst:expr, $src:expr, $mask:expr) => {
+        $dst = ($dst & !$mask) | ($src & $mask)
+    };
+}
+
+#[macro_export]
+macro_rules! mask_bits {
+    ($dst:expr, $src:expr, $mask:expr) => {
+        ($dst & !$mask) | ($src & $mask)
+    };
+}
+
+#[macro_export]
 macro_rules! ffi {
     ($f:expr) => {{
         let ret = $f;

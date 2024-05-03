@@ -15,6 +15,7 @@ dependencies = [
 name = "alioth"
 version = "0.1.0"
 dependencies = [
+ "alioth-macros",
  "assert_matches",
  "bitfield",
  "bitflags",
