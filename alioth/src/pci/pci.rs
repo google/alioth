@@ -19,6 +19,7 @@ use bitfield::bitfield;
 use thiserror::Error;
 
 use crate::mem;
+use crate::mem::{IoRegion, MemRegion};
 
 pub mod bus;
 pub mod cap;
@@ -65,4 +66,19 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub trait Pci: Debug + Send + Sync + 'static {
     fn config(&self) -> Arc<dyn PciConfig>;
     fn reset(&self) -> Result<()>;
+}
+
+#[derive(Debug, Clone)]
+pub enum PciBar {
+    Empty,
+    Mem32(Arc<MemRegion>),
+    Mem64(Arc<MemRegion>),
+    Io(Arc<IoRegion>),
+}
+
+impl PciBar {
+    pub const fn empty_6() -> [PciBar; 6] {
+        const EMPTY: PciBar = PciBar::Empty;
+        [EMPTY; 6]
+    }
 }
