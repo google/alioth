@@ -65,6 +65,9 @@ struct RunArgs {
 
     #[arg(long, default_value = "1G")]
     mem_size: String,
+
+    #[arg(long)]
+    pvpanic: bool,
 }
 
 fn parse_mem(s: &str) -> Result<usize> {
@@ -111,6 +114,9 @@ fn main_run(args: RunArgs) -> Result<()> {
     vm.add_com1()?;
     if let Some(payload) = payload {
         vm.add_payload(payload);
+    }
+    if args.pvpanic {
+        vm.add_pvpanic()?;
     }
     vm.boot()?;
     for result in vm.wait() {

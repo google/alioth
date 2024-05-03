@@ -22,6 +22,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::device::pvpanic::PvPanic;
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
 use crate::loader::{self, Payload};
@@ -117,6 +118,12 @@ where
         log::info!("{} located at {bdf}", dev.name);
         self.board.pci_devs.write().push(dev);
         Ok(())
+    }
+
+    pub fn add_pvpanic(&mut self) -> Result<(), Error> {
+        let dev = PvPanic::new();
+        let pci_dev = PciDevice::new("pvpanic".to_owned().into(), Arc::new(dev));
+        self.add_pci_dev(pci_dev)
     }
 
     pub fn add_payload(&mut self, payload: Payload) {
