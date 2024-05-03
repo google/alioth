@@ -110,6 +110,11 @@ pub struct DeviceHeader {
 pub const OFFSET_BAR0: usize = DeviceHeader::OFFSET_BARS;
 pub const OFFSET_BAR5: usize = OFFSET_BAR0 + 5 * size_of::<u32>();
 
+pub const BAR_PREFETCHABLE: u32 = 0b1000;
+pub const BAR_MEM64: u32 = 0b0100;
+pub const BAR_MEM32: u32 = 0b0000;
+pub const BAR_IO: u32 = 0b01;
+
 #[derive(Debug)]
 pub enum ConfigHeader {
     Device(DeviceHeader),
@@ -123,6 +128,28 @@ pub struct HeaderData {
 }
 
 impl HeaderData {
+    pub fn set_bar(&mut self, index: usize, val: u32) -> (u32, u32) {
+        match &mut self.header {
+            ConfigHeader::Device(header) => {
+                let mask = self.bar_masks[index];
+                let old_val = header.bars[index];
+                let masked_val = mask_bits!(old_val, val, mask);
+                header.bars[index] = masked_val;
+                log::info!(
+                    "{}: bar {index}: set to {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}",
+                    self.bdf
+                );
+                (old_val, masked_val)
+            }
+        }
+    }
+
+    pub fn set_command(&mut self, command: Command) {
+        match &mut self.header {
+            ConfigHeader::Device(header) => header.common.command = command,
+        }
+    }
+
     fn write_header(&mut self, offset: usize, size: u8, val: u64) {
         match &mut self.header {
             ConfigHeader::Device(header) => match (offset, size as usize) {
@@ -179,6 +206,17 @@ pub struct EmulatedHeader {
     pub bars: [PciBar; 6],
 }
 
+impl EmulatedHeader {
+    pub fn set_bdf(&self, bdf: Bdf) {
+        self.data.write().bdf = bdf
+    }
+
+    pub fn set_command(&self, command: Command) {
+        let mut header = self.data.write();
+        header.set_command(command)
+    }
+}
+
 impl Mmio for EmulatedHeader {
     fn size(&self) -> usize {
         0x40
@@ -206,7 +244,9 @@ impl Mmio for EmulatedHeader {
     }
 }
 
-pub trait PciConfig: Mmio {}
+pub trait PciConfig: Mmio {
+    fn get_header(&self) -> &EmulatedHeader;
+}
 
 #[derive(Debug)]
 pub struct EmulatedConfig {
@@ -259,4 +299,8 @@ impl EmulatedConfig {
     }
 }
 
-impl PciConfig for EmulatedConfig {}
+impl PciConfig for EmulatedConfig {
+    fn get_header(&self) -> &EmulatedHeader {
+        &self.header
+    }
+}
