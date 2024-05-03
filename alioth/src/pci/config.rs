@@ -21,7 +21,8 @@ use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::emulated::Mmio;
-use crate::pci::Bdf;
+use crate::pci::cap::PciCapList;
+use crate::pci::{Bdf, PciBar};
 use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
 
 bitflags! {
@@ -175,6 +176,7 @@ impl HeaderData {
 #[derive(Debug)]
 pub struct EmulatedHeader {
     pub data: Arc<RwLock<HeaderData>>,
+    pub bars: [PciBar; 6],
 }
 
 impl Mmio for EmulatedHeader {
@@ -205,3 +207,56 @@ impl Mmio for EmulatedHeader {
 }
 
 pub trait PciConfig: Mmio {}
+
+#[derive(Debug)]
+pub struct EmulatedConfig {
+    pub header: EmulatedHeader,
+    pub caps: PciCapList,
+}
+
+impl Mmio for EmulatedConfig {
+    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+        if offset < size_of::<DeviceHeader>() {
+            self.header.read(offset, size)
+        } else {
+            self.caps.read(offset, size)
+        }
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+        if offset < size_of::<DeviceHeader>() {
+            self.header.write(offset, size, val)
+        } else {
+            self.caps.write(offset, size, val)
+        }
+    }
+
+    fn size(&self) -> usize {
+        4096
+    }
+}
+
+impl EmulatedConfig {
+    pub fn new_device(
+        mut header: DeviceHeader,
+        bar_masks: [u32; 6],
+        bars: [PciBar; 6],
+        caps: PciCapList,
+    ) -> EmulatedConfig {
+        if !caps.is_empty() {
+            header.common.status |= Status::CAP;
+            header.capability_pointer = size_of::<DeviceHeader>() as u8;
+        }
+        let header = EmulatedHeader {
+            data: Arc::new(RwLock::new(HeaderData {
+                header: ConfigHeader::Device(header),
+                bar_masks,
+                bdf: Bdf(0),
+            })),
+            bars,
+        };
+        EmulatedConfig { header, caps }
+    }
+}
+
+impl PciConfig for EmulatedConfig {}
