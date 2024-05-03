@@ -27,6 +27,7 @@ use crate::hv::{self, Hypervisor, Vm};
 use crate::loader::{self, Payload};
 use crate::mem;
 use crate::mem::Memory;
+use crate::pci::bus::PciBus;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -83,6 +84,7 @@ where
             vcpus: Arc::new(RwLock::new(Vec::new())),
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
             io_devs: RwLock::new(Vec::new()),
+            pci_bus: PciBus::new(),
         };
 
         let (event_tx, event_rx) = mpsc::channel();
