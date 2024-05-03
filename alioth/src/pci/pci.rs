@@ -12,5 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt::{Display, Formatter};
+
+use bitfield::bitfield;
+
 pub mod cap;
 pub mod config;
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct Bdf(u16);
+    impl Debug;
+    bus, _: 15, 8;
+    dev, _: 7, 3;
+    func, _: 2, 0;
+}
+
+impl Display for Bdf {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02x}:{:02x}.{:x}", self.bus(), self.dev(), self.func())
+    }
+}
