@@ -21,11 +21,12 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::acpi::create_acpi_tables;
-use crate::arch::layout::{EBDA_END, EBDA_START};
+use crate::arch::layout::{EBDA_END, EBDA_START, PCIE_CONFIG_START};
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
-use crate::mem::{self, Memory};
+use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
+use crate::pci::bus::{PciBus, CONFIG_ADDRESS};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -82,6 +83,7 @@ where
     pub payload: RwLock<Option<Payload>>,
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
+    pub pci_bus: PciBus,
 }
 
 impl<V> Board<V>
@@ -169,6 +171,15 @@ where
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
                 }
+                self.memory
+                    .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
+                self.memory.add_region(
+                    AddrOpt::Fixed(PCIE_CONFIG_START),
+                    Arc::new(MemRegion::with_emulated(
+                        self.pci_bus.segment.clone(),
+                        MemRegionType::Reserved,
+                    )),
+                )?;
                 let init_state = self.load_payload()?;
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;

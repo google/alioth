@@ -22,8 +22,9 @@ use parking_lot::{Mutex, RwLock};
 use crate::mem;
 use crate::mem::emulated::Mmio;
 use crate::pci::config::PciConfig;
+use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, Error, Result};
+use crate::pci::{Bdf, Error, Pci, Result};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;
@@ -99,7 +100,8 @@ pub struct PciBus {
 
 impl PciBus {
     pub fn new() -> Self {
-        let configs = HashMap::new();
+        let bridge = HostBridge::new();
+        let configs = HashMap::from([(Bdf(0), bridge.config())]);
 
         let segment = Arc::new(PciSegment {
             configs: RwLock::new(configs),
