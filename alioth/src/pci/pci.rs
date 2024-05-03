@@ -24,6 +24,7 @@ use crate::mem::{IoRegion, MemRegion};
 pub mod bus;
 pub mod cap;
 pub mod config;
+pub mod host_bridge;
 pub mod segment;
 
 use config::PciConfig;
