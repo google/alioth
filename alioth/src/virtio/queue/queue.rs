@@ -18,6 +18,8 @@ use crate::virtio::Result;
 
 pub mod split;
 
+pub const QUEUE_SIZE_MAX: u16 = 256;
+
 #[derive(Debug, Default)]
 pub struct Queue {
     pub size: AtomicU16,
