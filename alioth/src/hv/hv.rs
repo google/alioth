@@ -115,6 +115,10 @@ where
     }
 }
 
+pub trait MsiSender: Debug + Send + Sync + 'static {
+    fn send(&self, addr: u64, data: u32) -> Result<()>;
+}
+
 pub trait VmMemory: Debug + Send + Sync + 'static {
     fn mem_map(
         &self,
@@ -134,8 +138,10 @@ pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
     type IntxSender: IntxSender + Send + Sync;
+    type MsiSender: MsiSender;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error>;
+    fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
 }

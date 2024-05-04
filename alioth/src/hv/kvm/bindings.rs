@@ -217,6 +217,7 @@ pub struct KvmMsi {
 
 pub const KVM_CAP_NR_MEMSLOTS: u64 = 10;
 pub const KVM_CAP_IRQFD: u64 = 32;
+pub const KVM_CAP_SIGNAL_MSI: u64 = 77;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]

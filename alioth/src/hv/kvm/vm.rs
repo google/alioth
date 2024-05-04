@@ -20,13 +20,15 @@ use std::thread::JoinHandle;
 use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 
 use crate::ffi;
-use crate::hv::{Error, IntxSender, MemMapOption, Vm, VmMemory};
-
-use super::bindings::{
-    KvmIrqfd, KvmMemFlag, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS,
+use crate::hv::kvm::bindings::{
+    KvmIrqfd, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS,
+    KVM_CAP_SIGNAL_MSI,
 };
-use super::ioctls::{kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_set_user_memory_region};
-use super::vcpu::{KvmRunBlock, KvmVcpu};
+use crate::hv::kvm::ioctls::{
+    kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_set_user_memory_region, kvm_signal_msi,
+};
+use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
+use crate::hv::{Error, IntxSender, MemMapOption, MsiSender, Result, Vm, VmMemory};
 
 pub struct KvmVm {
     pub(super) fd: Arc<OwnedFd>,
@@ -103,6 +105,24 @@ impl IntxSender for KvmIntxSender {
     }
 }
 
+#[derive(Debug)]
+pub struct KvmMsiSender {
+    vm_fd: Arc<OwnedFd>,
+}
+
+impl MsiSender for KvmMsiSender {
+    fn send(&self, addr: u64, data: u32) -> Result<()> {
+        let kvm_msi = KvmMsi {
+            address_lo: addr as u32,
+            address_hi: (addr >> 32) as u32,
+            data,
+            ..Default::default()
+        };
+        unsafe { kvm_signal_msi(&self.vm_fd, &kvm_msi) }?;
+        Ok(())
+    }
+}
+
 impl KvmVm {
     fn check_extension(&self, id: u64) -> Result<bool, Error> {
         let ret = unsafe { kvm_check_extension(&self.fd, id) }?;
@@ -113,6 +133,7 @@ impl KvmVm {
 impl Vm for KvmVm {
     type Vcpu = KvmVcpu;
     type IntxSender = KvmIntxSender;
+    type MsiSender = KvmMsiSender;
     type Memory = KvmMemory;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
@@ -156,6 +177,17 @@ impl Vm for KvmVm {
         unsafe { kvm_irqfd(&self.fd, &request) }?;
         Ok(KvmIntxSender {
             event_fd: unsafe { OwnedFd::from_raw_fd(event_fd) },
+        })
+    }
+
+    fn create_msi_sender(&self) -> Result<Self::MsiSender> {
+        if !self.check_extension(KVM_CAP_SIGNAL_MSI)? {
+            Err(Error::LackCap {
+                cap: "KVM_CAP_SIGNAL_MSI".to_string(),
+            })?;
+        }
+        Ok(KvmMsiSender {
+            vm_fd: self.fd.clone(),
         })
     }
 }
