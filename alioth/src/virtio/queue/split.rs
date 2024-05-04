@@ -12,9 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
 use bitflags::bitflags;
 use macros::Layout;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
+
+use crate::mem::mapped::RamBus;
+use crate::virtio::queue::{Queue, VirtQueue};
+use crate::virtio::{Result, VirtioFeature};
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes)]
@@ -67,4 +74,50 @@ pub struct UsedHeader {
 pub struct UsedElem {
     id: u32,
     len: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Register {
+    pub size: u16,
+    pub _desc: u64,
+    pub _avail: u64,
+    pub _used: u64,
+    pub _feature: VirtioFeature,
+}
+
+#[derive(Debug)]
+pub struct SplitQueue {
+    pub memory: Arc<RamBus>,
+    register: Register,
+}
+
+impl SplitQueue {
+    pub fn new(reg: &Queue, memory: Arc<RamBus>, feature: u64) -> Self {
+        let register = if reg.enabled.load(Ordering::Acquire) {
+            Register {
+                size: reg.size.load(Ordering::Acquire),
+                _desc: reg.desc.load(Ordering::Acquire),
+                _avail: reg.driver.load(Ordering::Acquire),
+                _used: reg.device.load(Ordering::Acquire),
+                _feature: VirtioFeature::from_bits_retain(feature),
+            }
+        } else {
+            Register::default()
+        };
+        Self { memory, register }
+    }
+}
+
+impl VirtQueue for SplitQueue {
+    fn size(&self) -> u16 {
+        self.register.size
+    }
+
+    fn enable_notification(&self, _val: bool) -> Result<()> {
+        todo!()
+    }
+
+    fn interrupt_enabled(&self) -> Result<bool> {
+        todo!()
+    }
 }
