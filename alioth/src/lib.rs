@@ -30,4 +30,6 @@ pub mod mem;
 pub mod pci;
 #[path = "utils/utils.rs"]
 pub(crate) mod utils;
+#[path = "virtio/virtio.rs"]
+pub mod virtio;
 pub mod vm;
