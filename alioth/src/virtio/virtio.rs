@@ -49,6 +49,7 @@ bitflags! {
         const EVENT_IDX = 1 << 29;
         const VERSION_1 = 1 << 32;
         const RING_PACKED = 1 << 34;
+        const SUPPORTED = Self::VERSION_1.bits();
     }
 }
 
