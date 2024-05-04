@@ -14,6 +14,9 @@
 
 use bitflags::bitflags;
 
+#[path = "queue/queue.rs"]
+pub mod queue;
+
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct VirtioFeature: u64 {
