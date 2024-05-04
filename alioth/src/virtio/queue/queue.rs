@@ -12,4 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::virtio::Result;
+
 pub mod split;
+
+pub trait VirtQueue {
+    fn enable_notification(&self, val: bool) -> Result<()>;
+    fn interrupt_enabled(&self) -> Result<bool>;
+}
