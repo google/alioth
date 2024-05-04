@@ -29,6 +29,8 @@ use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
 
+pub mod entropy;
+
 pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
 
