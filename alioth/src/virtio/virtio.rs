@@ -21,6 +21,7 @@ use crate::mem;
 
 #[path = "dev/dev.rs"]
 pub mod dev;
+pub mod pci;
 #[path = "queue/queue.rs"]
 pub mod queue;
 

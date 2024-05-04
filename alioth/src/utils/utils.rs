@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 pub mod ioctls;
 
 #[macro_export]
@@ -35,6 +37,44 @@ macro_rules! mask_bits {
     ($dst:expr, $src:expr, $mask:expr) => {
         ($dst & !$mask) | ($src & $mask)
     };
+}
+
+pub fn get_low32(num: u64) -> u32 {
+    num as u32
+}
+
+pub fn get_high32(num: u64) -> u32 {
+    (num >> 32) as u32
+}
+
+pub fn get_atomic_low32(num: &AtomicU64) -> u32 {
+    num.load(Ordering::Acquire) as u32
+}
+
+pub fn get_atomic_high32(num: &AtomicU64) -> u32 {
+    (num.load(Ordering::Acquire) >> 32) as u32
+}
+
+pub fn set_low32(num: &mut u64, val: u32) {
+    *num &= !0xffff_ffff;
+    *num |= val as u64;
+}
+
+pub fn set_high32(num: &mut u64, val: u32) {
+    *num &= 0xffff_ffff;
+    *num |= (val as u64) << 32;
+}
+
+pub fn set_atomic_low32(num: &AtomicU64, val: u32) {
+    let mut cur = num.load(Ordering::Acquire);
+    set_low32(&mut cur, val);
+    num.store(cur, Ordering::Release)
+}
+
+pub fn set_atomic_high32(num: &AtomicU64, val: u32) {
+    let mut cur = num.load(Ordering::Acquire);
+    set_high32(&mut cur, val);
+    num.store(cur, Ordering::Release)
 }
 
 #[macro_export]

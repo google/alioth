@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8};
 use std::sync::Arc;
 
 use mio::event::Event;
@@ -50,4 +51,14 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
     }
+}
+
+#[derive(Debug, Default)]
+pub struct Register {
+    pub device_feature: u64,
+    pub driver_feature: AtomicU64,
+    pub device_feature_sel: AtomicU8,
+    pub driver_feature_sel: AtomicU8,
+    pub queue_sel: AtomicU16,
+    pub status: AtomicU8,
 }
