@@ -12,10 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
+use std::fmt::Debug;
 
+use bitflags::bitflags;
+use thiserror::Error;
+
+use crate::mem;
+
+#[path = "dev/dev.rs"]
+pub mod dev;
 #[path = "queue/queue.rs"]
 pub mod queue;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("hypervisor: {0}")]
+    Hv(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("IO: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("memory: {0}")]
+    Memory(#[from] mem::Error),
+
+    #[error("PCI bus: {0}")]
+    PciBus(#[from] crate::pci::Error),
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,4 +73,9 @@ bitflags! {
         const NEEDS_RESET = 64;
         const FAILED = 128;
     }
+}
+
+pub trait IrqSender: Send + Sync + Debug + 'static {
+    fn queue_irq(&self, idx: u16);
+    fn config_irq(&self);
 }
