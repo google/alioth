@@ -28,6 +28,7 @@ pub struct Queue {
 }
 
 pub trait VirtQueue {
+    fn size(&self) -> u16;
     fn enable_notification(&self, val: bool) -> Result<()>;
     fn interrupt_enabled(&self) -> Result<bool>;
 }
