@@ -14,18 +14,85 @@
 
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use macros::Layout;
+use parking_lot::RwLock;
 
+use crate::hv::MsiSender;
 use crate::mem;
 use crate::mem::emulated::Mmio;
+use crate::pci::cap::MsixTableEntry;
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };
 use crate::virtio::dev::Register;
 use crate::virtio::queue::Queue;
+use crate::virtio::IrqSender;
+
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
+
+#[derive(Debug)]
+struct VirtioPciMsixVector {
+    config: AtomicU16,
+    queues: Vec<AtomicU16>,
+}
+
+#[derive(Debug)]
+pub struct PciIrqSender<S> {
+    msix_vector: VirtioPciMsixVector,
+    msix_entries: Arc<Vec<RwLock<MsixTableEntry>>>,
+    msi_sender: S,
+}
+
+impl<S> PciIrqSender<S>
+where
+    S: MsiSender,
+{
+    fn send(&self, vector: u16) {
+        let entries = &**self.msix_entries;
+        let Some(entry) = entries.get(vector as usize) else {
+            log::error!("invalid config vector: {:x}", vector);
+            return;
+        };
+        let entry = entry.read();
+        if entry.control.masked() {
+            log::info!("{} is masked", vector);
+            return;
+        }
+        let data = entry.data;
+        let addr = ((entry.addr_hi as u64) << 32) | (entry.addr_lo as u64);
+        if let Err(e) = self.msi_sender.send(addr, data) {
+            log::error!("send msi data = {data:#x} to {addr:#x}: {e}")
+        } else {
+            log::trace!("send msi data = {data:#x} to {addr:#x}: done")
+        }
+    }
+}
+
+impl<S> IrqSender for PciIrqSender<S>
+where
+    S: MsiSender,
+{
+    fn config_irq(&self) {
+        let vector = self.msix_vector.config.load(Ordering::Acquire);
+        if vector != VIRTIO_MSI_NO_VECTOR {
+            self.send(vector)
+        }
+    }
+
+    fn queue_irq(&self, idx: u16) {
+        let Some(vector) = self.msix_vector.queues.get(idx as usize) else {
+            log::error!("invalid queue index: {idx}");
+            return;
+        };
+        let vector = vector.load(Ordering::Acquire);
+        if vector != VIRTIO_MSI_NO_VECTOR {
+            self.send(vector);
+        }
+    }
+}
 
 #[repr(C, align(4))]
 #[derive(Layout)]
