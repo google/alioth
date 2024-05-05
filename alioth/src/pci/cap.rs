@@ -13,12 +13,16 @@
 // limitations under the License.
 
 use std::fmt::Debug;
+use std::mem::size_of;
+use std::sync::Arc;
 
 use bitfield::bitfield;
+use parking_lot::RwLock;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Mmio, MmioBus};
+use crate::{impl_mmio_for_zerocopy, mem};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +33,7 @@ pub enum PciCapId {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 pub struct PciCapHdr {
     pub id: u8,
     pub next: u8,
@@ -46,7 +50,7 @@ bitfield! {
 }
 
 bitfield! {
-    #[derive(Copy, Clone, Default)]
+    #[derive(Copy, Clone, Default, FromBytes, FromZeroes, AsBytes)]
     #[repr(C)]
     pub struct MsixMsgCtrl(u16);
     impl Debug;
@@ -63,7 +67,7 @@ impl MsixMsgCtrl {
 }
 
 bitfield! {
-    #[derive(Copy, Clone, Default)]
+    #[derive(Copy, Clone, Default, FromBytes, FromZeroes, AsBytes)]
     #[repr(C)]
     pub struct MsixCapOffset(u32);
     impl Debug;
@@ -80,7 +84,7 @@ impl MsixCapOffset {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
 #[repr(C)]
 pub struct MsixCap {
     pub header: PciCapHdr,
@@ -88,6 +92,7 @@ pub struct MsixCap {
     pub table_offset: MsixCapOffset,
     pub pba_offset: MsixCapOffset,
 }
+impl_mmio_for_zerocopy!(MsixCap);
 
 bitfield! {
     #[derive(Copy, Clone, Default)]
@@ -174,5 +179,97 @@ impl Mmio for PciCapList {
 
     fn size(&self) -> usize {
         4096
+    }
+}
+
+#[derive(Debug)]
+pub struct MsixCapMmio {
+    pub cap: RwLock<MsixCap>,
+}
+
+impl Mmio for MsixCapMmio {
+    fn size(&self) -> usize {
+        size_of::<MsixCap>()
+    }
+
+    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+        let cap = self.cap.read();
+        Mmio::read(&*cap, offset, size)
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+        if offset == 2 && size == 2 {
+            let mut cap = self.cap.write();
+            let control = MsixMsgCtrl(val as u16);
+            cap.control.set_enabled(control.enabled());
+            cap.control.set_masked(control.masked());
+        }
+        Ok(())
+    }
+}
+
+impl PciCap for MsixCapMmio {
+    fn set_next(&mut self, val: u8) {
+        self.cap.write().header.next = val;
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MsixTableMmio {
+    pub entries: Arc<Vec<RwLock<MsixTableEntry>>>,
+}
+
+impl Mmio for MsixTableMmio {
+    fn size(&self) -> usize {
+        size_of::<MsixTableEntry>() * self.entries.len()
+    }
+
+    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+        if size != 4 || offset & 0b11 != 0 {
+            log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
+            return Ok(0);
+        }
+        let index = offset / size_of::<MsixTableEntry>();
+        let Some(entry) = self.entries.get(index) else {
+            log::error!(
+                "MSI-X table size: {}, accessing index {index}",
+                self.entries.len()
+            );
+            return Ok(0);
+        };
+        let entry = entry.read();
+        let ret = match offset % size_of::<MsixTableEntry>() {
+            0 => entry.addr_lo,
+            4 => entry.addr_hi,
+            8 => entry.data,
+            12 => entry.control.0,
+            _ => unreachable!(),
+        };
+        Ok(ret as u64)
+    }
+
+    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+        if size != 4 || offset & 0b11 != 0 {
+            log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
+            return Ok(());
+        }
+        let val = val as u32;
+        let index = offset / size_of::<MsixTableEntry>();
+        let Some(entry) = self.entries.get(index) else {
+            log::error!(
+                "MSI-X table size: {}, accessing index {index}",
+                self.entries.len()
+            );
+            return Ok(());
+        };
+        let mut entry = entry.write();
+        match offset % size_of::<MsixTableEntry>() {
+            0 => entry.addr_lo = val,
+            4 => entry.addr_hi = val,
+            8 => entry.data = val,
+            12 => entry.control = MsixVectorCtrl(val),
+            _ => unreachable!(),
+        };
+        Ok(())
     }
 }
