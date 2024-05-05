@@ -30,6 +30,8 @@ use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
 
 pub mod entropy;
+#[path = "net/net.rs"]
+pub mod net;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;

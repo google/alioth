@@ -156,13 +156,20 @@ macro_rules! ioctl_writeread_buf {
 
 #[macro_export]
 macro_rules! ioctl_read {
+    ($name:ident, $code:expr, $ty:ty) => {
+        pub unsafe fn $name<F: ::std::os::fd::AsRawFd>(fd: &F) -> ::std::io::Result<$ty> {
+            let mut val = ::core::mem::MaybeUninit::<$ty>::uninit();
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code, val.as_mut_ptr()))?;
+            ::std::io::Result::Ok(val.assume_init())
+        }
+    };
     ($name:ident, $type_:expr, $nr:expr, $ty:ty) => {
         pub unsafe fn $name<F: ::std::os::fd::AsRawFd>(fd: &F) -> ::std::io::Result<$ty> {
             let mut val = ::core::mem::MaybeUninit::<$ty>::uninit();
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
                 $crate::utils::ioctls::ioctl_ior::<$ty>($type_, $nr),
-                val.as_mut_ptr(),
+                val.as_mut_ptr()
             ))?;
             ::std::io::Result::Ok(val.assume_init())
         }
