@@ -15,9 +15,11 @@
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use macros::Layout;
+use mio::Waker;
 use parking_lot::RwLock;
 
 use crate::hv::MsiSender;
@@ -27,9 +29,9 @@ use crate::pci::cap::MsixTableEntry;
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };
-use crate::virtio::dev::Register;
+use crate::virtio::dev::{Register, WakeEvent};
 use crate::virtio::queue::Queue;
-use crate::virtio::IrqSender;
+use crate::virtio::{DevStatus, IrqSender};
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
@@ -137,6 +139,34 @@ where
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
     irq_sender: Arc<PciIrqSender<M>>,
+    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
+    waker: Arc<Waker>,
+}
+
+impl<M> VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
+    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
+        if let Err(e) = self.event_tx.send(event) {
+            log::error!("{}: failed to send event: {e}", self.name);
+            return;
+        }
+        if let Err(e) = self.waker.wake() {
+            log::error!("{}: failed to wake up device: {e}", self.name);
+        }
+    }
+
+    fn reset(&self) {
+        let config_msix = &self.irq_sender.msix_vector.config;
+        config_msix.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
+        for q_vector in self.irq_sender.msix_vector.queues.iter() {
+            q_vector.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
+        }
+        for q in self.queues.iter() {
+            q.enabled.store(false, Ordering::Release);
+        }
+    }
 }
 
 impl<M> Mmio for VirtioPciRegisterMmio<M>
@@ -296,7 +326,21 @@ where
                 );
             }
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
-                todo!()
+                let status = DevStatus::from_bits_truncate(val as u8);
+                let old = reg.status.swap(status.bits(), Ordering::AcqRel);
+                let old = DevStatus::from_bits_retain(old);
+                if (old ^ status).contains(DevStatus::DRIVER_OK) {
+                    let event = if status.contains(DevStatus::DRIVER_OK) {
+                        WakeEvent::Start {
+                            feature: reg.driver_feature.load(Ordering::Acquire),
+                            irq_sender: self.irq_sender.clone(),
+                        }
+                    } else {
+                        self.reset();
+                        WakeEvent::Reset
+                    };
+                    self.wake_up_dev(event);
+                }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SELECT => {
                 reg.queue_sel.store(val as u16, Ordering::Relaxed);
