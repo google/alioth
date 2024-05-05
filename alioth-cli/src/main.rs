@@ -18,8 +18,9 @@ use alioth::board::BoardConfig;
 use alioth::hv::Kvm;
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::entropy::EntropyParam;
+use alioth::virtio::dev::net::NetParam;
 use alioth::vm::Machine;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
 
@@ -72,6 +73,9 @@ struct RunArgs {
 
     #[arg(long)]
     entropy: bool,
+
+    #[arg(long)]
+    net: Vec<String>,
 }
 
 fn parse_mem(s: &str) -> Result<usize> {
@@ -88,6 +92,44 @@ fn parse_mem(s: &str) -> Result<usize> {
         let n = s.parse::<usize>()?;
         Ok(n)
     }
+}
+
+fn parse_net<'a>(s: &'a str) -> Result<NetParam> {
+    let mut parts = s.trim().splitn(3, ',');
+    let splitter = |s: &'a str| s.split_once::<'a, _>('=');
+    let Some(("tap", tap_path)) = parts.next().and_then(splitter) else {
+        bail!("invalid net opt: {s}");
+    };
+    let Some(("mac", mac_str)) = parts.next().and_then(splitter) else {
+        bail!("invalid net opt: {s}");
+    };
+    let mut mac = [0u8; 6];
+    let mut fail = false;
+    for (index, p) in mac_str.trim().split(':').enumerate() {
+        if index < 6 {
+            let Ok(b) = u8::from_str_radix(p, 16) else {
+                fail = true;
+                break;
+            };
+            mac[index] = b;
+        } else {
+            fail = true;
+            break;
+        }
+    }
+    if fail {
+        bail!("cannot parse {mac_str}")
+    }
+    let Some(("mtu", mtu_str)) = parts.next().and_then(splitter) else {
+        bail!("invalid net opt: {s}")
+    };
+
+    Ok(NetParam {
+        mac,
+        mtu: mtu_str.parse()?,
+        queue_pairs: 1,
+        tap: tap_path.into(),
+    })
 }
 
 fn main_run(args: RunArgs) -> Result<()> {
@@ -124,6 +166,10 @@ fn main_run(args: RunArgs) -> Result<()> {
     }
     if args.entropy {
         vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
+    }
+    for (index, net_opt) in args.net.into_iter().enumerate() {
+        let net_param = parse_net(&net_opt)?;
+        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
     }
     vm.boot()?;
     for result in vm.wait() {
