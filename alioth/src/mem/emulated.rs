@@ -47,6 +47,46 @@ impl SlotBackend for MmioRange {
     }
 }
 
+#[macro_export]
+macro_rules! impl_mmio_for_zerocopy {
+    ($ty:ident) => {
+        impl $crate::mem::emulated::Mmio for $ty {
+            fn size(&self) -> usize {
+                ::core::mem::size_of::<Self>()
+            }
+
+            fn read(&self, offset: usize, size: u8) -> $crate::mem::Result<u64> {
+                let bytes = AsBytes::as_bytes(self);
+                let val = match size {
+                    1 => bytes.get(offset).map(|b| *b as u64),
+                    2 => u16::read_from_prefix(&bytes[offset..]).map(|w| w as u64),
+                    4 => u32::read_from_prefix(&bytes[offset..]).map(|d| d as u64),
+                    8 => u64::read_from_prefix(&bytes[offset..]),
+                    _ => ::core::option::Option::None,
+                };
+                if let ::core::option::Option::Some(val) = val {
+                    ::core::result::Result::Ok(val)
+                } else {
+                    ::log::error!(
+                        "{}: invalid read access, offset = {offset:#x}, size = {size}.",
+                        ::core::any::type_name::<Self>()
+                    );
+                    ::core::result::Result::Ok(0)
+                }
+            }
+
+            fn write(&self, offset: usize, size: u8, val: u64) -> $crate::mem::Result<()> {
+                ::log::error!(
+                    "{}: write 0x{val:0width$x} to readonly offset 0x{offset:x}.",
+                    ::core::any::type_name::<Self>(),
+                    width = 2 * size as usize
+                );
+                Ok(())
+            }
+        }
+    };
+}
+
 #[derive(Debug)]
 pub struct MmioBus<R = MmioRange>
 where
