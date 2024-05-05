@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("PCI bus: {0}")]
     PciBus(#[from] crate::pci::Error),
+
+    #[error("Invalid descriptor id {0}")]
+    InvalidDescriptor(u16),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
