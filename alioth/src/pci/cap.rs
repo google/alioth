@@ -22,7 +22,9 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Mmio, MmioBus};
-use crate::{impl_mmio_for_zerocopy, mem};
+use crate::pci::config::DeviceHeader;
+use crate::pci::Error;
+use crate::{align_up, impl_mmio_for_zerocopy, mem};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
@@ -179,6 +181,26 @@ impl Mmio for PciCapList {
 
     fn size(&self) -> usize {
         4096
+    }
+}
+
+impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
+    type Error = Error;
+    fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
+        let bus = MmioBus::new();
+        let mut ptr = size_of::<DeviceHeader>();
+        let num_caps = caps.len();
+        for (index, mut cap) in caps.into_iter().enumerate() {
+            let next = if index == num_caps - 1 {
+                0
+            } else {
+                align_up!(ptr + Mmio::size(&cap), 4)
+            };
+            cap.set_next(next as u8);
+            bus.add(ptr, cap)?;
+            ptr = next;
+        }
+        Ok(Self { inner: bus })
     }
 }
 
