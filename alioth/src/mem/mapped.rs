@@ -379,11 +379,10 @@ impl Drop for RamBus {
 }
 
 impl RamBus {
-    pub fn lock_layout(&self) -> Result<RamLayoutGuard<'_>, Error> {
-        let guard = RamLayoutGuard {
+    pub fn lock_layout(&self) -> RamLayoutGuard<'_> {
+        RamLayoutGuard {
             inner: self.inner.read(),
-        };
-        Ok(guard)
+        }
     }
 
     pub fn new<M: VmMemory>(vm_memory: M) -> Self {
@@ -609,7 +608,7 @@ mod test {
         });
         assert_matches!(read_ret, Ok(Ok(64)));
 
-        let locked_bus = bus.lock_layout().unwrap();
+        let locked_bus = bus.lock_layout();
         let bufs = locked_bus.translate_iov(&guest_iov).unwrap();
         println!("{:?}", bufs);
         drop(locked_bus);
