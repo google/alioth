@@ -129,13 +129,20 @@ pub struct VirtioPciRegister {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciRegisterMmio {
+pub struct VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
     name: Arc<String>,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
+    irq_sender: Arc<PciIrqSender<M>>,
 }
 
-impl Mmio for VirtioPciRegisterMmio {
+impl<M> Mmio for VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
     fn size(&self) -> usize {
         size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()
     }
@@ -163,7 +170,9 @@ impl Mmio for VirtioPciRegisterMmio {
                     get_atomic_low32(&reg.driver_feature) as u64
                 }
             }
-            VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => todo!(),
+            VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
+                self.irq_sender.msix_vector.config.load(Ordering::Acquire) as u64
+            }
             VirtioCommonCfg::LAYOUT_NUM_QUEUES => self.queues.len() as u64,
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => reg.status.load(Ordering::Acquire) as u64,
             VirtioCommonCfg::LAYOUT_CONFIG_GENERATION => {
@@ -179,7 +188,12 @@ impl Mmio for VirtioPciRegisterMmio {
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_MSIX_VECTOR => {
-                todo!()
+                let q_sel = reg.queue_sel.load(Ordering::Acquire) as usize;
+                if let Some(msix_vector) = self.irq_sender.msix_vector.queues.get(q_sel) {
+                    msix_vector.load(Ordering::Acquire) as u64
+                } else {
+                    VIRTIO_MSI_NO_VECTOR as u64
+                }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_ENABLE => {
                 let q_sel = reg.queue_sel.load(Ordering::Acquire) as usize;
@@ -274,7 +288,12 @@ impl Mmio for VirtioPciRegisterMmio {
                 }
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
-                todo!()
+                let config_msix = &self.irq_sender.msix_vector.config;
+                let old = config_msix.swap(val as u16, Ordering::AcqRel);
+                log::trace!(
+                    "{}: config MSI-X vector update: {old:#x} -> {val:#x}",
+                    self.name
+                );
             }
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
                 todo!()
@@ -293,7 +312,14 @@ impl Mmio for VirtioPciRegisterMmio {
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_MSIX_VECTOR => {
-                todo!()
+                let q_sel = reg.queue_sel.load(Ordering::Relaxed) as usize;
+                if let Some(msix_vector) = self.irq_sender.msix_vector.queues.get(q_sel) {
+                    let old = msix_vector.swap(val as u16, Ordering::AcqRel);
+                    log::trace!(
+                        "{}: queue {q_sel} MSI-X vector update: {old:#x} -> {val:#x}",
+                        self.name
+                    );
+                }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_ENABLE => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
