@@ -322,3 +322,8 @@ where
         Ok(())
     }
 }
+
+pub trait DevParam {
+    type Device;
+    fn build(self, name: Arc<String>) -> Result<Self::Device>;
+}
