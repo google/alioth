@@ -29,7 +29,9 @@ use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::pci::bus::PciBus;
 use crate::pci::PciDevice;
-use crate::{mem, pci};
+use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
+use crate::virtio::pci::VirtioPciDevice;
+use crate::{mem, pci, virtio};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -50,6 +52,9 @@ pub enum Error {
 
     #[error("PCI bus: {0}")]
     PciBus(#[from] pci::Error),
+
+    #[error("Virtio: {0}")]
+    Virtio(#[from] virtio::Error),
 
     #[error("ACPI bytes exceed EBDA area")]
     AcpiTooLong,
@@ -124,6 +129,26 @@ where
         let dev = PvPanic::new();
         let pci_dev = PciDevice::new("pvpanic".to_owned().into(), Arc::new(dev));
         self.add_pci_dev(pci_dev)
+    }
+
+    pub fn add_virtio_dev<D, P>(
+        &mut self,
+        name: String,
+        param: P,
+    ) -> Result<Arc<VirtioPciDevice<D, <<H as Hypervisor>::Vm as Vm>::MsiSender>>, Error>
+    where
+        P: DevParam<Device = D>,
+        D: Virtio,
+    {
+        let name = Arc::new(name);
+        let dev = param.build(name.clone())?;
+        let virtio_dev = VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus().clone())?;
+        let msi_sender = self.board.vm.create_msi_sender()?;
+        let dev = VirtioPciDevice::new(virtio_dev, msi_sender)?;
+        let dev = Arc::new(dev);
+        let pci_dev = PciDevice::new(name.clone(), dev.clone());
+        self.add_pci_dev(pci_dev)?;
+        Ok(dev)
     }
 
     pub fn add_payload(&mut self, payload: Payload) {

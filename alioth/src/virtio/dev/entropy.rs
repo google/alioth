@@ -25,7 +25,7 @@ use mio::Registry;
 use crate::mem;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
-use crate::virtio::dev::{DeviceId, Virtio};
+use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::VirtQueue;
 use crate::virtio::{IrqSender, Result};
@@ -114,5 +114,14 @@ impl Virtio for Entropy {
 
     fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {
         Ok(())
+    }
+}
+
+pub struct EntropyParam;
+
+impl DevParam for EntropyParam {
+    type Device = Entropy;
+    fn build(self, name: Arc<String>) -> Result<Self::Device> {
+        Entropy::new(name)
     }
 }

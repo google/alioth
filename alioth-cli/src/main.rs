@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use alioth::board::BoardConfig;
 use alioth::hv::Kvm;
 use alioth::loader::{ExecType, Payload};
+use alioth::virtio::dev::entropy::EntropyParam;
 use alioth::vm::Machine;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -68,6 +69,9 @@ struct RunArgs {
 
     #[arg(long)]
     pvpanic: bool,
+
+    #[arg(long)]
+    entropy: bool,
 }
 
 fn parse_mem(s: &str) -> Result<usize> {
@@ -117,6 +121,9 @@ fn main_run(args: RunArgs) -> Result<()> {
     }
     if args.pvpanic {
         vm.add_pvpanic()?;
+    }
+    if args.entropy {
+        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
     }
     vm.boot()?;
     for result in vm.wait() {
