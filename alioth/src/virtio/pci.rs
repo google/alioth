@@ -423,7 +423,10 @@ where
                 todo!()
             }
             (VirtioPciRegister::OFFSET_QUEUE_NOTIFY, _) => {
-                todo!()
+                let event = WakeEvent::Notify {
+                    q_index: val as u16,
+                };
+                self.wake_up_dev(event)
             }
             _ => {
                 log::error!(
