@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use alioth::board::BoardConfig;
 use alioth::hv::Kvm;
 use alioth::loader::{ExecType, Payload};
+use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 use alioth::virtio::dev::net::NetParam;
 use alioth::vm::Machine;
@@ -76,6 +77,9 @@ struct RunArgs {
 
     #[arg(long)]
     net: Vec<String>,
+
+    #[arg(long)]
+    blk: Vec<String>,
 }
 
 fn parse_mem(s: &str) -> Result<usize> {
@@ -170,6 +174,10 @@ fn main_run(args: RunArgs) -> Result<()> {
     for (index, net_opt) in args.net.into_iter().enumerate() {
         let net_param = parse_net(&net_opt)?;
         vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
+    }
+    for (index, blk) in args.blk.into_iter().enumerate() {
+        let param = BlockParam { path: blk.into() };
+        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
     }
     vm.boot()?;
     for result in vm.wait() {
