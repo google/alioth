@@ -12,5 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "fw_cfg/fw_cfg.rs"]
+pub mod fw_cfg;
 pub mod pvpanic;
 pub mod serial;
