@@ -101,8 +101,10 @@ fn parse_mem(s: &str) -> Result<usize> {
 fn parse_net<'a>(s: &'a str) -> Result<NetParam> {
     let mut parts = s.trim().splitn(3, ',');
     let splitter = |s: &'a str| s.split_once::<'a, _>('=');
-    let Some(("tap", tap_path)) = parts.next().and_then(splitter) else {
-        bail!("invalid net opt: {s}");
+    let (tap_path, if_name) = match parts.next().and_then(splitter) {
+        Some(("tap", p)) => (p, None),
+        Some(("if", name)) => ("/dev/net/tun", Some(name.to_owned())),
+        _ => bail!("invalid net opt: {s}"),
     };
     let Some(("mac", mac_str)) = parts.next().and_then(splitter) else {
         bail!("invalid net opt: {s}");
@@ -133,6 +135,7 @@ fn parse_net<'a>(s: &'a str) -> Result<NetParam> {
         mtu: mtu_str.parse()?,
         queue_pairs: 1,
         tap: tap_path.into(),
+        if_name,
     })
 }
 
