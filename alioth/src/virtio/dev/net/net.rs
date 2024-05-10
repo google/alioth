@@ -15,6 +15,8 @@
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::io;
+use std::iter::zip;
+use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
@@ -107,6 +109,7 @@ pub struct NetParam {
     pub mtu: u16,
     pub queue_pairs: u16,
     pub tap: PathBuf,
+    pub if_name: Option<String>,
 }
 
 impl DevParam for NetParam {
@@ -125,7 +128,7 @@ impl Net {
             .write(true)
             .open(param.tap)?;
 
-        setup_tap(&mut file)?;
+        setup_tap(&mut file, param.if_name.as_deref())?;
         let net = Net {
             name,
             config: Arc::new(NetConfig {
@@ -244,8 +247,18 @@ pub const TOKEN_TAP: Token = Token(0);
 
 const VNET_HEADER_SIZE: i32 = 12;
 
-fn setup_tap(file: &mut File) -> Result<()> {
-    let mut tap_ifconfig = unsafe { tun_get_iff(file) }?;
+fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
+    let mut tap_ifconfig = match if_name {
+        None => unsafe { tun_get_iff(file) }?,
+        Some(name) => {
+            let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
+            for (s, d) in zip(name.as_bytes(), tap_ifconfig.ifr_name.as_mut()) {
+                *d = *s as i8;
+            }
+            tap_ifconfig
+        }
+    };
+
     tap_ifconfig.ifr_ifru.ifru_flags = (IFF_TAP | IFF_NO_PI | IFF_VNET_HDR) as i16;
     unsafe { tun_set_iff(file, &tap_ifconfig) }?;
     unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
