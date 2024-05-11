@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
+use alioth::device::fw_cfg::{FwCfgContent, FwCfgItem};
 use alioth::hv::Kvm;
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::blk::BlockParam;
@@ -72,6 +74,9 @@ struct RunArgs {
     #[arg(long)]
     pvpanic: bool,
 
+    #[arg(long = "fw-cfg")]
+    fw_cfgs: Vec<String>,
+
     #[arg(long)]
     entropy: bool,
 
@@ -80,6 +85,29 @@ struct RunArgs {
 
     #[arg(long)]
     blk: Vec<String>,
+}
+
+fn parse_fw_cfgs(s: &str) -> Result<FwCfgItem> {
+    let Some((name, ty_content)) = s.split_once(',') else {
+        bail!("invalid config: {s}")
+    };
+    let Some((ty, content)) = ty_content.split_once('=') else {
+        bail!("invalid content: {ty_content}")
+    };
+    match ty {
+        "file" => {
+            let f = File::open(content)?;
+            Ok(FwCfgItem {
+                name: name.to_owned(),
+                content: FwCfgContent::File(f),
+            })
+        }
+        "string" => Ok(FwCfgItem {
+            name: name.to_owned(),
+            content: FwCfgContent::Bytes(content.into()),
+        }),
+        _ => bail!("invalid content: {ty_content}"),
+    }
 }
 
 fn parse_mem(s: &str) -> Result<usize> {
@@ -170,6 +198,14 @@ fn main_run(args: RunArgs) -> Result<()> {
     }
     if args.pvpanic {
         vm.add_pvpanic()?;
+    }
+    let fw_cfg_items = args
+        .fw_cfgs
+        .iter()
+        .map(|s| parse_fw_cfgs(s))
+        .collect::<Result<Vec<_>>>()?;
+    if !fw_cfg_items.is_empty() {
+        vm.add_fw_cfg(fw_cfg_items)?;
     }
     if args.entropy {
         vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;

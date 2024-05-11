@@ -23,6 +23,7 @@ use thiserror::Error;
 use zerocopy::AsBytes;
 
 use crate::arch::layout::{EBDA_START, PCIE_CONFIG_START};
+use crate::device::fw_cfg::FwCfg;
 use crate::firmware::acpi::bindings::AcpiTableRsdp;
 use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
@@ -93,6 +94,7 @@ where
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     pub pci_bus: PciBus,
     pub pci_devs: RwLock<Vec<PciDevice>>,
+    pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
 }
 
 impl<V> Board<V>
@@ -108,12 +110,17 @@ where
             size_of::<AcpiTableRsdp>(),
             acpi_table.rsdp().as_bytes(),
         )?;
-        let tables = acpi_table.tables();
         ram.write_range(
             EBDA_START + size_of::<AcpiTableRsdp>(),
-            tables.len(),
-            tables,
+            acpi_table.tables().len(),
+            acpi_table.tables(),
         )?;
+        if let Some(fw_cfg) = &*self.fw_cfg.lock() {
+            let mut dev = fw_cfg.lock();
+            dev.add_acpi(acpi_table)?;
+            let mem_regions = self.memory.mem_region_entries();
+            dev.add_e820(&mem_regions)?;
+        }
         Ok(())
     }
 

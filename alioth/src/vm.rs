@@ -22,6 +22,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::device::fw_cfg::{FwCfg, FwCfgItem, PORT_SELECTOR};
 use crate::device::pvpanic::PvPanic;
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
@@ -96,6 +97,7 @@ where
             io_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
             pci_devs: RwLock::new(Vec::new()),
+            fw_cfg: Mutex::new(None),
         };
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -129,6 +131,14 @@ where
         let dev = PvPanic::new();
         let pci_dev = PciDevice::new("pvpanic".to_owned().into(), Arc::new(dev));
         self.add_pci_dev(pci_dev)
+    }
+
+    pub fn add_fw_cfg(&mut self, items: Vec<FwCfgItem>) -> Result<(), Error> {
+        let fw_cfg = Arc::new(Mutex::new(FwCfg::new(self.board.memory.ram_bus(), items)?));
+        let mut io_devs = self.board.io_devs.write();
+        io_devs.push((PORT_SELECTOR, fw_cfg.clone()));
+        *self.board.fw_cfg.lock() = Some(fw_cfg);
+        Ok(())
     }
 
     pub fn add_virtio_dev<D, P>(
