@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -19,9 +20,11 @@ use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
+use zerocopy::AsBytes;
 
-use crate::acpi::create_acpi_tables;
-use crate::arch::layout::{EBDA_END, EBDA_START, PCIE_CONFIG_START};
+use crate::arch::layout::{EBDA_START, PCIE_CONFIG_START};
+use crate::firmware::acpi::bindings::AcpiTableRsdp;
+use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
@@ -97,12 +100,20 @@ where
     V: Vm,
 {
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
-        let acpi_bytes = create_acpi_tables(EBDA_START, self.config.num_cpu);
-        if acpi_bytes.len() > EBDA_END - EBDA_START {
-            return Err(Error::AcpiTooLong);
-        }
         let ram = self.memory.ram_bus();
-        ram.write_range(EBDA_START, acpi_bytes.len(), &*acpi_bytes)?;
+        let mut acpi_table = create_acpi(self.config.num_cpu);
+        acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
+        ram.write_range(
+            EBDA_START,
+            size_of::<AcpiTableRsdp>(),
+            acpi_table.rsdp().as_bytes(),
+        )?;
+        let tables = acpi_table.tables();
+        ram.write_range(
+            EBDA_START + size_of::<AcpiTableRsdp>(),
+            tables.len(),
+            tables,
+        )?;
         Ok(())
     }
 
