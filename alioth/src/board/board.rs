@@ -27,7 +27,7 @@ use crate::device::fw_cfg::FwCfg;
 use crate::firmware::acpi::bindings::AcpiTableRsdp;
 use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
-use crate::loader::{self, linux, xen, ExecType, InitState, Payload};
+use crate::loader::{self, firmware, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::{PciBus, CONFIG_ADDRESS};
@@ -145,6 +145,7 @@ where
                 payload.cmd_line.as_deref(),
                 payload.initramfs.as_ref(),
             )?,
+            ExecType::Firmware => firmware::load(&self.memory, &payload.executable)?,
         };
         Ok(init_state)
     }
