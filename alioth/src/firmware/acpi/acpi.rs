@@ -256,6 +256,18 @@ impl AcpiTable {
     pub fn tables(&self) -> &[u8] {
         &self.tables
     }
+
+    pub fn pointers(&self) -> &[usize] {
+        &self.table_pointers
+    }
+
+    pub fn checksums(&self) -> &[(usize, usize)] {
+        &self.table_checksums
+    }
+
+    pub fn take(self) -> (AcpiTableRsdp, Vec<u8>) {
+        (self.rsdp, self.tables)
+    }
 }
 
 pub fn create_acpi(num_cpu: u32) -> AcpiTable {
