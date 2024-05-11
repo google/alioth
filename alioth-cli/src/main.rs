@@ -59,6 +59,9 @@ struct RunArgs {
     #[arg(long)]
     pvh: Option<PathBuf>,
 
+    #[arg(long, short)]
+    firmware: Option<PathBuf>,
+
     #[arg(short, long)]
     cmd_line: Option<String>,
 
@@ -169,7 +172,14 @@ fn parse_net<'a>(s: &'a str) -> Result<NetParam> {
 
 fn main_run(args: RunArgs) -> Result<()> {
     let hypervisor = Kvm::new()?;
-    let payload = if let Some(kernel) = args.kernel {
+    let payload = if let Some(fw) = args.firmware {
+        Some(Payload {
+            executable: fw,
+            exec_type: ExecType::Firmware,
+            initramfs: None,
+            cmd_line: None,
+        })
+    } else if let Some(kernel) = args.kernel {
         Some(Payload {
             exec_type: ExecType::Linux,
             executable: kernel,

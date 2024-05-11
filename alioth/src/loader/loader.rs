@@ -23,6 +23,8 @@ use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
+#[path = "firmware/firmware.rs"]
+pub mod firmware;
 #[path = "linux/linux.rs"]
 pub mod linux;
 #[path = "xen/xen.rs"]
@@ -40,6 +42,7 @@ pub struct Payload {
 pub enum ExecType {
     Linux,
     Pvh,
+    Firmware,
 }
 
 #[derive(Debug, Clone, Default)]
