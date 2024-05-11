@@ -146,7 +146,7 @@ impl Vm for KvmVm {
     }
 
     fn stop_vcpu<T>(_id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
-        ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t(), SIGRTMIN()) })?;
+        ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })?;
         Ok(())
     }
 
