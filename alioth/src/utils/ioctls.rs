@@ -14,38 +14,36 @@
 
 use std::mem::size_of;
 
-use libc::c_ulong;
-
-const IOC_NONN: c_ulong = 0;
-const IOC_WRITE: c_ulong = 1;
-const IOC_READ: c_ulong = 2;
+const IOC_NONN: u32 = 0;
+const IOC_WRITE: u32 = 1;
+const IOC_READ: u32 = 2;
 
 const IOC_NRSHIFT: usize = 0;
 const IOC_TYPESHIFT: usize = 8;
 const IOC_SIZESHIFT: usize = 16;
 const IOC_DIRSHIFT: usize = 30;
 
-const fn ioctl_ioc(dir: c_ulong, type_: u8, nr: u8, size: c_ulong) -> c_ulong {
+const fn ioctl_ioc(dir: u32, type_: u8, nr: u8, size: u32) -> u32 {
     (dir << IOC_DIRSHIFT)
         | (size << IOC_SIZESHIFT)
-        | ((type_ as c_ulong) << IOC_TYPESHIFT)
-        | ((nr as c_ulong) << IOC_NRSHIFT)
+        | ((type_ as u32) << IOC_TYPESHIFT)
+        | ((nr as u32) << IOC_NRSHIFT)
 }
 
-pub const fn ioctl_io(type_: u8, nr: u8) -> c_ulong {
+pub const fn ioctl_io(type_: u8, nr: u8) -> u32 {
     ioctl_ioc(IOC_NONN, type_, nr, 0)
 }
 
-pub const fn ioctl_ior<T>(type_: u8, nr: u8) -> c_ulong {
-    ioctl_ioc(IOC_READ, type_, nr, size_of::<T>() as c_ulong)
+pub const fn ioctl_ior<T>(type_: u8, nr: u8) -> u32 {
+    ioctl_ioc(IOC_READ, type_, nr, size_of::<T>() as u32)
 }
 
-pub const fn ioctl_iow<T>(type_: u8, nr: u8) -> c_ulong {
-    ioctl_ioc(IOC_WRITE, type_, nr, size_of::<T>() as c_ulong)
+pub const fn ioctl_iow<T>(type_: u8, nr: u8) -> u32 {
+    ioctl_ioc(IOC_WRITE, type_, nr, size_of::<T>() as u32)
 }
 
-pub const fn ioctl_iowr<T>(type_: u8, nr: u8) -> c_ulong {
-    ioctl_ioc(IOC_WRITE | IOC_READ, type_, nr, size_of::<T>() as c_ulong)
+pub const fn ioctl_iowr<T>(type_: u8, nr: u8) -> u32 {
+    ioctl_ioc(IOC_WRITE | IOC_READ, type_, nr, size_of::<T>() as u32)
 }
 
 #[macro_export]
@@ -54,7 +52,7 @@ macro_rules! ioctl_none {
         pub unsafe fn $name<F: ::std::os::fd::AsRawFd>(fd: &F) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_io($type_, $nr),
+                $crate::utils::ioctls::ioctl_io($type_, $nr) as _,
                 $val as ::libc::c_ulong,
             ))
         }
@@ -68,7 +66,7 @@ macro_rules! ioctl_write_val {
             fd: &F,
             val: ::libc::c_ulong,
         ) -> ::std::io::Result<libc::c_int> {
-            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code, val))
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val))
         }
     };
     ($name:ident, $code:expr, $ty:ty) => {
@@ -76,7 +74,7 @@ macro_rules! ioctl_write_val {
             fd: &F,
             val: $ty,
         ) -> ::std::io::Result<libc::c_int> {
-            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code, val))
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val))
         }
     };
 }
@@ -88,7 +86,7 @@ macro_rules! ioctl_write_ptr {
             fd: &F,
             val: &$ty,
         ) -> ::std::io::Result<libc::c_int> {
-            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code, val as *const $ty))
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val as *const $ty))
         }
     };
 
@@ -99,7 +97,7 @@ macro_rules! ioctl_write_ptr {
         ) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iow::<$ty>($type_, $nr),
+                $crate::utils::ioctls::ioctl_iow::<$ty>($type_, $nr) as _,
                 val as *const $ty,
             ))
         }
@@ -115,7 +113,7 @@ macro_rules! ioctl_write_buf {
         ) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iow::<$ty<0>>($type_, $nr),
+                $crate::utils::ioctls::ioctl_iow::<$ty<0>>($type_, $nr) as _,
                 val as *const $ty<N>,
             ))
         }
@@ -131,7 +129,7 @@ macro_rules! ioctl_writeread {
         ) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iowr::<$ty>($type_, $nr),
+                $crate::utils::ioctls::ioctl_iowr::<$ty>($type_, $nr) as _,
                 val as *mut $ty,
             ))
         }
@@ -147,7 +145,7 @@ macro_rules! ioctl_writeread_buf {
         ) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iowr::<$ty<0>>($type_, $nr),
+                $crate::utils::ioctls::ioctl_iowr::<$ty<0>>($type_, $nr) as _,
                 val as *mut $ty<N>,
             ))
         }
@@ -159,7 +157,7 @@ macro_rules! ioctl_read {
     ($name:ident, $code:expr, $ty:ty) => {
         pub unsafe fn $name<F: ::std::os::fd::AsRawFd>(fd: &F) -> ::std::io::Result<$ty> {
             let mut val = ::core::mem::MaybeUninit::<$ty>::uninit();
-            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code, val.as_mut_ptr()))?;
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val.as_mut_ptr()))?;
             ::std::io::Result::Ok(val.assume_init())
         }
     };
@@ -168,7 +166,7 @@ macro_rules! ioctl_read {
             let mut val = ::core::mem::MaybeUninit::<$ty>::uninit();
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_ior::<$ty>($type_, $nr),
+                $crate::utils::ioctls::ioctl_ior::<$ty>($type_, $nr) as _,
                 val.as_mut_ptr()
             ))?;
             ::std::io::Result::Ok(val.assume_init())
