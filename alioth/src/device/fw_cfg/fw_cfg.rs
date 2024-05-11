@@ -22,6 +22,7 @@ use macros::Layout;
 use parking_lot::Mutex;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::firmware::acpi::AcpiTable;
 use crate::loader::linux::bootparams::{
     BootE820Entry, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
 };
@@ -29,6 +30,10 @@ use crate::mem;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
+
+pub mod acpi;
+
+use acpi::create_acpi_loader;
 
 pub const PORT_SELECTOR: u16 = 0x510;
 pub const PORT_DATA: u16 = 0x511;
@@ -243,6 +248,13 @@ impl FwCfg {
             content: FwCfgContent::Bytes(bytes),
         };
         self.add_item(item)
+    }
+
+    pub(crate) fn add_acpi(&mut self, acpi_table: AcpiTable) -> Result<()> {
+        let [table_loader, acpi_rsdp, apci_tables] = create_acpi_loader(acpi_table);
+        self.add_item(table_loader)?;
+        self.add_item(acpi_rsdp)?;
+        self.add_item(apci_tables)
     }
 
     pub fn add_item(&mut self, item: FwCfgItem) -> Result<()> {
