@@ -14,14 +14,14 @@
 
 pub mod bindings;
 
-use std::mem::{size_of, size_of_val};
+use std::mem::{offset_of, size_of, size_of_val};
 
-use zerocopy::AsBytes;
+use zerocopy::{transmute, AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{APIC_START, IOAPIC_START};
-use crate::{align_up, unsafe_impl_zerocopy};
+use crate::unsafe_impl_zerocopy;
 
 use bindings::{
     AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
@@ -34,7 +34,7 @@ use bindings::{
 unsafe_impl_zerocopy!(AcpiTableMcfg<1>, FromBytes, FromZeroes, AsBytes);
 unsafe_impl_zerocopy!(AcpiTableXsdt<3>, FromBytes, FromZeroes, AsBytes);
 
-pub const DSDT_DSDTTBL_HEADER: [u8; 324] = [
+const DSDT_DSDTTBL_HEADER: [u8; 324] = [
     0x44, 0x53, 0x44, 0x54, 0x43, 0x01, 0x00, 0x00, 0x02, 0x37, 0x41, 0x4c, 0x49, 0x4f, 0x54, 0x48,
     0x41, 0x4c, 0x49, 0x4f, 0x54, 0x48, 0x56, 0x4d, 0x01, 0x00, 0x00, 0x00, 0x49, 0x4e, 0x54, 0x4c,
     0x25, 0x09, 0x20, 0x20, 0x5b, 0x82, 0x37, 0x2e, 0x5f, 0x53, 0x42, 0x5f, 0x43, 0x4f, 0x4d, 0x31,
@@ -59,23 +59,11 @@ pub const DSDT_DSDTTBL_HEADER: [u8; 324] = [
 ];
 
 #[inline]
-fn gencsum<'a, T>(data: T) -> u8
-where
-    T: IntoIterator<Item = &'a u8>,
-{
-    (!wrapping_sum(data)).wrapping_add(1)
-}
-
-#[inline]
 fn wrapping_sum<'a, T>(data: T) -> u8
 where
     T: IntoIterator<Item = &'a u8>,
 {
     data.into_iter().fold(0u8, |accu, e| accu.wrapping_add(*e))
-}
-
-fn encode_addr64(addr: usize) -> [u32; 2] {
-    [addr as u32, (addr >> 32) as u32]
 }
 
 const OEM_ID: [u8; 6] = *b"ALIOTH";
@@ -93,25 +81,22 @@ fn default_header() -> AcpiTableHeader {
 }
 
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#root-system-description-pointer-rsdp-structure
-pub fn create_rsdp(xsdt_addr: usize) -> AcpiTableRsdp {
-    let mut rsdp = AcpiTableRsdp {
+fn create_rsdp(xsdt_addr: u64) -> AcpiTableRsdp {
+    AcpiTableRsdp {
         signature: SIG_RSDP,
         oem_id: OEM_ID,
         revision: RSDP_REVISION,
         length: size_of::<AcpiTableRsdp>() as u32,
-        xsdt_physical_address: encode_addr64(xsdt_addr),
+        xsdt_physical_address: transmute!(xsdt_addr),
         ..Default::default()
-    };
-    rsdp.checksum = gencsum(&rsdp.as_bytes()[0..20]);
-    rsdp.extended_checksum = gencsum(rsdp.as_bytes());
-    rsdp
+    }
 }
 
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#extended-system-description-table-fields-xsdt
-pub fn create_xsdt(entries: [usize; 3]) -> AcpiTableXsdt<3> {
-    let total_length = size_of::<AcpiTableHeader>() + size_of::<u64>() * 3;
-    let entries = entries.map(encode_addr64);
-    let mut xsdt = AcpiTableXsdt {
+fn create_xsdt<const N: usize>(entries: [u64; N]) -> AcpiTableXsdt<N> {
+    let total_length = size_of::<AcpiTableHeader>() + size_of::<u64>() * N;
+    let entries = entries.map(|e| transmute!(e));
+    AcpiTableXsdt {
         header: AcpiTableHeader {
             signature: SIG_XSDT,
             length: total_length as u32,
@@ -119,14 +104,12 @@ pub fn create_xsdt(entries: [usize; 3]) -> AcpiTableXsdt<3> {
             ..default_header()
         },
         entries,
-    };
-    xsdt.header.checksum = gencsum(xsdt.as_bytes());
-    xsdt
+    }
 }
 
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fadt-format
-pub fn create_fadt(dsdt_addr: usize) -> AcpiTableFadt {
-    let mut fadt = AcpiTableFadt {
+fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
+    AcpiTableFadt {
         header: AcpiTableHeader {
             signature: SIG_FADT,
             revision: FADT_MAJOR_VERSION,
@@ -138,7 +121,7 @@ pub fn create_fadt(dsdt_addr: usize) -> AcpiTableFadt {
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: encode_addr64(0x604),
+            address: transmute!(0x604u64),
         },
         reset_value: 0x1,
         sleep_control: AcpiGenericAddress {
@@ -146,31 +129,30 @@ pub fn create_fadt(dsdt_addr: usize) -> AcpiTableFadt {
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: encode_addr64(0x600),
+            address: transmute!(0x600u64),
         },
         sleep_status: AcpiGenericAddress {
             space_id: 1,
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: encode_addr64(0x601),
+            address: transmute!(0x601u64),
         },
         flags: (1 << 20) | (1 << 10),
         minor_revision: FADT_MINOR_VERSION,
         hypervisor_id: *b"ALIOTH  ",
-        xdsdt: encode_addr64(dsdt_addr),
+        xdsdt: transmute!(dsdt_addr),
         ..Default::default()
-    };
-    fadt.header.checksum = gencsum(fadt.as_bytes());
-    fadt
+    }
 }
 
 // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
 #[cfg(target_arch = "x86_64")]
-pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
+fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
     let total_length = size_of::<AcpiTableMadt>()
         + size_of::<AcpiMadtIoApic>()
         + num_cpu as usize * size_of::<AcpiMadtLocalX2apic>();
+    let mut checksum = 0u8;
 
     let mut madt = AcpiTableMadt {
         header: AcpiTableHeader {
@@ -182,6 +164,7 @@ pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadt
         address: APIC_START as u32,
         flags: 0,
     };
+    checksum = checksum.wrapping_sub(wrapping_sum(madt.as_bytes()));
 
     let io_apic = AcpiMadtIoApic {
         header: AcpiSubtableHeader {
@@ -193,13 +176,9 @@ pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadt
         global_irq_base: 0,
         ..Default::default()
     };
+    checksum = checksum.wrapping_sub(wrapping_sum(io_apic.as_bytes()));
 
     let mut x2apics = vec![];
-    let mut sums = vec![
-        wrapping_sum(madt.as_bytes()),
-        wrapping_sum(io_apic.as_bytes()),
-    ];
-
     for i in 0..num_cpu {
         let x2apic = AcpiMadtLocalX2apic {
             header: AcpiSubtableHeader {
@@ -211,16 +190,15 @@ pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadt
             lapic_flags: 1,
             ..Default::default()
         };
-        sums.push(wrapping_sum(x2apic.as_bytes()));
+        checksum = checksum.wrapping_sub(wrapping_sum(x2apic.as_bytes()));
         x2apics.push(x2apic);
     }
-
-    madt.header.checksum = gencsum(&sums);
+    madt.header.checksum = checksum;
 
     (madt, io_apic, x2apics)
 }
 
-pub fn create_mcfg() -> AcpiTableMcfg<1> {
+fn create_mcfg() -> AcpiTableMcfg<1> {
     let mut mcfg = AcpiTableMcfg {
         header: AcpiTableHeader {
             signature: SIG_MCFG,
@@ -230,52 +208,105 @@ pub fn create_mcfg() -> AcpiTableMcfg<1> {
         },
         reserved: [0; 8],
         allocations: [AcpiMcfgAllocation {
-            address: encode_addr64(PCIE_CONFIG_START),
+            address: transmute!(PCIE_CONFIG_START),
             pci_segment: 0,
             start_bus_number: 0,
             end_bus_number: 0,
             ..Default::default()
         }],
     };
-    mcfg.header.checksum = gencsum(mcfg.as_bytes());
+    mcfg.header.checksum = 0u8.wrapping_sub(wrapping_sum(mcfg.as_bytes()));
     mcfg
 }
 
-#[cfg(target_arch = "x86_64")]
-pub fn create_acpi_tables(start: usize, num_cpu: u32) -> Vec<u8> {
-    let mut buf = Vec::new();
+pub struct AcpiTable {
+    rsdp: AcpiTableRsdp,
+    tables: Vec<u8>,
+    table_pointers: Vec<usize>,
+    table_checksums: Vec<(usize, usize)>,
+}
 
-    buf.extend(AcpiTableRsdp::default().as_bytes());
+impl AcpiTable {
+    pub fn relocate(&mut self, table_addr: u64) {
+        let old_addr: u64 = transmute!(self.rsdp.xsdt_physical_address);
+        self.rsdp.xsdt_physical_address = transmute!(table_addr);
 
-    let dsdt_addr = start + size_of::<AcpiTableRsdp>();
-    buf.extend(&DSDT_DSDTTBL_HEADER);
+        let sum = wrapping_sum(&self.rsdp.as_bytes()[0..20]);
+        self.rsdp.checksum = self.rsdp.checksum.wrapping_sub(sum);
+        let ext_sum = wrapping_sum(self.rsdp.as_bytes());
+        self.rsdp.extended_checksum = self.rsdp.extended_checksum.wrapping_sub(ext_sum);
 
-    let fadt_addr = align_up!(dsdt_addr + size_of_val(&DSDT_DSDTTBL_HEADER), 4);
-    let fadt = create_fadt(dsdt_addr);
-    buf.extend(fadt.as_bytes());
-    log::trace!("fadt: {:#x?}", fadt);
+        for pointer in self.table_pointers.iter() {
+            let old_val: u64 = FromBytes::read_from_prefix(&self.tables[*pointer..]).unwrap();
+            let new_val = old_val.wrapping_sub(old_addr).wrapping_add(table_addr);
+            AsBytes::write_to_prefix(&new_val, &mut self.tables[*pointer..]).unwrap();
+        }
 
-    let madt_addr = fadt_addr + size_of_val(&fadt);
-    let (madt, madt_ioapic, madt_apics) = create_madt(num_cpu);
-    buf.extend(madt.as_bytes());
-    buf.extend(madt_ioapic.as_bytes());
-    for apic in madt_apics.iter() {
-        buf.extend(apic.as_bytes());
+        for (start, len) in self.table_checksums.iter() {
+            let sum = wrapping_sum(&self.tables[*start..(*start + *len)]);
+            let checksum = &mut self.tables[start + offset_of!(AcpiTableHeader, checksum)];
+            *checksum = checksum.wrapping_sub(sum);
+        }
     }
-    log::trace!("madt: {:#x?} {:#x?} {:#x?}", madt, madt_ioapic, madt_apics);
 
-    let mcfg_addr = madt_addr + madt.header.length as usize;
+    pub fn rsdp(&self) -> &AcpiTableRsdp {
+        &self.rsdp
+    }
+
+    pub fn tables(&self) -> &[u8] {
+        &self.tables
+    }
+}
+
+pub fn create_acpi(num_cpu: u32) -> AcpiTable {
+    let mut table_bytes = Vec::new();
+    let mut pointers = vec![];
+    let mut checksums = vec![];
+
+    let mut xsdt: AcpiTableXsdt<3> = FromZeroes::new_zeroed();
+    let offset_xsdt = 0;
+    table_bytes.extend(xsdt.as_bytes());
+
+    let offset_dsdt = offset_xsdt + size_of_val(&xsdt);
+    table_bytes.extend(DSDT_DSDTTBL_HEADER);
+
+    let offset_fadt = offset_dsdt + size_of_val(&DSDT_DSDTTBL_HEADER);
+    debug_assert_eq!(offset_fadt % 4, 0);
+    let fadt = create_fadt(offset_dsdt as u64);
+    let pointer_fadt_to_dsdt = offset_fadt + offset_of!(AcpiTableFadt, xdsdt);
+    table_bytes.extend(fadt.as_bytes());
+    pointers.push(pointer_fadt_to_dsdt);
+    checksums.push((offset_fadt, size_of_val(&fadt)));
+
+    let offset_madt = offset_fadt + size_of_val(&fadt);
+    debug_assert_eq!(offset_madt % 4, 0);
+    let (madt, madt_ioapic, madt_apics) = create_madt(num_cpu);
+    table_bytes.extend(madt.as_bytes());
+    table_bytes.extend(madt_ioapic.as_bytes());
+    for apic in madt_apics {
+        table_bytes.extend(apic.as_bytes());
+    }
+
+    let offset_mcfg = offset_madt + madt.header.length as usize;
+    debug_assert_eq!(offset_mcfg % 4, 0);
     let mcfg = create_mcfg();
-    log::trace!("mcfg: {:#x?}", mcfg);
-    buf.extend(mcfg.as_bytes());
+    table_bytes.extend(mcfg.as_bytes());
 
-    let xsdt_addr = mcfg_addr + size_of_val(&mcfg);
-    let xsdt = create_xsdt([fadt_addr, madt_addr, mcfg_addr]);
-    log::trace!("xsdt: {:#x?}", xsdt);
-    buf.extend(xsdt.as_bytes());
+    debug_assert_eq!(offset_xsdt % 4, 0);
+    let xsdt_entries = [offset_fadt as u64, offset_madt as u64, offset_mcfg as u64];
+    xsdt = create_xsdt(xsdt_entries);
+    xsdt.write_to_prefix(&mut table_bytes);
+    for index in 0..xsdt_entries.len() {
+        pointers.push(offset_xsdt + offset_of!(AcpiTableXsdt<3>, entries) + index * 8);
+    }
+    checksums.push((offset_xsdt, size_of_val(&xsdt)));
 
-    let rsdp = create_rsdp(xsdt_addr);
-    buf[0..size_of_val(&rsdp)].copy_from_slice(rsdp.as_bytes());
+    let rsdp = create_rsdp(offset_xsdt as u64);
 
-    buf
+    AcpiTable {
+        rsdp,
+        tables: table_bytes,
+        table_checksums: checksums,
+        table_pointers: pointers,
+    }
 }
