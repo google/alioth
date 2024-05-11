@@ -21,8 +21,8 @@ use std::thread::JoinHandle;
 use bitfield::bitfield;
 use bitflags::bitflags;
 use libc::{
-    cfmakeraw, fcntl, tcgetattr, tcsetattr, termios, F_GETFL, F_SETFL, O_NONBLOCK, STDIN_FILENO,
-    STDOUT_FILENO, TCSANOW,
+    cfmakeraw, fcntl, tcgetattr, tcsetattr, termios, F_GETFL, F_SETFL, OPOST, O_NONBLOCK,
+    STDIN_FILENO, STDOUT_FILENO, TCSANOW,
 };
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -362,6 +362,7 @@ where
         let mut raw_termios = MaybeUninit::uninit();
         ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
         unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
+        unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
         ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) })?;
 
         let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
