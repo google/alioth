@@ -34,6 +34,11 @@ use mapped::{ArcMemPages, RamBus};
 #[derive(Debug)]
 pub enum Action {
     Shutdown,
+    ChangeLayout { callback: Box<dyn ChangeLayout> },
+}
+
+pub trait ChangeLayout: Debug + Send + Sync + 'static {
+    fn change(&self, memory: &Memory) -> Result<()>;
 }
 
 #[derive(Debug, Error)]
@@ -379,6 +384,10 @@ impl Memory {
     fn handle_action(&self, action: Action) -> Result<VmEntry> {
         match action {
             Action::Shutdown => Ok(VmEntry::Shutdown),
+            Action::ChangeLayout { callback } => {
+                callback.change(self)?;
+                Ok(VmEntry::None)
+            }
         }
     }
 
