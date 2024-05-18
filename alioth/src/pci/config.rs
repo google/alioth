@@ -170,6 +170,36 @@ impl ChangeLayout for UpdateCommandCallback {
 }
 
 #[derive(Debug)]
+struct MoveBarCallback {
+    bdf: Bdf,
+    src: u64,
+    dst: u64,
+}
+
+impl ChangeLayout for MoveBarCallback {
+    fn change(&self, memory: &mem::Memory) -> mem::Result<()> {
+        log::debug!(
+            "{}: moving bar from {:#x} to {:#x}...",
+            self.bdf,
+            self.src,
+            self.dst
+        );
+        if self.src as u32 & BAR_IO == BAR_IO {
+            let src_port = self.src & !(BAR_IO_MASK as u64);
+            let dst_port = self.dst & !(BAR_IO_MASK as u64);
+            let region = memory.remove_io_region(src_port as u16)?;
+            memory.add_io_region(Some(dst_port as u16), region)?;
+        } else {
+            let src_addr = self.src & !(BAR_MEM_MASK as u64);
+            let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
+            let region = memory.remove_region(src_addr as usize)?;
+            memory.add_region(AddrOpt::Fixed(dst_addr as usize), region)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct HeaderData {
     pub header: ConfigHeader,
     pub bar_masks: [u32; 6],
@@ -243,12 +273,54 @@ impl HeaderData {
                     let mask = self.bar_masks[bar_index];
                     let old_val = header.bars[bar_index];
                     let masked_val = mask_bits!(old_val, val as u32, mask);
-
+                    if old_val == masked_val {
+                        return None;
+                    }
                     log::info!(
-                        "{bdf}: updating bar {bar_index}: {old_val:x} -> {masked_val:x}, mask={mask:x}",
+                        "{bdf}: updating bar {bar_index}: {old_val:#010x} -> {masked_val:#010x}, mask={mask:#010x}",
                     );
-                    header.bars[bar_index] = masked_val;
-                    None
+                    let command = header.common.command;
+                    match &pci_bars[bar_index] {
+                        PciBar::Io(_) if command.contains(Command::IO) => {
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: old_val as u64,
+                                dst: masked_val as u64,
+                            }))
+                        }
+                        PciBar::Mem32(_) if command.contains(Command::MEM) => {
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: old_val as u64,
+                                dst: masked_val as u64,
+                            }))
+                        }
+                        PciBar::Mem64(_) if command.contains(Command::MEM) => {
+                            let hi_32 = (header.bars[bar_index + 1] as u64) << 32;
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: old_val as u64 | hi_32,
+                                dst: masked_val as u64 | hi_32,
+                            }))
+                        }
+                        PciBar::Empty
+                            if command.contains(Command::MEM)
+                                && bar_index > 0
+                                && matches!(&pci_bars[bar_index - 1], PciBar::Mem64(_)) =>
+                        {
+                            let lo_32 = header.bars[bar_index - 1] as u64;
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: lo_32 | (old_val as u64) << 32,
+                                dst: lo_32 | (masked_val as u64) << 32,
+                            }))
+                        }
+                        _ => {
+                            header.bars[bar_index] = masked_val;
+                            log::info!("{bdf}: bar {bar_index}: write {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}");
+                            None
+                        }
+                    }
                 }
                 _ => {
                     log::warn!(
