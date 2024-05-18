@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::iter::zip;
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::emulated::Mmio;
+use crate::mem::{AddrOpt, ChangeLayout};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
 use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
@@ -115,9 +117,56 @@ pub const BAR_MEM64: u32 = 0b0100;
 pub const BAR_MEM32: u32 = 0b0000;
 pub const BAR_IO: u32 = 0b01;
 
+pub const BAR_IO_MASK: u32 = 0b11;
+pub const BAR_MEM_MASK: u32 = 0b1111;
+
 #[derive(Debug)]
 pub enum ConfigHeader {
     Device(DeviceHeader),
+}
+
+#[derive(Debug)]
+struct UpdateCommandCallback {
+    pci_bars: [PciBar; 6],
+    bars: [u32; 6],
+    changed: Command,
+    current: Command,
+}
+
+impl ChangeLayout for UpdateCommandCallback {
+    fn change(&self, memory: &mem::Memory) -> mem::Result<()> {
+        for (i, (pci_bar, bar)) in zip(&self.pci_bars, self.bars).enumerate() {
+            match pci_bar {
+                PciBar::Empty => {}
+                PciBar::Mem32(region) | PciBar::Mem64(region) => {
+                    if !self.changed.contains(Command::MEM) {
+                        continue;
+                    }
+                    let mut addr = (bar & !BAR_MEM_MASK) as usize;
+                    if matches!(pci_bar, PciBar::Mem64(_)) {
+                        addr |= (self.bars[i + 1] as usize) << 32;
+                    }
+                    if self.current.contains(Command::MEM) {
+                        memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
+                    } else {
+                        memory.remove_region(addr)?;
+                    }
+                }
+                PciBar::Io(region) => {
+                    if !self.changed.contains(Command::IO) {
+                        continue;
+                    }
+                    let port = (bar & !BAR_IO_MASK) as u16;
+                    if self.current.contains(Command::IO) {
+                        memory.add_io_region(Some(port), region.clone())?;
+                    } else {
+                        memory.remove_io_region(port)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -150,7 +199,14 @@ impl HeaderData {
         }
     }
 
-    fn write_header(&mut self, offset: usize, size: u8, val: u64) {
+    fn write_header(
+        &mut self,
+        offset: usize,
+        size: u8,
+        val: u64,
+        pci_bars: &[PciBar; 6],
+    ) -> Option<Box<dyn ChangeLayout>> {
+        let bdf = self.bdf;
         match &mut self.header {
             ConfigHeader::Device(header) => match (offset, size as usize) {
                 CommonHeader::LAYOUT_COMMAND => {
@@ -158,20 +214,28 @@ impl HeaderData {
                     let old = header.common.command;
                     assign_bits!(header.common.command, val, Command::WRITABLE_BITS);
                     let current = header.common.command;
-                    log::trace!(
-                        "{}: write command: {val:x?}\n   {old:x?}\n-> {current:x?}",
-                        self.bdf
-                    );
+                    log::trace!("{bdf}: write command: {val:x?}\n   {old:x?}\n-> {current:x?}",);
+                    let changed = old ^ current;
+                    if !(changed & (Command::MEM | Command::IO)).is_empty() {
+                        Some(Box::new(UpdateCommandCallback {
+                            pci_bars: pci_bars.clone(),
+                            bars: header.bars,
+                            changed,
+                            current,
+                        }))
+                    } else {
+                        None
+                    }
                 }
                 CommonHeader::LAYOUT_STATUS => {
                     let val = Status::from_bits_retain(val as u16);
                     let old = header.common.status;
                     header.common.status &= !(val & Status::RW1C_BITS);
                     log::trace!(
-                        "{}: write status: {val:x?}\n   {old:x?}\n-> {:x?}",
-                        self.bdf,
+                        "{bdf}: write status: {val:x?}\n   {old:x?}\n-> {:x?}",
                         header.common.status,
                     );
+                    None
                 }
                 (OFFSET_BAR0..=OFFSET_BAR5, 4) => {
                     let bar_index = (offset - OFFSET_BAR0) >> 2;
@@ -181,19 +245,16 @@ impl HeaderData {
                     let masked_val = mask_bits!(old_val, val as u32, mask);
 
                     log::info!(
-                        "{}: updating bar {}: {:x} -> {:x}, mask={:x}",
-                        self.bdf,
-                        bar_index,
-                        old_val,
-                        masked_val,
-                        mask
+                        "{bdf}: updating bar {bar_index}: {old_val:x} -> {masked_val:x}, mask={mask:x}",
                     );
                     header.bars[bar_index] = masked_val;
+                    None
                 }
                 _ => {
                     log::warn!(
-                        "unaligned write offset = {offset:#x}, size = {size}, val = {val:#x}"
+                        "{bdf}: unaligned write offset = {offset:#x}, size = {size}, val = {val:#x}"
                     );
+                    None
                 }
             },
         }
@@ -239,8 +300,11 @@ impl Mmio for EmulatedHeader {
 
     fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
         let mut data = self.data.write();
-        data.write_header(offset, size, val);
-        Ok(())
+        if let Some(callback) = data.write_header(offset, size, val, &self.bars) {
+            Err(mem::Error::Action(mem::Action::ChangeLayout { callback }))
+        } else {
+            Ok(())
+        }
     }
 }
 
