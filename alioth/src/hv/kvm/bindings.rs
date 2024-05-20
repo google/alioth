@@ -115,6 +115,29 @@ pub struct KvmDtable {
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
+pub struct KvmSregs {
+    pub cs: KvmSegment,
+    pub ds: KvmSegment,
+    pub es: KvmSegment,
+    pub fs: KvmSegment,
+    pub gs: KvmSegment,
+    pub ss: KvmSegment,
+    pub tr: KvmSegment,
+    pub ldt: KvmSegment,
+    pub gdt: KvmDtable,
+    pub idt: KvmDtable,
+    pub cr0: u64,
+    pub cr2: u64,
+    pub cr3: u64,
+    pub cr4: u64,
+    pub cr8: u64,
+    pub efer: u64,
+    pub apic_base: u64,
+    pub interrupt_bitmap: [u64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSregs2 {
     pub cs: KvmSegment,
     pub ds: KvmSegment,
