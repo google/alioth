@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
-use alioth::device::fw_cfg::{FwCfgContent, FwCfgItem};
 use alioth::hv::Kvm;
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 use alioth::virtio::dev::net::NetParam;
 use alioth::vm::Machine;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
 
@@ -90,86 +88,6 @@ struct RunArgs {
     blk: Vec<String>,
 }
 
-fn parse_fw_cfgs(s: &str) -> Result<FwCfgItem> {
-    let Some((name, ty_content)) = s.split_once(',') else {
-        bail!("invalid config: {s}")
-    };
-    let Some((ty, content)) = ty_content.split_once('=') else {
-        bail!("invalid content: {ty_content}")
-    };
-    match ty {
-        "file" => {
-            let f = File::open(content)?;
-            Ok(FwCfgItem {
-                name: name.to_owned(),
-                content: FwCfgContent::File(f),
-            })
-        }
-        "string" => Ok(FwCfgItem {
-            name: name.to_owned(),
-            content: FwCfgContent::Bytes(content.into()),
-        }),
-        _ => bail!("invalid content: {ty_content}"),
-    }
-}
-
-fn parse_mem(s: &str) -> Result<usize> {
-    if let Some((num, "")) = s.split_once(['g', 'G']) {
-        let n = num.parse::<usize>()?;
-        Ok(n << 30)
-    } else if let Some((num, "")) = s.split_once(['m', 'M']) {
-        let n = num.parse::<usize>()?;
-        Ok(n << 20)
-    } else if let Some((num, "")) = s.split_once(['k', 'K']) {
-        let n = num.parse::<usize>()?;
-        Ok(n << 10)
-    } else {
-        let n = s.parse::<usize>()?;
-        Ok(n)
-    }
-}
-
-fn parse_net<'a>(s: &'a str) -> Result<NetParam> {
-    let mut parts = s.trim().splitn(3, ',');
-    let splitter = |s: &'a str| s.split_once::<'a, _>('=');
-    let (tap_path, if_name) = match parts.next().and_then(splitter) {
-        Some(("tap", p)) => (p, None),
-        Some(("if", name)) => ("/dev/net/tun", Some(name.to_owned())),
-        _ => bail!("invalid net opt: {s}"),
-    };
-    let Some(("mac", mac_str)) = parts.next().and_then(splitter) else {
-        bail!("invalid net opt: {s}");
-    };
-    let mut mac = [0u8; 6];
-    let mut fail = false;
-    for (index, p) in mac_str.trim().split(':').enumerate() {
-        if index < 6 {
-            let Ok(b) = u8::from_str_radix(p, 16) else {
-                fail = true;
-                break;
-            };
-            mac[index] = b;
-        } else {
-            fail = true;
-            break;
-        }
-    }
-    if fail {
-        bail!("cannot parse {mac_str}")
-    }
-    let Some(("mtu", mtu_str)) = parts.next().and_then(splitter) else {
-        bail!("invalid net opt: {s}")
-    };
-
-    Ok(NetParam {
-        mac,
-        mtu: mtu_str.parse()?,
-        queue_pairs: 1,
-        tap: tap_path.into(),
-        if_name,
-    })
-}
-
 fn main_run(args: RunArgs) -> Result<()> {
     let hypervisor = Kvm::new()?;
     let payload = if let Some(fw) = args.firmware {
@@ -197,7 +115,7 @@ fn main_run(args: RunArgs) -> Result<()> {
         None
     };
     let board_config = BoardConfig {
-        mem_size: parse_mem(&args.mem_size)?,
+        mem_size: serde_aco::from_arg(&args.mem_size)?,
         num_cpu: args.num_cpu,
     };
     let mut vm = Machine::new(hypervisor, board_config)?;
@@ -209,19 +127,19 @@ fn main_run(args: RunArgs) -> Result<()> {
     if args.pvpanic {
         vm.add_pvpanic()?;
     }
-    let fw_cfg_items = args
-        .fw_cfgs
-        .iter()
-        .map(|s| parse_fw_cfgs(s))
-        .collect::<Result<Vec<_>>>()?;
-    if !fw_cfg_items.is_empty() {
-        vm.add_fw_cfg(fw_cfg_items)?;
+    if !args.fw_cfgs.is_empty() {
+        let params = args
+            .fw_cfgs
+            .iter()
+            .map(|s| serde_aco::from_arg(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        vm.add_fw_cfg(params.into_iter())?;
     }
     if args.entropy {
         vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
     }
     for (index, net_opt) in args.net.into_iter().enumerate() {
-        let net_param = parse_net(&net_opt)?;
+        let net_param: NetParam = serde_aco::from_arg(&net_opt)?;
         vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
     }
     for (index, blk) in args.blk.into_iter().enumerate() {

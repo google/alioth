@@ -22,7 +22,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
-use crate::device::fw_cfg::{FwCfg, FwCfgItem, PORT_SELECTOR};
+use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 use crate::device::pvpanic::PvPanic;
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, Vm};
@@ -133,7 +133,11 @@ where
         self.add_pci_dev(pci_dev)
     }
 
-    pub fn add_fw_cfg(&mut self, items: Vec<FwCfgItem>) -> Result<(), Error> {
+    pub fn add_fw_cfg(
+        &mut self,
+        params: impl Iterator<Item = FwCfgItemParam>,
+    ) -> Result<(), Error> {
+        let items = params.map(|p| p.build()).collect::<Result<Vec<_>, _>>()?;
         let fw_cfg = Arc::new(Mutex::new(FwCfg::new(self.board.memory.ram_bus(), items)?));
         let mut io_devs = self.board.io_devs.write();
         io_devs.push((PORT_SELECTOR, fw_cfg.clone()));
