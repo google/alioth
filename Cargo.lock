@@ -24,6 +24,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rand",
+ "serde",
  "thiserror",
  "zerocopy",
 ]
@@ -37,6 +38,8 @@ dependencies = [
  "clap",
  "flexi_logger",
  "log",
+ "serde",
+ "serde-aco",
 ]
 
 [[package]]

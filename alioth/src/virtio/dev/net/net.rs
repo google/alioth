@@ -17,6 +17,7 @@ use std::fs::{self, File};
 use std::io;
 use std::iter::zip;
 use std::mem::MaybeUninit;
+use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
@@ -27,10 +28,12 @@ use libc::{IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
+use serde::Deserialize;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
+use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
 use crate::virtio::queue::handlers::{queue_to_writer, reader_to_queue};
 use crate::virtio::queue::VirtQueue;
@@ -46,7 +49,7 @@ const QUEUE_TX: u16 = 1;
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
 pub struct NetConfig {
-    mac: [u8; 6],
+    mac: MacAddr,
     status: u16,
     max_queue_pairs: u16,
     mtu: u16,
@@ -104,10 +107,11 @@ pub struct Net {
     feature: NetFeature,
 }
 
+#[derive(Deserialize)]
 pub struct NetParam {
-    pub mac: [u8; 6],
+    pub mac: MacAddr,
     pub mtu: u16,
-    pub queue_pairs: u16,
+    pub queue_pairs: Option<NonZeroU16>,
     pub tap: PathBuf,
     pub if_name: Option<String>,
 }
@@ -133,7 +137,7 @@ impl Net {
             name,
             config: Arc::new(NetConfig {
                 mac: param.mac,
-                max_queue_pairs: param.queue_pairs,
+                max_queue_pairs: param.queue_pairs.map(|p| p.into()).unwrap_or(1),
                 mtu: param.mtu,
                 ..Default::default()
             }),
