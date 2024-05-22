@@ -261,11 +261,15 @@ where
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
+            self.init_ap(id, &mut vcpu, &vcpus)?;
             if let Some(coco) = &self.config.coco {
                 match coco {
-                    Coco::AmdSev { .. } => {
+                    Coco::AmdSev { policy } => {
                         self.sync_vcpus(&vcpus);
                         if id == 0 {
+                            if policy.es() {
+                                self.vm.sev_launch_update_vmsa()?;
+                            }
                             self.vm.sev_launch_measure()?;
                             self.vm.sev_launch_finish()?;
                         }
