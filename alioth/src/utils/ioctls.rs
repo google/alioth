@@ -134,6 +134,14 @@ macro_rules! ioctl_writeread {
             ))
         }
     };
+    ($name:ident, $code:expr) => {
+        pub unsafe fn $name<F: ::std::os::fd::AsRawFd, T>(
+            fd: &F,
+            val: &mut T,
+        ) -> ::std::io::Result<libc::c_int> {
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val as *mut T))
+        }
+    };
 }
 
 #[macro_export]

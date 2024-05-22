@@ -238,3 +238,10 @@ pub struct KvmIoEventFd {
     pub flags: KvmIoEventFdFlag,
     pub pad: [u32; 9],
 }
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmEncRegion {
+    pub addr: u64,
+    pub size: u64,
+}
