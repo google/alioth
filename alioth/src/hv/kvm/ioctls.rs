@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs2, KvmUserspaceMemoryRegion, KVMIO,
+    KvmCpuid2, KvmEncRegion, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs2, KvmUserspaceMemoryRegion, KVMIO,
 };
-use crate::utils::ioctls::ioctl_io;
+use crate::utils::ioctls::{ioctl_io, ioctl_ior, ioctl_iowr};
 use crate::{
-    ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread_buf,
+    ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
+    ioctl_writeread_buf,
 };
 
 ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
@@ -51,6 +52,20 @@ ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
 
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
+
+ioctl_writeread!(kvm_memory_encrypt_op, ioctl_iowr::<u64>(KVMIO, 0xba));
+
+ioctl_write_ptr!(
+    kvm_memory_encrypt_reg_region,
+    ioctl_ior::<KvmEncRegion>(KVMIO, 0xbb),
+    KvmEncRegion
+);
+
+ioctl_write_ptr!(
+    kvm_memory_encrypt_unreg_region,
+    ioctl_ior::<KvmEncRegion>(KVMIO, 0xbc),
+    KvmEncRegion
+);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_read!(kvm_get_sregs2, KVMIO, 0xcc, KvmSregs2);

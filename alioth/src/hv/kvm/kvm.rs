@@ -14,6 +14,8 @@
 
 mod bindings;
 mod ioctls;
+#[path = "sev/sev.rs"]
+mod sev;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
 mod vm;

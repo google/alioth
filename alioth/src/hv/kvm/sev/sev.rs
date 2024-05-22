@@ -12,8 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod layout;
-pub mod msr;
-pub mod paging;
-pub mod reg;
-pub mod sev;
+#![allow(dead_code)]
+
+pub mod bindings;
+
+use crate::ioctl_writeread;
+
+use bindings::SevIssueCmd;
+
+const SEV_IOC_TYPE: u8 = b'S';
+
+ioctl_writeread!(sev_issue_cmd, SEV_IOC_TYPE, 0x0, SevIssueCmd);
