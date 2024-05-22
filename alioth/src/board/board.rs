@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use zerocopy::AsBytes;
 
@@ -79,6 +79,8 @@ pub struct BoardConfig {
     pub num_cpu: u32,
     pub coco: Option<Coco>,
 }
+
+type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
 
 pub struct Board<V>
 where
@@ -217,6 +219,18 @@ where
         }
     }
 
+    fn sync_vcpus(&self, vcpus: &VcpuGuard) {
+        let (lock, cvar) = &*self.mp_sync;
+        let mut count = lock.lock();
+        *count += 1;
+        if *count == vcpus.len() as u32 {
+            *count = 0;
+            cvar.notify_all();
+        } else {
+            cvar.wait(&mut count)
+        }
+    }
+
     fn run_vcpu_inner(
         &self,
         id: u32,
@@ -231,7 +245,13 @@ where
             return Ok(());
         }
         loop {
+            let vcpus = self.vcpus.read();
             if id == 0 {
+                if let Some(coco) = &self.config.coco {
+                    match coco {
+                        Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
+                    }
+                }
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
@@ -241,6 +261,19 @@ where
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
+            if let Some(coco) = &self.config.coco {
+                match coco {
+                    Coco::AmdSev { .. } => {
+                        self.sync_vcpus(&vcpus);
+                        if id == 0 {
+                            self.vm.sev_launch_measure()?;
+                            self.vm.sev_launch_finish()?;
+                        }
+                        self.sync_vcpus(&vcpus);
+                    }
+                }
+            }
+            drop(vcpus);
 
             let reboot = self.vcpu_loop(&mut vcpu, id)?;
 
@@ -270,15 +303,7 @@ where
                 }
             }
 
-            let (lock, cvar) = &*self.mp_sync;
-            let mut count = lock.lock();
-            *count += 1;
-            if *count == vcpus.len() as u32 {
-                *count = 0;
-                cvar.notify_all();
-            } else {
-                cvar.wait(&mut count)
-            }
+            self.sync_vcpus(&vcpus);
 
             if new_state == STATE_SHUTDOWN {
                 break Ok(());
