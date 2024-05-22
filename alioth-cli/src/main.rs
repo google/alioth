@@ -86,6 +86,9 @@ struct RunArgs {
 
     #[arg(long)]
     blk: Vec<String>,
+
+    #[arg(long)]
+    coco: Option<String>,
 }
 
 fn main_run(args: RunArgs) -> Result<()> {
@@ -114,10 +117,14 @@ fn main_run(args: RunArgs) -> Result<()> {
     } else {
         None
     };
+    let coco = match args.coco {
+        None => None,
+        Some(c) => Some(serde_aco::from_arg(&c)?),
+    };
     let board_config = BoardConfig {
         mem_size: serde_aco::from_arg(&args.mem_size)?,
         num_cpu: args.num_cpu,
-        coco: None,
+        coco,
     };
     let mut vm = Machine::new(hypervisor, board_config)?;
     #[cfg(target_arch = "x86_64")]
