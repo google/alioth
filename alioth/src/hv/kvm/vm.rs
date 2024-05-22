@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -25,8 +25,11 @@ use crate::hv::kvm::bindings::{
     KVM_CAP_SIGNAL_MSI,
 };
 use crate::hv::kvm::ioctls::{
-    kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_set_user_memory_region, kvm_signal_msi,
+    kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_memory_encrypt_op,
+    kvm_set_user_memory_region, kvm_signal_msi,
 };
+use crate::hv::kvm::sev::bindings::KvmSevCmd;
+use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::{Error, IntxSender, MemMapOption, MsiSender, Result, Vm, VmMemory};
 
@@ -34,6 +37,7 @@ pub struct KvmVm {
     pub(super) fd: Arc<OwnedFd>,
     pub(super) vcpu_mmap_size: usize,
     pub(super) memory_created: bool,
+    pub(super) sev_fd: Option<Arc<SevFd>>,
 }
 
 #[derive(Debug)]
@@ -128,6 +132,23 @@ impl KvmVm {
         let ret = unsafe { kvm_check_extension(&self.fd, id) }?;
         Ok(ret == 1)
     }
+
+    pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<()> {
+        let Some(sev_fd) = &self.sev_fd else {
+            unreachable!("SevFd is not initialized")
+        };
+        let mut req = KvmSevCmd {
+            sev_fd: sev_fd.as_fd().as_raw_fd() as u32,
+            data: match data {
+                Some(p) => p as *mut T as _,
+                None => 0,
+            },
+            id: cmd,
+            error: 0,
+        };
+        unsafe { kvm_memory_encrypt_op(&self.fd, &mut req) }?;
+        Ok(())
+    }
 }
 
 impl Vm for KvmVm {
@@ -201,12 +222,13 @@ mod test {
 
     use super::*;
     use crate::ffi;
-    use crate::hv::{Hypervisor, Kvm, MemMapOption};
+    use crate::hv::{Hypervisor, Kvm, MemMapOption, VmConfig};
 
     #[test]
     fn test_mem_map() {
         let kvm = Kvm::new().unwrap();
-        let mut vm = kvm.create_vm().unwrap();
+        let vm_config = VmConfig { coco: None };
+        let mut vm = kvm.create_vm(&vm_config).unwrap();
         let vm_memory = vm.create_vm_memory().unwrap();
         assert_matches!(vm_memory.max_mem_slots(), Ok(1..));
         let prot = PROT_WRITE | PROT_READ | PROT_EXEC;

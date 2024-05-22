@@ -22,6 +22,7 @@ mod kvm;
 pub(crate) mod test;
 #[cfg(target_os = "linux")]
 pub use kvm::Kvm;
+use serde::Deserialize;
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -31,6 +32,8 @@ use arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use thiserror::Error;
+
+use crate::arch::sev::Policy;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -134,6 +137,17 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     fn max_mem_slots(&self) -> Result<u32, Error>;
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub enum Coco {
+    #[serde(alias = "sev")]
+    AmdSev { policy: Policy },
+}
+
+#[derive(Debug)]
+pub struct VmConfig {
+    pub coco: Option<Coco>,
+}
+
 pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
@@ -149,7 +163,7 @@ pub trait Vm {
 pub trait Hypervisor {
     type Vm: Vm + Sync + Send + 'static;
 
-    fn create_vm(&self) -> Result<Self::Vm, Error>;
+    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error>;
 
     #[cfg(target_arch = "x86_64")]
     fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error>;

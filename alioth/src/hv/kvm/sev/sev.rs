@@ -16,10 +16,48 @@
 
 pub mod bindings;
 
+use std::fmt::Debug;
+use std::fs::File;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::Path;
+
+use crate::hv::Result;
 use crate::ioctl_writeread;
 
-use bindings::SevIssueCmd;
+use bindings::{SevIssueCmd, SEV_RET_SUCCESS};
 
 const SEV_IOC_TYPE: u8 = b'S';
 
 ioctl_writeread!(sev_issue_cmd, SEV_IOC_TYPE, 0x0, SevIssueCmd);
+
+#[derive(Debug)]
+pub struct SevFd {
+    fd: OwnedFd,
+}
+
+impl AsFd for SevFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+pub const SEV_PLATFORM_STATUS: u32 = 1;
+
+impl SevFd {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let f = File::open(path)?;
+        let sev_fd = Self { fd: f.into() };
+        Ok(sev_fd)
+    }
+
+    pub fn issue_cmd<T>(&self, cmd: u32, data: &mut T) -> Result<()> {
+        let mut req = SevIssueCmd {
+            cmd,
+            data: data as *mut T as _,
+            error: 0,
+        };
+        unsafe { sev_issue_cmd(&self.fd, &mut req) }?;
+        assert_eq!(req.error, SEV_RET_SUCCESS);
+        Ok(())
+    }
+}
