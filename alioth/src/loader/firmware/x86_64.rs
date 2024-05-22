@@ -23,7 +23,7 @@ use crate::loader::{InitState, Result};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory};
 
-pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<InitState> {
+pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcMemPages)> {
     let file = File::open(path)?;
     let size = file.metadata()?.len() as usize;
     assert_eq!(size & 0xfff, 0);
@@ -32,7 +32,7 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<InitState> {
     let gpa = MEM_64_START - size;
     memory.add_region(
         AddrOpt::Fixed(gpa),
-        Arc::new(MemRegion::with_mapped(rom, MemRegionType::Reserved)),
+        Arc::new(MemRegion::with_mapped(rom.clone(), MemRegionType::Reserved)),
     )?;
     let boot_cs = SegRegVal {
         selector: 0xf000,
@@ -121,5 +121,5 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<InitState> {
         ],
         initramfs: None,
     };
-    Ok(init)
+    Ok((init, rom))
 }

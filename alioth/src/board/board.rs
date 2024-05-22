@@ -26,7 +26,7 @@ use crate::arch::layout::{EBDA_START, PCIE_CONFIG_START};
 use crate::device::fw_cfg::FwCfg;
 use crate::firmware::acpi::bindings::AcpiTableRsdp;
 use crate::firmware::acpi::create_acpi;
-use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
+use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, firmware, linux, xen, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
@@ -77,6 +77,7 @@ pub const STATE_REBOOT_PENDING: u8 = 3;
 pub struct BoardConfig {
     pub mem_size: usize,
     pub num_cpu: u32,
+    pub coco: Option<Coco>,
 }
 
 pub struct Board<V>
@@ -145,7 +146,11 @@ where
                 payload.cmd_line.as_deref(),
                 payload.initramfs.as_ref(),
             )?,
-            ExecType::Firmware => firmware::load(&self.memory, &payload.executable)?,
+            ExecType::Firmware => {
+                let (init_state, mut rom) = firmware::load(&self.memory, &payload.executable)?;
+                self.setup_firmware(&mut rom)?;
+                init_state
+            }
         };
         Ok(init_state)
     }

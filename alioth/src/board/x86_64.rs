@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 use crate::board::{Board, Result};
 use crate::hv::arch::Cpuid;
-use crate::hv::{Hypervisor, Vcpu, Vm};
+use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
@@ -44,6 +44,15 @@ impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn setup_firmware(&self, fw: &mut ArcMemPages) -> Result<()> {
+        match &self.config.coco {
+            Some(Coco::AmdSev { .. }) => {
+                self.memory.ram_bus().register_encrypted_pages(&fw)?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
     pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
         vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
         vcpu.set_regs(&init_state.regs)?;
@@ -70,6 +79,9 @@ where
 
         let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
         let pages_low = ArcMemPages::new_anon(low_mem_size)?;
+        if self.config.coco.is_some() {
+            self.memory.ram_bus().register_encrypted_pages(&pages_low)?;
+        }
         let region_low = MemRegion {
             size: low_mem_size,
             ranges: vec![MemRange::Mapped(pages_low)],
@@ -96,6 +108,9 @@ where
         memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
         if config.mem_size > RAM_32_SIZE {
             let mem_hi = ArcMemPages::new_anon(config.mem_size - RAM_32_SIZE)?;
+            if self.config.coco.is_some() {
+                self.memory.ram_bus().register_encrypted_pages(&mem_hi)?;
+            }
             let region_hi = MemRegion::with_mapped(mem_hi, MemRegionType::Ram);
             memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
         }

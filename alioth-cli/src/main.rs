@@ -117,6 +117,7 @@ fn main_run(args: RunArgs) -> Result<()> {
     let board_config = BoardConfig {
         mem_size: serde_aco::from_arg(&args.mem_size)?,
         num_cpu: args.num_cpu,
+        coco: None,
     };
     let mut vm = Machine::new(hypervisor, board_config)?;
     #[cfg(target_arch = "x86_64")]

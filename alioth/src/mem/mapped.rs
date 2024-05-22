@@ -161,6 +161,14 @@ impl ArcMemPages {
         }
     }
 
+    pub fn as_slice_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.addr as *mut u8, self.size) }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.size) }
+    }
+
     /// Given offset and len, return a slice, len might be truncated.
     fn get_partial_slice(&self, offset: usize, len: usize) -> Result<&[u8], Error> {
         let (addr, len) = self.get_valid_range(offset, len)?;
@@ -526,6 +534,17 @@ impl RamBus {
             }
         }
         Ok(callback(&mut iov))
+    }
+
+    pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
+        self.vm_memory.register_encrypted_range(pages.as_slice())?;
+        Ok(())
+    }
+
+    pub fn deregister_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
+        self.vm_memory
+            .deregister_encrypted_range(pages.as_slice())?;
+        Ok(())
     }
 }
 

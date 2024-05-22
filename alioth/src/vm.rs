@@ -80,7 +80,9 @@ where
     H: Hypervisor + 'static,
 {
     pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
-        let vm_config = VmConfig { coco: None };
+        let vm_config = VmConfig {
+            coco: config.coco.clone(),
+        };
         let mut vm = hv.create_vm(&vm_config)?;
         let vm_memory = vm.create_vm_memory()?;
         let memory = Memory::new(vm_memory);
