@@ -135,6 +135,13 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error>;
 
     fn max_mem_slots(&self) -> Result<u32, Error>;
+
+    fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        unimplemented!()
+    }
+    fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        unimplemented!()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,6 +165,22 @@ pub trait Vm {
     fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
+
+    fn sev_launch_start(&self, _policy: u32) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_update_data(&self, _range: &mut [u8]) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
+        unimplemented!()
+    }
+    fn sev_launch_finish(&self) -> Result<(), Error> {
+        unimplemented!()
+    }
 }
 
 pub trait Hypervisor {
