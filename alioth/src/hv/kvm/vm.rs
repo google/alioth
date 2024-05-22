@@ -21,14 +21,19 @@ use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 
 use crate::ffi;
 use crate::hv::kvm::bindings::{
-    KvmIrqfd, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS,
-    KVM_CAP_SIGNAL_MSI,
+    KvmEncRegion, KvmIrqfd, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD,
+    KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_memory_encrypt_op,
-    kvm_set_user_memory_region, kvm_signal_msi,
+    kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_user_memory_region,
+    kvm_signal_msi,
 };
-use crate::hv::kvm::sev::bindings::KvmSevCmd;
+use crate::hv::kvm::sev::bindings::{
+    KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
+    KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
+    KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA,
+};
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::{Error, IntxSender, MemMapOption, MsiSender, Result, Vm, VmMemory};
@@ -94,6 +99,24 @@ impl VmMemory for KvmMemory {
     fn max_mem_slots(&self) -> Result<u32, Error> {
         let ret = unsafe { kvm_check_extension(&self.fd, KVM_CAP_NR_MEMSLOTS) }?;
         Ok(ret as u32)
+    }
+
+    fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let region = KvmEncRegion {
+            addr: range.as_ptr() as u64,
+            size: range.len() as u64,
+        };
+        unsafe { kvm_memory_encrypt_reg_region(&self.fd, &region) }?;
+        Ok(())
+    }
+
+    fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let region = KvmEncRegion {
+            addr: range.as_ptr() as u64,
+            size: range.len() as u64,
+        };
+        unsafe { kvm_memory_encrypt_unreg_region(&self.fd, &region) }?;
+        Ok(())
     }
 }
 
@@ -210,6 +233,43 @@ impl Vm for KvmVm {
         Ok(KvmMsiSender {
             vm_fd: self.fd.clone(),
         })
+    }
+
+    fn sev_launch_start(&self, policy: u32) -> Result<(), Error> {
+        let mut start = KvmSevLaunchStart {
+            policy,
+            ..Default::default()
+        };
+        self.sev_op(KVM_SEV_LAUNCH_START, Some(&mut start))
+    }
+
+    fn sev_launch_update_data(&self, range: &mut [u8]) -> Result<(), Error> {
+        let mut update_data = KvmSevLaunchUpdateData {
+            uaddr: range.as_mut_ptr() as u64,
+            len: range.len() as u32,
+        };
+        self.sev_op(KVM_SEV_LAUNCH_UPDATE_DATA, Some(&mut update_data))
+    }
+
+    fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
+        self.sev_op::<()>(KVM_SEV_LAUNCH_UPDATE_VMSA, None)
+    }
+
+    fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
+        let mut empty = KvmSevLaunchMeasure { uaddr: 0, len: 0 };
+        let _ = self.sev_op(KVM_SEV_LAUNCH_MEASURE, Some(&mut empty));
+        assert_ne!(empty.len, 0);
+        let mut buf = vec![0u8; empty.len as usize];
+        let mut measure = KvmSevLaunchMeasure {
+            uaddr: buf.as_mut_ptr() as u64,
+            len: buf.len() as u32,
+        };
+        self.sev_op(KVM_SEV_LAUNCH_MEASURE, Some(&mut measure))?;
+        Ok(buf)
+    }
+
+    fn sev_launch_finish(&self) -> Result<(), Error> {
+        self.sev_op::<()>(KVM_SEV_LAUNCH_FINISH, None)
     }
 }
 
