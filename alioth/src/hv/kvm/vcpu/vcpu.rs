@@ -186,8 +186,11 @@ mod test {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_vcpu_regs() {
+        use crate::hv::VmConfig;
+
         let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
+        let vm_config = VmConfig { coco: None };
+        let vm = kvm.create_vm(&vm_config).unwrap();
         let mut vcpu = vm.create_vcpu(0).unwrap();
         let regs = [
             (Reg::Rax, 0xa93f90f6ce9c8040),
@@ -330,8 +333,11 @@ mod test {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_kvm_run() {
+        use crate::hv::VmConfig;
+
         let kvm = Kvm::new().unwrap();
-        let mut vm = kvm.create_vm().unwrap();
+        let vm_config = VmConfig { coco: None };
+        let mut vm = kvm.create_vm(&vm_config).unwrap();
         let memory = vm.create_vm_memory().unwrap();
 
         let prot = PROT_WRITE | PROT_EXEC | PROT_READ;

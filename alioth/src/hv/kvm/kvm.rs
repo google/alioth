@@ -34,9 +34,12 @@ use crate::hv::{Error, Hypervisor};
 use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
 
+use crate::hv::{Coco, VmConfig};
 #[cfg(target_arch = "x86_64")]
 use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
 use libc::SIGRTMIN;
+use sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT};
+use sev::SevFd;
 use vm::KvmVm;
 
 #[derive(Debug)]
@@ -68,21 +71,41 @@ impl Kvm {
 impl Hypervisor for Kvm {
     type Vm = KvmVm;
 
-    fn create_vm(&self) -> Result<Self::Vm, Error> {
+    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error> {
         let vcpu_mmap_size = unsafe { kvm_get_vcpu_mmap_size(&self.fd) }? as usize;
         let vm_fd = unsafe { kvm_create_vm(&self.fd, 0) }?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
-        unsafe { kvm_create_irqchip(&fd) }?;
-        // TODO should be in parameters
-        #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_tss_addr(&fd, 0xf000_0000) }?;
-        #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_identity_map_addr(&fd, &0xf000_3000) }?;
-        Ok(KvmVm {
+        let sev_fd = if let Some(cv) = &config.coco {
+            match cv {
+                Coco::AmdSev { .. } => Some(Arc::new(SevFd::new("/dev/sev")?)),
+            }
+        } else {
+            None
+        };
+        let kvm_vm = KvmVm {
             fd: Arc::new(fd),
+            sev_fd,
             vcpu_mmap_size,
             memory_created: false,
-        })
+        };
+        if kvm_vm.sev_fd.is_some() {
+            match config.coco.as_ref().unwrap() {
+                Coco::AmdSev { policy } => {
+                    if policy.es() {
+                        kvm_vm.sev_op::<()>(KVM_SEV_ES_INIT, None)?;
+                    } else {
+                        kvm_vm.sev_op::<()>(KVM_SEV_INIT, None)?;
+                    }
+                }
+            }
+        }
+        unsafe { kvm_create_irqchip(&kvm_vm.fd) }?;
+        // TODO should be in parameters
+        #[cfg(target_arch = "x86_64")]
+        unsafe { kvm_set_tss_addr(&kvm_vm.fd, 0xf000_0000) }?;
+        #[cfg(target_arch = "x86_64")]
+        unsafe { kvm_set_identity_map_addr(&kvm_vm.fd, &0xf000_3000) }?;
+        Ok(kvm_vm)
     }
 
     #[cfg(target_arch = "x86_64")]

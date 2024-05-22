@@ -25,7 +25,7 @@ use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUN
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 use crate::device::pvpanic::PvPanic;
 use crate::device::serial::Serial;
-use crate::hv::{self, Hypervisor, Vm};
+use crate::hv::{self, Hypervisor, Vm, VmConfig};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::pci::bus::PciBus;
@@ -80,7 +80,8 @@ where
     H: Hypervisor + 'static,
 {
     pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
-        let mut vm = hv.create_vm()?;
+        let vm_config = VmConfig { coco: None };
+        let mut vm = hv.create_vm(&vm_config)?;
         let vm_memory = vm.create_vm_memory()?;
         let memory = Memory::new(vm_memory);
         let arch = ArchBoard::new(&hv)?;
