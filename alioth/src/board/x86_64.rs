@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::arch::x86_64::__cpuid;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
-use crate::board::{Board, Result};
+use crate::board::{Board, BoardConfig, Result};
 use crate::hv::arch::Cpuid;
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
@@ -29,11 +30,21 @@ pub struct ArchBoard {
 }
 
 impl ArchBoard {
-    pub fn new<H: Hypervisor>(hv: &H) -> Result<Self> {
+    pub fn new<H: Hypervisor>(hv: &H, config: &BoardConfig) -> Result<Self> {
         let mut cpuids = hv.get_supported_cpuids()?;
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
                 cpuid.ecx |= (1 << 24) | (1 << 31);
+            } else if cpuid.func == 0x8000_001f {
+                // AMD Volume 3, section E.4.17.
+                if let Some(Coco::AmdSev { policy }) = &config.coco {
+                    cpuid.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
+                    let host_ebx = unsafe { __cpuid(cpuid.func) }.ebx;
+                    // set PhysAddrReduction to 1
+                    cpuid.ebx = (1 << 6) | (host_ebx & 0x3f);
+                    cpuid.ecx = 0;
+                    cpuid.edx = 0;
+                }
             }
         }
         Ok(Self { cpuids })
