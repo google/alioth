@@ -48,6 +48,7 @@ where
         match &self.config.coco {
             Some(Coco::AmdSev { .. }) => {
                 self.memory.ram_bus().register_encrypted_pages(&fw)?;
+                self.vm.sev_launch_update_data(fw.as_slice_mut())?;
             }
             None => {}
         }

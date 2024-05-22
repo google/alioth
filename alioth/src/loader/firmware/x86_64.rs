@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,11 +25,13 @@ use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory};
 
 pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcMemPages)> {
-    let file = File::open(path)?;
+    let mut file = File::open(path)?;
     let size = file.metadata()?.len() as usize;
     assert_eq!(size & 0xfff, 0);
 
-    let rom = ArcMemPages::new_file(file)?;
+    let mut rom = ArcMemPages::new_anon(size)?;
+    file.read_exact(rom.as_slice_mut())?;
+
     let gpa = MEM_64_START - size;
     memory.add_region(
         AddrOpt::Fixed(gpa),
