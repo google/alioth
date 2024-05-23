@@ -107,12 +107,18 @@ pub struct Net {
     feature: NetFeature,
 }
 
+fn default_tap_device() -> PathBuf {
+    PathBuf::from("/dev/net/tun")
+}
+
 #[derive(Deserialize)]
 pub struct NetParam {
     pub mac: MacAddr,
     pub mtu: u16,
     pub queue_pairs: Option<NonZeroU16>,
+    #[serde(default = "default_tap_device")]
     pub tap: PathBuf,
+    #[serde(alias = "if")]
     pub if_name: Option<String>,
 }
 
