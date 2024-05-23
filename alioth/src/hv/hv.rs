@@ -21,7 +21,7 @@ mod kvm;
 #[cfg(test)]
 pub(crate) mod test;
 #[cfg(target_os = "linux")]
-pub use kvm::Kvm;
+pub use kvm::{Kvm, KvmConfig};
 use serde::Deserialize;
 
 use std::fmt::Debug;

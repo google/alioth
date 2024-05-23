@@ -282,11 +282,12 @@ mod test {
 
     use super::*;
     use crate::ffi;
+    use crate::hv::kvm::KvmConfig;
     use crate::hv::{Hypervisor, Kvm, MemMapOption, VmConfig};
 
     #[test]
     fn test_mem_map() {
-        let kvm = Kvm::new().unwrap();
+        let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };
         let mut vm = kvm.create_vm(&vm_config).unwrap();
         let vm_memory = vm.create_vm_memory().unwrap();

@@ -22,8 +22,10 @@ mod vm;
 mod vmentry;
 mod vmexit;
 
+use std::fs::File;
 use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::sync::Arc;
 
@@ -33,6 +35,7 @@ use crate::hv::Cpuid;
 use crate::hv::{Error, Hypervisor};
 use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use serde::Deserialize;
 
 use crate::hv::{Coco, VmConfig};
 #[cfg(target_arch = "x86_64")]
@@ -45,13 +48,25 @@ use vm::KvmVm;
 #[derive(Debug)]
 pub struct Kvm {
     fd: OwnedFd,
+    config: KvmConfig,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct KvmConfig {
+    #[serde(default)]
+    pub dev_kvm: Option<PathBuf>,
+    #[serde(default)]
+    pub dev_sev: Option<PathBuf>,
 }
 
 extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
 
 impl Kvm {
-    pub fn new() -> Result<Self, Error> {
-        let kvm_file = std::fs::File::open("/dev/kvm")?;
+    pub fn new(config: KvmConfig) -> Result<Self, Error> {
+        let kvm_file = match &config.dev_kvm {
+            Some(dev_kvm) => File::open(dev_kvm),
+            None => File::open("/dev/kvm"),
+        }?;
         let kvm_fd = OwnedFd::from(kvm_file);
         let version = unsafe { kvm_get_api_version(&kvm_fd) }?;
         if version != KVM_API_VERSION {
@@ -64,7 +79,7 @@ impl Kvm {
         action.sa_sigaction = sigrtmin_handler as _;
         ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) })?;
         ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })?;
-        Ok(Kvm { fd: kvm_fd })
+        Ok(Kvm { fd: kvm_fd, config })
     }
 }
 
@@ -77,7 +92,10 @@ impl Hypervisor for Kvm {
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
         let sev_fd = if let Some(cv) = &config.coco {
             match cv {
-                Coco::AmdSev { .. } => Some(Arc::new(SevFd::new("/dev/sev")?)),
+                Coco::AmdSev { .. } => Some(Arc::new(match &self.config.dev_sev {
+                    Some(dev_sev) => SevFd::new(dev_sev),
+                    None => SevFd::new("/dev/sev"),
+                }?)),
             }
         } else {
             None
@@ -142,7 +160,7 @@ mod test {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_get_supported_cpuid() {
-        let kvm = Kvm::new().unwrap();
+        let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let mut kvm_cpuid_exist = false;
         let supported_cpuids = kvm.get_supported_cpuids().unwrap();
         for cpuid in &supported_cpuids {

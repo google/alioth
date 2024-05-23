@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
-use alioth::hv::Kvm;
+use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
@@ -24,6 +24,7 @@ use alioth::vm::Machine;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
+use serde::Deserialize;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -49,8 +50,24 @@ enum Command {
     Run(RunArgs),
 }
 
+#[derive(Debug, Deserialize, Clone)]
+enum Hypervisor {
+    #[serde(alias = "kvm")]
+    Kvm(KvmConfig),
+}
+
+impl Default for Hypervisor {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        Hypervisor::Kvm(KvmConfig::default())
+    }
+}
+
 #[derive(Args, Debug, Clone)]
 struct RunArgs {
+    #[arg(long)]
+    hypervisor: Option<String>,
+
     #[arg(short, long)]
     kernel: Option<PathBuf>,
 
@@ -92,7 +109,14 @@ struct RunArgs {
 }
 
 fn main_run(args: RunArgs) -> Result<()> {
-    let hypervisor = Kvm::new()?;
+    let hv_config = if let Some(hv_cfg_opt) = args.hypervisor {
+        serde_aco::from_arg(&hv_cfg_opt)?
+    } else {
+        Hypervisor::default()
+    };
+    let hypervisor = match hv_config {
+        Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config),
+    }?;
     let payload = if let Some(fw) = args.firmware {
         Some(Payload {
             executable: fw,

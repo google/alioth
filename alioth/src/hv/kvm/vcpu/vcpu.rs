@@ -186,9 +186,10 @@ mod test {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_vcpu_regs() {
+        use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
 
-        let kvm = Kvm::new().unwrap();
+        let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };
         let vm = kvm.create_vm(&vm_config).unwrap();
         let mut vcpu = vm.create_vcpu(0).unwrap();
@@ -333,9 +334,10 @@ mod test {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_kvm_run() {
+        use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
 
-        let kvm = Kvm::new().unwrap();
+        let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };
         let mut vm = kvm.create_vm(&vm_config).unwrap();
         let memory = vm.create_vm_memory().unwrap();
