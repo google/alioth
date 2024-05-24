@@ -1,6 +1,6 @@
 [package]
 name = "alioth"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A library for virtualization"
 repository.workspace = true
@@ -17,7 +17,7 @@ mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 rand = "0.8.5"
 libc = "0.2.150"
 parking_lot.workspace = true
-macros = { version = "0.1.0", path = "../macros", package = "alioth-macros" }
+macros = { version = "0.2.0", path = "../macros", package = "alioth-macros" }
 serde.workspace = true
 
 [dev-dependencies]
