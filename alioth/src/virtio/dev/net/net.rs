@@ -137,7 +137,16 @@ impl Net {
             .read(true)
             .write(true)
             .open(param.tap)?;
-
+        let dev_feat = NetFeature::MAC
+            | NetFeature::MTU
+            | NetFeature::CSUM
+            | NetFeature::HOST_TSO4
+            | NetFeature::HOST_TSO6
+            | NetFeature::HOST_ECN
+            | NetFeature::HOST_UFO
+            | NetFeature::HOST_USO
+            | detect_tap_offload(&file);
+        log::debug!("{name}: device fature: {dev_feat:x?}");
         setup_tap(&mut file, param.if_name.as_deref())?;
         let net = Net {
             name,
@@ -148,21 +157,7 @@ impl Net {
                 ..Default::default()
             }),
             tap: file,
-            feature: NetFeature::MAC
-                | NetFeature::MTU
-                | NetFeature::GUEST_CSUM
-                | NetFeature::GUEST_TSO4
-                | NetFeature::GUEST_TSO6
-                | NetFeature::GUEST_ECN
-                | NetFeature::GUEST_UFO
-                | NetFeature::GUEST_USO4
-                | NetFeature::GUEST_USO6
-                | NetFeature::CSUM
-                | NetFeature::HOST_TSO4
-                | NetFeature::HOST_TSO6
-                | NetFeature::HOST_ECN
-                | NetFeature::HOST_UFO
-                | NetFeature::HOST_USO,
+            feature: dev_feat,
         };
         Ok(net)
     }
@@ -198,7 +193,7 @@ impl Virtio for Net {
 
     fn activate(&mut self, registry: &Registry, feature: u64, _memory: &RamBus) -> Result<()> {
         let feature = NetFeature::from_bits_retain(feature);
-        log::debug!("{}: net feature: {:?}", self.name, feature);
+        log::debug!("{}: driver feature: {:?}", self.name, feature);
         enable_tap_offload(&mut self.tap, feature)?;
         registry.register(
             &mut SourceFd(&self.tap.as_raw_fd()),
@@ -273,6 +268,31 @@ fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
     unsafe { tun_set_iff(file, &tap_ifconfig) }?;
     unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
     Ok(())
+}
+
+fn detect_tap_offload(tap: &impl AsRawFd) -> NetFeature {
+    let mut tap_feature = TunFeature::all();
+    let mut dev_feat = NetFeature::GUEST_CSUM
+        | NetFeature::GUEST_TSO4
+        | NetFeature::GUEST_TSO6
+        | NetFeature::GUEST_ECN
+        | NetFeature::GUEST_UFO
+        | NetFeature::GUEST_USO4
+        | NetFeature::GUEST_USO6;
+    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+        return dev_feat;
+    }
+    tap_feature &= !(TunFeature::USO4 | TunFeature::USO6);
+    dev_feat &= !(NetFeature::GUEST_USO4 | NetFeature::GUEST_USO6);
+    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+        return dev_feat;
+    }
+    tap_feature &= !(TunFeature::UFO);
+    dev_feat &= !NetFeature::GUEST_UFO;
+    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+        return dev_feat;
+    }
+    return NetFeature::empty();
 }
 
 fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> io::Result<i32> {
