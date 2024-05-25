@@ -139,13 +139,13 @@ where
     pub fn add_fw_cfg(
         &mut self,
         params: impl Iterator<Item = FwCfgItemParam>,
-    ) -> Result<(), Error> {
+    ) -> Result<Arc<Mutex<FwCfg>>, Error> {
         let items = params.map(|p| p.build()).collect::<Result<Vec<_>, _>>()?;
         let fw_cfg = Arc::new(Mutex::new(FwCfg::new(self.board.memory.ram_bus(), items)?));
         let mut io_devs = self.board.io_devs.write();
         io_devs.push((PORT_SELECTOR, fw_cfg.clone()));
-        *self.board.fw_cfg.lock() = Some(fw_cfg);
-        Ok(())
+        *self.board.fw_cfg.lock() = Some(fw_cfg.clone());
+        Ok(fw_cfg)
     }
 
     pub fn add_virtio_dev<D, P>(

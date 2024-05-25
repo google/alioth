@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ffi::CString;
+use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
@@ -117,6 +119,55 @@ fn main_run(args: RunArgs) -> Result<()> {
     let hypervisor = match hv_config {
         Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config),
     }?;
+    let coco = match args.coco {
+        None => None,
+        Some(c) => Some(serde_aco::from_arg(&c)?),
+    };
+    let board_config = BoardConfig {
+        mem_size: serde_aco::from_arg(&args.mem_size)?,
+        num_cpu: args.num_cpu,
+        coco,
+    };
+    let mut vm = Machine::new(hypervisor, board_config)?;
+    #[cfg(target_arch = "x86_64")]
+    vm.add_com1()?;
+
+    if args.pvpanic {
+        vm.add_pvpanic()?;
+    }
+
+    if args.firmware.is_some() || !args.fw_cfgs.is_empty() {
+        let params = args
+            .fw_cfgs
+            .iter()
+            .map(|s| serde_aco::from_arg(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        let fw_cfg = vm.add_fw_cfg(params.into_iter())?;
+        let mut dev = fw_cfg.lock();
+        if let Some(kernel) = &args.kernel {
+            dev.add_kernel_data(File::open(kernel)?)?
+        }
+        if let Some(initramfs) = &args.initramfs {
+            dev.add_initramfs_data(File::open(initramfs)?)?;
+        }
+        if let Some(cmdline) = &args.cmd_line {
+            let cmdline_c = CString::new(cmdline.as_str())?;
+            dev.add_kernel_cmdline(cmdline_c);
+        }
+    };
+
+    if args.entropy {
+        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
+    }
+    for (index, net_opt) in args.net.into_iter().enumerate() {
+        let net_param: NetParam = serde_aco::from_arg(&net_opt)?;
+        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
+    }
+    for (index, blk) in args.blk.into_iter().enumerate() {
+        let param = BlockParam { path: blk.into() };
+        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
+    }
+
     let payload = if let Some(fw) = args.firmware {
         Some(Payload {
             executable: fw,
@@ -141,43 +192,10 @@ fn main_run(args: RunArgs) -> Result<()> {
     } else {
         None
     };
-    let coco = match args.coco {
-        None => None,
-        Some(c) => Some(serde_aco::from_arg(&c)?),
-    };
-    let board_config = BoardConfig {
-        mem_size: serde_aco::from_arg(&args.mem_size)?,
-        num_cpu: args.num_cpu,
-        coco,
-    };
-    let mut vm = Machine::new(hypervisor, board_config)?;
-    #[cfg(target_arch = "x86_64")]
-    vm.add_com1()?;
     if let Some(payload) = payload {
         vm.add_payload(payload);
     }
-    if args.pvpanic {
-        vm.add_pvpanic()?;
-    }
-    if !args.fw_cfgs.is_empty() {
-        let params = args
-            .fw_cfgs
-            .iter()
-            .map(|s| serde_aco::from_arg(s))
-            .collect::<Result<Vec<_>, _>>()?;
-        vm.add_fw_cfg(params.into_iter())?;
-    }
-    if args.entropy {
-        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
-    }
-    for (index, net_opt) in args.net.into_iter().enumerate() {
-        let net_param: NetParam = serde_aco::from_arg(&net_opt)?;
-        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
-    }
-    for (index, blk) in args.blk.into_iter().enumerate() {
-        let param = BlockParam { path: blk.into() };
-        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
-    }
+
     vm.boot()?;
     for result in vm.wait() {
         result?;
