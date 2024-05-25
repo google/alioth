@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use core::fmt;
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
+use std::mem::{size_of, size_of_val};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::firmware::acpi::AcpiTable;
 use crate::loader::linux::bootparams::{
-    BootE820Entry, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
+    BootE820Entry, BootParams, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
 };
 use crate::mem;
 use crate::mem::emulated::Mmio;
@@ -91,7 +93,8 @@ fn create_file_name(name: &str) -> [u8; FILE_NAME_SIZE] {
 pub enum FwCfgContent {
     Bytes(Vec<u8>),
     Slice(&'static [u8]),
-    File(File),
+    File(u64, File),
+    U32(u32),
 }
 
 struct FwCfgContentAccess<'a> {
@@ -102,8 +105,8 @@ struct FwCfgContentAccess<'a> {
 impl<'a> Read for FwCfgContentAccess<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self.content {
-            FwCfgContent::File(f) => {
-                (&*f).seek(SeekFrom::Start(self.offset as u64))?;
+            FwCfgContent::File(offset, f) => {
+                (&*f).seek(SeekFrom::Start(offset + self.offset as u64))?;
                 (&*f).read(buf)
             }
             FwCfgContent::Bytes(b) => match b.get(self.offset..) {
@@ -111,6 +114,10 @@ impl<'a> Read for FwCfgContentAccess<'a> {
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
             FwCfgContent::Slice(b) => match b.get(self.offset..) {
+                Some(mut s) => s.read(buf),
+                None => Err(ErrorKind::UnexpectedEof)?,
+            },
+            FwCfgContent::U32(n) => match n.to_le_bytes().get(self.offset..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
@@ -128,8 +135,9 @@ impl FwCfgContent {
     fn size(&self) -> Result<usize> {
         let ret = match self {
             FwCfgContent::Bytes(v) => v.len(),
-            FwCfgContent::File(f) => f.metadata()?.len() as usize,
+            FwCfgContent::File(offset, f) => (f.metadata()?.len() - offset) as usize,
             FwCfgContent::Slice(s) => s.len(),
+            FwCfgContent::U32(n) => size_of_val(n),
         };
         Ok(ret)
     }
@@ -261,6 +269,37 @@ impl FwCfg {
         self.add_item(apci_tables)
     }
 
+    pub fn add_kernel_data(&mut self, file: File) -> Result<()> {
+        let mut buffer = vec![0u8; size_of::<BootParams>()];
+        file.read_exact_at(buffer.as_bytes_mut(), 0)?;
+        let bp = BootParams::mut_from(&mut buffer).unwrap();
+        if bp.hdr.setup_sects == 0 {
+            bp.hdr.setup_sects = 4;
+        }
+        bp.hdr.type_of_loader = 0xff;
+        let kernel_start = (bp.hdr.setup_sects as usize + 1) * 512;
+        self.known_items[FW_CFG_SETUP_SIZE as usize] = FwCfgContent::U32(buffer.len() as u32);
+        self.known_items[FW_CFG_SETUP_DATA as usize] = FwCfgContent::Bytes(buffer);
+        self.known_items[FW_CFG_KERNEL_SIZE as usize] =
+            FwCfgContent::U32(file.metadata()?.len() as u32 - kernel_start as u32);
+        self.known_items[FW_CFG_KERNEL_DATA as usize] =
+            FwCfgContent::File(kernel_start as u64, file);
+        Ok(())
+    }
+
+    pub fn add_initramfs_data(&mut self, file: File) -> Result<()> {
+        let initramfs_size = file.metadata()?.len();
+        self.known_items[FW_CFG_INITRD_SIZE as usize] = FwCfgContent::U32(initramfs_size as _);
+        self.known_items[FW_CFG_INITRD_DATA as usize] = FwCfgContent::File(0, file);
+        Ok(())
+    }
+
+    pub fn add_kernel_cmdline(&mut self, s: CString) {
+        let bytes = s.into_bytes_with_nul();
+        self.known_items[FW_CFG_CMDLINE_SIZE as usize] = FwCfgContent::U32(bytes.len() as u32);
+        self.known_items[FW_CFG_CMDLINE_DATA as usize] = FwCfgContent::Bytes(bytes);
+    }
+
     pub fn add_item(&mut self, item: FwCfgItem) -> Result<()> {
         let index = self.items.len();
         let c_name = create_file_name(&item.name);
@@ -364,9 +403,9 @@ impl FwCfg {
         match content {
             FwCfgContent::Bytes(b) => b.get(offset).copied(),
             FwCfgContent::Slice(s) => s.get(offset).copied(),
-            FwCfgContent::File(f) => {
+            FwCfgContent::File(o, f) => {
                 let mut buf = [0u8];
-                match f.read_exact_at(&mut buf, offset as u64) {
+                match f.read_exact_at(&mut buf, o + offset as u64) {
                     Ok(_) => Some(buf[0]),
                     Err(e) => {
                         log::error!("fw_cfg: reading {f:?}: {e:?}");
@@ -374,6 +413,7 @@ impl FwCfg {
                     }
                 }
             }
+            FwCfgContent::U32(n) => n.to_le_bytes().get(offset).copied(),
         }
     }
 
@@ -542,7 +582,7 @@ impl FwCfgItemParam {
                 let f = File::open(file)?;
                 Ok(FwCfgItem {
                     name: self.name,
-                    content: FwCfgContent::File(f),
+                    content: FwCfgContent::File(0, f),
                 })
             }
             FwCfgContentParam::String(string) => Ok(FwCfgItem {
