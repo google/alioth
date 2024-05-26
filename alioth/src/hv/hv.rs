@@ -25,6 +25,7 @@ pub use kvm::{Kvm, KvmConfig};
 use serde::Deserialize;
 
 use std::fmt::Debug;
+use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -144,6 +145,23 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     }
 }
 
+pub trait IoeventFd: Debug + Send + Sync + AsFd + 'static {}
+
+pub trait IoeventFdRegistry: Debug + Send + Sync + 'static {
+    type IoeventFd: IoeventFd;
+    fn create(&self) -> Result<Self::IoeventFd>;
+    fn register(&self, fd: &Self::IoeventFd, gpa: usize, len: u8, data: Option<u64>) -> Result<()>;
+    #[cfg(target_arch = "x86_64")]
+    fn register_port(
+        &self,
+        fd: &Self::IoeventFd,
+        port: u16,
+        len: u8,
+        data: Option<u64>,
+    ) -> Result<()>;
+    fn deregister(&self, fd: &Self::IoeventFd) -> Result<()>;
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub enum Coco {
     #[serde(alias = "sev")]
@@ -160,10 +178,12 @@ pub trait Vm {
     type Memory: VmMemory;
     type IntxSender: IntxSender + Send + Sync;
     type MsiSender: MsiSender;
+    type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error>;
     fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
+    fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
     fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
 
     fn sev_launch_start(&self, _policy: u32) -> Result<(), Error> {

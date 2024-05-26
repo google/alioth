@@ -12,20 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::collections::HashMap;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
+use parking_lot::Mutex;
 
 use crate::ffi;
 use crate::hv::kvm::bindings::{
-    KvmEncRegion, KvmIrqfd, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD,
-    KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
+    KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqfd, KvmMemFlag, KvmMsi,
+    KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
 };
 use crate::hv::kvm::ioctls::{
-    kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_memory_encrypt_op,
+    kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_op,
     kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_user_memory_region,
     kvm_signal_msi,
 };
@@ -36,13 +38,16 @@ use crate::hv::kvm::sev::bindings::{
 };
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
-use crate::hv::{Error, IntxSender, MemMapOption, MsiSender, Result, Vm, VmMemory};
+use crate::hv::{
+    Error, IntxSender, IoeventFd, IoeventFdRegistry, MemMapOption, MsiSender, Result, Vm, VmMemory,
+};
 
 pub struct KvmVm {
     pub(super) fd: Arc<OwnedFd>,
     pub(super) vcpu_mmap_size: usize,
     pub(super) memory_created: bool,
     pub(super) sev_fd: Option<Arc<SevFd>>,
+    pub(super) ioeventfds: Arc<Mutex<HashMap<i32, KvmIoEventFd>>>,
 }
 
 #[derive(Debug)]
@@ -150,6 +155,72 @@ impl MsiSender for KvmMsiSender {
     }
 }
 
+#[derive(Debug)]
+pub struct KvmIoeventFd {
+    fd: OwnedFd,
+}
+
+impl AsFd for KvmIoeventFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl IoeventFd for KvmIoeventFd {}
+
+#[derive(Debug)]
+pub struct KvmIoeventFdRegistry {
+    vm_fd: Arc<OwnedFd>,
+    fds: Arc<Mutex<HashMap<i32, KvmIoEventFd>>>,
+}
+
+impl IoeventFdRegistry for KvmIoeventFdRegistry {
+    type IoeventFd = KvmIoeventFd;
+    fn create(&self) -> Result<Self::IoeventFd> {
+        let fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })?;
+        Ok(KvmIoeventFd {
+            fd: unsafe { OwnedFd::from_raw_fd(fd) },
+        })
+    }
+
+    fn register(&self, fd: &Self::IoeventFd, gpa: usize, len: u8, data: Option<u64>) -> Result<()> {
+        let mut request = KvmIoEventFd {
+            addr: gpa as u64,
+            len: len as u32,
+            fd: fd.as_fd().as_raw_fd(),
+            ..Default::default()
+        };
+        if let Some(data) = data {
+            request.datamatch = data;
+            request.flags |= KvmIoEventFdFlag::DATA_MATCH;
+        }
+        unsafe { kvm_ioeventfd(&self.vm_fd, &request) }?;
+        let mut fds = self.fds.lock();
+        fds.insert(request.fd, request);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn register_port(
+        &self,
+        _fd: &Self::IoeventFd,
+        _port: u16,
+        _len: u8,
+        _data: Option<u64>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    fn deregister(&self, fd: &Self::IoeventFd) -> Result<()> {
+        let mut fds = self.fds.lock();
+        if let Some(mut request) = fds.remove(&fd.as_fd().as_raw_fd()) {
+            request.flags |= KvmIoEventFdFlag::DEASSIGN;
+            unsafe { kvm_ioeventfd(&self.vm_fd, &request) }?;
+        }
+        Ok(())
+    }
+}
+
 impl KvmVm {
     fn check_extension(&self, id: u64) -> Result<bool, Error> {
         let ret = unsafe { kvm_check_extension(&self.fd, id) }?;
@@ -179,6 +250,7 @@ impl Vm for KvmVm {
     type IntxSender = KvmIntxSender;
     type MsiSender = KvmMsiSender;
     type Memory = KvmMemory;
+    type IoeventFdRegistry = KvmIoeventFdRegistry;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
         let vcpu_fd = unsafe { kvm_create_vcpu(&self.fd, id) }?;
@@ -232,6 +304,13 @@ impl Vm for KvmVm {
         }
         Ok(KvmMsiSender {
             vm_fd: self.fd.clone(),
+        })
+    }
+
+    fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
+        Ok(KvmIoeventFdRegistry {
+            vm_fd: self.fd.clone(),
+            fds: self.ioeventfds.clone(),
         })
     }
 
