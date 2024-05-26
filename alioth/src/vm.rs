@@ -25,7 +25,7 @@ use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUN
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 use crate::device::pvpanic::PvPanic;
 use crate::device::serial::Serial;
-use crate::hv::{self, Hypervisor, Vm, VmConfig};
+use crate::hv::{self, Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::pci::bus::PciBus;
@@ -152,16 +152,27 @@ where
         &mut self,
         name: String,
         param: P,
-    ) -> Result<Arc<VirtioPciDevice<D, <<H as Hypervisor>::Vm as Vm>::MsiSender>>, Error>
+    ) -> Result<
+        Arc<
+            VirtioPciDevice<
+                D,
+                <<H as Hypervisor>::Vm as Vm>::MsiSender,
+                <<<H as Hypervisor>::Vm as Vm>::IoeventFdRegistry as IoeventFdRegistry>::IoeventFd,
+            >,
+        >,
+        Error,
+    >
     where
         P: DevParam<Device = D>,
         D: Virtio,
     {
         let name = Arc::new(name);
         let dev = param.build(name.clone())?;
-        let virtio_dev = VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus().clone())?;
+        let registry = self.board.vm.create_ioeventfd_registry()?;
+        let virtio_dev =
+            VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus(), &registry)?;
         let msi_sender = self.board.vm.create_msi_sender()?;
-        let dev = VirtioPciDevice::new(virtio_dev, msi_sender)?;
+        let dev = VirtioPciDevice::new(virtio_dev, msi_sender, registry)?;
         let dev = Arc::new(dev);
         let pci_dev = PciDevice::new(name.clone(), dev.clone());
         self.add_pci_dev(pci_dev)?;

@@ -17,7 +17,7 @@ use std::fmt::Debug;
 use bitflags::bitflags;
 use thiserror::Error;
 
-use crate::mem;
+use crate::{hv, mem};
 
 #[path = "dev/dev.rs"]
 pub mod dev;
@@ -28,7 +28,7 @@ pub mod queue;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("hypervisor: {0}")]
-    Hv(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Hv(#[from] hv::Error),
 
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),

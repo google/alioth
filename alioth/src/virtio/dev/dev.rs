@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::fmt::Debug;
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -20,8 +21,10 @@ use std::thread::JoinHandle;
 
 use bitfield::bitfield;
 use mio::event::Event;
-use mio::{Events, Poll, Registry, Token, Waker};
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll, Registry, Token, Waker};
 
+use crate::hv::{IoeventFd, IoeventFdRegistry};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
 use crate::mem::MemRegion;
@@ -114,25 +117,28 @@ where
 }
 
 #[derive(Debug)]
-pub struct VirtioDevice<D, S>
+pub struct VirtioDevice<D, S, E>
 where
     D: Virtio,
     S: IrqSender,
+    E: IoeventFd,
 {
     pub name: Arc<String>,
     pub device_config: Arc<D::Config>,
     pub reg: Arc<Register>,
     pub queue_regs: Arc<Vec<Queue>>,
+    pub ioeventfds: Arc<Vec<E>>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
     pub event_tx: Sender<WakeEvent<S>>,
     worker_handle: Option<JoinHandle<()>>,
 }
 
-impl<D, S> VirtioDevice<D, S>
+impl<D, S, E> VirtioDevice<D, S, E>
 where
     D: Virtio,
     S: IrqSender,
+    E: IoeventFd,
 {
     fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(handle) = self.worker_handle.take() else {
@@ -146,7 +152,10 @@ where
         Ok(())
     }
 
-    pub fn new(name: Arc<String>, dev: D, memory: Arc<RamBus>) -> Result<Self> {
+    pub fn new<R>(name: Arc<String>, dev: D, memory: Arc<RamBus>, registry: &R) -> Result<Self>
+    where
+        R: IoeventFdRegistry<IoeventFd = E>,
+    {
         let poll = Poll::new()?;
         let device_config = dev.config();
         let reg = Arc::new(Register {
@@ -159,6 +168,18 @@ where
             ..Default::default()
         });
         let queue_regs = Arc::new(queue_regs.collect::<Vec<_>>());
+        let ioeventfds = Arc::new(
+            (0..num_queues)
+                .map(|_| registry.create())
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        for (index, fd) in ioeventfds.iter().enumerate() {
+            poll.registry().register(
+                &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                Token(TOKEN_IS_QUEUE as usize | index),
+                Interest::READABLE,
+            )?;
+        }
         let token = TOKEN_IS_QUEUE | TOKEN_WORKER_EVENT;
         let waker = Waker::new(poll.registry(), Token(token as usize))?;
         let shared_mem_regions = dev.shared_mem_regions();
@@ -186,6 +207,7 @@ where
             name,
             reg,
             queue_regs,
+            ioeventfds,
             worker_handle: Some(handle),
             event_tx,
             waker: Arc::new(waker),
@@ -196,10 +218,11 @@ where
     }
 }
 
-impl<D, S> Drop for VirtioDevice<D, S>
+impl<D, S, E> Drop for VirtioDevice<D, S, E>
 where
     D: Virtio,
     S: IrqSender,
+    E: IoeventFd,
 {
     fn drop(&mut self) {
         if let Err(e) = self.shutdown() {

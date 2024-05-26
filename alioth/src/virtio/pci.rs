@@ -23,9 +23,9 @@ use mio::Waker;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::hv::MsiSender;
+use crate::hv::{IoeventFd, IoeventFdRegistry, MsiSender};
 use crate::mem::emulated::Mmio;
-use crate::mem::{MemRange, MemRegion, MemRegionEntry};
+use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
     MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio, PciCap,
     PciCapHdr, PciCapId, PciCapList,
@@ -422,10 +422,15 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_RESET => {
                 todo!()
             }
-            (VirtioPciRegister::OFFSET_QUEUE_NOTIFY, _) => {
-                let event = WakeEvent::Notify {
-                    q_index: val as u16,
-                };
+            (offset, _)
+                if offset >= VirtioPciRegister::OFFSET_QUEUE_NOTIFY
+                    && offset
+                        < VirtioPciRegister::OFFSET_QUEUE_NOTIFY
+                            + size_of::<u32>() * self.queues.len() =>
+            {
+                let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u16 / 4;
+                log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
+                let event = WakeEvent::Notify { q_index };
                 self.wake_up_dev(event)
             }
             _ => {
@@ -435,6 +440,38 @@ where
                     width = 2 * size as usize
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct IoeventFdCallback<R>
+where
+    R: IoeventFdRegistry,
+{
+    registry: R,
+    ioeventfds: Arc<Vec<R::IoeventFd>>,
+}
+
+impl<R> MemRegionCallback for IoeventFdCallback<R>
+where
+    R: IoeventFdRegistry,
+{
+    fn mapped(&self, addr: usize) -> mem::Result<()> {
+        for (q_index, fd) in self.ioeventfds.iter().enumerate() {
+            let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY;
+            let notify_addr = base_addr + q_index * size_of::<u32>();
+            self.registry.register(fd, notify_addr, 0, None)?;
+            log::info!("q-{q_index} ioeventfd registered at {notify_addr:x}",)
+        }
+        Ok(())
+    }
+
+    fn unmapped(&self) -> mem::Result<()> {
+        for fd in self.ioeventfds.iter() {
+            self.registry.deregister(fd)?;
+            log::info!("ioeventfd {fd:?} de-registered")
         }
         Ok(())
     }
@@ -514,22 +551,31 @@ impl PciCap for VirtioPciNotifyCap {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciDevice<D, M>
+pub struct VirtioPciDevice<D, M, E>
 where
     D: Virtio,
     M: MsiSender,
+    E: IoeventFd,
 {
-    pub dev: VirtioDevice<D, PciIrqSender<M>>,
+    pub dev: VirtioDevice<D, PciIrqSender<M>, E>,
     pub config: Arc<EmulatedConfig>,
     pub registers: Arc<VirtioPciRegisterMmio<M>>,
 }
 
-impl<D, M> VirtioPciDevice<D, M>
+impl<D, M, E> VirtioPciDevice<D, M, E>
 where
     M: MsiSender,
     D: Virtio,
+    E: IoeventFd,
 {
-    pub fn new(dev: VirtioDevice<D, PciIrqSender<M>>, msi_sender: M) -> Result<Self> {
+    pub fn new<R>(
+        dev: VirtioDevice<D, PciIrqSender<M>, E>,
+        msi_sender: M,
+        ioeventfd_reg: R,
+    ) -> Result<Self>
+    where
+        R: IoeventFdRegistry<IoeventFd = E>,
+    {
         let (class, subclass) = get_class(D::device_id());
         let mut header = DeviceHeader {
             common: CommonHeader {
@@ -608,7 +654,7 @@ where
                 length: (size_of::<u32>() * num_queues) as u32,
                 ..Default::default()
             },
-            multiplier: 0, // TODO use 4 for KVM_IOEVENTFD
+            multiplier: size_of::<u32>() as u32,
         };
         let cap_device_config = VirtioPciCap {
             header: PciCapHdr {
@@ -701,6 +747,10 @@ where
         bar0.ranges
             .push(MemRange::Span((12 << 10) - msix_table_size));
         bar0.ranges.push(MemRange::Emulated(registers.clone()));
+        bar0.callbacks.lock().push(Box::new(IoeventFdCallback {
+            registry: ioeventfd_reg,
+            ioeventfds: dev.ioeventfds.clone(),
+        }));
         if device_config.size() > 0 {
             bar0.ranges.push(MemRange::Emulated(device_config))
         }
@@ -734,10 +784,11 @@ where
     }
 }
 
-impl<D, M> Pci for VirtioPciDevice<D, M>
+impl<D, M, E> Pci for VirtioPciDevice<D, M, E>
 where
     M: MsiSender,
     D: Virtio,
+    E: IoeventFd,
 {
     fn config(&self) -> Arc<dyn PciConfig> {
         self.config.clone()
