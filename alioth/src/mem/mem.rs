@@ -67,8 +67,6 @@ pub enum Error {
     LockPoisoned,
     #[error("cannot allocate")]
     CanotAllocate,
-    #[error("cannot register MMIO notifier: {0}")]
-    Notifier(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("{0}")]
     Hv(#[from] hv::Error),
     #[error("cannot handle action: {0:x?}")]
