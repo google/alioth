@@ -22,6 +22,7 @@ mod vm;
 mod vmentry;
 mod vmexit;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -35,6 +36,7 @@ use crate::hv::Cpuid;
 use crate::hv::{Error, Hypervisor};
 use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use parking_lot::Mutex;
 use serde::Deserialize;
 
 use crate::hv::{Coco, VmConfig};
@@ -105,6 +107,7 @@ impl Hypervisor for Kvm {
             sev_fd,
             vcpu_mmap_size,
             memory_created: false,
+            ioeventfds: Arc::new(Mutex::new(HashMap::new())),
         };
         if kvm_vm.sev_fd.is_some() {
             match config.coco.as_ref().unwrap() {
