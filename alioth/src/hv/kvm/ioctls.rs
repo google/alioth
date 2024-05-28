@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmEncRegion, KvmIoEventFd, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs, KvmSregs2,
-    KvmUserspaceMemoryRegion, KVMIO,
+    KvmCpuid2, KvmEncRegion, KvmIoEventFd, KvmIrqRouting, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs,
+    KvmSregs2, KvmUserspaceMemoryRegion, KVMIO,
 };
 use crate::utils::ioctls::{ioctl_io, ioctl_ior, ioctl_iowr};
 use crate::{
@@ -42,6 +42,7 @@ ioctl_write_val!(kvm_set_tss_addr, ioctl_io(KVMIO, 0x47));
 ioctl_write_ptr!(kvm_set_identity_map_addr, KVMIO, 0x48, u64);
 
 ioctl_none!(kvm_create_irqchip, KVMIO, 0x60, 0);
+ioctl_write_buf!(kvm_set_gsi_routing, KVMIO, 0x6a, KvmIrqRouting);
 
 ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
 ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, KvmIoEventFd);
