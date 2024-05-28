@@ -217,14 +217,82 @@ pub const KVM_EXIT_SHUTDOWN: u32 = 8;
 pub const KVM_EXIT_IO_IN: u8 = 0;
 pub const KVM_EXIT_IO_OUT: u8 = 1;
 
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct KvmIrqfdFlag: u32 {
+        const DEASSIGN = 1 << 0;
+        const RESAMPLE = 1 << 1;
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmIrqfd {
     pub fd: u32,
     pub gsi: u32,
-    pub flags: u32,
+    pub flags: KvmIrqfdFlag,
     pub resamplefd: u32,
     pub pad: [u8; 16usize],
+}
+
+pub const KVM_IRQ_ROUTING_IRQCHIP: u32 = 1;
+pub const KVM_IRQ_ROUTING_MSI: u32 = 2;
+
+pub const KVM_IRQCHIP_IOAPIC: u32 = 2;
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct KvmIrqRoutingIrqchip {
+    pub irqchip: u32,
+    pub pin: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct KvmIrqRoutingMsi {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub data: u32,
+    pub devid: u32,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub union KvmIrqRoutingType {
+    pub irqchip: KvmIrqRoutingIrqchip,
+    pub msi: KvmIrqRoutingMsi,
+    pub pad: [u32; 8],
+}
+
+impl Default for KvmIrqRoutingType {
+    fn default() -> Self {
+        KvmIrqRoutingType { pad: [0; 8] }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct KvmIrqRoutingEntryFlag: u32 {
+        const MSI_VALID_DEVID = 1 << 0;
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct KvmIrqRoutingEntry {
+    pub gsi: u32,
+    pub type_: u32,
+    pub flags: u32,
+    pub pad: u32,
+    pub routing: KvmIrqRoutingType,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KvmIrqRouting<const N: usize> {
+    pub nr: u32,
+    pub flags: u32,
+    pub entries: [KvmIrqRoutingEntry; N],
 }
 
 #[repr(C)]
