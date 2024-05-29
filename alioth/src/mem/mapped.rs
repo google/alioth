@@ -360,6 +360,11 @@ impl Addressable<MappedSlot> {
         }
     }
 
+    pub fn translate(&self, gpa: usize) -> Result<*const u8> {
+        let s = self.get_partial_slice(gpa, 1)?;
+        Ok(s.as_ptr())
+    }
+
     pub fn translate_iov<'a>(&'a self, iov: &[(usize, usize)]) -> Result<Vec<IoSlice<'a>>> {
         let mut slices = vec![];
         for (gpa, len) in iov {

@@ -64,6 +64,12 @@ pub enum Error {
 
     #[error("vhost-user backend signals an error of queue {0:#x}")]
     VuQueueErr(u16),
+
+    #[error("vhost-user backend is missing device feature {0:#x}")]
+    VuMissingDeviceFeature(u64),
+
+    #[error("vhost-user backend is missing protocol feature {0:x?}")]
+    VuMissingProtocolFeature(vu::VuFeature),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;

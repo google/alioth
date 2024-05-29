@@ -27,7 +27,7 @@ use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
-use crate::virtio::queue::{Descriptor, VirtQueue};
+use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::{DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 
 pub const VIRTIO_BLK_T_IN: u32 = 0;
@@ -264,7 +264,14 @@ impl Virtio for Block {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
-    fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(
+        &mut self,
+        _registry: &Registry,
+        _feature: u64,
+        _memory: &RamBus,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
         Ok(())
     }
 

@@ -35,6 +35,7 @@ use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
 
 pub mod blk;
 pub mod entropy;
+pub mod fs;
 #[path = "net/net.rs"]
 pub mod net;
 
@@ -47,7 +48,14 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn device_id() -> DeviceId;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u64;
-    fn activate(&mut self, registry: &Registry, feature: u64, memory: &RamBus) -> Result<()>;
+    fn activate(
+        &mut self,
+        registry: &Registry,
+        feature: u64,
+        memory: &RamBus,
+        irq_sender: &impl IrqSender,
+        queues: &[Queue],
+    ) -> Result<()>;
     fn handle_queue(
         &mut self,
         index: u16,
@@ -64,6 +72,12 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     ) -> Result<()>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
+    }
+    fn offload_ioeventfd<E>(&self, _qindex: u16, _fd: &E) -> Result<bool>
+    where
+        E: IoeventFd,
+    {
+        Ok(false)
     }
 }
 
@@ -176,11 +190,13 @@ where
                 .collect::<Result<Vec<_>, _>>()?,
         );
         for (index, fd) in ioeventfds.iter().enumerate() {
-            poll.registry().register(
-                &mut SourceFd(&fd.as_fd().as_raw_fd()),
-                Token(TOKEN_IS_QUEUE as usize | index),
-                Interest::READABLE,
-            )?;
+            if !dev.offload_ioeventfd(index as u16, fd)? {
+                poll.registry().register(
+                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                    Token(TOKEN_IS_QUEUE as usize | index),
+                    Interest::READABLE,
+                )?;
+            }
         }
         let token = TOKEN_IS_QUEUE | TOKEN_WORKER_EVENT;
         let waker = Waker::new(poll.registry(), Token(token as usize))?;
@@ -206,7 +222,8 @@ where
                 }
             })?;
         log::debug!(
-            "{name}: created with {:x?}",
+            "{name}: created with {:x?} {:x?}",
+            VirtioFeature::from_bits_retain(reg.device_feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(reg.device_feature)
         );
         let virtio_dev = VirtioDevice {
@@ -320,7 +337,13 @@ where
             return Ok(DevAction::Shutdown);
         };
         let memory = &self.memory;
-        self.dev.activate(self.poll.registry(), feature, memory)?;
+        self.dev.activate(
+            self.poll.registry(),
+            feature,
+            memory,
+            irq_sender.as_ref(),
+            &self.queue_regs,
+        )?;
         self.queues =
             if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
                 todo!()
