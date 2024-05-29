@@ -54,6 +54,8 @@ pub enum Error {
     LackCap { cap: String },
     #[error("creating multipe memory")]
     CreatingMultipleMemory,
+    #[error("cannot allocate irqfd")]
+    CannotAllocateIrqFd,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -120,7 +122,9 @@ where
 }
 
 pub trait MsiSender: Debug + Send + Sync + 'static {
+    type IrqFd: IrqFd;
     fn send(&self, addr: u64, data: u32) -> Result<()>;
+    fn create_irqfd(&self) -> Result<Self::IrqFd>;
 }
 
 pub trait VmMemory: Debug + Send + Sync + 'static {
@@ -160,6 +164,17 @@ pub trait IoeventFdRegistry: Debug + Send + Sync + 'static {
         data: Option<u64>,
     ) -> Result<()>;
     fn deregister(&self, fd: &Self::IoeventFd) -> Result<()>;
+}
+
+pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
+    fn set_addr_lo(&self, val: u32) -> Result<()>;
+    fn get_addr_lo(&self) -> u32;
+    fn set_addr_hi(&self, val: u32) -> Result<()>;
+    fn get_addr_hi(&self) -> u32;
+    fn set_data(&self, val: u32) -> Result<()>;
+    fn get_data(&self) -> u32;
+    fn set_masked(&self, val: bool) -> Result<()>;
+    fn get_masked(&self) -> bool;
 }
 
 #[derive(Debug, Clone, Deserialize)]

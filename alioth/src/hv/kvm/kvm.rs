@@ -28,6 +28,7 @@ use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::ptr::null_mut;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use crate::ffi;
@@ -36,6 +37,7 @@ use crate::hv::Cpuid;
 use crate::hv::{Error, Hypervisor};
 use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
 use serde::Deserialize;
 
@@ -108,6 +110,8 @@ impl Hypervisor for Kvm {
             vcpu_mmap_size,
             memory_created: false,
             ioeventfds: Arc::new(Mutex::new(HashMap::new())),
+            next_msi_gsi: Arc::new(AtomicU32::new(0)),
+            msi_table: Arc::new(RwLock::new(HashMap::new())),
         };
         if kvm_vm.sev_fd.is_some() {
             match config.coco.as_ref().unwrap() {
