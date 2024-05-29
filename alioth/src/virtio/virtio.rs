@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::fmt::Debug;
+use std::os::fd::RawFd;
 
 use bitflags::bitflags;
 use thiserror::Error;
@@ -41,6 +42,12 @@ pub enum Error {
 
     #[error("Invalid descriptor id {0}")]
     InvalidDescriptor(u16),
+
+    #[error("invalid queue index {0}")]
+    InvalidQueueIndex(u16),
+
+    #[error("invalid msix vector {0}")]
+    InvalidMsixVector(u16),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -87,4 +94,6 @@ bitflags! {
 pub trait IrqSender: Send + Sync + Debug + 'static {
     fn queue_irq(&self, idx: u16);
     fn config_irq(&self);
+    fn queue_irqfd(&self, idx: u16) -> Result<RawFd>;
+    fn config_irqfd(&self) -> Result<RawFd>;
 }

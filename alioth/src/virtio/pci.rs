@@ -14,6 +14,7 @@
 
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use mio::Waker;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::hv::{IoeventFd, IoeventFdRegistry, MsiSender};
+use crate::hv::{IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
 use crate::mem::emulated::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
@@ -39,11 +40,11 @@ use crate::utils::{
 };
 use crate::virtio::dev::{Register, WakeEvent};
 use crate::virtio::queue::Queue;
-use crate::virtio::{DevStatus, IrqSender};
+use crate::virtio::{DevStatus, Error, IrqSender, Result};
 use crate::{impl_mmio_for_zerocopy, mem};
 
 use super::dev::{Virtio, VirtioDevice};
-use super::{DeviceId, Result};
+use super::DeviceId;
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
@@ -86,6 +87,27 @@ where
             log::trace!("send msi data = {data:#x} to {addr:#x}: done")
         }
     }
+
+    fn get_irqfd(&self, vector: u16) -> Result<RawFd> {
+        let entries = &**self.msix_entries;
+        let Some(entry) = entries.get(vector as usize) else {
+            return Err(Error::InvalidMsixVector(vector));
+        };
+        let mut entry = entry.write();
+        match &*entry {
+            MsixTableMmioEntry::Entry(e) => {
+                let irqfd = self.msi_sender.create_irqfd()?;
+                irqfd.set_addr_hi(e.addr_hi)?;
+                irqfd.set_addr_lo(e.addr_lo)?;
+                irqfd.set_data(e.data)?;
+                irqfd.set_masked(e.control.masked())?;
+                let raw_fd = irqfd.as_fd().as_raw_fd();
+                *entry = MsixTableMmioEntry::IrqFd(irqfd);
+                Ok(raw_fd)
+            }
+            MsixTableMmioEntry::IrqFd(f) => Ok(f.as_fd().as_raw_fd()),
+        }
+    }
 }
 
 impl<S> IrqSender for PciIrqSender<S>
@@ -108,6 +130,17 @@ where
         if vector != VIRTIO_MSI_NO_VECTOR {
             self.send(vector);
         }
+    }
+
+    fn config_irqfd(&self) -> Result<RawFd> {
+        self.get_irqfd(self.msix_vector.config.load(Ordering::Acquire))
+    }
+
+    fn queue_irqfd(&self, idx: u16) -> Result<RawFd> {
+        let Some(vector) = self.msix_vector.queues.get(idx as usize) else {
+            return Err(Error::InvalidQueueIndex(idx));
+        };
+        self.get_irqfd(vector.load(Ordering::Acquire))
     }
 }
 
