@@ -27,8 +27,8 @@ use crate::hv::{IoeventFd, IoeventFdRegistry, MsiSender};
 use crate::mem::emulated::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
-    MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio, PciCap,
-    PciCapHdr, PciCapId, PciCapList,
+    MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
+    MsixTableMmioEntry, PciCap, PciCapHdr, PciCapId, PciCapList,
 };
 use crate::pci::config::{
     CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, BAR_MEM64, BAR_PREFETCHABLE,
@@ -54,9 +54,12 @@ struct VirtioPciMsixVector {
 }
 
 #[derive(Debug)]
-pub struct PciIrqSender<S> {
+pub struct PciIrqSender<S>
+where
+    S: MsiSender,
+{
     msix_vector: VirtioPciMsixVector,
-    msix_entries: Arc<Vec<RwLock<MsixTableEntry>>>,
+    msix_entries: Arc<Vec<RwLock<MsixTableMmioEntry<S::IrqFd>>>>,
     msi_sender: S,
 }
 
@@ -71,12 +74,12 @@ where
             return;
         };
         let entry = entry.read();
-        if entry.control.masked() {
+        if entry.get_masked() {
             log::info!("{} is masked", vector);
             return;
         }
-        let data = entry.data;
-        let addr = ((entry.addr_hi as u64) << 32) | (entry.addr_lo as u64);
+        let data = entry.get_data();
+        let addr = ((entry.get_addr_hi() as u64) << 32) | (entry.get_addr_lo() as u64);
         if let Err(e) = self.msi_sender.send(addr, data) {
             log::error!("send msi data = {data:#x} to {addr:#x}: {e}")
         } else {
@@ -669,9 +672,9 @@ where
             length: device_config.size() as u32,
             ..Default::default()
         };
-        let msix_entries: Arc<Vec<RwLock<MsixTableEntry>>> = Arc::new(
+        let msix_entries: Arc<Vec<RwLock<MsixTableMmioEntry<_>>>> = Arc::new(
             (0..table_entries)
-                .map(|_| RwLock::new(MsixTableEntry::default()))
+                .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
                 .collect(),
         );
         let mut bar0 = MemRegion {

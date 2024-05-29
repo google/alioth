@@ -20,6 +20,7 @@ use bitfield::bitfield;
 use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Mmio, MmioBus};
 use crate::pci::config::DeviceHeader;
@@ -236,12 +237,61 @@ impl PciCap for MsixCapMmio {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct MsixTableMmio {
-    pub entries: Arc<Vec<RwLock<MsixTableEntry>>>,
+#[derive(Debug)]
+pub enum MsixTableMmioEntry<F> {
+    Entry(MsixTableEntry),
+    IrqFd(F),
 }
 
-impl Mmio for MsixTableMmio {
+macro_rules! impl_msix_table_mmio_entry_method {
+    ($field:ident, $get:ident, $set:ident) => {
+        pub fn $get(&self) -> u32 {
+            match self {
+                MsixTableMmioEntry::Entry(e) => e.$field,
+                MsixTableMmioEntry::IrqFd(f) => f.$get(),
+            }
+        }
+        fn $set(&mut self, val: u32) -> mem::Result<()> {
+            match self {
+                MsixTableMmioEntry::Entry(e) => e.$field = val,
+                MsixTableMmioEntry::IrqFd(f) => f.$set(val)?,
+            }
+            Ok(())
+        }
+    };
+}
+
+impl<F> MsixTableMmioEntry<F>
+where
+    F: IrqFd,
+{
+    impl_msix_table_mmio_entry_method!(addr_lo, get_addr_lo, set_addr_lo);
+    impl_msix_table_mmio_entry_method!(addr_hi, get_addr_hi, set_addr_hi);
+    impl_msix_table_mmio_entry_method!(data, get_data, set_data);
+    fn set_masked(&mut self, val: bool) -> mem::Result<()> {
+        match self {
+            MsixTableMmioEntry::Entry(e) => e.control.set_masked(val),
+            MsixTableMmioEntry::IrqFd(f) => f.set_masked(val)?,
+        }
+        Ok(())
+    }
+    pub fn get_masked(&self) -> bool {
+        match self {
+            MsixTableMmioEntry::Entry(e) => e.control.masked(),
+            MsixTableMmioEntry::IrqFd(f) => f.get_masked(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MsixTableMmio<F> {
+    pub entries: Arc<Vec<RwLock<MsixTableMmioEntry<F>>>>,
+}
+
+impl<F> Mmio for MsixTableMmio<F>
+where
+    F: IrqFd,
+{
     fn size(&self) -> usize {
         size_of::<MsixTableEntry>() * self.entries.len()
     }
@@ -261,10 +311,10 @@ impl Mmio for MsixTableMmio {
         };
         let entry = entry.read();
         let ret = match offset % size_of::<MsixTableEntry>() {
-            0 => entry.addr_lo,
-            4 => entry.addr_hi,
-            8 => entry.data,
-            12 => entry.control.0,
+            0 => entry.get_addr_lo(),
+            4 => entry.get_addr_hi(),
+            8 => entry.get_data(),
+            12 => entry.get_masked() as _,
             _ => unreachable!(),
         };
         Ok(ret as u64)
@@ -286,10 +336,10 @@ impl Mmio for MsixTableMmio {
         };
         let mut entry = entry.write();
         match offset % size_of::<MsixTableEntry>() {
-            0 => entry.addr_lo = val,
-            4 => entry.addr_hi = val,
-            8 => entry.data = val,
-            12 => entry.control = MsixVectorCtrl(val),
+            0 => entry.set_addr_lo(val)?,
+            4 => entry.set_addr_hi(val)?,
+            8 => entry.set_data(val)?,
+            12 => entry.set_masked(MsixVectorCtrl(val).masked())?,
             _ => unreachable!(),
         };
         Ok(())
