@@ -21,6 +21,7 @@ use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
+use alioth::virtio::dev::fs::VuFsParam;
 use alioth::virtio::dev::net::NetParam;
 use alioth::vm::Machine;
 use anyhow::Result;
@@ -63,6 +64,12 @@ impl Default for Hypervisor {
         #[cfg(target_os = "linux")]
         Hypervisor::Kvm(KvmConfig::default())
     }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+enum FsParam {
+    #[serde(alias = "vu")]
+    Vu(VuFsParam),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -108,6 +115,9 @@ struct RunArgs {
 
     #[arg(long)]
     coco: Option<String>,
+
+    #[arg(long)]
+    fs: Vec<String>,
 }
 
 fn main_run(args: RunArgs) -> Result<()> {
@@ -166,6 +176,12 @@ fn main_run(args: RunArgs) -> Result<()> {
     for (index, blk) in args.blk.into_iter().enumerate() {
         let param = BlockParam { path: blk.into() };
         vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
+    }
+    for (index, fs) in args.fs.into_iter().enumerate() {
+        let param: FsParam = serde_aco::from_arg(&fs)?;
+        match param {
+            FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p)?,
+        };
     }
 
     let payload = if let Some(fw) = args.firmware {
