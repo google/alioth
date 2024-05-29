@@ -29,7 +29,7 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
     let size = file.metadata()?.len() as usize;
     assert_eq!(size & 0xfff, 0);
 
-    let mut rom = ArcMemPages::new_anon(size)?;
+    let mut rom = ArcMemPages::from_anonymous(size, None, Some(c"rom"))?;
     file.read_exact(rom.as_slice_mut())?;
 
     let gpa = MEM_64_START - size;
