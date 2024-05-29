@@ -13,18 +13,19 @@
 // limitations under the License.
 
 use std::cell::UnsafeCell;
+use std::ffi::CStr;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::{align_of, size_of};
 use std::ops::Deref;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd};
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use libc::{
-    c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MS_ASYNC, PROT_EXEC,
+    c_void, mmap, msync, munmap, MAP_FAILED, MAP_SHARED, MFD_CLOEXEC, MS_ASYNC, PROT_EXEC,
     PROT_READ, PROT_WRITE,
 };
 use parking_lot::{RwLock, RwLockReadGuard};
@@ -40,6 +41,7 @@ use super::{Error, Result};
 struct MemPages {
     addr: NonNull<c_void>,
     len: usize,
+    fd: File,
 }
 
 unsafe impl Send for MemPages {}
@@ -81,42 +83,43 @@ impl ArcMemPages {
         self.size
     }
 
+    pub fn fd(&self) -> BorrowedFd {
+        self._inner.fd.as_fd()
+    }
+
     pub fn sync(&self) -> Result<()> {
         ffi!(unsafe { msync(self.addr as *mut _, self.size, MS_ASYNC) })?;
         Ok(())
     }
 
-    fn new_raw(addr: *mut c_void, len: usize) -> Self {
+    fn from_raw(addr: *mut c_void, len: usize, fd: File) -> Self {
         let addr = NonNull::new(addr).expect("address from mmap() should not be null");
         ArcMemPages {
             addr: addr.as_ptr() as usize,
             size: len,
-            _inner: Arc::new(MemPages { addr, len }),
+            _inner: Arc::new(MemPages { addr, len, fd }),
         }
     }
 
-    pub fn new_file(file: File) -> Result<Self, Error> {
-        let mut prot = PROT_READ | PROT_EXEC;
-        let meta = file.metadata().map_err(Error::Mmap)?;
-        let is_readonly = meta.permissions().readonly();
-        if !is_readonly {
-            prot |= PROT_WRITE;
-        }
-        let size = meta.len() as usize;
-        let addr = unsafe { mmap(null_mut(), size, prot, MAP_PRIVATE, file.as_raw_fd(), 0) };
-        match addr {
-            MAP_FAILED => Err(Error::Mmap(std::io::Error::last_os_error())),
-            addr => Ok(Self::new_raw(addr, size)),
-        }
+    pub fn from_file(file: File, offset: i64, len: usize, prot: i32) -> Result<Self> {
+        let addr = ffi!(
+            unsafe { mmap(null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), offset) },
+            MAP_FAILED
+        )?;
+        Ok(Self::from_raw(addr, len, file))
     }
 
-    pub fn new_anon(size: usize) -> Result<Self, Error> {
-        let prot = PROT_WRITE | PROT_READ | PROT_EXEC;
-        let addr = unsafe { mmap(null_mut(), size, prot, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) };
-        match addr {
-            MAP_FAILED => Err(Error::Mmap(std::io::Error::last_os_error())),
-            addr => Ok(Self::new_raw(addr, size)),
-        }
+    pub fn from_anonymous(size: usize, prot: Option<i32>, name: Option<&CStr>) -> Result<Self> {
+        let name = name.unwrap_or(c"anon");
+        let fd = ffi!(unsafe { libc::memfd_create(name.as_ptr(), MFD_CLOEXEC) })?;
+        let prot = prot.unwrap_or(PROT_WRITE | PROT_READ | PROT_EXEC);
+        let addr = ffi!(
+            unsafe { mmap(null_mut(), size, prot, MAP_SHARED, fd, 0) },
+            MAP_FAILED
+        )?;
+        let file = unsafe { File::from_raw_fd(fd) };
+        file.set_len(size as _)?;
+        Ok(Self::from_raw(addr, size, file))
     }
 
     /// Given offset and len, return the host virtual address and len;
@@ -553,9 +556,8 @@ mod test {
     use assert_matches::assert_matches;
     use std::io::{Read, Write};
     use std::mem::size_of;
-    use std::ptr::null_mut;
 
-    use libc::{mmap, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+    use libc::{PROT_READ, PROT_WRITE};
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
     use crate::hv::test::FakeVmMemory;
@@ -574,17 +576,16 @@ mod test {
     fn test_ram_bus_read() {
         let bus = RamBus::new(FakeVmMemory);
         let prot = PROT_READ | PROT_WRITE;
-        let size = 3 * PAGE_SIZE;
-        let addr = unsafe { mmap(null_mut(), size, prot, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) };
-        assert_ne!(addr, MAP_FAILED);
-        let munmap_ret = unsafe { munmap(addr.add(PAGE_SIZE), PAGE_SIZE) };
-        assert_ne!(munmap_ret, -1);
-        let mem1 = ArcMemPages::new_raw(addr, PAGE_SIZE);
-        let mem2_addr = unsafe { addr.add(2 * PAGE_SIZE) };
-        let mem2 = ArcMemPages::new_raw(mem2_addr, PAGE_SIZE);
+        let mem1 = ArcMemPages::from_anonymous(PAGE_SIZE, Some(prot), None).unwrap();
+        let mem2 = ArcMemPages::from_anonymous(PAGE_SIZE, Some(prot), None).unwrap();
 
-        bus.add(0x0, mem1).unwrap();
-        bus.add(PAGE_SIZE, mem2).unwrap();
+        if mem1.addr > mem2.addr {
+            bus.add(0x0, mem1).unwrap();
+            bus.add(PAGE_SIZE, mem2).unwrap();
+        } else {
+            bus.add(0x0, mem2).unwrap();
+            bus.add(PAGE_SIZE, mem1).unwrap();
+        }
 
         let data = MyStruct {
             data: [1, 2, 3, 4, 5, 6, 7, 8],
