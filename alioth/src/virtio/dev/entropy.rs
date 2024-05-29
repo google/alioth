@@ -28,7 +28,7 @@ use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::handlers::reader_to_queue;
-use crate::virtio::queue::VirtQueue;
+use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::{IrqSender, Result, FEATURE_BUILT_IN};
 
 #[derive(Debug, Clone)]
@@ -119,7 +119,14 @@ impl Virtio for Entropy {
         FEATURE_BUILT_IN
     }
 
-    fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(
+        &mut self,
+        _registry: &Registry,
+        _feature: u64,
+        _memory: &RamBus,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
         Ok(())
     }
 }

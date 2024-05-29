@@ -36,7 +36,7 @@ use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
 use crate::virtio::queue::handlers::{queue_to_writer, reader_to_queue};
-use crate::virtio::queue::VirtQueue;
+use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::{IrqSender, FEATURE_BUILT_IN};
 
 pub mod tap;
@@ -191,7 +191,14 @@ impl Virtio for Net {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
-    fn activate(&mut self, registry: &Registry, feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(
+        &mut self,
+        registry: &Registry,
+        feature: u64,
+        _memory: &RamBus,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
         let feature = NetFeature::from_bits_retain(feature);
         enable_tap_offload(&mut self.tap, feature)?;
         registry.register(
