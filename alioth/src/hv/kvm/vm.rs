@@ -15,21 +15,24 @@
 use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::thread::JoinHandleExt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::ffi;
 use crate::hv::kvm::bindings::{
-    KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqfd, KvmMemFlag, KvmMsi,
+    KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
+    KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMsi,
     KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
+    KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_op,
-    kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_user_memory_region,
-    kvm_signal_msi,
+    kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing,
+    kvm_set_user_memory_region, kvm_signal_msi,
 };
 use crate::hv::kvm::sev::bindings::{
     KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
@@ -39,7 +42,8 @@ use crate::hv::kvm::sev::bindings::{
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::{
-    Error, IntxSender, IoeventFd, IoeventFdRegistry, MemMapOption, MsiSender, Result, Vm, VmMemory,
+    Error, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result, Vm,
+    VmMemory,
 };
 
 pub struct KvmVm {
@@ -48,6 +52,8 @@ pub struct KvmVm {
     pub(super) memory_created: bool,
     pub(super) sev_fd: Option<Arc<SevFd>>,
     pub(super) ioeventfds: Arc<Mutex<HashMap<i32, KvmIoEventFd>>>,
+    pub(super) msi_table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
+    pub(super) next_msi_gsi: Arc<AtomicU32>,
 }
 
 #[derive(Debug)]
@@ -137,12 +143,189 @@ impl IntxSender for KvmIntxSender {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct KvmMsiEntryData {
+    addr_lo: u32,
+    addr_hi: u32,
+    data: u32,
+    masked: bool,
+    dirty: bool,
+}
+
+#[derive(Debug)]
+pub struct KvmIrqFd {
+    event_fd: OwnedFd,
+    vm_fd: Arc<OwnedFd>,
+    gsi: u32,
+    table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
+}
+
+impl Drop for KvmIrqFd {
+    fn drop(&mut self) {
+        let mut table = self.table.write();
+        if table.remove(&self.gsi).is_none() {
+            log::error!("cannot find gsi {} in the gsi table", self.gsi);
+        };
+        if let Err(e) = self.deassign_irqfd() {
+            log::error!(
+                "removing irqfd {} from vm {}: {e}",
+                self.event_fd.as_raw_fd(),
+                self.vm_fd.as_raw_fd()
+            )
+        }
+    }
+}
+
+impl AsFd for KvmIrqFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.event_fd.as_fd()
+    }
+}
+
+impl KvmIrqFd {
+    fn assign_irqfd(&self) -> Result<()> {
+        let request = KvmIrqfd {
+            fd: self.event_fd.as_raw_fd() as u32,
+            gsi: self.gsi,
+            ..Default::default()
+        };
+        unsafe { kvm_irqfd(&self.vm_fd, &request) }?;
+        log::debug!(
+            "irqfd assigned gsi {:#x} -> eventfd {:#x}",
+            self.gsi,
+            self.event_fd.as_raw_fd()
+        );
+        Ok(())
+    }
+
+    fn deassign_irqfd(&self) -> Result<()> {
+        let request = KvmIrqfd {
+            fd: self.event_fd.as_raw_fd() as u32,
+            gsi: self.gsi,
+            flags: KvmIrqfdFlag::DEASSIGN,
+            ..Default::default()
+        };
+        unsafe { kvm_irqfd(&self.vm_fd, &request) }?;
+        log::debug!(
+            "irqfd de-assigned gsi {:#x} -> eventfd {:#x}",
+            self.gsi,
+            self.event_fd.as_raw_fd()
+        );
+        Ok(())
+    }
+
+    fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<()> {
+        let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
+        for (index, entry) in entries.iter_mut().enumerate().take(24) {
+            entry.gsi = index as u32;
+            entry.type_ = KVM_IRQ_ROUTING_IRQCHIP;
+            entry.routing.irqchip = KvmIrqRoutingIrqchip {
+                irqchip: KVM_IRQCHIP_IOAPIC,
+                pin: index as u32,
+            };
+        }
+        let mut index = 24;
+        for (gsi, entry) in table.iter() {
+            if entry.masked {
+                continue;
+            }
+            entries[index].gsi = *gsi;
+            entries[index].type_ = KVM_IRQ_ROUTING_MSI;
+            entries[index].routing.msi = KvmIrqRoutingMsi {
+                address_hi: entry.addr_hi,
+                address_lo: entry.addr_lo,
+                data: entry.data,
+                devid: 0,
+            };
+            index += 1;
+        }
+        let irq_routing = KvmIrqRouting {
+            nr: index as u32,
+            flags: 0,
+            entries,
+        };
+        unsafe { kvm_set_gsi_routing(&self.vm_fd, &irq_routing) }?;
+        Ok(())
+    }
+}
+
+macro_rules! impl_irqfd_method {
+    ($field:ident, $get:ident, $set:ident) => {
+        fn $get(&self) -> u32 {
+            let table = self.table.read();
+            let Some(entry) = table.get(&self.gsi) else {
+                unreachable!("cannot find gsi {}", self.gsi);
+            };
+            entry.$field
+        }
+        fn $set(&self, val: u32) -> Result<()> {
+            let mut table = self.table.write();
+            let Some(entry) = table.get_mut(&self.gsi) else {
+                unreachable!("cannot find gsi {}", self.gsi);
+            };
+            if entry.$field == val {
+                return Ok(());
+            }
+            entry.$field = val;
+
+            if !entry.masked {
+                self.update_routing_table(&table)
+            } else {
+                entry.dirty = true;
+                Ok(())
+            }
+        }
+    };
+}
+
+impl IrqFd for KvmIrqFd {
+    impl_irqfd_method!(addr_lo, get_addr_lo, set_addr_lo);
+    impl_irqfd_method!(addr_hi, get_addr_hi, set_addr_hi);
+    impl_irqfd_method!(data, get_data, set_data);
+
+    fn get_masked(&self) -> bool {
+        let table = self.table.read();
+        let Some(entry) = table.get(&self.gsi) else {
+            unreachable!("cannot find gsi {}", self.gsi);
+        };
+        entry.masked
+    }
+
+    fn set_masked(&self, val: bool) -> Result<()> {
+        let mut table = self.table.write();
+        let Some(entry) = table.get_mut(&self.gsi) else {
+            unreachable!("cannot find gsi {}", self.gsi);
+        };
+        if entry.masked == val {
+            return Ok(());
+        }
+        let old_val = entry.masked;
+        entry.masked = val;
+        if old_val && !val {
+            if entry.dirty {
+                self.update_routing_table(&table)?;
+            }
+            self.assign_irqfd()
+        } else if !old_val && val {
+            self.deassign_irqfd()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+const MAX_GSI_ROUTES: usize = 256;
+
 #[derive(Debug)]
 pub struct KvmMsiSender {
     vm_fd: Arc<OwnedFd>,
+    msi_table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
+    next_msi_gsi: Arc<AtomicU32>,
 }
 
 impl MsiSender for KvmMsiSender {
+    type IrqFd = KvmIrqFd;
+
     fn send(&self, addr: u64, data: u32) -> Result<()> {
         let kvm_msi = KvmMsi {
             address_lo: addr as u32,
@@ -152,6 +335,39 @@ impl MsiSender for KvmMsiSender {
         };
         unsafe { kvm_signal_msi(&self.vm_fd, &kvm_msi) }?;
         Ok(())
+    }
+
+    fn create_irqfd(&self) -> Result<Self::IrqFd> {
+        let event_fd =
+            unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
+        let mut table = self.msi_table.write();
+        let mut allocated_gsi = None;
+        for _ in 0..(MAX_GSI_ROUTES - 24) {
+            let gsi = self.next_msi_gsi.fetch_add(1, Ordering::AcqRel)
+                % (MAX_GSI_ROUTES as u32 - 24)
+                + 24;
+            let new_entry = KvmMsiEntryData {
+                masked: true,
+                ..Default::default()
+            };
+            if let Some(e) = table.insert(gsi, new_entry) {
+                table.insert(gsi, e);
+            } else {
+                allocated_gsi = Some(gsi);
+                break;
+            }
+        }
+        let Some(gsi) = allocated_gsi else {
+            return Err(Error::CannotAllocateIrqFd);
+        };
+        log::debug!("gsi {gsi} assigned to irqfd {}", event_fd.as_raw_fd());
+        let entry = KvmIrqFd {
+            vm_fd: self.vm_fd.clone(),
+            event_fd,
+            gsi,
+            table: self.msi_table.clone(),
+        };
+        Ok(entry)
     }
 }
 
@@ -304,6 +520,8 @@ impl Vm for KvmVm {
         }
         Ok(KvmMsiSender {
             vm_fd: self.fd.clone(),
+            msi_table: self.msi_table.clone(),
+            next_msi_gsi: self.next_msi_gsi.clone(),
         })
     }
 
