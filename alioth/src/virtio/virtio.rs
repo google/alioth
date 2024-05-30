@@ -25,6 +25,7 @@ pub mod dev;
 pub mod pci;
 #[path = "queue/queue.rs"]
 pub mod queue;
+pub mod vu;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -48,6 +49,21 @@ pub enum Error {
 
     #[error("invalid msix vector {0}")]
     InvalidMsixVector(u16),
+
+    #[error("Invalid vhost user response message, want {0}, got {1}")]
+    InvalidVhostRespMsg(u32, u32),
+
+    #[error("Invalid vhost user response size, want {0}, get {1}")]
+    InvalidVhostRespSize(usize, usize),
+
+    #[error("Invalid vhost user response payload size, want {0}, got {1}")]
+    InvalidVhostRespPayloadSize(usize, u32),
+
+    #[error("vhost-user backend replied error code {0:#x} to request {1:#x}")]
+    VuRequestErr(u64, u32),
+
+    #[error("vhost-user backend signals an error of queue {0:#x}")]
+    VuQueueErr(u16),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -57,6 +73,7 @@ bitflags! {
     pub struct VirtioFeature: u64 {
         const INDIRECT_DESC = 1 << 28;
         const EVENT_IDX = 1 << 29;
+        const VHOST_PROTOCOL = 1 << 30;
         const VERSION_1 = 1 << 32;
         const ACCESS_PLATFORM = 1 << 33;
         const RING_PACKED = 1 << 34;
