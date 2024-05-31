@@ -70,7 +70,7 @@ where
                     let ap_eip = get_ap_eip_from_fw(fw.as_slice()).unwrap();
                     self.arch.sev_ap_eip.store(ap_eip, Ordering::Release);
                 }
-                self.memory.ram_bus().register_encrypted_pages(&fw)?;
+                self.memory.ram_bus().register_encrypted_pages(fw)?;
                 self.vm.sev_launch_update_data(fw.as_slice_mut())?;
             }
             None => {}
