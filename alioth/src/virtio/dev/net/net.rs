@@ -37,7 +37,7 @@ use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
 use crate::virtio::queue::handlers::{queue_to_writer, reader_to_queue};
 use crate::virtio::queue::VirtQueue;
-use crate::virtio::{IrqSender, VirtioFeature};
+use crate::virtio::{IrqSender, FEATURE_BUILT_IN};
 
 pub mod tap;
 
@@ -188,7 +188,7 @@ impl Virtio for Net {
     }
 
     fn feature(&self) -> u64 {
-        self.feature.bits() | VirtioFeature::EVENT_IDX.bits()
+        self.feature.bits() | FEATURE_BUILT_IN
     }
 
     fn activate(&mut self, registry: &Registry, feature: u64, _memory: &RamBus) -> Result<()> {

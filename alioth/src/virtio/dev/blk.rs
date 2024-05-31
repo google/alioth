@@ -28,7 +28,7 @@ use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, VirtQueue};
-use crate::virtio::{DeviceId, IrqSender, Result};
+use crate::virtio::{DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 
 pub const VIRTIO_BLK_T_IN: u32 = 0;
 pub const VIRTIO_BLK_T_OUT: u32 = 1;
@@ -260,7 +260,7 @@ impl Virtio for Block {
     }
 
     fn feature(&self) -> u64 {
-        self.feature.bits()
+        self.feature.bits() | FEATURE_BUILT_IN
     }
 
     fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {

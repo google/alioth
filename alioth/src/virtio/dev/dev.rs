@@ -159,7 +159,7 @@ where
         let poll = Poll::new()?;
         let device_config = dev.config();
         let reg = Arc::new(Register {
-            device_feature: dev.feature() | VirtioFeature::SUPPORTED.bits(),
+            device_feature: dev.feature(),
             ..Default::default()
         });
         let num_queues = dev.num_queues();

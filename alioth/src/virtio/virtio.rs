@@ -53,9 +53,12 @@ bitflags! {
         const VERSION_1 = 1 << 32;
         const ACCESS_PLATFORM = 1 << 33;
         const RING_PACKED = 1 << 34;
-        const SUPPORTED = Self::VERSION_1.bits() | Self::ACCESS_PLATFORM.bits();
     }
 }
+
+const FEATURE_BUILT_IN: u64 = VirtioFeature::EVENT_IDX.bits()
+    | VirtioFeature::VERSION_1.bits()
+    | VirtioFeature::ACCESS_PLATFORM.bits();
 
 #[derive(Debug, Clone, Copy)]
 pub enum DeviceId {
