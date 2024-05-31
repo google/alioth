@@ -291,7 +291,7 @@ fn detect_tap_offload(tap: &impl AsRawFd) -> NetFeature {
     if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
         return dev_feat;
     }
-    return NetFeature::empty();
+    NetFeature::empty()
 }
 
 fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> io::Result<i32> {
