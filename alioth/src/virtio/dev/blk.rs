@@ -244,6 +244,7 @@ impl Block {
 
 impl Virtio for Block {
     type Config = BlockConfig;
+    type Feature = BlockFeature;
 
     fn reset(&mut self, _registry: &Registry) {}
 

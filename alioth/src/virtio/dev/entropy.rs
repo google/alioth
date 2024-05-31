@@ -18,6 +18,7 @@ use std::mem::size_of;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::Arc;
 
+use bitflags::bitflags;
 use libc::O_NONBLOCK;
 use mio::event::Event;
 use mio::Registry;
@@ -47,6 +48,11 @@ impl Mmio for EntropyConfig {
     }
 }
 
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct EntropyFeature: u64 { }
+}
+
 #[derive(Debug)]
 pub struct Entropy {
     name: Arc<String>,
@@ -69,6 +75,7 @@ impl Entropy {
 
 impl Virtio for Entropy {
     type Config = EntropyConfig;
+    type Feature = EntropyFeature;
 
     fn num_queues(&self) -> u16 {
         1
