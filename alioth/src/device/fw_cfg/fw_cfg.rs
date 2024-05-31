@@ -106,8 +106,8 @@ impl<'a> Read for FwCfgContentAccess<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self.content {
             FwCfgContent::File(offset, f) => {
-                (&*f).seek(SeekFrom::Start(offset + self.offset as u64))?;
-                (&*f).read(buf)
+                Seek::seek(&mut (&*f), SeekFrom::Start(offset + self.offset as u64))?;
+                Read::read(&mut (&*f), buf)
             }
             FwCfgContent::Bytes(b) => match b.get(self.offset..) {
                 Some(mut s) => s.read(buf),
