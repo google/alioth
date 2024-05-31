@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use bitfield::bitfield;
+use bitflags::Flags;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
@@ -39,6 +40,7 @@ pub mod net;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
+    type Feature: Flags<Bits = u64> + Debug;
 
     fn num_queues(&self) -> u16;
     fn reset(&mut self, registry: &Registry);
@@ -203,6 +205,10 @@ where
                     log::debug!("worker {}: done", device_worker.name)
                 }
             })?;
+        log::debug!(
+            "{name}: created with {:x?}",
+            D::Feature::from_bits_truncate(reg.device_feature)
+        );
         let virtio_dev = VirtioDevice {
             name,
             reg,
@@ -323,7 +329,12 @@ where
                 let split_queues = self.queue_regs.iter().map(new_queue).collect();
                 Queues::Split(split_queues)
             };
-        log::debug!("{}: started with feature bit {feature:#b}", self.name);
+        log::debug!(
+            "{}: activated with {:x?} {:x?}",
+            self.name,
+            VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
+            D::Feature::from_bits_truncate(feature)
+        );
         self.handle_wake_events(&irq_sender)?;
         let mut events = Events::with_capacity(128);
         loop {

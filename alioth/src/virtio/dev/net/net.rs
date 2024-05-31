@@ -146,7 +146,6 @@ impl Net {
             | NetFeature::HOST_UFO
             | NetFeature::HOST_USO
             | detect_tap_offload(&file);
-        log::debug!("{name}: device fature: {dev_feat:x?}");
         setup_tap(&mut file, param.if_name.as_deref())?;
         let net = Net {
             name,
@@ -165,6 +164,7 @@ impl Net {
 
 impl Virtio for Net {
     type Config = NetConfig;
+    type Feature = NetFeature;
 
     fn num_queues(&self) -> u16 {
         let data_queues = self.config.max_queue_pairs << 1;
@@ -193,7 +193,6 @@ impl Virtio for Net {
 
     fn activate(&mut self, registry: &Registry, feature: u64, _memory: &RamBus) -> Result<()> {
         let feature = NetFeature::from_bits_retain(feature);
-        log::debug!("{}: driver feature: {:?}", self.name, feature);
         enable_tap_offload(&mut self.tap, feature)?;
         registry.register(
             &mut SourceFd(&self.tap.as_raw_fd()),
