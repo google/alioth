@@ -324,6 +324,9 @@ where
             }
 
             if id == 0 {
+                for dev in self.pci_devs.read().iter() {
+                    dev.dev.reset()?;
+                }
                 self.memory.reset()?;
             }
         }
