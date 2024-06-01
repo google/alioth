@@ -75,6 +75,9 @@ pub enum Error {
 
     #[error("vhost backend is missing device feature {0:#x}")]
     VhostMissingDeviceFeature(u64),
+
+    #[error("vhost-{0} signals an error of queue {1:#x}")]
+    VhostQueueErr(&'static str, u16),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;

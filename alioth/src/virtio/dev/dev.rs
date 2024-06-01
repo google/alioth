@@ -38,6 +38,8 @@ pub mod entropy;
 pub mod fs;
 #[path = "net/net.rs"]
 pub mod net;
+#[path = "vsock/vsock.rs"]
+pub mod vsock;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
