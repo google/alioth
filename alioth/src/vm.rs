@@ -169,8 +169,13 @@ where
         let name = Arc::new(name);
         let dev = param.build(name.clone())?;
         let registry = self.board.vm.create_ioeventfd_registry()?;
-        let virtio_dev =
-            VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus(), &registry)?;
+        let virtio_dev = VirtioDevice::new(
+            name.clone(),
+            dev,
+            self.board.memory.ram_bus(),
+            &registry,
+            self.board.config.coco.is_some(),
+        )?;
         let msi_sender = self.board.vm.create_msi_sender()?;
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender, registry)?;
         let dev = Arc::new(dev);

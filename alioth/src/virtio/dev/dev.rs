@@ -168,14 +168,26 @@ where
         Ok(())
     }
 
-    pub fn new<R>(name: Arc<String>, dev: D, memory: Arc<RamBus>, registry: &R) -> Result<Self>
+    pub fn new<R>(
+        name: Arc<String>,
+        dev: D,
+        memory: Arc<RamBus>,
+        registry: &R,
+        restricted_memory: bool,
+    ) -> Result<Self>
     where
         R: IoeventFdRegistry<IoeventFd = E>,
     {
         let poll = Poll::new()?;
         let device_config = dev.config();
+        let mut dev_feat = dev.feature();
+        if restricted_memory {
+            dev_feat |= VirtioFeature::ACCESS_PLATFORM.bits()
+        } else {
+            dev_feat &= !VirtioFeature::ACCESS_PLATFORM.bits()
+        }
         let reg = Arc::new(Register {
-            device_feature: dev.feature(),
+            device_feature: dev_feat,
             ..Default::default()
         });
         let num_queues = dev.num_queues();
@@ -339,7 +351,7 @@ where
         let memory = &self.memory;
         self.dev.activate(
             self.poll.registry(),
-            feature,
+            feature & !VirtioFeature::ACCESS_PLATFORM.bits(),
             memory,
             irq_sender.as_ref(),
             &self.queue_regs,
