@@ -23,6 +23,7 @@ use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 use alioth::virtio::dev::fs::VuFsParam;
 use alioth::virtio::dev::net::NetParam;
+use alioth::virtio::dev::vsock::VhostVsockParam;
 use alioth::vm::Machine;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -72,6 +73,12 @@ enum FsParam {
     Vu(VuFsParam),
 }
 
+#[derive(Debug, Deserialize, Clone)]
+enum VsockParam {
+    #[serde(alias = "vhost")]
+    Vhost(VhostVsockParam),
+}
+
 #[derive(Args, Debug, Clone)]
 struct RunArgs {
     #[arg(long)]
@@ -118,6 +125,9 @@ struct RunArgs {
 
     #[arg(long)]
     fs: Vec<String>,
+
+    #[arg(long)]
+    vsock: Option<String>,
 }
 
 fn main_run(args: RunArgs) -> Result<()> {
@@ -181,6 +191,12 @@ fn main_run(args: RunArgs) -> Result<()> {
         let param: FsParam = serde_aco::from_arg(&fs)?;
         match param {
             FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p)?,
+        };
+    }
+    if let Some(vsock) = args.vsock {
+        let param = serde_aco::from_arg(&vsock)?;
+        match param {
+            VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock".to_owned(), p)?,
         };
     }
 
