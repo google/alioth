@@ -25,6 +25,8 @@ pub mod dev;
 pub mod pci;
 #[path = "queue/queue.rs"]
 pub mod queue;
+#[path = "vhost/vhost.rs"]
+pub mod vhost;
 pub mod vu;
 
 #[derive(Debug, Error)]
@@ -70,6 +72,9 @@ pub enum Error {
 
     #[error("vhost-user backend is missing protocol feature {0:x?}")]
     VuMissingProtocolFeature(vu::VuFeature),
+
+    #[error("vhost backend is missing device feature {0:#x}")]
+    VhostMissingDeviceFeature(u64),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
