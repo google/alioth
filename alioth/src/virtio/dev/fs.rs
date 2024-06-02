@@ -156,6 +156,9 @@ impl Virtio for VuFs {
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         let mem = memory.lock_layout();
         for (gpa, slot) in mem.iter() {
+            let Some(fd) = slot.pages.fd() else {
+                continue;
+            };
             let region = MemorySingleRegion {
                 _padding: 0,
                 region: MemoryRegion {
@@ -165,9 +168,7 @@ impl Virtio for VuFs {
                     mmap_offset: 0,
                 },
             };
-            self.vu_dev
-                .add_mem_region(&region, slot.pages.fd().as_raw_fd())
-                .unwrap();
+            self.vu_dev.add_mem_region(&region, fd.as_raw_fd()).unwrap();
             log::info!("region: {region:x?}");
             self.regions.push(region.region);
         }

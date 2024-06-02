@@ -132,7 +132,7 @@ where
         let memory = &self.memory;
 
         let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
-        let pages_low = ArcMemPages::from_anonymous(low_mem_size, None, Some(c"ram-low"))?;
+        let pages_low = ArcMemPages::from_memfd(low_mem_size, None, Some(c"ram-low"))?;
         if self.config.coco.is_some() {
             self.memory.ram_bus().register_encrypted_pages(&pages_low)?;
         }
@@ -161,11 +161,8 @@ where
         };
         memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
         if config.mem_size > RAM_32_SIZE {
-            let mem_hi = ArcMemPages::from_anonymous(
-                config.mem_size - RAM_32_SIZE,
-                None,
-                Some(c"ram-high"),
-            )?;
+            let mem_hi =
+                ArcMemPages::from_memfd(config.mem_size - RAM_32_SIZE, None, Some(c"ram-high"))?;
             if self.config.coco.is_some() {
                 self.memory.ram_bus().register_encrypted_pages(&mem_hi)?;
             }
