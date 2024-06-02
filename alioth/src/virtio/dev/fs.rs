@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::ErrorKind;
+use std::iter::zip;
 use std::mem::size_of_val;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
@@ -19,7 +21,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
+use libc::{
+    eventfd, mmap, EFD_CLOEXEC, EFD_NONBLOCK, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE,
+    MAP_SHARED, PROT_NONE,
+};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -27,14 +32,15 @@ use serde::Deserialize;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::{MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
     DeviceConfig, MemoryRegion, MemorySingleRegion, VirtqAddr, VirtqState, VuDev, VuFeature,
 };
 use crate::virtio::{DeviceId, Error, IrqSender, Result, VirtioFeature};
-use crate::{ffi, impl_mmio_for_zerocopy};
+use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
 #[repr(C, align(4))]
 #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
@@ -53,6 +59,18 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone, FromBytes, FromZeroes, AsBytes)]
+#[repr(C)]
+struct VuFsMap {
+    pub fd_offset: [u64; 8],
+    pub cache_offset: [u64; 8],
+    pub len: [u64; 8],
+    pub flags: [u64; 8],
+}
+
+const VHOST_USER_BACKEND_FS_MAP: u32 = 6;
+const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
+
 #[derive(Debug)]
 pub struct VuFs {
     name: Arc<String>,
@@ -61,12 +79,13 @@ pub struct VuFs {
     feature: u64,
     num_queues: u16,
     regions: Vec<MemoryRegion>,
+    dax_region: Option<ArcMemPages>,
     error_fds: Vec<OwnedFd>,
 }
 
 impl VuFs {
     pub fn new(param: VuFsParam, name: Arc<String>) -> Result<Self> {
-        let vu_dev = VuDev::new(param.socket)?;
+        let mut vu_dev = VuDev::new(param.socket)?;
         let dev_feat = vu_dev.get_features()?;
         let virtio_feat = VirtioFeature::from_bits_retain(dev_feat);
         let need_feat = VirtioFeature::VHOST_PROTOCOL | VirtioFeature::VERSION_1;
@@ -79,6 +98,10 @@ impl VuFs {
         let mut need_feat = VuFeature::MQ | VuFeature::REPLY_ACK | VuFeature::CONFIGURE_MEM_SLOTS;
         if param.tag.is_none() {
             need_feat |= VuFeature::CONFIG;
+        }
+        if param.dax_window > 0 {
+            assert!(param.dax_window.count_ones() == 1 && param.dax_window > (4 << 10));
+            need_feat |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD;
         }
         if !prot_feat.contains(need_feat) {
             return Err(Error::VuMissingProtocolFeature(need_feat & !prot_feat));
@@ -103,6 +126,13 @@ impl VuFs {
             let dev_config = vu_dev.get_config(&empty_cfg)?;
             FsConfig::read_from_prefix(&dev_config.region).unwrap()
         };
+        let dax_region = if param.dax_window > 0 {
+            vu_dev.setup_channel()?;
+            let size = align_up!(param.dax_window, 4 << 10);
+            Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE))?)
+        } else {
+            None
+        };
 
         Ok(VuFs {
             num_queues,
@@ -112,6 +142,7 @@ impl VuFs {
             feature: dev_feat & !VirtioFeature::VHOST_PROTOCOL.bits(),
             regions: Vec::new(),
             error_fds: Vec::new(),
+            dax_region,
         })
     }
 }
@@ -120,6 +151,8 @@ impl VuFs {
 pub struct VuFsParam {
     pub socket: PathBuf,
     pub tag: Option<String>,
+    #[serde(default)]
+    pub dax_window: usize,
 }
 
 impl DevParam for VuFsParam {
@@ -222,18 +255,93 @@ impl Virtio for VuFs {
             self.vu_dev.set_virtq_enable(&virtq_enable).unwrap();
             log::info!("virtq_enable: {virtq_enable:x?}");
         }
+        if let Some(channel) = self.vu_dev.get_channel() {
+            channel.set_nonblocking(true)?;
+            registry.register(
+                &mut SourceFd(&channel.as_raw_fd()),
+                Token(self.num_queues as _),
+                Interest::READABLE,
+            )?;
+        }
         Ok(())
     }
 
     fn handle_event(
         &mut self,
         event: &Event,
-        _queues: &[impl VirtQueue],
+        queues: &[impl VirtQueue],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
     ) -> Result<()> {
-        let q_index = event.token();
-        Err(Error::VuQueueErr(q_index.0 as _))
+        let q_index = event.token().0;
+        if q_index < queues.len() {
+            return Err(Error::VuQueueErr(q_index as _));
+        }
+
+        let Some(dax_region) = &self.dax_region else {
+            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+        };
+        loop {
+            let mut fs_map = VuFsMap::new_zeroed();
+            let mut fds = [None, None, None, None, None, None, None, None];
+            let ret = self
+                .vu_dev
+                .receive_from_channel(fs_map.as_bytes_mut(), &mut fds);
+            let (request, size) = match ret {
+                Ok((r, s)) => (r, s),
+                Err(Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            };
+            if size as usize != size_of_val(&fs_map) {
+                return Err(Error::VuInvalidPayloadSize(size_of_val(&fs_map), size));
+            }
+            match request {
+                VHOST_USER_BACKEND_FS_MAP => {
+                    for (index, fd) in fds.iter().enumerate() {
+                        let Some(fd) = fd else {
+                            break;
+                        };
+                        let raw_fd = fd.as_raw_fd();
+                        let map_addr = dax_region.addr() + fs_map.cache_offset[index] as usize;
+                        log::trace!(
+                            "{}: mapping fd {raw_fd} to offset {:#x}",
+                            self.name,
+                            fs_map.cache_offset[index]
+                        );
+                        ffi!(
+                            unsafe {
+                                mmap(
+                                    map_addr as _,
+                                    fs_map.len[index] as _,
+                                    fs_map.flags[index] as _,
+                                    MAP_SHARED | MAP_FIXED,
+                                    raw_fd,
+                                    fs_map.fd_offset[index] as _,
+                                )
+                            },
+                            MAP_FAILED
+                        )?;
+                    }
+                }
+                VHOST_USER_BACKEND_FS_UNMAP => {
+                    for (len, offset) in zip(fs_map.len, fs_map.cache_offset) {
+                        if len == 0 {
+                            continue;
+                        }
+                        log::trace!("{}: unmapping offset {offset:#x}, size {len:#x}", self.name);
+                        let map_addr = dax_region.addr() + offset as usize;
+                        let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED;
+                        ffi!(
+                            unsafe { mmap(map_addr as _, len as _, PROT_NONE, flags, -1, 0) },
+                            MAP_FAILED
+                        )?;
+                    }
+                }
+                _ => unimplemented!("unknown request {request:#x}"),
+            }
+            self.vu_dev.ack_request(request, &0u64)?;
+        }
+        Ok(())
     }
 
     fn handle_queue(
@@ -285,5 +393,13 @@ impl Virtio for VuFs {
         } else {
             Err(Error::InvalidQueueIndex(q_index))
         }
+    }
+
+    fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
+        let dax_region = self.dax_region.as_ref()?;
+        Some(Arc::new(MemRegion::with_mapped(
+            dax_region.clone(),
+            MemRegionType::Hidden,
+        )))
     }
 }

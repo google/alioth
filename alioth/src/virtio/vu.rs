@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{IoSlice, IoSliceMut, Read};
+use std::io::{IoSlice, IoSliceMut, Read, Write};
+use std::iter::zip;
 use std::mem::{size_of, size_of_val};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -114,6 +115,9 @@ impl MessageFlag {
     pub const fn sender() -> Self {
         MessageFlag(MessageFlag::VERSION_1 | MessageFlag::NEED_REPLY)
     }
+    pub const fn receiver() -> Self {
+        MessageFlag(MessageFlag::VERSION_1 | MessageFlag::REPLY)
+    }
 }
 
 #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
@@ -178,13 +182,34 @@ pub struct Message {
 #[derive(Debug)]
 pub struct VuDev {
     conn: UnixStream,
+    channel: Option<UnixStream>,
 }
 
 impl VuDev {
     pub fn new<P: AsRef<Path>>(sock: P) -> Result<Self> {
         Ok(VuDev {
             conn: UnixStream::connect(sock)?,
+            channel: None,
         })
+    }
+
+    pub fn setup_channel(&mut self) -> Result<()> {
+        if self.channel.is_some() {
+            return Ok(());
+        }
+        let mut socket_fds = [0; 2];
+        ffi!(unsafe {
+            libc::socketpair(libc::PF_UNIX, libc::SOCK_STREAM, 0, socket_fds.as_mut_ptr())
+        })?;
+        self.set_backend_req_fd(socket_fds[1])?;
+        ffi!(unsafe { libc::close(socket_fds[1]) })?;
+        let channel = unsafe { UnixStream::from_raw_fd(socket_fds[0]) };
+        self.channel = Some(channel);
+        Ok(())
+    }
+
+    pub fn get_channel(&self) -> Option<&UnixStream> {
+        self.channel.as_ref()
     }
 
     fn send_msg<T: AsBytes, R: FromBytes + AsBytes>(
@@ -252,24 +277,18 @@ impl VuDev {
         let read_size = (&self.conn).read_vectored(&mut bufs)?;
         let expect_size = size_of::<Message>() + bufs[1].len();
         if read_size != expect_size {
-            return Err(Error::InvalidVhostRespSize(expect_size, read_size));
+            return Err(Error::VuMessageSizeMismatch(expect_size, read_size));
         }
         if resp.request != req {
             return Err(Error::InvalidVhostRespMsg(req, resp.request));
         }
         if size_of::<R>() != 0 {
             if resp.size != size_of::<R>() as u32 {
-                return Err(Error::InvalidVhostRespPayloadSize(
-                    size_of::<R>(),
-                    resp.size,
-                ));
+                return Err(Error::VuInvalidPayloadSize(size_of::<R>(), resp.size));
             }
         } else {
             if resp.size != size_of::<u64>() as u32 {
-                return Err(Error::InvalidVhostRespPayloadSize(
-                    size_of::<u64>(),
-                    resp.size,
-                ));
+                return Err(Error::VuInvalidPayloadSize(size_of::<u64>(), resp.size));
             }
             if ret_code != 0 {
                 return Err(Error::VuRequestErr(ret_code, req));
@@ -337,5 +356,76 @@ impl VuDev {
     }
     pub fn remove_mem_region(&self, payload: &MemorySingleRegion) -> Result<()> {
         self.send_msg(VHOST_USER_REM_MEM_REG, payload, &[])
+    }
+
+    fn set_backend_req_fd(&self, fd: RawFd) -> Result<()> {
+        self.send_msg(VHOST_USER_SET_BACKEND_REQ_FD, &0u64, &[fd])
+    }
+
+    pub fn receive_from_channel(
+        &self,
+        buf: &mut [u8],
+        fds: &mut [Option<OwnedFd>],
+    ) -> Result<(u32, u32)> {
+        let mut msg = Message::new_zeroed();
+        let mut bufs = [IoSliceMut::new(msg.as_bytes_mut()), IoSliceMut::new(buf)];
+        const CMSG_BUF_LEN: usize = unsafe { libc::CMSG_SPACE(8) } as usize;
+        debug_assert_eq!(CMSG_BUF_LEN % size_of::<u64>(), 0);
+        let mut cmsg_buf = [0u64; CMSG_BUF_LEN / size_of::<u64>()];
+        let mut uds_msg = libc::msghdr {
+            msg_name: null_mut(),
+            msg_namelen: 0,
+            msg_iov: bufs.as_mut_ptr() as _,
+            msg_iovlen: bufs.len(),
+            msg_control: cmsg_buf.as_mut_ptr() as _,
+            msg_controllen: CMSG_BUF_LEN,
+            msg_flags: 0,
+        };
+        let Some(channel) = &self.channel else {
+            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+        };
+        let r_size = ffi!(unsafe { libc::recvmsg(channel.as_raw_fd(), &mut uds_msg, 0) })? as usize;
+        let expected_size = size_of::<Message>() + msg.size as usize;
+        if r_size != expected_size {
+            return Err(Error::VuMessageSizeMismatch(expected_size, r_size));
+        }
+
+        let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&uds_msg) };
+        if cmsg_ptr.is_null() {
+            return Ok((msg.request, msg.size));
+        }
+        let cmsg = unsafe { &*cmsg_ptr };
+        if cmsg.cmsg_level != libc::SOL_SOCKET || cmsg.cmsg_type != libc::SCM_RIGHTS {
+            return Ok((msg.request, msg.size));
+        }
+        let cmsg_data_ptr = unsafe { libc::CMSG_DATA(cmsg_ptr) } as *const RawFd;
+        let count =
+            (cmsg_ptr as usize + cmsg.cmsg_len - cmsg_data_ptr as usize) / size_of::<RawFd>();
+        if count > fds.len() {
+            return Err(Error::VuInsufficientBuffer(fds.len(), count));
+        }
+        for (fd, index) in zip(fds.iter_mut(), 0..count) {
+            *fd = Some(unsafe {
+                OwnedFd::from_raw_fd(std::ptr::read_unaligned(cmsg_data_ptr.add(index)))
+            });
+        }
+        Ok((msg.request, msg.size))
+    }
+
+    pub fn ack_request<T: AsBytes>(&self, req: u32, payload: &T) -> Result<()> {
+        let Some(channel) = &self.channel else {
+            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+        };
+        let msg = Message {
+            request: req,
+            flag: MessageFlag::receiver(),
+            size: size_of_val(payload) as _,
+        };
+        let bufs = [
+            IoSlice::new(msg.as_bytes()),
+            IoSlice::new(payload.as_bytes()),
+        ];
+        Write::write_vectored(&mut (&*channel), &bufs)?;
+        Ok(())
     }
 }

@@ -55,11 +55,11 @@ pub enum Error {
     #[error("Invalid vhost user response message, want {0}, got {1}")]
     InvalidVhostRespMsg(u32, u32),
 
-    #[error("Invalid vhost user response size, want {0}, get {1}")]
-    InvalidVhostRespSize(usize, usize),
+    #[error("Invalid vhost user message size, want {0}, get {1}")]
+    VuMessageSizeMismatch(usize, usize),
 
-    #[error("Invalid vhost user response payload size, want {0}, got {1}")]
-    InvalidVhostRespPayloadSize(usize, u32),
+    #[error("Invalid vhost user message payload size, want {0}, got {1}")]
+    VuInvalidPayloadSize(usize, u32),
 
     #[error("vhost-user backend replied error code {0:#x} to request {1:#x}")]
     VuRequestErr(u64, u32),
@@ -72,6 +72,9 @@ pub enum Error {
 
     #[error("vhost-user backend is missing protocol feature {0:x?}")]
     VuMissingProtocolFeature(vu::VuFeature),
+
+    #[error("insufficient buffer (size {0}) for holding {1} fds")]
+    VuInsufficientBuffer(usize, usize),
 
     #[error("vhost backend is missing device feature {0:#x}")]
     VhostMissingDeviceFeature(u64),
