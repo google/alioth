@@ -372,6 +372,11 @@ impl Virtio for VuFs {
         while let Some(fd) = self.error_fds.pop() {
             registry.deregister(&mut SourceFd(&fd.as_raw_fd())).unwrap();
         }
+        if let Some(channel) = self.vu_dev.get_channel() {
+            registry
+                .deregister(&mut SourceFd(&channel.as_raw_fd()))
+                .unwrap();
+        }
         while let Some(region) = self.regions.pop() {
             self.vu_dev
                 .remove_mem_region(&MemorySingleRegion {
