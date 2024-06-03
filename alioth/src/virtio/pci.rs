@@ -215,6 +215,23 @@ where
             q.enabled.store(false, Ordering::Release);
         }
     }
+
+    fn msix_change_allowed(&self, old: u16) -> bool {
+        let Some(entry) = self.irq_sender.msix_entries.get(old as usize) else {
+            return true;
+        };
+        let entry = entry.read();
+        if let MsixTableMmioEntry::IrqFd(fd) = &*entry {
+            log::error!(
+                "{}: MSI-X vector {old:#x} was assigned to irqfd {:#x}",
+                self.name,
+                fd.as_fd().as_raw_fd(),
+            );
+            false
+        } else {
+            true
+        }
+    }
 }
 
 impl<M> Mmio for VirtioPciRegisterMmio<M>
@@ -367,11 +384,19 @@ where
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
                 let config_msix = &self.irq_sender.msix_vector.config;
-                let old = config_msix.swap(val as u16, Ordering::AcqRel);
-                log::trace!(
-                    "{}: config MSI-X vector update: {old:#x} -> {val:#x}",
-                    self.name
-                );
+                let old = config_msix.load(Ordering::Acquire);
+                if self.msix_change_allowed(old) {
+                    config_msix.store(val as u16, Ordering::Release);
+                    log::trace!(
+                        "{}: config MSI-X vector update: {old:#x} -> {val:#x}",
+                        self.name
+                    );
+                } else {
+                    log::error!(
+                        "{}: cannot change config MSI-X vector from {old:#x} to {val:#x}",
+                        self.name
+                    )
+                }
             }
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
                 let status = DevStatus::from_bits_truncate(val as u8);
@@ -406,11 +431,19 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_MSIX_VECTOR => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed) as usize;
                 if let Some(msix_vector) = self.irq_sender.msix_vector.queues.get(q_sel) {
-                    let old = msix_vector.swap(val as u16, Ordering::AcqRel);
-                    log::trace!(
-                        "{}: queue {q_sel} MSI-X vector update: {old:#x} -> {val:#x}",
-                        self.name
-                    );
+                    let old = msix_vector.load(Ordering::Acquire);
+                    if self.msix_change_allowed(old) {
+                        msix_vector.store(val as u16, Ordering::Release);
+                        log::trace!(
+                            "{}: queue {q_sel} MSI-X vector update: {old:#x} -> {val:#x}",
+                            self.name
+                        );
+                    } else {
+                        log::error!(
+                            "{}: cannot change queue {q_sel} MSI-X vector from {old:#x} to {val:#x}",
+                            self.name
+                        )
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_ENABLE => {
