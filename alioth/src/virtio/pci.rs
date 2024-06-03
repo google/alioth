@@ -211,6 +211,10 @@ where
         for q_vector in self.irq_sender.msix_vector.queues.iter() {
             q_vector.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         }
+        for entry in self.irq_sender.msix_entries.iter() {
+            let mut entry = entry.write();
+            *entry = MsixTableMmioEntry::Entry(MsixTableEntry::default());
+        }
         for q in self.queues.iter() {
             q.enabled.store(false, Ordering::Release);
         }
