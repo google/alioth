@@ -309,6 +309,13 @@ where
 
             self.sync_vcpus(&vcpus);
 
+            if id == 0 {
+                for dev in self.pci_devs.read().iter() {
+                    dev.dev.reset()?;
+                }
+                self.memory.reset()?;
+            }
+
             if new_state == STATE_SHUTDOWN {
                 break Ok(());
             }
@@ -321,13 +328,6 @@ where
             ) {
                 Ok(STATE_REBOOT_PENDING) | Err(STATE_RUNNING) => {}
                 _ => break Ok(()),
-            }
-
-            if id == 0 {
-                for dev in self.pci_devs.read().iter() {
-                    dev.dev.reset()?;
-                }
-                self.memory.reset()?;
             }
         }
     }
