@@ -241,10 +241,15 @@ impl KvmIrqFd {
         }
         let irq_routing = KvmIrqRouting {
             nr: index as u32,
-            flags: 0,
+            _flags: 0,
             entries,
         };
         unsafe { kvm_set_gsi_routing(&self.vm_fd, &irq_routing) }?;
+        log::trace!(
+            "vm-{}: routing table updated to {:#x?}",
+            self.vm_fd.as_raw_fd(),
+            irq_routing
+        );
         Ok(())
     }
 }
