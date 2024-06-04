@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fmt::{Debug, Formatter, Result};
+
 use bitflags::bitflags;
 
 pub const KVMIO: u8 = 0xAE;
@@ -264,6 +266,12 @@ pub union KvmIrqRoutingType {
     pub pad: [u32; 8],
 }
 
+impl Debug for KvmIrqRoutingType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.debug_list().entries(unsafe { &self.pad }.iter()).finish()
+    }
+}
+
 impl Default for KvmIrqRoutingType {
     fn default() -> Self {
         KvmIrqRoutingType { pad: [0; 8] }
@@ -287,12 +295,36 @@ pub struct KvmIrqRoutingEntry {
     pub routing: KvmIrqRoutingType,
 }
 
+impl Debug for KvmIrqRoutingEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        let mut debug_struct = f.debug_struct("KvmIrqRoutingEntry");
+        debug_struct.field("gsi", &self.gsi);
+        debug_struct.field("flags", &self.flags);
+        match self.type_ {
+            KVM_IRQ_ROUTING_IRQCHIP => {
+                debug_struct.field("irqchip", unsafe { &self.routing.irqchip })
+            }
+            KVM_IRQ_ROUTING_MSI => debug_struct.field("msi", unsafe { &self.routing.msi }),
+            _ => debug_struct.field("unknown", unsafe { &self.routing.pad }),
+        };
+        debug_struct.finish()
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KvmIrqRouting<const N: usize> {
     pub nr: u32,
-    pub flags: u32,
+    pub _flags: u32,
     pub entries: [KvmIrqRoutingEntry; N],
+}
+
+impl<const N: usize> Debug for KvmIrqRouting<N> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.debug_list()
+            .entries(self.entries.iter().take(self.nr as usize))
+            .finish()
+    }
 }
 
 #[repr(C)]
