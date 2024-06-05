@@ -56,6 +56,8 @@ pub enum Error {
     CreatingMultipleMemory,
     #[error("cannot allocate irqfd")]
     CannotAllocateIrqFd,
+    #[error("cannot create multiple IntxSenders for pin {0}")]
+    CannotCreateMultipleIntxSender(u8),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
