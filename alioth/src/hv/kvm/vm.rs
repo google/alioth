@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -46,19 +46,30 @@ use crate::hv::{
     VmMemory,
 };
 
+#[derive(Debug)]
+pub(super) struct VmInner {
+    pub(super) fd: OwnedFd,
+    pub(super) sev_fd: Option<SevFd>,
+    pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
+    pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
+    pub(super) next_msi_gsi: AtomicU32,
+}
+
+impl AsRawFd for VmInner {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
 pub struct KvmVm {
-    pub(super) fd: Arc<OwnedFd>,
+    pub(super) vm: Arc<VmInner>,
     pub(super) vcpu_mmap_size: usize,
     pub(super) memory_created: bool,
-    pub(super) sev_fd: Option<Arc<SevFd>>,
-    pub(super) ioeventfds: Arc<Mutex<HashMap<i32, KvmIoEventFd>>>,
-    pub(super) msi_table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
-    pub(super) next_msi_gsi: Arc<AtomicU32>,
 }
 
 #[derive(Debug)]
 pub struct KvmMemory {
-    pub(super) fd: Arc<OwnedFd>,
+    pub(super) vm: Arc<VmInner>,
 }
 
 impl VmMemory for KvmMemory {
@@ -90,7 +101,7 @@ impl VmMemory for KvmMemory {
             userspace_addr: hva as _,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.fd, &region) }?;
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }?;
         Ok(())
     }
 
@@ -103,12 +114,12 @@ impl VmMemory for KvmMemory {
             userspace_addr: 0,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.fd, &region) }?;
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }?;
         Ok(())
     }
 
     fn max_mem_slots(&self) -> Result<u32, Error> {
-        let ret = unsafe { kvm_check_extension(&self.fd, KVM_CAP_NR_MEMSLOTS) }?;
+        let ret = unsafe { kvm_check_extension(&self.vm, KVM_CAP_NR_MEMSLOTS) }?;
         Ok(ret as u32)
     }
 
@@ -117,7 +128,7 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_reg_region(&self.fd, &region) }?;
+        unsafe { kvm_memory_encrypt_reg_region(&self.vm, &region) }?;
         Ok(())
     }
 
@@ -126,7 +137,7 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_unreg_region(&self.fd, &region) }?;
+        unsafe { kvm_memory_encrypt_unreg_region(&self.vm, &region) }?;
         Ok(())
     }
 }
@@ -155,14 +166,13 @@ pub(crate) struct KvmMsiEntryData {
 #[derive(Debug)]
 pub struct KvmIrqFd {
     event_fd: OwnedFd,
-    vm_fd: Arc<OwnedFd>,
+    vm: Arc<VmInner>,
     gsi: u32,
-    table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
 }
 
 impl Drop for KvmIrqFd {
     fn drop(&mut self) {
-        let mut table = self.table.write();
+        let mut table = self.vm.msi_table.write();
         if table.remove(&self.gsi).is_none() {
             log::error!("cannot find gsi {} in the gsi table", self.gsi);
         };
@@ -170,7 +180,7 @@ impl Drop for KvmIrqFd {
             log::error!(
                 "removing irqfd {} from vm {}: {e}",
                 self.event_fd.as_raw_fd(),
-                self.vm_fd.as_raw_fd()
+                self.vm.as_raw_fd()
             )
         }
     }
@@ -189,7 +199,7 @@ impl KvmIrqFd {
             gsi: self.gsi,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm_fd, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }?;
         log::debug!(
             "irqfd assigned gsi {:#x} -> eventfd {:#x}",
             self.gsi,
@@ -205,7 +215,7 @@ impl KvmIrqFd {
             flags: KvmIrqfdFlag::DEASSIGN,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm_fd, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }?;
         log::debug!(
             "irqfd de-assigned gsi {:#x} -> eventfd {:#x}",
             self.gsi,
@@ -244,10 +254,10 @@ impl KvmIrqFd {
             _flags: 0,
             entries,
         };
-        unsafe { kvm_set_gsi_routing(&self.vm_fd, &irq_routing) }?;
+        unsafe { kvm_set_gsi_routing(&self.vm, &irq_routing) }?;
         log::trace!(
             "vm-{}: routing table updated to {:#x?}",
-            self.vm_fd.as_raw_fd(),
+            self.vm.as_raw_fd(),
             irq_routing
         );
         Ok(())
@@ -257,14 +267,14 @@ impl KvmIrqFd {
 macro_rules! impl_irqfd_method {
     ($field:ident, $get:ident, $set:ident) => {
         fn $get(&self) -> u32 {
-            let table = self.table.read();
+            let table = self.vm.msi_table.read();
             let Some(entry) = table.get(&self.gsi) else {
                 unreachable!("cannot find gsi {}", self.gsi);
             };
             entry.$field
         }
         fn $set(&self, val: u32) -> Result<()> {
-            let mut table = self.table.write();
+            let mut table = self.vm.msi_table.write();
             let Some(entry) = table.get_mut(&self.gsi) else {
                 unreachable!("cannot find gsi {}", self.gsi);
             };
@@ -289,7 +299,7 @@ impl IrqFd for KvmIrqFd {
     impl_irqfd_method!(data, get_data, set_data);
 
     fn get_masked(&self) -> bool {
-        let table = self.table.read();
+        let table = self.vm.msi_table.read();
         let Some(entry) = table.get(&self.gsi) else {
             unreachable!("cannot find gsi {}", self.gsi);
         };
@@ -297,7 +307,7 @@ impl IrqFd for KvmIrqFd {
     }
 
     fn set_masked(&self, val: bool) -> Result<()> {
-        let mut table = self.table.write();
+        let mut table = self.vm.msi_table.write();
         let Some(entry) = table.get_mut(&self.gsi) else {
             unreachable!("cannot find gsi {}", self.gsi);
         };
@@ -323,9 +333,7 @@ const MAX_GSI_ROUTES: usize = 256;
 
 #[derive(Debug)]
 pub struct KvmMsiSender {
-    vm_fd: Arc<OwnedFd>,
-    msi_table: Arc<RwLock<HashMap<u32, KvmMsiEntryData>>>,
-    next_msi_gsi: Arc<AtomicU32>,
+    vm: Arc<VmInner>,
 }
 
 impl MsiSender for KvmMsiSender {
@@ -338,17 +346,17 @@ impl MsiSender for KvmMsiSender {
             data,
             ..Default::default()
         };
-        unsafe { kvm_signal_msi(&self.vm_fd, &kvm_msi) }?;
+        unsafe { kvm_signal_msi(&self.vm, &kvm_msi) }?;
         Ok(())
     }
 
     fn create_irqfd(&self) -> Result<Self::IrqFd> {
         let event_fd =
             unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
-        let mut table = self.msi_table.write();
+        let mut table = self.vm.msi_table.write();
         let mut allocated_gsi = None;
         for _ in 0..(MAX_GSI_ROUTES - 24) {
-            let gsi = self.next_msi_gsi.fetch_add(1, Ordering::AcqRel)
+            let gsi = self.vm.next_msi_gsi.fetch_add(1, Ordering::AcqRel)
                 % (MAX_GSI_ROUTES as u32 - 24)
                 + 24;
             let new_entry = KvmMsiEntryData {
@@ -367,10 +375,9 @@ impl MsiSender for KvmMsiSender {
         };
         log::debug!("gsi {gsi} assigned to irqfd {}", event_fd.as_raw_fd());
         let entry = KvmIrqFd {
-            vm_fd: self.vm_fd.clone(),
+            vm: self.vm.clone(),
             event_fd,
             gsi,
-            table: self.msi_table.clone(),
         };
         Ok(entry)
     }
@@ -391,8 +398,7 @@ impl IoeventFd for KvmIoeventFd {}
 
 #[derive(Debug)]
 pub struct KvmIoeventFdRegistry {
-    vm_fd: Arc<OwnedFd>,
-    fds: Arc<Mutex<HashMap<i32, KvmIoEventFd>>>,
+    vm: Arc<VmInner>,
 }
 
 impl IoeventFdRegistry for KvmIoeventFdRegistry {
@@ -415,8 +421,8 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
             request.datamatch = data;
             request.flags |= KvmIoEventFdFlag::DATA_MATCH;
         }
-        unsafe { kvm_ioeventfd(&self.vm_fd, &request) }?;
-        let mut fds = self.fds.lock();
+        unsafe { kvm_ioeventfd(&self.vm, &request) }?;
+        let mut fds = self.vm.ioeventfds.lock();
         fds.insert(request.fd, request);
         Ok(())
     }
@@ -433,10 +439,10 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
     }
 
     fn deregister(&self, fd: &Self::IoeventFd) -> Result<()> {
-        let mut fds = self.fds.lock();
+        let mut fds = self.vm.ioeventfds.lock();
         if let Some(mut request) = fds.remove(&fd.as_fd().as_raw_fd()) {
             request.flags |= KvmIoEventFdFlag::DEASSIGN;
-            unsafe { kvm_ioeventfd(&self.vm_fd, &request) }?;
+            unsafe { kvm_ioeventfd(&self.vm, &request) }?;
         }
         Ok(())
     }
@@ -444,12 +450,12 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 
 impl KvmVm {
     fn check_extension(&self, id: u64) -> Result<bool, Error> {
-        let ret = unsafe { kvm_check_extension(&self.fd, id) }?;
+        let ret = unsafe { kvm_check_extension(&self.vm, id) }?;
         Ok(ret == 1)
     }
 
     pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<()> {
-        let Some(sev_fd) = &self.sev_fd else {
+        let Some(sev_fd) = &self.vm.sev_fd else {
             unreachable!("SevFd is not initialized")
         };
         let mut req = KvmSevCmd {
@@ -461,7 +467,7 @@ impl KvmVm {
             id: cmd,
             error: 0,
         };
-        unsafe { kvm_memory_encrypt_op(&self.fd, &mut req) }?;
+        unsafe { kvm_memory_encrypt_op(&self.vm, &mut req) }?;
         Ok(())
     }
 }
@@ -474,7 +480,7 @@ impl Vm for KvmVm {
     type IoeventFdRegistry = KvmIoeventFdRegistry;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
-        let vcpu_fd = unsafe { kvm_create_vcpu(&self.fd, id) }?;
+        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm, id) }?;
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
         Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
@@ -492,7 +498,7 @@ impl Vm for KvmVm {
             Err(Error::CreatingMultipleMemory)
         } else {
             let kvm_memory = KvmMemory {
-                fd: self.fd.clone(),
+                vm: self.vm.clone(),
             };
             self.memory_created = true;
             Ok(kvm_memory)
@@ -511,7 +517,7 @@ impl Vm for KvmVm {
             gsi: pin as u32,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.fd, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }?;
         Ok(KvmIntxSender {
             event_fd: unsafe { OwnedFd::from_raw_fd(event_fd) },
         })
@@ -524,16 +530,13 @@ impl Vm for KvmVm {
             })?;
         }
         Ok(KvmMsiSender {
-            vm_fd: self.fd.clone(),
-            msi_table: self.msi_table.clone(),
-            next_msi_gsi: self.next_msi_gsi.clone(),
+            vm: self.vm.clone(),
         })
     }
 
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
         Ok(KvmIoeventFdRegistry {
-            vm_fd: self.fd.clone(),
-            fds: self.ioeventfds.clone(),
+            vm: self.vm.clone(),
         })
     }
 
