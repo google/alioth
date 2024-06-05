@@ -47,7 +47,7 @@ use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_add
 use libc::SIGRTMIN;
 use sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT};
 use sev::SevFd;
-use vm::KvmVm;
+use vm::{KvmVm, VmInner};
 
 #[derive(Debug)]
 pub struct Kvm {
@@ -96,24 +96,26 @@ impl Hypervisor for Kvm {
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
         let sev_fd = if let Some(cv) = &config.coco {
             match cv {
-                Coco::AmdSev { .. } => Some(Arc::new(match &self.config.dev_sev {
+                Coco::AmdSev { .. } => Some(match &self.config.dev_sev {
                     Some(dev_sev) => SevFd::new(dev_sev),
                     None => SevFd::new("/dev/sev"),
-                }?)),
+                }?),
             }
         } else {
             None
         };
         let kvm_vm = KvmVm {
-            fd: Arc::new(fd),
-            sev_fd,
+            vm: Arc::new(VmInner {
+                fd,
+                sev_fd,
+                ioeventfds: Mutex::new(HashMap::new()),
+                msi_table: RwLock::new(HashMap::new()),
+                next_msi_gsi: AtomicU32::new(0),
+            }),
             vcpu_mmap_size,
             memory_created: false,
-            ioeventfds: Arc::new(Mutex::new(HashMap::new())),
-            next_msi_gsi: Arc::new(AtomicU32::new(0)),
-            msi_table: Arc::new(RwLock::new(HashMap::new())),
         };
-        if kvm_vm.sev_fd.is_some() {
+        if kvm_vm.vm.sev_fd.is_some() {
             match config.coco.as_ref().unwrap() {
                 Coco::AmdSev { policy } => {
                     if policy.es() {
@@ -124,12 +126,12 @@ impl Hypervisor for Kvm {
                 }
             }
         }
-        unsafe { kvm_create_irqchip(&kvm_vm.fd) }?;
+        unsafe { kvm_create_irqchip(&kvm_vm.vm) }?;
         // TODO should be in parameters
         #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_tss_addr(&kvm_vm.fd, 0xf000_0000) }?;
+        unsafe { kvm_set_tss_addr(&kvm_vm.vm, 0xf000_0000) }?;
         #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_identity_map_addr(&kvm_vm.fd, &0xf000_3000) }?;
+        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm, &0xf000_3000) }?;
         Ok(kvm_vm)
     }
 
