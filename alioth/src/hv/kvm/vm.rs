@@ -53,6 +53,53 @@ pub(super) struct VmInner {
     pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
     pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
     pub(super) next_msi_gsi: AtomicU32,
+    pub(super) pin_map: AtomicU32,
+}
+
+impl VmInner {
+    fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<()> {
+        let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
+        let pin_map = self.pin_map.load(Ordering::Acquire);
+        let mut index = 0;
+        for pin in 0..24 {
+            if pin_map & (1 << pin) == 0 {
+                continue;
+            }
+            entries[index].gsi = pin;
+            entries[index].type_ = KVM_IRQ_ROUTING_IRQCHIP;
+            entries[index].routing.irqchip = KvmIrqRoutingIrqchip {
+                irqchip: KVM_IRQCHIP_IOAPIC,
+                pin,
+            };
+            index += 1;
+        }
+        for (gsi, entry) in table.iter() {
+            if entry.masked {
+                continue;
+            }
+            entries[index].gsi = *gsi;
+            entries[index].type_ = KVM_IRQ_ROUTING_MSI;
+            entries[index].routing.msi = KvmIrqRoutingMsi {
+                address_hi: entry.addr_hi,
+                address_lo: entry.addr_lo,
+                data: entry.data,
+                devid: 0,
+            };
+            index += 1;
+        }
+        let irq_routing = KvmIrqRouting {
+            nr: index as u32,
+            _flags: 0,
+            entries,
+        };
+        log::trace!(
+            "vm-{}: updating GSI routing table to {:#x?}",
+            self.as_raw_fd(),
+            irq_routing
+        );
+        unsafe { kvm_set_gsi_routing(self, &irq_routing) }?;
+        Ok(())
+    }
 }
 
 impl AsRawFd for VmInner {
@@ -144,7 +191,29 @@ impl VmMemory for KvmMemory {
 
 #[derive(Debug)]
 pub struct KvmIntxSender {
+    pin: u8,
+    vm: Arc<VmInner>,
     event_fd: OwnedFd,
+}
+
+impl Drop for KvmIntxSender {
+    fn drop(&mut self) {
+        let pin_flag = 1 << (self.pin as u32);
+        self.vm.pin_map.fetch_and(!pin_flag, Ordering::AcqRel);
+        let request = KvmIrqfd {
+            fd: self.event_fd.as_raw_fd() as u32,
+            gsi: self.pin as u32,
+            flags: KvmIrqfdFlag::DEASSIGN,
+            ..Default::default()
+        };
+        if let Err(e) = unsafe { kvm_irqfd(&self.vm, &request) } {
+            log::error!(
+                "vm-{}: removing irqfd {}: {e}",
+                self.event_fd.as_raw_fd(),
+                self.vm.as_raw_fd()
+            )
+        }
+    }
 }
 
 impl IntxSender for KvmIntxSender {
@@ -223,45 +292,6 @@ impl KvmIrqFd {
         );
         Ok(())
     }
-
-    fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<()> {
-        let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
-        for (index, entry) in entries.iter_mut().enumerate().take(24) {
-            entry.gsi = index as u32;
-            entry.type_ = KVM_IRQ_ROUTING_IRQCHIP;
-            entry.routing.irqchip = KvmIrqRoutingIrqchip {
-                irqchip: KVM_IRQCHIP_IOAPIC,
-                pin: index as u32,
-            };
-        }
-        let mut index = 24;
-        for (gsi, entry) in table.iter() {
-            if entry.masked {
-                continue;
-            }
-            entries[index].gsi = *gsi;
-            entries[index].type_ = KVM_IRQ_ROUTING_MSI;
-            entries[index].routing.msi = KvmIrqRoutingMsi {
-                address_hi: entry.addr_hi,
-                address_lo: entry.addr_lo,
-                data: entry.data,
-                devid: 0,
-            };
-            index += 1;
-        }
-        let irq_routing = KvmIrqRouting {
-            nr: index as u32,
-            _flags: 0,
-            entries,
-        };
-        unsafe { kvm_set_gsi_routing(&self.vm, &irq_routing) }?;
-        log::trace!(
-            "vm-{}: routing table updated to {:#x?}",
-            self.vm.as_raw_fd(),
-            irq_routing
-        );
-        Ok(())
-    }
 }
 
 macro_rules! impl_irqfd_method {
@@ -284,7 +314,7 @@ macro_rules! impl_irqfd_method {
             entry.$field = val;
 
             if !entry.masked {
-                self.update_routing_table(&table)
+                self.vm.update_routing_table(&table)
             } else {
                 entry.dirty = true;
                 Ok(())
@@ -318,7 +348,7 @@ impl IrqFd for KvmIrqFd {
         entry.masked = val;
         if old_val && !val {
             if entry.dirty {
-                self.update_routing_table(&table)?;
+                self.vm.update_routing_table(&table)?;
             }
             self.assign_irqfd()
         } else if !old_val && val {
@@ -506,6 +536,10 @@ impl Vm for KvmVm {
     }
 
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
+        let pin_flag = 1 << pin;
+        if self.vm.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
+            return Err(Error::CannotCreateMultipleIntxSender(pin));
+        }
         if !self.check_extension(KVM_CAP_IRQFD)? {
             Err(Error::LackCap {
                 cap: "KVM_CAP_IRQFD".to_string(),
@@ -517,8 +551,11 @@ impl Vm for KvmVm {
             gsi: pin as u32,
             ..Default::default()
         };
+        self.vm.update_routing_table(&self.vm.msi_table.read())?;
         unsafe { kvm_irqfd(&self.vm, &request) }?;
         Ok(KvmIntxSender {
+            pin,
+            vm: self.vm.clone(),
             event_fd: unsafe { OwnedFd::from_raw_fd(event_fd) },
         })
     }
