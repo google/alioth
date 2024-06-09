@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod errors;
 mod layout;
 
 use proc_macro::TokenStream;
@@ -19,4 +20,9 @@ use proc_macro::TokenStream;
 #[proc_macro_derive(Layout)]
 pub fn derive_layout(input: TokenStream) -> TokenStream {
     layout::derive_layout(input)
+}
+
+#[proc_macro_attribute]
+pub fn trace_error(attr: TokenStream, item: TokenStream) -> TokenStream {
+    errors::trace_error(attr, item)
 }

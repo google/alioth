@@ -21,8 +21,10 @@ mod kvm;
 #[cfg(test)]
 pub(crate) mod test;
 #[cfg(target_os = "linux")]
-pub use kvm::{Kvm, KvmConfig};
+pub use kvm::{Kvm, KvmConfig, KvmError};
+use macros::trace_error;
 use serde::Deserialize;
+use snafu::Snafu;
 
 use std::fmt::Debug;
 use std::os::fd::AsFd;
@@ -32,32 +34,60 @@ use std::thread::JoinHandle;
 use arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
-use thiserror::Error;
 
 use crate::arch::sev::Policy;
 
-#[derive(Error, Debug)]
+#[trace_error]
+#[derive(Snafu)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("invalid memory map option for {hypervisor}: {option:?}")]
-    MemMapOption {
-        option: MemMapOption,
-        hypervisor: &'static str,
+    #[snafu(display("Failed to map hva {hva:#x} to gpa {gpa:#x}, size {size:#x}"))]
+    GuestMap {
+        hva: usize,
+        gpa: u64,
+        size: usize,
+        error: std::io::Error,
     },
-    #[error("IO error: {source}")]
-    StdIo {
-        #[from]
-        source: std::io::Error,
+    #[snafu(display("Failed to unmap gpa {gpa:#x}, size {size:#x}"))]
+    GuestUnmap {
+        gpa: u64,
+        size: usize,
+        error: std::io::Error,
     },
-    #[error("{msg}")]
-    Unexpected { msg: String },
-    #[error("lack capability: {cap}")]
-    LackCap { cap: String },
-    #[error("creating multipe memory")]
-    CreatingMultipleMemory,
-    #[error("cannot allocate irqfd")]
-    CannotAllocateIrqFd,
-    #[error("cannot create multiple IntxSenders for pin {0}")]
-    CannotCreateMultipleIntxSender(u8),
+    #[snafu(display("Hypervisor is missing capability: {cap}"))]
+    Capability { cap: &'static str },
+    #[snafu(display("Failed to setup signal handlers"))]
+    SetupSignal { error: std::io::Error },
+    #[snafu(display("Failed to create a VM"))]
+    CreateVm { error: std::io::Error },
+    #[snafu(display("Failed to create a VCPU"))]
+    CreateVcpu { error: std::io::Error },
+    #[snafu(display("Failed to create a device"))]
+    CreateDevice { error: std::io::Error },
+    #[snafu(display("Failed to configure VM parameters"))]
+    SetVmParam { error: std::io::Error },
+    #[snafu(display("Failed to configure VCPU registers"))]
+    VcpuReg { error: std::io::Error },
+    #[snafu(display("Failed to configure the guest CPUID"))]
+    GuestCpuid { error: std::io::Error },
+    #[snafu(display("Failed to configure an encrypted region"))]
+    EncryptedRegion { error: std::io::Error },
+    #[snafu(display("Cannot create multiple VM memories"))]
+    MemoryCreated,
+    #[snafu(display("Failed to configure an IrqFd"))]
+    IrqFd { error: std::io::Error },
+    #[snafu(display("Failed to configure an IoeventFd"))]
+    IoeventFd { error: std::io::Error },
+    #[snafu(display("Failed to create an IntxSender for pin {pin}"))]
+    CreateIntx { pin: u8, error: std::io::Error },
+    #[snafu(display("Failed to send an interrupt"))]
+    SendInterrupt { error: std::io::Error },
+    #[snafu(display("Failed to run a VCPU"))]
+    RunVcpu { error: std::io::Error },
+    #[snafu(display("Failed to stop a VCPU"))]
+    StopVcpu { error: std::io::Error },
+    #[snafu(display("KVM internal error"), context(false))]
+    KvmErr { source: Box<KvmError> },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

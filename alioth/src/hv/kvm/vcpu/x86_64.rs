@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use snafu::ResultExt;
+
 use crate::arch::reg::SegAccess;
 use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::hv::kvm::bindings::{
@@ -21,8 +23,9 @@ use crate::hv::kvm::ioctls::{
     kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_regs, kvm_set_sregs,
     kvm_set_sregs2,
 };
+use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::{Error, Result};
+use crate::hv::{error, Error, Result};
 
 macro_rules! set_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident, $val:expr) => {
@@ -135,12 +138,12 @@ macro_rules! get_kvm_seg_reg {
 
 impl KvmVcpu {
     fn get_kvm_regs(&self) -> Result<KvmRegs> {
-        let kvm_regs = unsafe { kvm_get_regs(&self.fd) }?;
+        let kvm_regs = unsafe { kvm_get_regs(&self.fd) }.context(error::VcpuReg)?;
         Ok(kvm_regs)
     }
 
     fn set_kvm_regs(&self, kvm_regs: &KvmRegs) -> Result<()> {
-        unsafe { kvm_set_regs(&self.fd, kvm_regs) }?;
+        unsafe { kvm_set_regs(&self.fd, kvm_regs) }.context(error::VcpuReg)?;
         Ok(())
     }
 
@@ -202,7 +205,7 @@ impl KvmVcpu {
         seg_regs: &[(SegReg, SegRegVal)],
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error> {
-        let mut kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
+        let mut kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
         for (reg, val) in sregs {
             set_kvm_sreg!(kvm_sregs2, reg, *val)
         }
@@ -212,24 +215,24 @@ impl KvmVcpu {
         for (reg, val) in seg_regs {
             set_kvm_seg_reg!(kvm_sregs2, reg, val);
         }
-        unsafe { kvm_set_sregs2(&self.fd, &kvm_sregs2) }?;
+        unsafe { kvm_set_sregs2(&self.fd, &kvm_sregs2) }.context(error::VcpuReg)?;
         Ok(())
     }
 
     pub fn kvm_get_dt_reg2(&self, reg: DtReg) -> Result<DtRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
+        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_dt_reg!(kvm_sregs2, reg);
         Ok(val)
     }
 
     pub fn kvm_get_seg_reg2(&self, reg: SegReg) -> Result<SegRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
+        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_seg_reg!(kvm_sregs2, reg);
         Ok(val)
     }
 
     pub fn kvm_get_sreg2(&self, reg: SReg) -> Result<u64> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
+        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_sreg!(kvm_sregs2, reg);
         Ok(val)
     }
@@ -240,7 +243,7 @@ impl KvmVcpu {
         seg_regs: &[(SegReg, SegRegVal)],
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error> {
-        let mut kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
+        let mut kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.context(error::VcpuReg)?;
         for (reg, val) in sregs {
             set_kvm_sreg!(kvm_sregs, reg, *val)
         }
@@ -250,33 +253,31 @@ impl KvmVcpu {
         for (reg, val) in seg_regs {
             set_kvm_seg_reg!(kvm_sregs, reg, val);
         }
-        unsafe { kvm_set_sregs(&self.fd, &kvm_sregs) }?;
+        unsafe { kvm_set_sregs(&self.fd, &kvm_sregs) }.context(error::VcpuReg)?;
         Ok(())
     }
 
     pub fn kvm_get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
+        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_dt_reg!(kvm_sregs, reg);
         Ok(val)
     }
 
     pub fn kvm_get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
+        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_seg_reg!(kvm_sregs, reg);
         Ok(val)
     }
 
     pub fn kvm_get_sreg(&self, reg: SReg) -> Result<u64> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
+        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_sreg!(kvm_sregs, reg);
         Ok(val)
     }
 
     pub fn kvm_set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
         if cpuids.len() > KVM_MAX_CPUID_ENTRIES {
-            Err(Error::Unexpected {
-                msg: format!("exeeds kvm cpuid entry limit: {}", KVM_MAX_CPUID_ENTRIES),
-            })?
+            return kvm_error::CpuidTableTooLong.fail()?;
         }
         let mut kvm_cpuid2 = KvmCpuid2 {
             nent: cpuids.len() as u32,
@@ -296,7 +297,7 @@ impl KvmVcpu {
                 entry.flags = KvmCpuid2Flag::empty();
             }
         }
-        unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }?;
+        unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }.context(error::GuestCpuid)?;
         Ok(())
     }
 }

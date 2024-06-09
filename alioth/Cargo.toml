@@ -19,6 +19,7 @@ libc = "0.2.150"
 parking_lot.workspace = true
 macros = { version = "0.2.0", path = "../macros", package = "alioth-macros" }
 serde.workspace = true
+snafu.workspace = true
 
 [dev-dependencies]
 assert_matches = "1"

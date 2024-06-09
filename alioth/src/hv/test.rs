@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Error, MemMapOption, Result};
+use super::{error, MemMapOption, Result};
 
 #[derive(Debug)]
 pub struct FakeVmMemory;
@@ -34,8 +34,6 @@ impl crate::hv::VmMemory for FakeVmMemory {
     }
 
     fn max_mem_slots(&self) -> Result<u32> {
-        Err(Error::LackCap {
-            cap: "MaxMemSlots".to_string(),
-        })
+        error::Capability { cap: "MaxMemSlots" }.fail()
     }
 }
