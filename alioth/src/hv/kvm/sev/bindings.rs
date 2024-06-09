@@ -120,7 +120,10 @@ pub const KVM_SEV_DBG_ENCRYPT: u32 = 18;
 pub const KVM_SEV_CERT_EXPORT: u32 = 19;
 pub const KVM_SEV_GET_ATTESTATION_REPORT: u32 = 20;
 pub const KVM_SEV_SEND_CANCEL: u32 = 21;
-pub const KVM_SEV_NR_MAX: u32 = 22;
+pub const KVM_SEV_INIT2: u32 = 22;
+pub const KVM_SEV_SNP_LAUNCH_START: u32 = 100;
+pub const KVM_SEV_SNP_LAUNCH_UPDATE: u32 = 101;
+pub const KVM_SEV_SNP_LAUNCH_FINISH: u32 = 102;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -129,6 +132,16 @@ pub struct KvmSevCmd {
     pub data: u64,
     pub error: u32,
     pub sev_fd: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmSevInit {
+    pub vmsa_features: u64,
+    pub flags: u32,
+    pub ghcb_version: u16,
+    pub pad1: u16,
+    pub pad2: [u32; 8],
 }
 
 #[repr(C)]
@@ -236,4 +249,41 @@ pub struct KvmSevReceiveUpdateData {
     pub guest_len: u32,
     pub trans_uaddr: u64,
     pub trans_len: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmSevSnpLaunchStart {
+    pub policy: u64,
+    pub gosvw: [u8; 16],
+    pub flags: u16,
+    pub pad0: [u8; 6],
+    pub pad1: [u64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmSevSnpLaunchUpdate {
+    pub gfn_start: u64,
+    pub uaddr: u64,
+    pub len: u64,
+    pub type_: u8,
+    pub pad0: u8,
+    pub flags: u16,
+    pub pad1: u32,
+    pub pad2: [u64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmSevSnpLaunchFinish {
+    pub id_block_uaddr: u64,
+    pub id_auth_uaddr: u64,
+    pub id_block_en: u8,
+    pub auth_key_en: u8,
+    pub vcek_disabled: u8,
+    pub host_data: [u8; 32],
+    pub pad0: [u8; 3],
+    pub flags: u16,
+    pub pad1: [u64; 4],
 }

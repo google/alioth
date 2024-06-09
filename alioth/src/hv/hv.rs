@@ -35,7 +35,7 @@ use arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 
-use crate::arch::sev::Policy;
+use crate::arch::sev::SevPolicy;
 
 #[trace_error]
 #[derive(Snafu)]
@@ -212,7 +212,7 @@ pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
 #[derive(Debug, Clone, Deserialize)]
 pub enum Coco {
     #[serde(alias = "sev")]
-    AmdSev { policy: Policy },
+    AmdSev { policy: SevPolicy },
 }
 
 #[derive(Debug)]

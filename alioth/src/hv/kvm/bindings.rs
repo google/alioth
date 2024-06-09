@@ -18,6 +18,13 @@ use bitflags::bitflags;
 
 pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
+
+pub const KVM_X86_DEFAULT_VM: u64 = 0;
+// pub const KVM_X86_SW_PROTECTED_VM: u64 = 1;
+// pub const KVM_X86_SEV_VM: u64 = 2;
+// pub const KVM_X86_SEV_ES_VM: u64 = 3;
+pub const KVM_X86_SNP_VM: u64 = 4;
+
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
 bitflags! {
@@ -51,8 +58,9 @@ pub struct KvmCpuid2<const N: usize> {
 bitflags! {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct KvmMemFlag: u32 {
-        const LOG_DIRTY_PAGES = 1;
-        const READONLY = 2;
+        const LOG_DIRTY_PAGES = 1 << 0;
+        const READONLY = 1 << 1;
+        const GUEST_MEMFD = 1 << 2;
     }
 }
 
@@ -64,6 +72,44 @@ pub struct KvmUserspaceMemoryRegion {
     pub guest_phys_addr: u64,
     pub memory_size: u64,
     pub userspace_addr: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmUserspaceMemoryRegion2 {
+    pub slot: u32,
+    pub flags: KvmMemFlag,
+    pub guest_phys_addr: u64,
+    pub memory_size: u64,
+    pub userspace_addr: u64,
+    pub guest_memfd_offset: u64,
+    pub guest_memfd: u32,
+    pub _pad1: u32,
+    pub _pad2: [u64; 14],
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct KvmMemoryAttribute: u64 {
+        const PRIVATE = 1 << 3;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmMemoryAttributes {
+    pub address: u64,
+    pub size: u64,
+    pub attributes: KvmMemoryAttribute,
+    pub flags: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmCreateGuestMemfd {
+    pub size: u64,
+    pub flags: u64,
+    pub reserved: [u64; 6],
 }
 
 #[repr(C)]
@@ -341,6 +387,8 @@ pub struct KvmMsi {
 pub const KVM_CAP_NR_MEMSLOTS: u64 = 10;
 pub const KVM_CAP_IRQFD: u64 = 32;
 pub const KVM_CAP_SIGNAL_MSI: u64 = 77;
+pub const KVM_CAP_GUEST_MEMFD: u64 = 234;
+pub const KVM_CAP_VM_TYPES: u64 = 235;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
