@@ -26,28 +26,57 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
-use crate::ffi;
-#[cfg(target_arch = "x86_64")]
-use crate::hv::Cpuid;
-use crate::hv::{Error, Hypervisor};
-use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
-use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use macros::trace_error;
 use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
 use serde::Deserialize;
+use snafu::{ResultExt, Snafu};
 
-use crate::hv::{Coco, VmConfig};
+use crate::ffi;
+#[cfg(target_arch = "x86_64")]
+use crate::hv::Cpuid;
+use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
+
+use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
+use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
 #[cfg(target_arch = "x86_64")]
 use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
 use libc::SIGRTMIN;
 use sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT};
 use sev::SevFd;
 use vm::{KvmVm, VmInner};
+
+#[trace_error]
+#[derive(Snafu)]
+#[snafu(module, context(suffix(false)))]
+pub enum KvmError {
+    #[snafu(display("Failed to update GSI routing table"))]
+    GsiRouting { error: std::io::Error },
+    #[snafu(display("Failed to allocate a GSI number"))]
+    AllocateGsi,
+    #[snafu(display("CPUID table too long"))]
+    CpuidTableTooLong,
+    #[snafu(display("Failed to issue an SEV command"))]
+    SevCmd { error: std::io::Error },
+    #[snafu(display("SEV command error code {code:#x}"))]
+    SevErr { code: u32 },
+    #[snafu(display("Failed to get KVM API version"))]
+    KvmApi { error: std::io::Error },
+    #[snafu(display("Failed to open {path:?}"))]
+    OpenFile {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[snafu(display("Invalid memory map option {option:?}"))]
+    MmapOption { option: MemMapOption },
+    #[snafu(display("Failed to mmap a VCPU fd"))]
+    MmapVcpuFd { error: std::io::Error },
+}
 
 #[derive(Debug)]
 pub struct Kvm {
@@ -66,23 +95,26 @@ pub struct KvmConfig {
 extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
 
 impl Kvm {
-    pub fn new(config: KvmConfig) -> Result<Self, Error> {
-        let kvm_file = match &config.dev_kvm {
-            Some(dev_kvm) => File::open(dev_kvm),
-            None => File::open("/dev/kvm"),
-        }?;
+    pub fn new(config: KvmConfig) -> Result<Self> {
+        let path = match &config.dev_kvm {
+            Some(dev_kvm) => dev_kvm.as_path(),
+            None => Path::new("/dev/kvm"),
+        };
+        let kvm_file = File::open(path).with_context(|_| kvm_error::OpenFile { path })?;
         let kvm_fd = OwnedFd::from(kvm_file);
-        let version = unsafe { kvm_get_api_version(&kvm_fd) }?;
+        let version = unsafe { kvm_get_api_version(&kvm_fd) }.context(kvm_error::KvmApi)?;
         if version != KVM_API_VERSION {
-            return Err(Error::LackCap {
-                cap: format!("current KVM API version {version}, need {KVM_API_VERSION}"),
-            });
+            return Err(error::Capability {
+                cap: "KVM_API_VERSION (12)",
+            }
+            .build());
         }
         let mut action: libc::sigaction = unsafe { transmute([0u8; size_of::<libc::sigaction>()]) };
         action.sa_flags = libc::SA_SIGINFO;
         action.sa_sigaction = sigrtmin_handler as _;
-        ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) })?;
-        ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })?;
+        ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) }).context(error::SetupSignal)?;
+        ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })
+            .context(error::SetupSignal)?;
         Ok(Kvm { fd: kvm_fd, config })
     }
 }
@@ -90,9 +122,10 @@ impl Kvm {
 impl Hypervisor for Kvm {
     type Vm = KvmVm;
 
-    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error> {
-        let vcpu_mmap_size = unsafe { kvm_get_vcpu_mmap_size(&self.fd) }? as usize;
-        let vm_fd = unsafe { kvm_create_vm(&self.fd, 0) }?;
+    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm> {
+        let vcpu_mmap_size =
+            unsafe { kvm_get_vcpu_mmap_size(&self.fd) }.context(error::CreateVm)? as usize;
+        let vm_fd = unsafe { kvm_create_vm(&self.fd, 0) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
         let sev_fd = if let Some(cv) = &config.coco {
             match cv {
@@ -127,23 +160,24 @@ impl Hypervisor for Kvm {
                 }
             }
         }
-        unsafe { kvm_create_irqchip(&kvm_vm.vm) }?;
+        unsafe { kvm_create_irqchip(&kvm_vm.vm) }.context(error::CreateDevice)?;
         // TODO should be in parameters
         #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_tss_addr(&kvm_vm.vm, 0xf000_0000) }?;
+        unsafe { kvm_set_tss_addr(&kvm_vm.vm, 0xf000_0000) }.context(error::SetVmParam)?;
         #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm, &0xf000_3000) }?;
+        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm, &0xf000_3000) }
+            .context(error::SetVmParam)?;
         Ok(kvm_vm)
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error> {
+    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>> {
         let mut kvm_cpuid2 = KvmCpuid2 {
             nent: KVM_MAX_CPUID_ENTRIES as u32,
             padding: 0,
             entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
         };
-        unsafe { kvm_get_supported_cpuid(&self.fd, &mut kvm_cpuid2) }?;
+        unsafe { kvm_get_supported_cpuid(&self.fd, &mut kvm_cpuid2) }.context(error::GuestCpuid)?;
         let cpuids = kvm_cpuid2.entries[0..kvm_cpuid2.nent as usize]
             .iter()
             .map(|e| Cpuid {

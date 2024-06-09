@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 
 use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 use parking_lot::{Mutex, RwLock};
+use snafu::ResultExt;
 
 use crate::ffi;
 use crate::hv::kvm::bindings::{
@@ -41,9 +42,10 @@ use crate::hv::kvm::sev::bindings::{
 };
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
+use crate::hv::kvm::{kvm_error, KvmError};
 use crate::hv::{
-    Error, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result, Vm,
-    VmMemory,
+    error, Error, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result,
+    Vm, VmMemory,
 };
 
 #[derive(Debug)]
@@ -57,7 +59,7 @@ pub(super) struct VmInner {
 }
 
 impl VmInner {
-    fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<()> {
+    fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<(), KvmError> {
         let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
         let pin_map = self.pin_map.load(Ordering::Acquire);
         let mut index = 0;
@@ -97,7 +99,7 @@ impl VmInner {
             self.as_raw_fd(),
             irq_routing
         );
-        unsafe { kvm_set_gsi_routing(self, &irq_routing) }?;
+        unsafe { kvm_set_gsi_routing(self, &irq_routing) }.context(kvm_error::GsiRouting)?;
         Ok(())
     }
 }
@@ -130,10 +132,7 @@ impl VmMemory for KvmMemory {
     ) -> Result<(), Error> {
         let mut flags = KvmMemFlag::empty();
         if !option.read || !option.exec {
-            return Err(Error::MemMapOption {
-                option,
-                hypervisor: "kvm",
-            });
+            return kvm_error::MmapOption { option }.fail()?;
         }
         if !option.write {
             flags |= KvmMemFlag::READONLY;
@@ -148,11 +147,15 @@ impl VmMemory for KvmMemory {
             userspace_addr: hva as _,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }?;
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }.context(error::GuestMap {
+            hva,
+            gpa: gpa as u64,
+            size,
+        })?;
         Ok(())
     }
 
-    fn unmap(&self, slot: u32, gpa: usize, _size: usize) -> Result<(), Error> {
+    fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error> {
         let flags = KvmMemFlag::empty();
         let region = KvmUserspaceMemoryRegion {
             slot,
@@ -161,13 +164,22 @@ impl VmMemory for KvmMemory {
             userspace_addr: 0,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }?;
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }.context(error::GuestUnmap {
+            gpa: gpa as u64,
+            size,
+        })?;
         Ok(())
     }
 
     fn max_mem_slots(&self) -> Result<u32, Error> {
-        let ret = unsafe { kvm_check_extension(&self.vm, KVM_CAP_NR_MEMSLOTS) }?;
-        Ok(ret as u32)
+        let ret = unsafe { kvm_check_extension(&self.vm, KVM_CAP_NR_MEMSLOTS) };
+        match ret {
+            Ok(num) => Ok(num as u32),
+            Err(_) => error::Capability {
+                cap: "KVM_CAP_CHECK_EXTENSION_VM",
+            }
+            .fail(),
+        }
     }
 
     fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
@@ -175,7 +187,8 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_reg_region(&self.vm, &region) }?;
+        unsafe { kvm_memory_encrypt_reg_region(&self.vm, &region) }
+            .context(error::EncryptedRegion)?;
         Ok(())
     }
 
@@ -184,7 +197,8 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_unreg_region(&self.vm, &region) }?;
+        unsafe { kvm_memory_encrypt_unreg_region(&self.vm, &region) }
+            .context(error::EncryptedRegion)?;
         Ok(())
     }
 }
@@ -218,7 +232,8 @@ impl Drop for KvmIntxSender {
 
 impl IntxSender for KvmIntxSender {
     fn send(&self) -> Result<(), Error> {
-        ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })?;
+        ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })
+            .context(error::SendInterrupt)?;
         Ok(())
     }
 }
@@ -268,7 +283,7 @@ impl KvmIrqFd {
             gsi: self.gsi,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
         log::debug!(
             "irqfd assigned gsi {:#x} -> eventfd {:#x}",
             self.gsi,
@@ -284,7 +299,7 @@ impl KvmIrqFd {
             flags: KvmIrqfdFlag::DEASSIGN,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
         log::debug!(
             "irqfd de-assigned gsi {:#x} -> eventfd {:#x}",
             self.gsi,
@@ -314,11 +329,11 @@ macro_rules! impl_irqfd_method {
             entry.$field = val;
 
             if !entry.masked {
-                self.vm.update_routing_table(&table)
+                self.vm.update_routing_table(&table)?;
             } else {
                 entry.dirty = true;
-                Ok(())
             }
+            Ok(())
         }
     };
 }
@@ -376,13 +391,16 @@ impl MsiSender for KvmMsiSender {
             data,
             ..Default::default()
         };
-        unsafe { kvm_signal_msi(&self.vm, &kvm_msi) }?;
+        unsafe { kvm_signal_msi(&self.vm, &kvm_msi) }.context(error::SendInterrupt)?;
         Ok(())
     }
 
     fn create_irqfd(&self) -> Result<Self::IrqFd> {
-        let event_fd =
-            unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
+        let event_fd = unsafe {
+            OwnedFd::from_raw_fd(
+                ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)).context(error::IrqFd)?,
+            )
+        };
         let mut table = self.vm.msi_table.write();
         let mut allocated_gsi = None;
         for _ in 0..(MAX_GSI_ROUTES - 24) {
@@ -401,7 +419,7 @@ impl MsiSender for KvmMsiSender {
             }
         }
         let Some(gsi) = allocated_gsi else {
-            return Err(Error::CannotAllocateIrqFd);
+            return kvm_error::AllocateGsi.fail()?;
         };
         log::debug!("gsi {gsi} assigned to irqfd {}", event_fd.as_raw_fd());
         let entry = KvmIrqFd {
@@ -434,7 +452,8 @@ pub struct KvmIoeventFdRegistry {
 impl IoeventFdRegistry for KvmIoeventFdRegistry {
     type IoeventFd = KvmIoeventFd;
     fn create(&self) -> Result<Self::IoeventFd> {
-        let fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })?;
+        let fd =
+            ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) }).context(error::IoeventFd)?;
         Ok(KvmIoeventFd {
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
         })
@@ -451,7 +470,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
             request.datamatch = data;
             request.flags |= KvmIoEventFdFlag::DATA_MATCH;
         }
-        unsafe { kvm_ioeventfd(&self.vm, &request) }?;
+        unsafe { kvm_ioeventfd(&self.vm, &request) }.context(error::IoeventFd)?;
         let mut fds = self.vm.ioeventfds.lock();
         fds.insert(request.fd, request);
         Ok(())
@@ -472,7 +491,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
         let mut fds = self.vm.ioeventfds.lock();
         if let Some(mut request) = fds.remove(&fd.as_fd().as_raw_fd()) {
             request.flags |= KvmIoEventFdFlag::DEASSIGN;
-            unsafe { kvm_ioeventfd(&self.vm, &request) }?;
+            unsafe { kvm_ioeventfd(&self.vm, &request) }.context(error::IoeventFd)?;
         }
         Ok(())
     }
@@ -480,11 +499,17 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 
 impl KvmVm {
     fn check_extension(&self, id: u64) -> Result<bool, Error> {
-        let ret = unsafe { kvm_check_extension(&self.vm, id) }?;
-        Ok(ret == 1)
+        let ret = unsafe { kvm_check_extension(&self.vm, id) };
+        match ret {
+            Ok(num) => Ok(num == 1),
+            Err(_) => error::Capability {
+                cap: "KVM_CAP_CHECK_EXTENSION_VM",
+            }
+            .fail(),
+        }
     }
 
-    pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<()> {
+    pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<(), KvmError> {
         let Some(sev_fd) = &self.vm.sev_fd else {
             unreachable!("SevFd is not initialized")
         };
@@ -497,7 +522,7 @@ impl KvmVm {
             id: cmd,
             error: 0,
         };
-        unsafe { kvm_memory_encrypt_op(&self.vm, &mut req) }?;
+        unsafe { kvm_memory_encrypt_op(&self.vm, &mut req) }.context(kvm_error::SevCmd)?;
         Ok(())
     }
 }
@@ -510,7 +535,7 @@ impl Vm for KvmVm {
     type IoeventFdRegistry = KvmIoeventFdRegistry;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
-        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm, id) }?;
+        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm, id) }.context(error::CreateVcpu)?;
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
         Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
@@ -519,13 +544,14 @@ impl Vm for KvmVm {
     }
 
     fn stop_vcpu<T>(_id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
-        ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })?;
+        ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })
+            .context(error::StopVcpu)?;
         Ok(())
     }
 
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error> {
         if self.memory_created {
-            Err(Error::CreatingMultipleMemory)
+            error::MemoryCreated.fail()
         } else {
             let kvm_memory = KvmMemory {
                 vm: self.vm.clone(),
@@ -538,21 +564,24 @@ impl Vm for KvmVm {
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
         let pin_flag = 1 << pin;
         if self.vm.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
-            return Err(Error::CannotCreateMultipleIntxSender(pin));
+            return Err(std::io::ErrorKind::AlreadyExists.into())
+                .context(error::CreateIntx { pin });
         }
         if !self.check_extension(KVM_CAP_IRQFD)? {
-            Err(Error::LackCap {
-                cap: "KVM_CAP_IRQFD".to_string(),
-            })?;
+            return error::Capability {
+                cap: "KVM_CAP_IRQFD",
+            }
+            .fail();
         }
-        let event_fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })?;
+        let event_fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })
+            .context(error::CreateIntx { pin })?;
         let request = KvmIrqfd {
             fd: event_fd as u32,
             gsi: pin as u32,
             ..Default::default()
         };
         self.vm.update_routing_table(&self.vm.msi_table.read())?;
-        unsafe { kvm_irqfd(&self.vm, &request) }?;
+        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::CreateIntx { pin })?;
         Ok(KvmIntxSender {
             pin,
             vm: self.vm.clone(),
@@ -562,9 +591,10 @@ impl Vm for KvmVm {
 
     fn create_msi_sender(&self) -> Result<Self::MsiSender> {
         if !self.check_extension(KVM_CAP_SIGNAL_MSI)? {
-            Err(Error::LackCap {
-                cap: "KVM_CAP_SIGNAL_MSI".to_string(),
-            })?;
+            return error::Capability {
+                cap: "KVM_CAP_SIGNAL_MSI",
+            }
+            .fail();
         }
         Ok(KvmMsiSender {
             vm: self.vm.clone(),
@@ -582,7 +612,8 @@ impl Vm for KvmVm {
             policy,
             ..Default::default()
         };
-        self.sev_op(KVM_SEV_LAUNCH_START, Some(&mut start))
+        self.sev_op(KVM_SEV_LAUNCH_START, Some(&mut start))?;
+        Ok(())
     }
 
     fn sev_launch_update_data(&self, range: &mut [u8]) -> Result<(), Error> {
@@ -590,11 +621,13 @@ impl Vm for KvmVm {
             uaddr: range.as_mut_ptr() as u64,
             len: range.len() as u32,
         };
-        self.sev_op(KVM_SEV_LAUNCH_UPDATE_DATA, Some(&mut update_data))
+        self.sev_op(KVM_SEV_LAUNCH_UPDATE_DATA, Some(&mut update_data))?;
+        Ok(())
     }
 
     fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
-        self.sev_op::<()>(KVM_SEV_LAUNCH_UPDATE_VMSA, None)
+        self.sev_op::<()>(KVM_SEV_LAUNCH_UPDATE_VMSA, None)?;
+        Ok(())
     }
 
     fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
@@ -611,7 +644,8 @@ impl Vm for KvmVm {
     }
 
     fn sev_launch_finish(&self) -> Result<(), Error> {
-        self.sev_op::<()>(KVM_SEV_LAUNCH_FINISH, None)
+        self.sev_op::<()>(KVM_SEV_LAUNCH_FINISH, None)?;
+        Ok(())
     }
 }
 
@@ -649,15 +683,7 @@ mod test {
         };
         assert_matches!(
             vm_memory.mem_map(0, 0x0, 0x1000, user_mem as usize, option_no_write),
-            Err(Error::MemMapOption {
-                option: MemMapOption {
-                    read: false,
-                    write: true,
-                    exec: true,
-                    log_dirty: true,
-                },
-                hypervisor: "kvm"
-            })
+            Err(Error::KvmErr { .. })
         );
         let option_no_exec = MemMapOption {
             read: false,
@@ -667,15 +693,7 @@ mod test {
         };
         assert_matches!(
             vm_memory.mem_map(0, 0x0, 0x1000, user_mem as usize, option_no_exec),
-            Err(Error::MemMapOption {
-                option: MemMapOption {
-                    read: false,
-                    write: true,
-                    exec: true,
-                    log_dirty: true,
-                },
-                hypervisor: "kvm"
-            })
+            Err(Error::KvmErr { .. })
         );
         let option = MemMapOption {
             read: true,

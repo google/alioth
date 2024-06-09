@@ -21,14 +21,16 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::ptr::null_mut;
 
 use libc::{mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+use snafu::ResultExt;
 
 use crate::ffi;
 use crate::hv::arch::Reg;
 use crate::hv::kvm::bindings::{KvmRun, KVM_EXIT_IO, KVM_EXIT_MMIO};
 use crate::hv::kvm::ioctls::kvm_run;
+use crate::hv::kvm::{kvm_error, KvmError};
+use crate::hv::{error, Error, Vcpu, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::hv::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
-use crate::hv::{Error, Vcpu, VmEntry, VmExit};
 
 use super::bindings::KVM_EXIT_SHUTDOWN;
 
@@ -38,12 +40,13 @@ pub(super) struct KvmRunBlock {
 }
 
 impl KvmRunBlock {
-    pub unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, Error> {
+    pub unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, KvmError> {
         let prot = PROT_READ | PROT_WRITE;
         let addr = ffi!(
             unsafe { mmap(null_mut(), mmap_size, prot, MAP_SHARED, fd, 0,) },
             MAP_FAILED
-        )?;
+        )
+        .context(kvm_error::MmapVcpuFd)?;
         Ok(KvmRunBlock {
             addr: addr as usize,
             size: mmap_size,
@@ -140,7 +143,7 @@ impl Vcpu for KvmVcpu {
                     Ok(VmExit::Reboot)
                 }
                 (ErrorKind::Interrupted, _) => Ok(VmExit::Interrupted),
-                _ => Err(e.into()),
+                _ => Err(e).context(error::RunVcpu),
             },
             Ok(_) => match self.kvm_run.exit_reason {
                 KVM_EXIT_IO => self.handle_io(),

@@ -19,12 +19,14 @@ pub mod bindings;
 use std::fmt::Debug;
 use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::hv::kvm::kvm_error;
 use crate::hv::Result;
 use crate::ioctl_writeread;
 
 use bindings::{SevIssueCmd, SEV_RET_SUCCESS};
+use snafu::ResultExt;
 
 const SEV_IOC_TYPE: u8 = b'S';
 
@@ -45,7 +47,9 @@ pub const SEV_PLATFORM_STATUS: u32 = 1;
 
 impl SevFd {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let f = File::open(path)?;
+        let f = File::open(&path).with_context(|_| kvm_error::OpenFile {
+            path: PathBuf::from(path.as_ref()),
+        })?;
         let sev_fd = Self { fd: f.into() };
         Ok(sev_fd)
     }
@@ -56,8 +60,10 @@ impl SevFd {
             data: data as *mut T as _,
             error: 0,
         };
-        unsafe { sev_issue_cmd(&self.fd, &mut req) }?;
-        assert_eq!(req.error, SEV_RET_SUCCESS);
+        unsafe { sev_issue_cmd(&self.fd, &mut req) }.context(kvm_error::SevCmd)?;
+        if req.error != SEV_RET_SUCCESS {
+            return kvm_error::SevErr { code: req.error }.fail()?;
+        }
         Ok(())
     }
 }
