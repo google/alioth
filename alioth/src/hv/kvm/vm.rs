@@ -102,6 +102,17 @@ impl VmInner {
         unsafe { kvm_set_gsi_routing(self, &irq_routing) }.context(kvm_error::GsiRouting)?;
         Ok(())
     }
+
+    fn check_extension(&self, id: u64) -> Result<i32, Error> {
+        let ret = unsafe { kvm_check_extension(self, id) };
+        match ret {
+            Ok(num) => Ok(num),
+            Err(_) => error::Capability {
+                cap: "KVM_CAP_CHECK_EXTENSION_VM",
+            }
+            .fail(),
+        }
+    }
 }
 
 impl AsRawFd for VmInner {
@@ -172,14 +183,9 @@ impl VmMemory for KvmMemory {
     }
 
     fn max_mem_slots(&self) -> Result<u32, Error> {
-        let ret = unsafe { kvm_check_extension(&self.vm, KVM_CAP_NR_MEMSLOTS) };
-        match ret {
-            Ok(num) => Ok(num as u32),
-            Err(_) => error::Capability {
-                cap: "KVM_CAP_CHECK_EXTENSION_VM",
-            }
-            .fail(),
-        }
+        self.vm
+            .check_extension(KVM_CAP_NR_MEMSLOTS)
+            .map(|r| r as u32)
     }
 
     fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
@@ -498,17 +504,6 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 }
 
 impl KvmVm {
-    fn check_extension(&self, id: u64) -> Result<bool, Error> {
-        let ret = unsafe { kvm_check_extension(&self.vm, id) };
-        match ret {
-            Ok(num) => Ok(num == 1),
-            Err(_) => error::Capability {
-                cap: "KVM_CAP_CHECK_EXTENSION_VM",
-            }
-            .fail(),
-        }
-    }
-
     pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<(), KvmError> {
         let Some(sev_fd) = &self.vm.sev_fd else {
             unreachable!("SevFd is not initialized")
@@ -567,7 +562,7 @@ impl Vm for KvmVm {
             return Err(std::io::ErrorKind::AlreadyExists.into())
                 .context(error::CreateIntx { pin });
         }
-        if !self.check_extension(KVM_CAP_IRQFD)? {
+        if self.vm.check_extension(KVM_CAP_IRQFD)? == 0 {
             return error::Capability {
                 cap: "KVM_CAP_IRQFD",
             }
@@ -590,7 +585,7 @@ impl Vm for KvmVm {
     }
 
     fn create_msi_sender(&self) -> Result<Self::MsiSender> {
-        if !self.check_extension(KVM_CAP_SIGNAL_MSI)? {
+        if self.vm.check_extension(KVM_CAP_SIGNAL_MSI)? == 0 {
             return error::Capability {
                 cap: "KVM_CAP_SIGNAL_MSI",
             }
