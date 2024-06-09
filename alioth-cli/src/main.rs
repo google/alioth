@@ -25,10 +25,11 @@ use alioth::virtio::dev::fs::VuFsParam;
 use alioth::virtio::dev::net::NetParam;
 use alioth::virtio::dev::vsock::VhostVsockParam;
 use alioth::vm::Machine;
-use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
+use macros::trace_error;
 use serde::Deserialize;
+use snafu::{ResultExt, Snafu};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -130,73 +131,125 @@ struct RunArgs {
     vsock: Option<String>,
 }
 
-fn main_run(args: RunArgs) -> Result<()> {
+#[trace_error]
+#[derive(Snafu)]
+#[snafu(module, context(suffix(false)))]
+pub enum Error {
+    #[snafu(display("Failed to parse {arg}"))]
+    ParseArg {
+        arg: String,
+        error: serde_aco::Error,
+    },
+    #[snafu(display("Failed to access system hypervisor"))]
+    Hypervisor { source: alioth::hv::Error },
+    #[snafu(display("Failed to create a VM"))]
+    CreateVm { error: alioth::vm::Error },
+    #[snafu(display("Failed to create a device"))]
+    CreateDevice { error: alioth::vm::Error },
+    #[snafu(display("Failed to open {path:?}"))]
+    OpenFile {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[snafu(display("Failed to configure the fw-cfg device"))]
+    FwCfg { error: std::io::Error },
+    #[snafu(display("{s} is not a valid CString"))]
+    CreateCString { s: String },
+    #[snafu(display("Failed to boot a VM"))]
+    BootVm { error: alioth::vm::Error },
+    #[snafu(display("VM did not shutdown peacefully"))]
+    WaitVm { error: alioth::vm::Error },
+}
+
+fn main_run(args: RunArgs) -> Result<(), Error> {
     let hv_config = if let Some(hv_cfg_opt) = args.hypervisor {
-        serde_aco::from_arg(&hv_cfg_opt)?
+        serde_aco::from_arg(&hv_cfg_opt).context(error::ParseArg { arg: hv_cfg_opt })?
     } else {
         Hypervisor::default()
     };
     let hypervisor = match hv_config {
-        Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config),
+        Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config).context(error::Hypervisor),
     }?;
     let coco = match args.coco {
         None => None,
-        Some(c) => Some(serde_aco::from_arg(&c)?),
+        Some(c) => Some(serde_aco::from_arg(&c).context(error::ParseArg { arg: c })?),
     };
     let board_config = BoardConfig {
-        mem_size: serde_aco::from_arg(&args.mem_size)?,
+        mem_size: serde_aco::from_arg(&args.mem_size)
+            .context(error::ParseArg { arg: args.mem_size })?,
         num_cpu: args.num_cpu,
         coco,
     };
-    let mut vm = Machine::new(hypervisor, board_config)?;
+    let mut vm = Machine::new(hypervisor, board_config).context(error::CreateVm)?;
     #[cfg(target_arch = "x86_64")]
-    vm.add_com1()?;
+    vm.add_com1().context(error::CreateDevice)?;
 
     if args.pvpanic {
-        vm.add_pvpanic()?;
+        vm.add_pvpanic().context(error::CreateDevice)?;
     }
 
     if args.firmware.is_some() || !args.fw_cfgs.is_empty() {
         let params = args
             .fw_cfgs
-            .iter()
-            .map(|s| serde_aco::from_arg(s))
+            .into_iter()
+            .map(|s| serde_aco::from_arg(&s).context(error::ParseArg { arg: s }))
             .collect::<Result<Vec<_>, _>>()?;
-        let fw_cfg = vm.add_fw_cfg(params.into_iter())?;
+        let fw_cfg = vm
+            .add_fw_cfg(params.into_iter())
+            .context(error::CreateDevice)?;
         let mut dev = fw_cfg.lock();
         if let Some(kernel) = &args.kernel {
-            dev.add_kernel_data(File::open(kernel)?)?
+            dev.add_kernel_data(File::open(kernel).with_context(|_| error::OpenFile {
+                path: kernel.to_owned(),
+            })?)
+            .context(error::FwCfg)?
         }
         if let Some(initramfs) = &args.initramfs {
-            dev.add_initramfs_data(File::open(initramfs)?)?;
+            dev.add_initramfs_data(File::open(initramfs).with_context(|_| error::OpenFile {
+                path: initramfs.to_owned(),
+            })?)
+            .context(error::FwCfg)?;
         }
         if let Some(cmdline) = &args.cmd_line {
-            let cmdline_c = CString::new(cmdline.as_str())?;
+            let Ok(cmdline_c) = CString::new(cmdline.as_str()) else {
+                return error::CreateCString {
+                    s: cmdline.to_owned(),
+                }
+                .fail();
+            };
             dev.add_kernel_cmdline(cmdline_c);
         }
     };
 
     if args.entropy {
-        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)?;
+        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)
+            .context(error::CreateDevice)?;
     }
     for (index, net_opt) in args.net.into_iter().enumerate() {
-        let net_param: NetParam = serde_aco::from_arg(&net_opt)?;
-        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)?;
+        let net_param: NetParam =
+            serde_aco::from_arg(&net_opt).context(error::ParseArg { arg: net_opt })?;
+        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)
+            .context(error::CreateDevice)?;
     }
     for (index, blk) in args.blk.into_iter().enumerate() {
         let param = BlockParam { path: blk.into() };
-        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
+        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)
+            .context(error::CreateDevice)?;
     }
     for (index, fs) in args.fs.into_iter().enumerate() {
-        let param: FsParam = serde_aco::from_arg(&fs)?;
+        let param: FsParam = serde_aco::from_arg(&fs).context(error::ParseArg { arg: fs })?;
         match param {
-            FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p)?,
+            FsParam::Vu(p) => vm
+                .add_virtio_dev(format!("vu-fs-{index}"), p)
+                .context(error::CreateDevice)?,
         };
     }
     if let Some(vsock) = args.vsock {
-        let param = serde_aco::from_arg(&vsock)?;
+        let param = serde_aco::from_arg(&vsock).context(error::ParseArg { arg: vsock })?;
         match param {
-            VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock".to_owned(), p)?,
+            VsockParam::Vhost(p) => vm
+                .add_virtio_dev("vhost-vsock".to_owned(), p)
+                .context(error::CreateDevice)?,
         };
     }
 
@@ -228,9 +281,9 @@ fn main_run(args: RunArgs) -> Result<()> {
         vm.add_payload(payload);
     }
 
-    vm.boot()?;
+    vm.boot().context(error::BootVm)?;
     for result in vm.wait() {
-        result?;
+        result.context(error::WaitVm)?;
     }
     Ok(())
 }
