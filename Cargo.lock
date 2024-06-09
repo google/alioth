@@ -35,12 +35,13 @@ name = "alioth-cli"
 version = "0.2.0"
 dependencies = [
  "alioth",
- "anyhow",
+ "alioth-macros",
  "clap",
  "flexi_logger",
  "log",
  "serde",
  "serde-aco",
+ "snafu",
 ]
 
 [[package]]
@@ -113,12 +114,6 @@ dependencies = [
  "anstyle",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "anyhow"
-version = "1.0.82"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f538837af36e6f6a9be0faa67f9a314f8119e4e4b5867c6ab40ed60360142519"
 
 [[package]]
 name = "assert_matches"

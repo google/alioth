@@ -11,10 +11,11 @@ license.workspace = true
 log = "0.4"
 flexi_logger = "0.28"
 clap = { version = "4", features = ["derive"] }
-anyhow = "1"
+snafu.workspace = true
 alioth = { version = "0.2.0", path = "../alioth" }
 serde.workspace = true
 serde-aco = { version = "0.2.0", path = "../serde-aco" }
+macros = { version = "0.2.0", path = "../macros", package = "alioth-macros" }
 
 [[bin]]
 path = "src/main.rs"
