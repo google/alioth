@@ -23,6 +23,7 @@ use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
+use crate::arch::sev::SnpPolicy;
 use crate::ffi;
 use crate::hv::kvm::bindings::{
     KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
@@ -37,8 +38,9 @@ use crate::hv::kvm::ioctls::{
 };
 use crate::hv::kvm::sev::bindings::{
     KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
-    KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
-    KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA,
+    KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE,
+    KVM_SEV_LAUNCH_START, KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA,
+    KVM_SEV_SNP_LAUNCH_FINISH, KVM_SEV_SNP_LAUNCH_START,
 };
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
@@ -640,6 +642,21 @@ impl Vm for KvmVm {
 
     fn sev_launch_finish(&self) -> Result<(), Error> {
         self.sev_op::<()>(KVM_SEV_LAUNCH_FINISH, None)?;
+        Ok(())
+    }
+
+    fn snp_launch_start(&self, policy: SnpPolicy) -> Result<()> {
+        let mut start = KvmSevSnpLaunchStart {
+            policy: policy.0,
+            ..Default::default()
+        };
+        self.sev_op(KVM_SEV_SNP_LAUNCH_START, Some(&mut start))?;
+        Ok(())
+    }
+
+    fn snp_launch_finish(&self) -> Result<()> {
+        let mut finish = KvmSevSnpLaunchFinish::default();
+        self.sev_op(KVM_SEV_SNP_LAUNCH_FINISH, Some(&mut finish))?;
         Ok(())
     }
 }

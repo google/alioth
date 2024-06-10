@@ -250,7 +250,7 @@ where
                 if let Some(coco) = &self.config.coco {
                     match coco {
                         Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
-                        Coco::AmdSnp { .. } => unimplemented!(),
+                        Coco::AmdSnp { policy } => self.vm.snp_launch_start(*policy)?,
                     }
                 }
                 self.create_ram()?;
@@ -264,20 +264,22 @@ where
             }
             self.init_ap(id, &mut vcpu, &vcpus)?;
             if let Some(coco) = &self.config.coco {
-                match coco {
-                    Coco::AmdSev { policy } => {
-                        self.sync_vcpus(&vcpus);
-                        if id == 0 {
+                self.sync_vcpus(&vcpus);
+                if id == 0 {
+                    match coco {
+                        Coco::AmdSev { policy } => {
                             if policy.es() {
                                 self.vm.sev_launch_update_vmsa()?;
                             }
                             self.vm.sev_launch_measure()?;
                             self.vm.sev_launch_finish()?;
                         }
-                        self.sync_vcpus(&vcpus);
+                        Coco::AmdSnp { .. } => {
+                            self.vm.snp_launch_finish()?;
+                        }
                     }
-                    Coco::AmdSnp { .. } => unimplemented!(),
                 }
+                self.sync_vcpus(&vcpus);
             }
             drop(vcpus);
 

@@ -250,6 +250,10 @@ pub trait Vm {
     fn sev_launch_finish(&self) -> Result<(), Error> {
         unimplemented!()
     }
+
+    fn snp_launch_start(&self, policy: SnpPolicy) -> Result<()>;
+
+    fn snp_launch_finish(&self) -> Result<()>;
 }
 
 pub trait Hypervisor {
