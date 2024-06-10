@@ -250,6 +250,7 @@ where
                 if let Some(coco) = &self.config.coco {
                     match coco {
                         Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
+                        Coco::AmdSnp { .. } => unimplemented!(),
                     }
                 }
                 self.create_ram()?;
@@ -275,6 +276,7 @@ where
                         }
                         self.sync_vcpus(&vcpus);
                     }
+                    Coco::AmdSnp { .. } => unimplemented!(),
                 }
             }
             drop(vcpus);

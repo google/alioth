@@ -35,7 +35,7 @@ use arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 
-use crate::arch::sev::SevPolicy;
+use crate::arch::sev::{SevPolicy, SnpPolicy};
 
 #[trace_error]
 #[derive(Snafu)]
@@ -213,6 +213,8 @@ pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
 pub enum Coco {
     #[serde(alias = "sev")]
     AmdSev { policy: SevPolicy },
+    #[serde(alias = "snp", alias = "sev-snp")]
+    AmdSnp { policy: SnpPolicy },
 }
 
 #[derive(Debug)]
