@@ -25,7 +25,7 @@ mod vmexit;
 use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicU32;
@@ -42,12 +42,15 @@ use crate::ffi;
 use crate::hv::Cpuid;
 use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
 
-use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
+use bindings::{
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
+    KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
+};
 use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
 #[cfg(target_arch = "x86_64")]
 use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
 use libc::SIGRTMIN;
-use sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT};
+use sev::bindings::{KvmSevInit, KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2};
 use sev::SevFd;
 use vm::{KvmVm, VmInner};
 
@@ -125,11 +128,16 @@ impl Hypervisor for Kvm {
     fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm> {
         let vcpu_mmap_size =
             unsafe { kvm_get_vcpu_mmap_size(&self.fd) }.context(error::CreateVm)? as usize;
-        let vm_fd = unsafe { kvm_create_vm(&self.fd, 0) }.context(error::CreateVm)?;
+        let kvm_vm_type = if let Some(Coco::AmdSnp { .. }) = &config.coco {
+            KVM_X86_SNP_VM
+        } else {
+            KVM_X86_DEFAULT_VM
+        };
+        let vm_fd = unsafe { kvm_create_vm(&self.fd, kvm_vm_type) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
         let sev_fd = if let Some(cv) = &config.coco {
             match cv {
-                Coco::AmdSev { .. } => Some(match &self.config.dev_sev {
+                Coco::AmdSev { .. } | Coco::AmdSnp { .. } => Some(match &self.config.dev_sev {
                     Some(dev_sev) => SevFd::new(dev_sev),
                     None => SevFd::new("/dev/sev"),
                 }?),
@@ -157,6 +165,11 @@ impl Hypervisor for Kvm {
                     } else {
                         kvm_vm.sev_op::<()>(KVM_SEV_INIT, None)?;
                     }
+                }
+                Coco::AmdSnp { .. } => {
+                    let mut init = KvmSevInit::default();
+                    kvm_vm.sev_op(KVM_SEV_INIT2, Some(&mut init))?;
+                    log::debug!("vm-{}: snp init: {init:#x?}", kvm_vm.vm.as_raw_fd());
                 }
             }
         }

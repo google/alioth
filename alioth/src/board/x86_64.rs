@@ -73,6 +73,7 @@ where
                 self.memory.ram_bus().register_encrypted_pages(fw)?;
                 self.vm.sev_launch_update_data(fw.as_slice_mut())?;
             }
+            Some(Coco::AmdSnp { .. }) => unimplemented!(),
             None => {}
         }
         Ok(())
