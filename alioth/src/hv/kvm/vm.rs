@@ -27,14 +27,16 @@ use crate::arch::sev::SnpPolicy;
 use crate::ffi;
 use crate::hv::kvm::bindings::{
     KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
-    KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMsi,
-    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS,
-    KVM_CAP_SIGNAL_MSI, KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
+    KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute,
+    KvmMemoryAttributes, KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
+    KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI, KVM_IRQCHIP_IOAPIC,
+    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_op,
     kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing,
-    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
+    kvm_set_memory_attributes, kvm_set_user_memory_region, kvm_set_user_memory_region2,
+    kvm_signal_msi,
 };
 use crate::hv::kvm::sev::bindings::{
     KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
@@ -224,6 +226,21 @@ impl VmMemory for KvmMemory {
         };
         unsafe { kvm_memory_encrypt_unreg_region(&self.vm, &region) }
             .context(error::EncryptedRegion)?;
+        Ok(())
+    }
+
+    fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
+        let attr = KvmMemoryAttributes {
+            address: gpa,
+            size,
+            attributes: if private {
+                KvmMemoryAttribute::PRIVATE
+            } else {
+                KvmMemoryAttribute::empty()
+            },
+            flags: 0,
+        };
+        unsafe { kvm_set_memory_attributes(&self.vm, &attr) }.context(error::EncryptedRegion)?;
         Ok(())
     }
 }

@@ -179,6 +179,8 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
         unimplemented!()
     }
+
+    fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()>;
 }
 
 pub trait IoeventFd: Debug + Send + Sync + AsFd + 'static {}

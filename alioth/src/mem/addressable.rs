@@ -194,6 +194,21 @@ where
             }
         }
     }
+
+    pub fn search_next(&self, addr: usize) -> Option<(usize, &B)> {
+        match self.slots.binary_search_by_key(&addr, |s| s.addr) {
+            Ok(index) => Some((self.slots[index].addr, &self.slots[index].backend)),
+            Err(0) => None,
+            Err(index) => {
+                let candidate = &self.slots[index - 1];
+                if addr <= candidate.max_addr() {
+                    Some((candidate.addr, &candidate.backend))
+                } else {
+                    self.slots.get(index).map(|slot| (slot.addr, &slot.backend))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

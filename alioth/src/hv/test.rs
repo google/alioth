@@ -36,4 +36,8 @@ impl crate::hv::VmMemory for FakeVmMemory {
     fn max_mem_slots(&self) -> Result<u32> {
         error::Capability { cap: "MaxMemSlots" }.fail()
     }
+
+    fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
+        unimplemented!()
+    }
 }

@@ -553,6 +553,26 @@ impl RamBus {
         Ok(callback(&mut iov))
     }
 
+    pub fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
+        let inner = self.inner.read();
+        let mut start = gpa;
+        let end = gpa + size;
+        while let Some((addr, slot)) = inner.search_next(start as usize) {
+            let gpa_start = std::cmp::max(addr as u64, start);
+            let gpa_end = std::cmp::min(end, (addr + slot.size()) as u64);
+            if gpa_start >= gpa_end {
+                break;
+            }
+            self.vm_memory
+                .mark_private_memory(gpa_start, gpa_end - gpa_start, private)?;
+            start = gpa_end;
+            if start >= end {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
         self.vm_memory.register_encrypted_range(pages.as_slice())?;
         Ok(())
