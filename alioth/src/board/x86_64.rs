@@ -88,6 +88,16 @@ where
         }
     }
 
+    fn parse_sev_es_ap(&self, coco: &Coco, fw: &ArcMemPages) {
+        match coco {
+            Coco::AmdSev { policy } if policy.es() => {}
+            Coco::AmdSnp { .. } => {}
+            _ => return,
+        }
+        let ap_eip = parse_data_from_fw(fw.as_slice(), &SEV_ES_RESET_BLOCK_GUID).unwrap();
+        self.arch.sev_ap_eip.store(ap_eip, Ordering::Release);
+    }
+
     fn update_snp_desc(&self, offset: usize, fw_range: &mut [u8]) -> Result<()> {
         let mut cpuid_table = SnpCpuidInfo::new_zeroed();
         let ram_bus = self.memory.ram_bus();
@@ -135,13 +145,9 @@ where
         };
         let ram_bus = self.memory.ram_bus();
         ram_bus.register_encrypted_pages(fw)?;
+        self.parse_sev_es_ap(coco, fw);
         match coco {
-            Coco::AmdSev { policy } => {
-                if policy.es() {
-                    let ap_eip =
-                        parse_data_from_fw(fw.as_slice(), &SEV_ES_RESET_BLOCK_GUID).unwrap();
-                    self.arch.sev_ap_eip.store(ap_eip, Ordering::Release);
-                }
+            Coco::AmdSev { .. } => {
                 self.vm.sev_launch_update_data(fw.as_slice_mut())?;
             }
             Coco::AmdSnp { .. } => {
@@ -166,11 +172,10 @@ where
     }
 
     pub fn init_ap(&self, id: u32, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
-        let Some(Coco::AmdSev { policy }) = &self.config.coco else {
-            return Ok(());
-        };
-        if !policy.es() {
-            return Ok(());
+        match &self.config.coco {
+            Some(Coco::AmdSev { policy }) if policy.es() => {}
+            Some(Coco::AmdSnp { .. }) => {}
+            _ => return Ok(()),
         }
         self.sync_vcpus(vcpus);
         if id == 0 {
