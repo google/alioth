@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::arch::x86_64::__cpuid;
+use std::iter::zip;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -43,13 +44,20 @@ impl ArchBoard {
                 cpuid.ecx |= (1 << 24) | (1 << 31);
             } else if cpuid.func == 0x8000_001f {
                 // AMD Volume 3, section E.4.17.
-                if let Some(Coco::AmdSev { policy }) = &config.coco {
-                    cpuid.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
+                if matches!(
+                    &config.coco,
+                    Some(Coco::AmdSev { .. } | Coco::AmdSnp { .. })
+                ) {
                     let host_ebx = unsafe { __cpuid(cpuid.func) }.ebx;
                     // set PhysAddrReduction to 1
                     cpuid.ebx = (1 << 6) | (host_ebx & 0x3f);
                     cpuid.ecx = 0;
                     cpuid.edx = 0;
+                }
+                if let Some(Coco::AmdSev { policy }) = &config.coco {
+                    cpuid.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
+                } else if let Some(Coco::AmdSnp { .. }) = &config.coco {
+                    cpuid.eax = 0x2 | 0x8 | 0x10;
                 }
             }
         }
@@ -64,21 +72,60 @@ impl<V> Board<V>
 where
     V: Vm,
 {
+    fn fill_snp_cpuid(&self, entries: &mut [SnpCpuidFunc]) {
+        for (src, dst) in zip(self.arch.cpuids.iter(), entries.iter_mut()) {
+            dst.eax_in = src.func;
+            dst.ecx_in = src.index.unwrap_or(0);
+            dst.eax = src.eax;
+            dst.ebx = src.ebx;
+            dst.ecx = src.ecx;
+            dst.edx = src.edx;
+            if dst.eax_in == 0xd && (dst.ecx_in == 0x0 || dst.ecx_in == 0x1) {
+                dst.ebx = 0x240;
+                dst.xcr0_in = 1;
+                dst.xss_in = 0;
+            }
+        }
+    }
+
     fn update_snp_desc(&self, offset: usize, fw_range: &mut [u8]) -> Result<()> {
+        let mut cpuid_table = SnpCpuidInfo::new_zeroed();
         let ram_bus = self.memory.ram_bus();
         let ram = ram_bus.lock_layout();
         let desc = SevMetadataDesc::read_from_prefix(&fw_range[offset..]).unwrap();
         let snp_page_type = match desc.type_ {
             SEV_DESC_TYPE_SNP_SEC_MEM => SnpPageType::Unmeasured,
             SEV_DESC_TYPE_SNP_SECRETS => SnpPageType::Secrets,
+            SEV_DESC_TYPE_CPUID => {
+                assert!(desc.len as usize >= size_of::<SnpCpuidInfo>());
+                assert!(cpuid_table.entries.len() >= self.arch.cpuids.len());
+                cpuid_table.count = self.arch.cpuids.len() as u32;
+                self.fill_snp_cpuid(&mut cpuid_table.entries);
+                ram.write(desc.base as _, &cpuid_table)?;
+                SnpPageType::Cpuid
+            }
             _ => unimplemented!(),
         };
         let range_ref = ram.get_slice::<u8>(desc.base as usize, desc.len as usize)?;
         let range_bytes =
             unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
         ram_bus.mark_private_memory(desc.base as _, desc.len as _, true)?;
-        self.vm
-            .snp_launch_update(range_bytes, desc.base as _, snp_page_type)?;
+        let mut ret = self
+            .vm
+            .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
+        if ret.is_err() && desc.type_ == SEV_DESC_TYPE_CPUID {
+            let updated_cpuid = ram.read::<SnpCpuidInfo>(desc.base as _)?;
+            for (set, got) in zip(cpuid_table.entries.iter(), updated_cpuid.entries.iter()) {
+                if set != got {
+                    log::error!("set {set:#x?}, but firmware expects {got:#x?}");
+                }
+            }
+            ram.write(desc.base as _, &updated_cpuid)?;
+            ret = self
+                .vm
+                .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
+        }
+        ret?;
         Ok(())
     }
 
@@ -283,4 +330,27 @@ where
         current = current.checked_sub(table_len)?;
     }
     None
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+pub struct SnpCpuidFunc {
+    pub eax_in: u32,
+    pub ecx_in: u32,
+    pub xcr0_in: u64,
+    pub xss_in: u64,
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub reserved: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, FromZeroes, FromBytes, AsBytes)]
+pub struct SnpCpuidInfo {
+    pub count: u32,
+    pub _reserved1: u32,
+    pub _reserved2: u64,
+    pub entries: [SnpCpuidFunc; 64],
 }
