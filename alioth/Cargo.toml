@@ -13,7 +13,7 @@ zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 bitflags = "2.4.0"
 bitfield = "0.15.0"
 log = "0.4"
-mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
+mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 rand = "0.8.5"
 libc = "0.2.150"
 parking_lot.workspace = true
