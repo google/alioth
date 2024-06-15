@@ -43,10 +43,13 @@ use crate::hv::Cpuid;
 use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
 
 use bindings::{
-    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
-    KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KVM_API_VERSION,
+    KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
 };
-use ioctls::{kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use ioctls::{
+    kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_get_api_version,
+    kvm_get_vcpu_mmap_size,
+};
 #[cfg(target_arch = "x86_64")]
 use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
 use libc::SIGRTMIN;
@@ -79,6 +82,8 @@ pub enum KvmError {
     MmapOption { option: MemMapOption },
     #[snafu(display("Failed to mmap a VCPU fd"))]
     MmapVcpuFd { error: std::io::Error },
+    #[snafu(display("Failed to create guest memfd"))]
+    GuestMemfd { error: std::io::Error },
 }
 
 #[derive(Debug)]
@@ -145,10 +150,22 @@ impl Hypervisor for Kvm {
         } else {
             None
         };
+        let memfd = if let Some(Coco::AmdSnp { .. }) = &config.coco {
+            let mut request = KvmCreateGuestMemfd {
+                size: 1 << 48,
+                ..Default::default()
+            };
+            let ret = unsafe { kvm_create_guest_memfd(&fd, &mut request) }
+                .context(kvm_error::GuestMemfd)?;
+            Some(unsafe { OwnedFd::from_raw_fd(ret) })
+        } else {
+            None
+        };
         let kvm_vm = KvmVm {
             vm: Arc::new(VmInner {
                 fd,
                 sev_fd,
+                memfd,
                 ioeventfds: Mutex::new(HashMap::new()),
                 msi_table: RwLock::new(HashMap::new()),
                 next_msi_gsi: AtomicU32::new(0),
