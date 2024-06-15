@@ -105,19 +105,21 @@ where
     V: Vm,
 {
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
-        let ram = self.memory.ram_bus();
         let mut acpi_table = create_acpi(self.config.num_cpu);
-        acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
-        ram.write_range(
-            EBDA_START,
-            size_of::<AcpiTableRsdp>(),
-            acpi_table.rsdp().as_bytes(),
-        )?;
-        ram.write_range(
-            EBDA_START + size_of::<AcpiTableRsdp>(),
-            acpi_table.tables().len(),
-            acpi_table.tables(),
-        )?;
+        if self.config.coco.is_none() {
+            let ram = self.memory.ram_bus();
+            acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
+            ram.write_range(
+                EBDA_START,
+                size_of::<AcpiTableRsdp>(),
+                acpi_table.rsdp().as_bytes(),
+            )?;
+            ram.write_range(
+                EBDA_START + size_of::<AcpiTableRsdp>(),
+                acpi_table.tables().len(),
+                acpi_table.tables(),
+            )?;
+        }
         if let Some(fw_cfg) = &*self.fw_cfg.lock() {
             let mut dev = fw_cfg.lock();
             dev.add_acpi(acpi_table)?;

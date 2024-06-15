@@ -131,15 +131,13 @@ where
     pub fn create_ram(&self) -> Result<()> {
         let config = &self.config;
         let memory = &self.memory;
+        let ram_bus = memory.ram_bus();
 
         let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
         let pages_low = ArcMemPages::from_memfd(low_mem_size, None, Some(c"ram-low"))?;
-        if self.config.coco.is_some() {
-            self.memory.ram_bus().register_encrypted_pages(&pages_low)?;
-        }
         let region_low = MemRegion {
             size: low_mem_size,
-            ranges: vec![MemRange::Mapped(pages_low)],
+            ranges: vec![MemRange::Mapped(pages_low.clone())],
             entries: vec![
                 MemRegionEntry {
                     size: BIOS_DATA_END,
@@ -161,14 +159,23 @@ where
             callbacks: Mutex::new(vec![]),
         };
         memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
-        if config.mem_size > RAM_32_SIZE {
-            let mem_hi =
-                ArcMemPages::from_memfd(config.mem_size - RAM_32_SIZE, None, Some(c"ram-high"))?;
-            if self.config.coco.is_some() {
-                self.memory.ram_bus().register_encrypted_pages(&mem_hi)?;
+        if let Some(coco) = &self.config.coco {
+            ram_bus.register_encrypted_pages(&pages_low)?;
+            if let Coco::AmdSnp { .. } = coco {
+                ram_bus.mark_private_memory(0, low_mem_size as _, true)?;
             }
-            let region_hi = MemRegion::with_mapped(mem_hi, MemRegionType::Ram);
+        }
+        if config.mem_size > RAM_32_SIZE {
+            let mem_hi_size = config.mem_size - RAM_32_SIZE;
+            let mem_hi = ArcMemPages::from_memfd(mem_hi_size, None, Some(c"ram-high"))?;
+            let region_hi = MemRegion::with_mapped(mem_hi.clone(), MemRegionType::Ram);
             memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
+            if let Some(coco) = &self.config.coco {
+                ram_bus.register_encrypted_pages(&mem_hi)?;
+                if let Coco::AmdSnp { .. } = coco {
+                    ram_bus.mark_private_memory(MEM_64_START as _, mem_hi_size as _, true)?;
+                }
+            }
         }
         Ok(())
     }
