@@ -43,12 +43,12 @@ use crate::hv::Cpuid;
 use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
 
 use bindings::{
-    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KVM_API_VERSION,
-    KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap, KVM_API_VERSION,
+    KVM_CAP_EXIT_HYPERCALL, KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
 };
 use ioctls::{
-    kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_get_api_version,
-    kvm_get_vcpu_mmap_size,
+    kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_enable_cap,
+    kvm_get_api_version, kvm_get_vcpu_mmap_size,
 };
 #[cfg(target_arch = "x86_64")]
 use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
@@ -82,6 +82,16 @@ pub enum KvmError {
     MmapOption { option: MemMapOption },
     #[snafu(display("Failed to mmap a VCPU fd"))]
     MmapVcpuFd { error: std::io::Error },
+    #[snafu(display("Failed to check extension {ext}"))]
+    CheckExtension {
+        ext: &'static str,
+        error: std::io::Error,
+    },
+    #[snafu(display("Failed to enable capability {cap}"))]
+    EnableCap {
+        cap: &'static str,
+        error: std::io::Error,
+    },
     #[snafu(display("Failed to create guest memfd"))]
     GuestMemfd { error: std::io::Error },
 }
@@ -184,6 +194,23 @@ impl Hypervisor for Kvm {
                     }
                 }
                 Coco::AmdSnp { .. } => {
+                    let bitmap = unsafe { kvm_check_extension(&kvm_vm.vm, KVM_CAP_EXIT_HYPERCALL) }
+                        .context(kvm_error::CheckExtension {
+                            ext: "KVM_CAP_EXIT_HYPERCALL",
+                        })?;
+                    if bitmap != 0 {
+                        let request = KvmEnableCap {
+                            cap: KVM_CAP_EXIT_HYPERCALL,
+                            args: [bitmap as _, 0, 0, 0],
+                            flags: 0,
+                            pad: [0; 64],
+                        };
+                        unsafe { kvm_enable_cap(&kvm_vm.vm, &request) }.context(
+                            kvm_error::EnableCap {
+                                cap: "KVM_CAP_EXIT_HYPERCALL",
+                            },
+                        )?;
+                    }
                     let mut init = KvmSevInit::default();
                     kvm_vm.sev_op(KVM_SEV_INIT2, Some(&mut init))?;
                     log::debug!("vm-{}: snp init: {init:#x?}", kvm_vm.vm.as_raw_fd());

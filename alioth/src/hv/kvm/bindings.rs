@@ -230,6 +230,7 @@ pub struct KvmRun {
 pub union KvmExit {
     pub mmio: KvmExitMmio,
     pub io: KvmExitIo,
+    pub hypercall: KvmRunExitHypercall,
     pub padding: [u8; 256],
 }
 
@@ -253,12 +254,22 @@ pub struct KvmExitIo {
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmRunExitHypercall {
+    pub nr: u64,
+    pub args: [u64; 6],
+    pub ret: u64,
+    pub flags: u64,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub union KvmSyncRegsBlock {
     pub padding: [u8; 2048],
 }
 
 pub const KVM_EXIT_IO: u32 = 2;
+pub const KVM_EXIT_HYPERCALL: u32 = 3;
 pub const KVM_EXIT_MMIO: u32 = 6;
 pub const KVM_EXIT_SHUTDOWN: u32 = 8;
 
@@ -384,11 +395,23 @@ pub struct KvmMsi {
     pub pad: [u8; 12usize],
 }
 
-pub const KVM_CAP_NR_MEMSLOTS: u64 = 10;
-pub const KVM_CAP_IRQFD: u64 = 32;
-pub const KVM_CAP_SIGNAL_MSI: u64 = 77;
-pub const KVM_CAP_GUEST_MEMFD: u64 = 234;
-pub const KVM_CAP_VM_TYPES: u64 = 235;
+pub const KVM_CAP_NR_MEMSLOTS: u32 = 10;
+pub const KVM_CAP_IRQFD: u32 = 32;
+pub const KVM_CAP_SIGNAL_MSI: u32 = 77;
+pub const KVM_CAP_EXIT_HYPERCALL: u32 = 201;
+// pub const KVM_CAP_GUEST_MEMFD: u32 = 234;
+// pub const KVM_CAP_VM_TYPES: u32 = 235;
+
+pub const KVM_HC_MAP_GPA_RANGE: u64 = 12;
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct KvmMapGpaRangeFlag: u64 {
+        const PAGE_2M = 1 << 0;
+        const PAGE_1G = 1 << 1;
+        const ENCRYPTED = 1 << 4;
+    }
+}
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -415,4 +438,13 @@ pub struct KvmIoEventFd {
 pub struct KvmEncRegion {
     pub addr: u64,
     pub size: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct KvmEnableCap {
+    pub cap: u32,
+    pub flags: u32,
+    pub args: [u64; 4],
+    pub pad: [u8; 64],
 }

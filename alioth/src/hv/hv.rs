@@ -277,6 +277,11 @@ pub enum VmExit {
         write: Option<u64>,
         size: u8,
     },
+    ConvertMemory {
+        gpa: u64,
+        size: u64,
+        private: bool,
+    },
     Shutdown,
     Reboot,
     Unknown(String),

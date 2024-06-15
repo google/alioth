@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::kvm::bindings::{KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT};
+use crate::hv::kvm::bindings::{
+    KvmMapGpaRangeFlag, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_HC_MAP_GPA_RANGE,
+};
 use crate::hv::{Error, VmExit};
 
 use super::vcpu::KvmVcpu;
@@ -59,5 +61,20 @@ impl KvmVcpu {
             write,
             size: kvm_io.size,
         })
+    }
+
+    pub(super) fn handle_hypercall(&mut self) -> Result<VmExit, Error> {
+        let hypercall = unsafe { self.kvm_run.exit.hypercall };
+        match hypercall.nr {
+            KVM_HC_MAP_GPA_RANGE => {
+                let flag = KvmMapGpaRangeFlag::from_bits_retain(hypercall.args[2]);
+                Ok(VmExit::ConvertMemory {
+                    gpa: hypercall.args[0],
+                    size: hypercall.args[1] << 12,
+                    private: flag.contains(KvmMapGpaRangeFlag::ENCRYPTED),
+                })
+            }
+            _ => unimplemented!(),
+        }
     }
 }

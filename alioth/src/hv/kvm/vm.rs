@@ -106,7 +106,7 @@ impl VmInner {
         Ok(())
     }
 
-    fn check_extension(&self, id: u64) -> Result<i32, Error> {
+    fn check_extension(&self, id: u32) -> Result<i32, Error> {
         let ret = unsafe { kvm_check_extension(self, id) };
         match ret {
             Ok(num) => Ok(num),

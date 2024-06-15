@@ -214,6 +214,7 @@ where
                         _ => VmEntry::None,
                     }
                 }
+                VmExit::ConvertMemory { .. } => unimplemented!(),
                 VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
             };
         }
