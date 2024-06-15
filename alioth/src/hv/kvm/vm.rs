@@ -23,7 +23,7 @@ use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
-use crate::arch::sev::SnpPolicy;
+use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
 use crate::hv::kvm::bindings::{
     KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
@@ -40,9 +40,10 @@ use crate::hv::kvm::ioctls::{
 };
 use crate::hv::kvm::sev::bindings::{
     KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
-    KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE,
-    KVM_SEV_LAUNCH_START, KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA,
-    KVM_SEV_SNP_LAUNCH_FINISH, KVM_SEV_SNP_LAUNCH_START,
+    KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KvmSevSnpLaunchUpdate, KVM_SEV_LAUNCH_FINISH,
+    KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START, KVM_SEV_LAUNCH_UPDATE_DATA,
+    KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH, KVM_SEV_SNP_LAUNCH_START,
+    KVM_SEV_SNP_LAUNCH_UPDATE,
 };
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
@@ -685,6 +686,18 @@ impl Vm for KvmVm {
             ..Default::default()
         };
         self.sev_op(KVM_SEV_SNP_LAUNCH_START, Some(&mut start))?;
+        Ok(())
+    }
+
+    fn snp_launch_update(&self, range: &mut [u8], gpa: u64, type_: SnpPageType) -> Result<()> {
+        let mut update = KvmSevSnpLaunchUpdate {
+            uaddr: range.as_mut_ptr() as _,
+            len: range.len() as _,
+            gfn_start: gpa >> 12,
+            type_: type_ as _,
+            ..Default::default()
+        };
+        self.sev_op(KVM_SEV_SNP_LAUNCH_UPDATE, Some(&mut update))?;
         Ok(())
     }
 
