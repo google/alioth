@@ -214,7 +214,12 @@ where
                         _ => VmEntry::None,
                     }
                 }
-                VmExit::ConvertMemory { .. } => unimplemented!(),
+                VmExit::ConvertMemory { gpa, size, private } => {
+                    self.memory
+                        .ram_bus()
+                        .mark_private_memory(gpa, size, private)?;
+                    VmEntry::None
+                }
                 VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
             };
         }
