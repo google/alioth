@@ -28,13 +28,13 @@ use crate::ffi;
 use crate::hv::kvm::bindings::{
     KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
     KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMsi,
-    KvmUserspaceMemoryRegion, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
-    KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS,
+    KVM_CAP_SIGNAL_MSI, KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_op,
     kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing,
-    kvm_set_user_memory_region, kvm_signal_msi,
+    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
 };
 use crate::hv::kvm::sev::bindings::{
     KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
@@ -54,6 +54,7 @@ use crate::hv::{
 pub(super) struct VmInner {
     pub(super) fd: OwnedFd,
     pub(super) sev_fd: Option<SevFd>,
+    pub(super) memfd: Option<OwnedFd>,
     pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
     pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
     pub(super) next_msi_gsi: AtomicU32,
@@ -153,14 +154,30 @@ impl VmMemory for KvmMemory {
         if option.log_dirty {
             flags |= KvmMemFlag::LOG_DIRTY_PAGES;
         }
-        let region = KvmUserspaceMemoryRegion {
-            slot,
-            guest_phys_addr: gpa as _,
-            memory_size: size as _,
-            userspace_addr: hva as _,
-            flags,
-        };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }.context(error::GuestMap {
+        if let Some(memfd) = &self.vm.memfd {
+            flags |= KvmMemFlag::GUEST_MEMFD;
+            let region = KvmUserspaceMemoryRegion2 {
+                slot,
+                guest_phys_addr: gpa as _,
+                memory_size: size as _,
+                userspace_addr: hva as _,
+                flags,
+                guest_memfd: memfd.as_raw_fd() as _,
+                guest_memfd_offset: gpa as u64,
+                ..Default::default()
+            };
+            unsafe { kvm_set_user_memory_region2(&self.vm, &region) }
+        } else {
+            let region = KvmUserspaceMemoryRegion {
+                slot,
+                guest_phys_addr: gpa as _,
+                memory_size: size as _,
+                userspace_addr: hva as _,
+                flags,
+            };
+            unsafe { kvm_set_user_memory_region(&self.vm, &region) }
+        }
+        .context(error::GuestMap {
             hva,
             gpa: gpa as u64,
             size,
