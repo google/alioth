@@ -35,7 +35,7 @@ use arch::Reg;
 #[cfg(target_arch = "x86_64")]
 use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 
-use crate::arch::sev::{SevPolicy, SnpPolicy};
+use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 
 #[trace_error]
 #[derive(Snafu)]
@@ -254,6 +254,8 @@ pub trait Vm {
     }
 
     fn snp_launch_start(&self, policy: SnpPolicy) -> Result<()>;
+
+    fn snp_launch_update(&self, range: &mut [u8], gpa: u64, type_: SnpPageType) -> Result<()>;
 
     fn snp_launch_finish(&self) -> Result<()>;
 }

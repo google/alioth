@@ -18,10 +18,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use zerocopy::FromBytes;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 use crate::arch::reg::SegAccess;
+use crate::arch::sev::SnpPageType;
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
 use crate::hv::arch::{Cpuid, Reg, SegReg, SegRegVal};
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
@@ -63,18 +64,56 @@ impl<V> Board<V>
 where
     V: Vm,
 {
+    fn update_snp_desc(&self, offset: usize, fw_range: &mut [u8]) -> Result<()> {
+        let ram_bus = self.memory.ram_bus();
+        let ram = ram_bus.lock_layout();
+        let desc = SevMetadataDesc::read_from_prefix(&fw_range[offset..]).unwrap();
+        let snp_page_type = match desc.type_ {
+            SEV_DESC_TYPE_SNP_SEC_MEM => SnpPageType::Unmeasured,
+            SEV_DESC_TYPE_SNP_SECRETS => SnpPageType::Secrets,
+            _ => unimplemented!(),
+        };
+        let range_ref = ram.get_slice::<u8>(desc.base as usize, desc.len as usize)?;
+        let range_bytes =
+            unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
+        ram_bus.mark_private_memory(desc.base as _, desc.len as _, true)?;
+        self.vm
+            .snp_launch_update(range_bytes, desc.base as _, snp_page_type)?;
+        Ok(())
+    }
+
     pub fn setup_firmware(&self, fw: &mut ArcMemPages) -> Result<()> {
-        match &self.config.coco {
-            Some(Coco::AmdSev { policy }) => {
+        let Some(coco) = &self.config.coco else {
+            return Ok(());
+        };
+        let ram_bus = self.memory.ram_bus();
+        ram_bus.register_encrypted_pages(fw)?;
+        match coco {
+            Coco::AmdSev { policy } => {
                 if policy.es() {
-                    let ap_eip = get_ap_eip_from_fw(fw.as_slice()).unwrap();
+                    let ap_eip =
+                        parse_data_from_fw(fw.as_slice(), &SEV_ES_RESET_BLOCK_GUID).unwrap();
                     self.arch.sev_ap_eip.store(ap_eip, Ordering::Release);
                 }
-                self.memory.ram_bus().register_encrypted_pages(fw)?;
                 self.vm.sev_launch_update_data(fw.as_slice_mut())?;
             }
-            Some(Coco::AmdSnp { .. }) => unimplemented!(),
-            None => {}
+            Coco::AmdSnp { .. } => {
+                let fw_range = fw.as_slice_mut();
+                let metadata_offset_r: u32 =
+                    parse_data_from_fw(fw_range, &SEV_METADATA_GUID).unwrap();
+                let metadata_offset = fw_range.len() - metadata_offset_r as usize;
+                let metadata = SevMetaData::read_from_prefix(&fw_range[metadata_offset..]).unwrap();
+                let desc_offset = metadata_offset + size_of::<SevMetaData>();
+                for i in 0..metadata.num_desc as usize {
+                    let offset = desc_offset + i * size_of::<SevMetadataDesc>();
+                    self.update_snp_desc(offset, fw_range)?;
+                }
+                let fw_gpa = (MEM_64_START - fw_range.len()) as u64;
+                ram_bus.mark_private_memory(fw_gpa, fw_range.len() as _, true)?;
+                self.vm
+                    .snp_launch_update(fw_range, fw_gpa, SnpPageType::Normal)
+                    .unwrap();
+            }
         }
         Ok(())
     }
@@ -193,7 +232,36 @@ const SEV_ES_RESET_BLOCK_GUID: [u8; GUID_SIZE] = [
     0xde, 0x71, 0xf7, 0x00, 0x7e, 0x1a, 0xcb, 0x4f, 0x89, 0x0e, 0x68, 0xc7, 0x7e, 0x2f, 0xb4, 0x4e,
 ];
 
-pub fn get_ap_eip_from_fw(blob: &[u8]) -> Option<u32> {
+const SEV_METADATA_GUID: [u8; GUID_SIZE] = [
+    0x66, 0x65, 0x88, 0xdc, 0x4a, 0x98, 0x98, 0x47, 0xA7, 0x5e, 0x55, 0x85, 0xa7, 0xbf, 0x67, 0xcc,
+];
+
+#[derive(Debug, FromZeroes, FromBytes, AsBytes)]
+#[repr(C)]
+struct SevMetaData {
+    signature: u32,
+    len: u32,
+    version: u32,
+    num_desc: u32,
+}
+
+pub const SEV_DESC_TYPE_SNP_SEC_MEM: u32 = 1;
+pub const SEV_DESC_TYPE_SNP_SECRETS: u32 = 2;
+pub const SEV_DESC_TYPE_CPUID: u32 = 3;
+
+#[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+#[repr(C)]
+
+struct SevMetadataDesc {
+    base: u32,
+    len: u32,
+    type_: u32,
+}
+
+pub fn parse_data_from_fw<T>(blob: &[u8], guid: &[u8; GUID_SIZE]) -> Option<T>
+where
+    T: FromBytes,
+{
     let offset_table_footer = blob.len().checked_sub(GUID_TABLE_FOOTER_R_OFFSET)?;
     if !blob[offset_table_footer..].starts_with(&GUID_TABLE_FOOTER_GUID) {
         return None;
@@ -208,8 +276,8 @@ pub fn get_ap_eip_from_fw(blob: &[u8]) -> Option<u32> {
     let mut current = offset_table_len;
     while current > offset_table_end {
         let offset_len = current.checked_sub(GUID_SIZE + size_of::<u16>())?;
-        if blob[(offset_len + 2)..].starts_with(&SEV_ES_RESET_BLOCK_GUID) {
-            return u32::read_from_prefix(&blob[offset_len.checked_sub(size_of::<u32>())?..]);
+        if blob[(offset_len + 2)..].starts_with(guid) {
+            return T::read_from_prefix(&blob[offset_len.checked_sub(size_of::<T>())?..]);
         }
         let table_len = u16::read_from_prefix(&blob[offset_len..])? as usize;
         current = current.checked_sub(table_len)?;
