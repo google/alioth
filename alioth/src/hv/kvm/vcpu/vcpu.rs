@@ -25,14 +25,12 @@ use snafu::ResultExt;
 
 use crate::ffi;
 use crate::hv::arch::Reg;
-use crate::hv::kvm::bindings::{KvmRun, KVM_EXIT_IO, KVM_EXIT_MMIO};
+use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
 use crate::hv::kvm::{kvm_error, KvmError};
 use crate::hv::{error, Error, Vcpu, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::hv::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
-
-use super::bindings::{KVM_EXIT_HYPERCALL, KVM_EXIT_SHUTDOWN};
 
 pub(super) struct KvmRunBlock {
     addr: usize,
@@ -146,11 +144,11 @@ impl Vcpu for KvmVcpu {
                 _ => Err(e).context(error::RunVcpu),
             },
             Ok(_) => match self.kvm_run.exit_reason {
-                KVM_EXIT_IO => self.handle_io(),
-                KVM_EXIT_HYPERCALL => self.handle_hypercall(),
-                KVM_EXIT_MMIO => self.handle_mmio(),
-                KVM_EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
-                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {:#x}", reason))),
+                KvmExit::IO => self.handle_io(),
+                KvmExit::HYPERCALL => self.handle_hypercall(),
+                KvmExit::MMIO => self.handle_mmio(),
+                KvmExit::SHUTDOWN => Ok(VmExit::Shutdown),
+                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {:#x?}", reason))),
             },
         }
     }

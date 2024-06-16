@@ -16,6 +16,8 @@ use std::fmt::{Debug, Formatter, Result};
 
 use bitflags::bitflags;
 
+use crate::c_enum;
+
 pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
 
@@ -208,45 +210,63 @@ pub struct KvmSregs2 {
     pub pdptrs: [u64; 4],
 }
 
+c_enum! {
+    pub struct KvmExit(u32);
+    {
+        IO = 2;
+        HYPERCALL = 3;
+        MMIO = 6;
+        SHUTDOWN = 8;
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct KvmRun {
     pub request_interrupt_window: u8,
     pub immediate_exit: u8,
     pub padding1: [u8; 6],
-    pub exit_reason: u32,
+    pub exit_reason: KvmExit,
     pub ready_for_interrupt_injection: u8,
     pub if_flag: u8,
     pub flags: u16,
     pub cr8: u64,
     pub apic_base: u64,
-    pub exit: KvmExit,
+    pub exit: KvmRunExit,
     pub kvm_valid_regs: u64,
     pub kvm_dirty_regs: u64,
     pub s: KvmSyncRegsBlock,
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub union KvmExit {
-    pub mmio: KvmExitMmio,
-    pub io: KvmExitIo,
+pub union KvmRunExit {
+    pub mmio: KvmRunExitMmio,
+    pub io: KvmRunExitIo,
     pub hypercall: KvmRunExitHypercall,
     pub padding: [u8; 256],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct KvmExitMmio {
+pub struct KvmRunExitMmio {
     pub phys_addr: u64,
     pub data: [u8; 8],
     pub len: u32,
     pub is_write: u8,
 }
 
+c_enum! {
+    pub struct KvmExitIo(u8);
+    {
+        IN = 0;
+        OUT = 1;
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct KvmExitIo {
-    pub direction: u8,
+pub struct KvmRunExitIo {
+    pub direction: KvmExitIo,
     pub size: u8,
     pub port: u16,
     pub count: u32,
@@ -267,14 +287,6 @@ pub struct KvmRunExitHypercall {
 pub union KvmSyncRegsBlock {
     pub padding: [u8; 2048],
 }
-
-pub const KVM_EXIT_IO: u32 = 2;
-pub const KVM_EXIT_HYPERCALL: u32 = 3;
-pub const KVM_EXIT_MMIO: u32 = 6;
-pub const KVM_EXIT_SHUTDOWN: u32 = 8;
-
-pub const KVM_EXIT_IO_IN: u8 = 0;
-pub const KVM_EXIT_IO_OUT: u8 = 1;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
