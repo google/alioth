@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::kvm::bindings::{
-    KvmMapGpaRangeFlag, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_HC_MAP_GPA_RANGE,
-};
+use crate::hv::kvm::bindings::{KvmExitIo, KvmMapGpaRangeFlag, KVM_HC_MAP_GPA_RANGE};
 use crate::hv::{Error, VmExit};
 
 use super::vcpu::KvmVcpu;
@@ -41,18 +39,18 @@ impl KvmVcpu {
         let count = kvm_io.count as usize;
         assert_eq!(count, 1);
         let write = match (kvm_io.direction, kvm_io.size) {
-            (KVM_EXIT_IO_IN, _) => None,
-            (KVM_EXIT_IO_OUT, 1) => {
+            (KvmExitIo::IN, _) => None,
+            (KvmExitIo::OUT, 1) => {
                 Some(unsafe { self.kvm_run.data_slice::<u8>(offset, count) }[0] as u32)
             }
-            (KVM_EXIT_IO_OUT, 2) => {
+            (KvmExitIo::OUT, 2) => {
                 Some(unsafe { self.kvm_run.data_slice::<u16>(offset, count) }[0] as u32)
             }
-            (KVM_EXIT_IO_OUT, 4) => {
+            (KvmExitIo::OUT, 4) => {
                 Some(unsafe { self.kvm_run.data_slice::<u32>(offset, count) }[0])
             }
             _ => unreachable!(
-                "kvm_io.direction = {}, kvm_io.size = {}",
+                "kvm_io.direction = {:?}, kvm_io.size = {}",
                 kvm_io.direction, kvm_io.size
             ),
         };
