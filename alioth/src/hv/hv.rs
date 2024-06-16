@@ -236,26 +236,28 @@ pub trait Vm {
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
     fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
 
-    fn sev_launch_start(&self, _policy: u32) -> Result<(), Error> {
-        unimplemented!()
-    }
-    fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
-    fn sev_launch_update_data(&self, _range: &mut [u8]) -> Result<(), Error> {
-        unimplemented!()
-    }
-    fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
-        unimplemented!()
-    }
-    fn sev_launch_finish(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
+    #[cfg(target_arch = "x86_64")]
+    fn sev_launch_start(&self, policy: u32) -> Result<()>;
 
+    #[cfg(target_arch = "x86_64")]
+    fn sev_launch_update_vmsa(&self) -> Result<()>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn sev_launch_update_data(&self, range: &mut [u8]) -> Result<()>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn sev_launch_measure(&self) -> Result<Vec<u8>>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn sev_launch_finish(&self) -> Result<()>;
+
+    #[cfg(target_arch = "x86_64")]
     fn snp_launch_start(&self, policy: SnpPolicy) -> Result<()>;
 
+    #[cfg(target_arch = "x86_64")]
     fn snp_launch_update(&self, range: &mut [u8], gpa: u64, type_: SnpPageType) -> Result<()>;
 
+    #[cfg(target_arch = "x86_64")]
     fn snp_launch_finish(&self) -> Result<()>;
 }
 
