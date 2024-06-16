@@ -55,6 +55,12 @@ pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 .parse2(quote! {#[snafu(implicit)] _location: ::snafu::Location})
                 .unwrap(),
         );
+        let mut cfg_attrs = vec![];
+        for attr in &variant.attrs {
+            if attr.path().is_ident("cfg") {
+                cfg_attrs.push(attr);
+            }
+        }
         let mut has_source = false;
         let mut has_error = false;
         for f in field.named.iter_mut() {
@@ -76,6 +82,7 @@ pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let variant_name = &variant.ident;
         let debug_trace_arm = if has_source {
             quote! {
+                #(#cfg_attrs)*
                 #name::#variant_name {_location, source, ..} => {
                     let level = source.debug_trace(f)?;
                     writeln!(f, "{level}: {self}, at {_location}")?;
@@ -84,6 +91,7 @@ pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         } else if has_error {
             quote! {
+                #(#cfg_attrs)*
                 #name::#variant_name {_location, error, ..} => {
                     writeln!(f, "0: {error}")?;
                     writeln!(f, "1: {self}, at {_location}")?;
@@ -92,6 +100,7 @@ pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         } else {
             quote! {
+                #(#cfg_attrs)*
                 #name::#variant_name {_location, .. } => {
                     writeln!(f, "0: {self}, at {_location}")?;
                     Ok(1)
