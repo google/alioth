@@ -19,8 +19,9 @@ use std::path::Path;
 
 use crate::arch::msr::Efer;
 use crate::arch::paging::Entry;
-use crate::arch::reg::{Cr0, Cr4, Rflags, SegAccess};
-use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{
+    Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
+};
 use crate::mem::mapped::RamBus;
 use zerocopy::{AsBytes, FromZeroes};
 

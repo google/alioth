@@ -21,11 +21,11 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::arch::cpuid::Cpuid;
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
-use crate::arch::reg::SegAccess;
+use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
-use crate::hv::arch::{Cpuid, Reg, SegReg, SegRegVal};
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;

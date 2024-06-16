@@ -23,14 +23,16 @@ use std::ptr::null_mut;
 use libc::{mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 use snafu::ResultExt;
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::cpuid::Cpuid;
+use crate::arch::reg::Reg;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::ffi;
-use crate::hv::arch::Reg;
 use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
 use crate::hv::kvm::{kvm_error, KvmError};
 use crate::hv::{error, Error, Vcpu, VmEntry, VmExit};
-#[cfg(target_arch = "x86_64")]
-use crate::hv::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 
 pub(super) struct KvmRunBlock {
     addr: usize,
