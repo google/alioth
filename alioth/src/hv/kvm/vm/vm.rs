@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
 use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::thread::JoinHandleExt;
@@ -44,7 +47,6 @@ use crate::hv::kvm::sev::bindings::{
     KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH, KVM_SEV_SNP_LAUNCH_START,
     KVM_SEV_SNP_LAUNCH_UPDATE,
 };
-use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::kvm::{kvm_error, KvmError};
 use crate::hv::{
@@ -52,21 +54,23 @@ use crate::hv::{
     Vm, VmMemory,
 };
 
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::VmArch;
+
 #[derive(Debug)]
 pub(super) struct VmInner {
     pub(super) fd: OwnedFd,
-    pub(super) sev_fd: Option<SevFd>,
     pub(super) memfd: Option<OwnedFd>,
     pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
     pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
     pub(super) next_msi_gsi: AtomicU32,
-    pub(super) pin_map: AtomicU32,
+    pub(super) arch: VmArch,
 }
 
 impl VmInner {
     fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<(), KvmError> {
         let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
-        let pin_map = self.pin_map.load(Ordering::Acquire);
+        let pin_map = self.arch.pin_map.load(Ordering::Acquire);
         let mut index = 0;
         for pin in 0..24 {
             if pin_map & (1 << pin) == 0 {
@@ -255,7 +259,7 @@ pub struct KvmIntxSender {
 impl Drop for KvmIntxSender {
     fn drop(&mut self) {
         let pin_flag = 1 << (self.pin as u32);
-        self.vm.pin_map.fetch_and(!pin_flag, Ordering::AcqRel);
+        self.vm.arch.pin_map.fetch_and(!pin_flag, Ordering::AcqRel);
         let request = KvmIrqfd {
             fd: self.event_fd.as_raw_fd() as u32,
             gsi: self.pin as u32,
@@ -541,7 +545,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 
 impl KvmVm {
     pub(super) fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<(), KvmError> {
-        let Some(sev_fd) = &self.vm.sev_fd else {
+        let Some(sev_fd) = &self.vm.arch.sev_fd else {
             unreachable!("SevFd is not initialized")
         };
         let mut req = KvmSevCmd {
@@ -594,7 +598,7 @@ impl Vm for KvmVm {
 
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
         let pin_flag = 1 << pin;
-        if self.vm.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
+        if self.vm.arch.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
             return Err(std::io::ErrorKind::AlreadyExists.into())
                 .context(error::CreateIntx { pin });
         }

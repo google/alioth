@@ -18,14 +18,17 @@ mod ioctls;
 mod sev;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
+#[path = "vm/vm.rs"]
 mod vm;
 mod vmentry;
 mod vmexit;
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicU32;
@@ -40,21 +43,13 @@ use snafu::{ResultExt, Snafu};
 use crate::ffi;
 #[cfg(target_arch = "x86_64")]
 use crate::hv::Cpuid;
-use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
+use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
 
-use bindings::{
-    KvmCap, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType,
-    KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
-};
-use ioctls::{
-    kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_enable_cap,
-    kvm_get_api_version, kvm_get_vcpu_mmap_size,
-};
+use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
 #[cfg(target_arch = "x86_64")]
-use ioctls::{kvm_get_supported_cpuid, kvm_set_identity_map_addr, kvm_set_tss_addr};
+use ioctls::kvm_get_supported_cpuid;
+use ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
 use libc::SIGRTMIN;
-use sev::bindings::{KvmSevInit, KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2};
-use sev::SevFd;
 use vm::{KvmVm, VmInner};
 
 #[trace_error]
@@ -143,87 +138,24 @@ impl Hypervisor for Kvm {
     fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm> {
         let vcpu_mmap_size =
             unsafe { kvm_get_vcpu_mmap_size(&self.fd) }.context(error::CreateVm)? as usize;
-        let kvm_vm_type = if let Some(Coco::AmdSnp { .. }) = &config.coco {
-            KvmVmType::SNP
-        } else {
-            KvmVmType::DEFAULT
-        };
+        let kvm_vm_type = Self::determine_vm_type(config)?;
         let vm_fd = unsafe { kvm_create_vm(&self.fd, kvm_vm_type) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
-        let sev_fd = if let Some(cv) = &config.coco {
-            match cv {
-                Coco::AmdSev { .. } | Coco::AmdSnp { .. } => Some(match &self.config.dev_sev {
-                    Some(dev_sev) => SevFd::new(dev_sev),
-                    None => SevFd::new("/dev/sev"),
-                }?),
-            }
-        } else {
-            None
-        };
-        let memfd = if let Some(Coco::AmdSnp { .. }) = &config.coco {
-            let mut request = KvmCreateGuestMemfd {
-                size: 1 << 48,
-                ..Default::default()
-            };
-            let ret = unsafe { kvm_create_guest_memfd(&fd, &mut request) }
-                .context(kvm_error::GuestMemfd)?;
-            Some(unsafe { OwnedFd::from_raw_fd(ret) })
-        } else {
-            None
-        };
+        let kvm_vm_arch = self.create_vm_arch(config)?;
+        let memfd = self.create_guest_memfd(config, &fd)?;
         let kvm_vm = KvmVm {
             vm: Arc::new(VmInner {
                 fd,
-                sev_fd,
                 memfd,
                 ioeventfds: Mutex::new(HashMap::new()),
                 msi_table: RwLock::new(HashMap::new()),
                 next_msi_gsi: AtomicU32::new(0),
-                pin_map: AtomicU32::new(0),
+                arch: kvm_vm_arch,
             }),
             vcpu_mmap_size,
             memory_created: false,
         };
-        if kvm_vm.vm.sev_fd.is_some() {
-            match config.coco.as_ref().unwrap() {
-                Coco::AmdSev { policy } => {
-                    if policy.es() {
-                        kvm_vm.sev_op::<()>(KVM_SEV_ES_INIT, None)?;
-                    } else {
-                        kvm_vm.sev_op::<()>(KVM_SEV_INIT, None)?;
-                    }
-                }
-                Coco::AmdSnp { .. } => {
-                    let bitmap = unsafe { kvm_check_extension(&kvm_vm.vm, KvmCap::EXIT_HYPERCALL) }
-                        .context(kvm_error::CheckExtension {
-                            ext: "KVM_CAP_EXIT_HYPERCALL",
-                        })?;
-                    if bitmap != 0 {
-                        let request = KvmEnableCap {
-                            cap: KvmCap::EXIT_HYPERCALL,
-                            args: [bitmap as _, 0, 0, 0],
-                            flags: 0,
-                            pad: [0; 64],
-                        };
-                        unsafe { kvm_enable_cap(&kvm_vm.vm, &request) }.context(
-                            kvm_error::EnableCap {
-                                cap: "KVM_CAP_EXIT_HYPERCALL",
-                            },
-                        )?;
-                    }
-                    let mut init = KvmSevInit::default();
-                    kvm_vm.sev_op(KVM_SEV_INIT2, Some(&mut init))?;
-                    log::debug!("vm-{}: snp init: {init:#x?}", kvm_vm.vm.as_raw_fd());
-                }
-            }
-        }
-        unsafe { kvm_create_irqchip(&kvm_vm.vm) }.context(error::CreateDevice)?;
-        // TODO should be in parameters
-        #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_tss_addr(&kvm_vm.vm, 0xf000_0000) }.context(error::SetVmParam)?;
-        #[cfg(target_arch = "x86_64")]
-        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm, &0xf000_3000) }
-            .context(error::SetVmParam)?;
+        self.vm_init_arch(config, &kvm_vm)?;
         Ok(kvm_vm)
     }
 
@@ -251,28 +183,5 @@ impl Hypervisor for Kvm {
             })
             .collect::<Vec<_>>();
         Ok(cpuids)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn test_get_supported_cpuid() {
-        let kvm = Kvm::new(KvmConfig::default()).unwrap();
-        let mut kvm_cpuid_exist = false;
-        let supported_cpuids = kvm.get_supported_cpuids().unwrap();
-        for cpuid in &supported_cpuids {
-            if cpuid.func == 0x4000_0000
-                && cpuid.ebx.to_le_bytes() == *b"KVMK"
-                && cpuid.ecx.to_le_bytes() == *b"VMKV"
-                && cpuid.edx.to_le_bytes() == *b"M\0\0\0"
-            {
-                kvm_cpuid_exist = true;
-            }
-        }
-        assert!(kvm_cpuid_exist);
     }
 }
