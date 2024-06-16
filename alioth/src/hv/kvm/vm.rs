@@ -26,11 +26,10 @@ use snafu::ResultExt;
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
 use crate::hv::kvm::bindings::{
-    KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
+    KvmCap, KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
     KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute,
     KvmMemoryAttributes, KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
-    KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI, KVM_IRQCHIP_IOAPIC,
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
+    KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_op,
@@ -109,7 +108,7 @@ impl VmInner {
         Ok(())
     }
 
-    fn check_extension(&self, id: u32) -> Result<i32, Error> {
+    fn check_extension(&self, id: KvmCap) -> Result<i32, Error> {
         let ret = unsafe { kvm_check_extension(self, id) };
         match ret {
             Ok(num) => Ok(num),
@@ -206,7 +205,7 @@ impl VmMemory for KvmMemory {
 
     fn max_mem_slots(&self) -> Result<u32, Error> {
         self.vm
-            .check_extension(KVM_CAP_NR_MEMSLOTS)
+            .check_extension(KvmCap::NR_MEMSLOTS)
             .map(|r| r as u32)
     }
 
@@ -599,7 +598,7 @@ impl Vm for KvmVm {
             return Err(std::io::ErrorKind::AlreadyExists.into())
                 .context(error::CreateIntx { pin });
         }
-        if self.vm.check_extension(KVM_CAP_IRQFD)? == 0 {
+        if self.vm.check_extension(KvmCap::IRQFD)? == 0 {
             return error::Capability {
                 cap: "KVM_CAP_IRQFD",
             }
@@ -622,7 +621,7 @@ impl Vm for KvmVm {
     }
 
     fn create_msi_sender(&self) -> Result<Self::MsiSender> {
-        if self.vm.check_extension(KVM_CAP_SIGNAL_MSI)? == 0 {
+        if self.vm.check_extension(KvmCap::SIGNAL_MSI)? == 0 {
             return error::Capability {
                 cap: "KVM_CAP_SIGNAL_MSI",
             }
