@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "arch/arch.rs"]
-pub mod arch;
-
 #[cfg(target_os = "linux")]
 #[path = "kvm/kvm.rs"]
 mod kvm;
@@ -31,9 +28,11 @@ use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use arch::Reg;
 #[cfg(target_arch = "x86_64")]
-use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::arch::cpuid::Cpuid;
+use crate::arch::reg::Reg;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 

@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "x86_64")]
-pub use x86_64::*;
-#[cfg(target_arch = "x86_64")]
-pub mod x86_64;
+#[derive(Debug, Default, Clone)]
+pub struct Cpuid {
+    pub func: u32,
+    pub index: Option<u32>,
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}

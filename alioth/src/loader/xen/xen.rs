@@ -23,8 +23,7 @@ use crate::align_up;
 use crate::arch::layout::{
     BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
 };
-use crate::arch::reg::{Cr0, Rflags, SegAccess};
-use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::elf::{
     Elf64Header, Elf64Note, Elf64ProgramHeader, Elf64SectionHeader, ELF_HEADER_MAGIC,
     ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, PT_NOTE, SHT_NOTE,

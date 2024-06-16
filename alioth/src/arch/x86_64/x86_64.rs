@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod cpuid;
 pub mod layout;
 pub mod msr;
 pub mod paging;

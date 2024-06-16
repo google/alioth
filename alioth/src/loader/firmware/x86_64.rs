@@ -18,8 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::arch::layout::MEM_64_START;
-use crate::arch::reg::{Cr0, Rflags, SegAccess};
-use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::{InitState, Result};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory};

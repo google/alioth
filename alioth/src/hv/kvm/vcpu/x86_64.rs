@@ -14,8 +14,8 @@
 
 use snafu::ResultExt;
 
-use crate::arch::reg::SegAccess;
-use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::arch::cpuid::Cpuid;
+use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::bindings::{
     KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs, KVM_MAX_CPUID_ENTRIES,
 };
@@ -312,9 +312,8 @@ mod test {
 
     use crate::arch::msr::Efer;
     use crate::arch::paging::Entry;
-    use crate::arch::reg::{Cr0, Cr4, SegAccess};
+    use crate::arch::reg::{Cr0, Cr4, Reg, SegAccess};
     use crate::ffi;
-    use crate::hv::arch::Reg;
     use crate::hv::{
         DtReg, DtRegVal, Hypervisor, Kvm, MemMapOption, SReg, SegReg, SegRegVal, Vcpu, Vm, VmEntry,
         VmExit, VmMemory,
