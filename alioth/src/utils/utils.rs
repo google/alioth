@@ -98,6 +98,54 @@ macro_rules! ffi {
 }
 
 #[macro_export]
+macro_rules! c_enum {
+    (
+        $(#[$attr:meta])*
+        $vs:vis struct $EnumName:ident($TyName:ty);
+        {
+            $($VARIANT:ident = $value:expr;)*
+        }
+    ) => {
+        #[repr(transparent)]
+        #[derive(PartialEq, Eq, Copy, Clone)]
+        $(#[$attr])*
+        $vs struct $EnumName($TyName);
+
+        impl $EnumName {
+            $(pub const $VARIANT: $EnumName = $EnumName($value);)*
+
+            pub fn raw(&self) -> $TyName {
+                self.0
+            }
+        }
+
+        impl ::core::fmt::Debug for $EnumName {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.write_str(stringify!($EnumName))?;
+                match *self {
+                    $($EnumName::$VARIANT => {
+                        f.write_str("::")?;
+                        f.write_str(stringify!($VARIANT))
+                    })*
+                    _ => {
+                        ::core::fmt::Write::write_char(f, '(')?;
+                        ::core::fmt::Debug::fmt(&self.0, f)?;
+                        ::core::fmt::Write::write_char(f, ')')
+                    }
+                }
+            }
+        }
+
+
+        impl From<$EnumName> for $TyName {
+            fn from(value: $EnumName) -> Self {
+                value.0
+            }
+        }
+    }
+}
+
+#[macro_export]
 macro_rules! unsafe_impl_zerocopy {
     ($ty:ty, $($name:ident), +) => {
          $(
