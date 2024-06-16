@@ -23,25 +23,45 @@ use mio::event::Event;
 use mio::Registry;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::{DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
+use crate::{c_enum, impl_mmio_for_zerocopy};
 
-pub const VIRTIO_BLK_T_IN: u32 = 0;
-pub const VIRTIO_BLK_T_OUT: u32 = 1;
-pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
-pub const VIRTIO_BLK_T_GET_ID: u32 = 8;
-pub const VIRTIO_BLK_T_GET_LIFETIME: u32 = 10;
-pub const VIRTIO_BLK_T_DISCARD: u32 = 11;
-pub const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
-pub const VIRTIO_BLK_T_SECURE_ERASE: u32 = 14;
+c_enum! {
+    #[derive(FromBytes, FromZeroes)]
+    pub struct RequestType(u32);
+    {
+        IN = 0;
+        OUT = 1;
+        FLUSH = 4;
+        GET_ID = 8;
+        GET_LIFETIME = 10;
+        DISCARD = 11;
+        WRITE_ZEROES = 13;
+        SECURE_ERASE = 14;
+    }
+}
 
-pub const VIRTIO_BLK_S_OK: u8 = 0;
-pub const VIRTIO_BLK_S_IOERR: u8 = 1;
-pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+c_enum! {
+    #[derive(FromBytes, FromZeroes)]
+    pub struct Status(u8);
+    {
+        OK = 0;
+        IOERR = 1;
+        UNSUPP = 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, FromZeroes, FromBytes)]
+pub struct Request {
+    type_: RequestType,
+    reserved: u32,
+    sector: u64,
+}
 
 pub const VIRTIO_BLK_ID_SIZE: usize = 20;
 
@@ -145,29 +165,29 @@ impl Block {
         let Some(buf0) = desc.readable.first() else {
             return Err(ErrorKind::InvalidData.into());
         };
-        let hdr_clone;
-        let header = match BlockReqHeader::ref_from(buf0) {
-            Some(h) => h,
+        let request_clone;
+        let request = match Request::ref_from(buf0) {
+            Some(r) => r,
             None => match FromBytes::read_from(buf0) {
-                Some(h) => {
-                    hdr_clone = h;
-                    &hdr_clone
+                Some(r) => {
+                    request_clone = r;
+                    &request_clone
                 }
                 None => return Err(ErrorKind::InvalidData.into()),
             },
         };
-        let offset = header.sector * SECTOR_SIZE as u64;
-        let w_len = match header.type_ {
-            VIRTIO_BLK_T_IN => {
+        let offset = request.sector * SECTOR_SIZE as u64;
+        let w_len = match request.type_ {
+            RequestType::IN => {
                 let Some(buf1) = desc.writable.first_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let l = buf1.len();
                 let status = match disk.read_exact_at(buf1, offset) {
-                    Ok(()) => VIRTIO_BLK_S_OK,
+                    Ok(()) => Status::OK,
                     Err(e) => {
                         log::error!("{}: read {l} bytes from offset {offset:#x}: {e}", self.name);
-                        VIRTIO_BLK_S_IOERR
+                        Status::IOERR
                     }
                 };
                 let Some(buf2) = desc.writable.get_mut(1) else {
@@ -176,19 +196,19 @@ impl Block {
                 let Some(status_byte) = buf2.first_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
-                *status_byte = status;
+                *status_byte = status.into();
                 l + 1
             }
-            VIRTIO_BLK_T_OUT => {
+            RequestType::OUT => {
                 let Some(buf1) = desc.readable.get(1) else {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let l = buf1.len();
                 let status = match disk.write_all_at(buf1, offset) {
-                    Ok(()) => VIRTIO_BLK_S_OK,
+                    Ok(()) => Status::OK,
                     Err(e) => {
                         log::error!("{}: write {l} bytes to offset {offset:#x}: {e}", self.name);
-                        VIRTIO_BLK_S_IOERR
+                        Status::IOERR
                     }
                 };
                 let Some(buf2) = desc.writable.first_mut() else {
@@ -197,10 +217,10 @@ impl Block {
                 let Some(status_byte) = buf2.first_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
-                *status_byte = status;
+                *status_byte = status.into();
                 1
             }
-            VIRTIO_BLK_T_FLUSH => {
+            RequestType::FLUSH => {
                 // TODO flush the file
                 let Some(w_buf) = desc.writable.last_mut() else {
                     return Err(ErrorKind::InvalidData.into());
@@ -208,10 +228,10 @@ impl Block {
                 let Some(status_byte) = w_buf.get_mut(0) else {
                     return Err(ErrorKind::InvalidData.into());
                 };
-                *status_byte = VIRTIO_BLK_S_OK;
+                *status_byte = Status::OK.into();
                 1
             }
-            VIRTIO_BLK_T_GET_ID => {
+            RequestType::GET_ID => {
                 let Some(buf1) = desc.writable.first_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
@@ -223,18 +243,18 @@ impl Block {
                 let Some(status_byte) = buf2.first_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
-                *status_byte = VIRTIO_BLK_S_OK;
+                *status_byte = Status::OK.into();
                 1 + len
             }
             _ => {
-                log::error!("unimplemented op: {}", header.type_);
+                log::error!("unimplemented op: {:#x?}", request.type_);
                 let Some(w_buf) = desc.writable.last_mut() else {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let Some(w_byte) = w_buf.get_mut(0) else {
                     return Err(ErrorKind::InvalidData.into());
                 };
-                *w_byte = VIRTIO_BLK_S_UNSUPP;
+                *w_byte = Status::UNSUPP.into();
                 1
             }
         };
@@ -300,12 +320,4 @@ impl Virtio for Block {
             self.handle_req_queue(desc)
         })
     }
-}
-
-#[repr(C)]
-#[derive(Debug, FromZeroes, FromBytes)]
-pub struct BlockReqHeader {
-    type_: u32,
-    reserved: u32,
-    sector: u64,
 }
