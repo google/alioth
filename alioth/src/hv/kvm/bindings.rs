@@ -407,12 +407,17 @@ pub struct KvmMsi {
     pub pad: [u8; 12usize],
 }
 
-pub const KVM_CAP_NR_MEMSLOTS: u32 = 10;
-pub const KVM_CAP_IRQFD: u32 = 32;
-pub const KVM_CAP_SIGNAL_MSI: u32 = 77;
-pub const KVM_CAP_EXIT_HYPERCALL: u32 = 201;
-// pub const KVM_CAP_GUEST_MEMFD: u32 = 234;
-// pub const KVM_CAP_VM_TYPES: u32 = 235;
+c_enum! {
+    pub struct KvmCap(u32);
+    {
+        NR_MEMSLOTS = 10;
+        IRQFD = 32;
+        SIGNAL_MSI = 77;
+        EXIT_HYPERCALL = 201;
+        // GUEST_MEMFD = 234;
+        // VM_TYPES = 235;
+    }
+}
 
 pub const KVM_HC_MAP_GPA_RANGE: u64 = 12;
 
@@ -455,7 +460,7 @@ pub struct KvmEncRegion {
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmEnableCap {
-    pub cap: u32,
+    pub cap: KvmCap,
     pub flags: u32,
     pub args: [u64; 4],
     pub pad: [u8; 64],

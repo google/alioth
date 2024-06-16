@@ -43,8 +43,8 @@ use crate::hv::Cpuid;
 use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
 
 use bindings::{
-    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap, KVM_API_VERSION,
-    KVM_CAP_EXIT_HYPERCALL, KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
+    KvmCap, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap,
+    KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
 };
 use ioctls::{
     kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_enable_cap,
@@ -194,13 +194,13 @@ impl Hypervisor for Kvm {
                     }
                 }
                 Coco::AmdSnp { .. } => {
-                    let bitmap = unsafe { kvm_check_extension(&kvm_vm.vm, KVM_CAP_EXIT_HYPERCALL) }
+                    let bitmap = unsafe { kvm_check_extension(&kvm_vm.vm, KvmCap::EXIT_HYPERCALL) }
                         .context(kvm_error::CheckExtension {
                             ext: "KVM_CAP_EXIT_HYPERCALL",
                         })?;
                     if bitmap != 0 {
                         let request = KvmEnableCap {
-                            cap: KVM_CAP_EXIT_HYPERCALL,
+                            cap: KvmCap::EXIT_HYPERCALL,
                             args: [bitmap as _, 0, 0, 0],
                             flags: 0,
                             pad: [0; 64],

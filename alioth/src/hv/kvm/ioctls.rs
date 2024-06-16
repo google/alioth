@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmEncRegion, KvmIoEventFd, KvmIrqRouting,
-    KvmIrqfd, KvmMemoryAttributes, KvmMsi, KvmRegs, KvmSregs, KvmSregs2, KvmUserspaceMemoryRegion,
-    KvmUserspaceMemoryRegion2, KVMIO,
+    KvmCap, KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmEncRegion, KvmIoEventFd,
+    KvmIrqRouting, KvmIrqfd, KvmMemoryAttributes, KvmMsi, KvmRegs, KvmSregs, KvmSregs2,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KVMIO,
 };
 use crate::utils::ioctls::{ioctl_io, ioctl_ior, ioctl_iowr};
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
 
 ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
 ioctl_write_val!(kvm_create_vm, ioctl_io(KVMIO, 0x01));
-ioctl_write_val!(kvm_check_extension, ioctl_io(KVMIO, 0x03), u32);
+ioctl_write_val!(kvm_check_extension, ioctl_io(KVMIO, 0x03), KvmCap);
 ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04, 0);
 #[cfg(target_arch = "x86_64")]
 ioctl_writeread_buf!(kvm_get_supported_cpuid, KVMIO, 0x05, KvmCpuid2);
