@@ -13,6 +13,10 @@
 // limitations under the License.
 
 pub const MMIO_32_START: u64 = 0x1000_0000; // 256 MiB
+
+pub const GIC_V2_DIST_START: u64 = 0x1000_0000; // size 4 KiB
+pub const GIC_V2_CPU_INTERFACE_START: u64 = 0x1000_1000; // size 8 KiB
+
 pub const MMIO_32_END: u64 = 0x3000_0000; // 768 MiB, size = 512 MiB
 pub const PCIE_CONFIG_START: u64 = 0x3000_0000; // 768 MiB
 pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB

@@ -14,6 +14,7 @@
 
 use std::arch::x86_64::__cpuid;
 use std::iter::zip;
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -33,13 +34,17 @@ use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 
-pub struct ArchBoard {
+pub struct ArchBoard<V> {
     cpuids: Vec<Cpuid>,
     sev_ap_eip: AtomicU32,
+    _phantom: PhantomData<V>,
 }
 
-impl ArchBoard {
-    pub fn new<H: Hypervisor>(hv: &H, config: &BoardConfig) -> Result<Self> {
+impl<V: Vm> ArchBoard<V> {
+    pub fn new<H>(hv: &H, _vm: &V, config: &BoardConfig) -> Result<Self>
+    where
+        H: Hypervisor<Vm = V>,
+    {
         let mut cpuids = hv.get_supported_cpuids()?;
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
@@ -66,6 +71,7 @@ impl ArchBoard {
         Ok(Self {
             cpuids,
             sev_ap_eip: AtomicU32::new(0),
+            _phantom: PhantomData,
         })
     }
 }
@@ -330,6 +336,10 @@ where
             let mem_regions = self.memory.mem_region_entries();
             dev.add_e820(&mem_regions)?;
         }
+        Ok(())
+    }
+
+    pub fn arch_init(&self) -> Result<()> {
         Ok(())
     }
 }

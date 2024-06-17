@@ -91,7 +91,7 @@ where
     pub vm: V,
     pub memory: Memory,
     pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
-    pub arch: ArchBoard,
+    pub arch: ArchBoard<V>,
     pub config: BoardConfig,
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
@@ -239,6 +239,7 @@ where
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
                 }
                 self.add_pci_devs()?;
+                self.arch_init()?;
                 let init_state = self.load_payload()?;
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
