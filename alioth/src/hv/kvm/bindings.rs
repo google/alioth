@@ -479,3 +479,11 @@ pub struct KvmEnableCap {
     pub args: [u64; 4],
     pub pad: [u8; 64],
 }
+
+#[cfg(not(target_arch = "x86_64"))]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmOneReg {
+    pub id: u64,
+    pub addr: u64,
+}

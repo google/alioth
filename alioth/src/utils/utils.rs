@@ -115,7 +115,7 @@ macro_rules! c_enum {
         impl $EnumName {
             $(pub const $VARIANT: $EnumName = $EnumName($value);)*
 
-            pub fn raw(&self) -> $TyName {
+            pub const fn raw(self) -> $TyName {
                 self.0
             }
         }

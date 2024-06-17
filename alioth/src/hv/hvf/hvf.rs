@@ -15,7 +15,7 @@
 use std::os::fd::{AsFd, BorrowedFd};
 use std::thread::JoinHandle;
 
-use crate::arch::reg::Reg;
+use crate::arch::reg::{Reg, SReg};
 use crate::hv::{
     Hypervisor, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result,
     Vcpu, Vm, VmEntry, VmExit, VmMemory,
@@ -38,6 +38,14 @@ impl Vcpu for HvfVcpu {
     }
 
     fn set_regs(&mut self, _vals: &[(Reg, u64)]) -> Result<()> {
+        unimplemented!()
+    }
+
+    fn get_sreg(&self, _reg: SReg) -> Result<u64> {
+        unimplemented!()
+    }
+
+    fn set_sregs(&mut self, _sregs: &[(SReg, u64)]) -> Result<()> {
         unimplemented!()
     }
 }

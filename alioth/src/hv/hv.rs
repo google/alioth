@@ -31,9 +31,9 @@ use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::Cpuid;
-use crate::arch::reg::Reg;
 #[cfg(target_arch = "x86_64")]
-use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
+use crate::arch::reg::{Reg, SReg};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 
@@ -127,7 +127,6 @@ pub trait Vcpu {
     #[cfg(target_arch = "x86_64")]
     fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error>;
 
-    #[cfg(target_arch = "x86_64")]
     fn get_sreg(&self, reg: SReg) -> Result<u64, Error>;
 
     #[cfg(target_arch = "x86_64")]
@@ -137,6 +136,9 @@ pub trait Vcpu {
         seg_regs: &[(SegReg, SegRegVal)],
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_sregs(&mut self, sregs: &[(SReg, u64)]) -> Result<(), Error>;
 
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
 
