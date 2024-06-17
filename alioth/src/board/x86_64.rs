@@ -26,6 +26,8 @@ use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
+use crate::firmware::acpi::bindings::AcpiTableRsdp;
+use crate::firmware::acpi::create_acpi;
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
@@ -267,6 +269,66 @@ where
                     ram_bus.mark_private_memory(MEM_64_START as _, mem_hi_size as _, true)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    pub fn coco_init(&self, id: u32) -> Result<()> {
+        if id != 0 {
+            return Ok(());
+        }
+        if let Some(coco) = &self.config.coco {
+            match coco {
+                Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
+                Coco::AmdSnp { policy } => self.vm.snp_launch_start(*policy)?,
+            }
+        }
+        Ok(())
+    }
+
+    pub fn coco_finalize(&self, id: u32, vcpus: &VcpuGuard) -> Result<()> {
+        if let Some(coco) = &self.config.coco {
+            self.sync_vcpus(vcpus);
+            if id == 0 {
+                match coco {
+                    Coco::AmdSev { policy } => {
+                        if policy.es() {
+                            self.vm.sev_launch_update_vmsa()?;
+                        }
+                        self.vm.sev_launch_measure()?;
+                        self.vm.sev_launch_finish()?;
+                    }
+                    Coco::AmdSnp { .. } => {
+                        self.vm.snp_launch_finish()?;
+                    }
+                }
+            }
+            self.sync_vcpus(vcpus);
+        }
+        Ok(())
+    }
+
+    pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
+        let mut acpi_table = create_acpi(self.config.num_cpu);
+        if self.config.coco.is_none() {
+            let ram = self.memory.ram_bus();
+            acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
+            ram.write_range(
+                EBDA_START,
+                size_of::<AcpiTableRsdp>(),
+                acpi_table.rsdp().as_bytes(),
+            )?;
+            ram.write_range(
+                EBDA_START + size_of::<AcpiTableRsdp>(),
+                acpi_table.tables().len(),
+                acpi_table.tables(),
+            )?;
+        }
+        if let Some(fw_cfg) = &*self.fw_cfg.lock() {
+            let mut dev = fw_cfg.lock();
+            dev.add_acpi(acpi_table)?;
+            let mem_regions = self.memory.mem_region_entries();
+            dev.add_e820(&mem_regions)?;
         }
         Ok(())
     }
