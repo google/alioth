@@ -27,9 +27,9 @@ use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::Cpuid;
-use crate::arch::reg::Reg;
 #[cfg(target_arch = "x86_64")]
-use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
+use crate::arch::reg::{Reg, SReg};
 use crate::ffi;
 use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
@@ -106,7 +106,6 @@ impl Vcpu for KvmVcpu {
         self.kvm_get_seg_reg(reg)
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn get_sreg(&self, reg: SReg) -> Result<u64, Error> {
         self.kvm_get_sreg(reg)
     }
@@ -123,6 +122,11 @@ impl Vcpu for KvmVcpu {
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error> {
         self.kvm_set_sregs(sregs, seg_regs, dt_regs)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_sregs(&mut self, sregs: &[(SReg, u64)]) -> Result<(), Error> {
+        self.kvm_set_sregs(sregs)
     }
 
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {

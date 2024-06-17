@@ -52,12 +52,12 @@ pub enum Reg {
     Pstate,
 }
 
-pub const fn encode(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
-    (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5)
+pub const fn encode(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
+    op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
 }
 
 c_enum! {
-    pub struct SReg(u32);
+    pub struct SReg(u16);
     {
         MPIDR_EL1 = encode(3, 0, 0, 0, 5);
     }

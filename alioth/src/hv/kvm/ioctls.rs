@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::hv::kvm::bindings::KvmOneReg;
 use crate::hv::kvm::bindings::{
     KvmCap, KvmEncRegion, KvmIoEventFd, KvmIrqRouting, KvmIrqfd, KvmMemoryAttributes, KvmMsi,
     KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KvmVmType, KVMIO,
@@ -75,6 +77,11 @@ ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
 #[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
+
+#[cfg(not(target_arch = "x86_64"))]
+ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
+#[cfg(not(target_arch = "x86_64"))]
+ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_writeread!(kvm_memory_encrypt_op, ioctl_iowr::<u64>(KVMIO, 0xba));
