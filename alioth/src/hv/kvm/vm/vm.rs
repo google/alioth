@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
@@ -22,7 +24,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
+#[cfg(target_arch = "x86_64")]
+use libc::write;
+use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
@@ -31,10 +35,11 @@ use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
 use crate::hv::kvm::bindings::{
     KvmCap, KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
-    KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute,
-    KvmMemoryAttributes, KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
-    KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
+    KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes,
+    KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KVM_IRQ_ROUTING_MSI,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::hv::kvm::bindings::{KvmIrqRoutingIrqchip, KVM_IRQCHIP_IOAPIC, KVM_IRQ_ROUTING_IRQCHIP};
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
     kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing, kvm_set_memory_attributes,
@@ -42,11 +47,15 @@ use crate::hv::kvm::ioctls::{
 };
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::kvm::{kvm_error, KvmError};
+#[cfg(target_arch = "x86_64")]
+use crate::hv::IntxSender;
 use crate::hv::{
-    error, Error, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result,
-    Vm, VmMemory,
+    error, Error, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result, Vm,
+    VmMemory,
 };
 
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::VmArch;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::VmArch;
 
@@ -63,19 +72,22 @@ pub(super) struct VmInner {
 impl VmInner {
     fn update_routing_table(&self, table: &HashMap<u32, KvmMsiEntryData>) -> Result<(), KvmError> {
         let mut entries = [KvmIrqRoutingEntry::default(); MAX_GSI_ROUTES];
-        let pin_map = self.arch.pin_map.load(Ordering::Acquire);
         let mut index = 0;
-        for pin in 0..24 {
-            if pin_map & (1 << pin) == 0 {
-                continue;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let pin_map = self.arch.pin_map.load(Ordering::Acquire);
+            for pin in 0..24 {
+                if pin_map & (1 << pin) == 0 {
+                    continue;
+                }
+                entries[index].gsi = pin;
+                entries[index].type_ = KVM_IRQ_ROUTING_IRQCHIP;
+                entries[index].routing.irqchip = KvmIrqRoutingIrqchip {
+                    irqchip: KVM_IRQCHIP_IOAPIC,
+                    pin,
+                };
+                index += 1;
             }
-            entries[index].gsi = pin;
-            entries[index].type_ = KVM_IRQ_ROUTING_IRQCHIP;
-            entries[index].routing.irqchip = KvmIrqRoutingIrqchip {
-                irqchip: KVM_IRQCHIP_IOAPIC,
-                pin,
-            };
-            index += 1;
         }
         for (gsi, entry) in table.iter() {
             if entry.masked {
@@ -242,6 +254,7 @@ impl VmMemory for KvmMemory {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug)]
 pub struct KvmIntxSender {
     pin: u8,
@@ -249,6 +262,7 @@ pub struct KvmIntxSender {
     event_fd: OwnedFd,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl Drop for KvmIntxSender {
     fn drop(&mut self) {
         let pin_flag = 1 << (self.pin as u32);
@@ -269,6 +283,7 @@ impl Drop for KvmIntxSender {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl IntxSender for KvmIntxSender {
     fn send(&self) -> Result<(), Error> {
         ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })
@@ -538,6 +553,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 
 impl Vm for KvmVm {
     type Vcpu = KvmVcpu;
+    #[cfg(target_arch = "x86_64")]
     type IntxSender = KvmIntxSender;
     type MsiSender = KvmMsiSender;
     type Memory = KvmMemory;
@@ -570,6 +586,7 @@ impl Vm for KvmVm {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
         let pin_flag = 1 << pin;
         if self.vm.arch.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {

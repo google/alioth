@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
+use crate::arch::reg::Reg;
+use crate::hv::kvm::vcpu::KvmVcpu;
+use crate::hv::Result;
 
-#[cfg(target_arch = "aarch64")]
-pub use aarch64::load;
-#[cfg(target_arch = "x86_64")]
-pub use x86_64::load;
+impl KvmVcpu {
+    pub fn kvm_set_regs(&self, _vals: &[(Reg, u64)]) -> Result<()> {
+        unimplemented!()
+    }
+
+    pub fn kvm_get_reg(&self, _reg: Reg) -> Result<u64> {
+        unimplemented!()
+    }
+}

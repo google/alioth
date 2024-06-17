@@ -264,7 +264,7 @@ fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
         Some(name) => {
             let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
             for (s, d) in zip(name.as_bytes(), tap_ifconfig.ifr_name.as_mut()) {
-                *d = *s as i8;
+                *d = *s as _;
             }
             tap_ifconfig
         }

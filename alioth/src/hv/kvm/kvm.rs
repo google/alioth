@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
 mod bindings;
 mod ioctls;
 #[path = "sev/sev.rs"]
@@ -22,8 +27,6 @@ mod vcpu;
 mod vm;
 mod vmentry;
 mod vmexit;
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -45,7 +48,9 @@ use crate::ffi;
 use crate::hv::Cpuid;
 use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
 
-use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES};
+use bindings::KVM_API_VERSION;
+#[cfg(target_arch = "x86_64")]
+use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_MAX_CPUID_ENTRIES};
 #[cfg(target_arch = "x86_64")]
 use ioctls::kvm_get_supported_cpuid;
 use ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
@@ -101,6 +106,7 @@ pub struct Kvm {
 pub struct KvmConfig {
     #[serde(default)]
     pub dev_kvm: Option<PathBuf>,
+    #[cfg(target_arch = "x86_64")]
     #[serde(default)]
     pub dev_sev: Option<PathBuf>,
 }

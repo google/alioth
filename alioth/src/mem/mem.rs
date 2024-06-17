@@ -332,12 +332,10 @@ impl Memory {
         entries
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn add_io_dev(&self, port: Option<u16>, dev: MmioRange) -> Result<u16, Error> {
         self.add_io_region(port, Arc::new(IoRegion::new(dev)))
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn add_io_region(&self, port: Option<u16>, region: Arc<IoRegion>) -> Result<u16, Error> {
         let mut regions = self.io_regions.lock();
         // TODO: allocate port dynamically
@@ -351,7 +349,6 @@ impl Memory {
         Ok(port.unwrap())
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
         self.io_bus.remove(port as usize)?;
         let callbacks = region.callbacks.lock();
@@ -361,7 +358,6 @@ impl Memory {
         Ok(())
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn remove_io_region(&self, port: u16) -> Result<Arc<IoRegion>> {
         let mut io_regions = self.io_regions.lock();
         let io_region = io_regions.remove(port as usize)?;

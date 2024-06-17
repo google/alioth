@@ -21,6 +21,7 @@ use crate::c_enum;
 pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
 
+#[cfg(target_arch = "x86_64")]
 c_enum! {
     pub struct KvmVmType(u64);
     {
@@ -32,6 +33,10 @@ c_enum! {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub struct KvmVmType(#[allow(dead_code)] pub u64);
+
+#[cfg(target_arch = "x86_64")]
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
 bitflags! {
@@ -54,6 +59,7 @@ pub struct KvmCpuidEntry2 {
     pub padding: [u32; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmCpuid2<const N: usize> {
@@ -119,6 +125,7 @@ pub struct KvmCreateGuestMemfd {
     pub reserved: [u64; 6],
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmRegs {
@@ -314,6 +321,7 @@ pub struct KvmIrqfd {
 pub const KVM_IRQ_ROUTING_IRQCHIP: u32 = 1;
 pub const KVM_IRQ_ROUTING_MSI: u32 = 2;
 
+#[cfg(target_arch = "x86_64")]
 pub const KVM_IRQCHIP_IOAPIC: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -462,6 +470,7 @@ pub struct KvmEncRegion {
     pub size: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmEnableCap {
