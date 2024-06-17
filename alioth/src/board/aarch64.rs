@@ -12,16 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::arch::layout::{GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START};
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
-use crate::hv::{Hypervisor, Vm};
+use crate::hv::{GicV2, Hypervisor, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 
-pub struct ArchBoard {}
+pub struct ArchBoard<V>
+where
+    V: Vm,
+{
+    gic_v2: V::GicV2,
+}
 
-impl ArchBoard {
-    pub fn new<H: Hypervisor>(_hv: &H, _config: &BoardConfig) -> Result<Self> {
-        unimplemented!()
+impl<V: Vm> ArchBoard<V> {
+    pub fn new<H>(_hv: &H, vm: &V, _config: &BoardConfig) -> Result<Self>
+    where
+        H: Hypervisor<Vm = V>,
+    {
+        let gic_v2 = vm.create_gic_v2(GIC_V2_DIST_START, GIC_V2_CPU_INTERFACE_START)?;
+        Ok(ArchBoard { gic_v2 })
     }
 }
 
@@ -59,5 +69,10 @@ where
 
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
         unimplemented!()
+    }
+
+    pub fn arch_init(&self) -> Result<()> {
+        self.arch.gic_v2.init()?;
+        Ok(())
     }
 }
