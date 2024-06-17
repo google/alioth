@@ -665,6 +665,13 @@ impl Vm for KvmVm {
     fn snp_launch_finish(&self) -> Result<()> {
         self.kvm_snp_launch_finish()
     }
+
+    #[cfg(target_arch = "aarch64")]
+    type GicV2 = aarch64::KvmGicV2;
+    #[cfg(target_arch = "aarch64")]
+    fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2> {
+        self.kvm_create_gic_v2(distributor_base, cpu_interface_base)
+    }
 }
 
 #[cfg(test)]

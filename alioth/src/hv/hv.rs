@@ -219,6 +219,17 @@ pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
     fn get_masked(&self) -> bool;
 }
 
+#[cfg(target_arch = "aarch64")]
+pub trait GicV2: Debug + Send + Sync + 'static {
+    fn init(&self) -> Result<()>;
+    fn get_dist_reg(&self, cpu_index: u32, offset: u16) -> Result<u32>;
+    fn set_dist_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()>;
+    fn get_cpu_reg(&self, cpu_index: u32, offset: u16) -> Result<u32>;
+    fn set_cpu_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()>;
+    fn get_num_irqs(&self) -> Result<u32>;
+    fn set_num_irqs(&self, val: u32) -> Result<()>;
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub enum Coco {
     #[cfg(target_arch = "x86_64")]
@@ -272,6 +283,11 @@ pub trait Vm {
 
     #[cfg(target_arch = "x86_64")]
     fn snp_launch_finish(&self) -> Result<()>;
+
+    #[cfg(target_arch = "aarch64")]
+    type GicV2: GicV2;
+    #[cfg(target_arch = "aarch64")]
+    fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2>;
 }
 
 pub trait Hypervisor {

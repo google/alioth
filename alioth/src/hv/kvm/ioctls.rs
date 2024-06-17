@@ -22,12 +22,14 @@ use crate::hv::kvm::bindings::{
 use crate::hv::kvm::bindings::{
     KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmRegs, KvmSregs, KvmSregs2,
 };
+#[cfg(target_arch = "aarch64")]
+use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDeviceAttr};
 #[cfg(target_arch = "x86_64")]
 use crate::utils::ioctls::ioctl_iowr;
 use crate::utils::ioctls::{ioctl_io, ioctl_ior};
-use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val};
+use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread};
 #[cfg(target_arch = "x86_64")]
-use crate::{ioctl_read, ioctl_writeread, ioctl_writeread_buf};
+use crate::{ioctl_read, ioctl_writeread_buf};
 
 ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
 ioctl_write_val!(kvm_create_vm, ioctl_io(KVMIO, 0x01), KvmVmType);
@@ -107,3 +109,10 @@ ioctl_write_ptr!(kvm_set_memory_attributes, KVMIO, 0xd2, KvmMemoryAttributes);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_writeread!(kvm_create_guest_memfd, KVMIO, 0xd4, KvmCreateGuestMemfd);
+
+#[cfg(target_arch = "aarch64")]
+ioctl_writeread!(kvm_create_device, KVMIO, 0xe0, KvmCreateDevice);
+#[cfg(target_arch = "aarch64")]
+ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, KvmDeviceAttr);
+#[cfg(target_arch = "aarch64")]
+ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, KvmDeviceAttr);
