@@ -13,20 +13,25 @@
 // limitations under the License.
 
 use std::cell::UnsafeCell;
+#[cfg(target_os = "linux")]
 use std::ffi::CStr;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::{align_of, size_of};
 use std::ops::Deref;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+use libc::MFD_CLOEXEC;
 use libc::{
-    c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MFD_CLOEXEC,
-    MS_ASYNC, PROT_EXEC, PROT_READ, PROT_WRITE,
+    c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC,
+    PROT_EXEC, PROT_READ, PROT_WRITE,
 };
 use parking_lot::{RwLock, RwLockReadGuard};
 use zerocopy::{AsBytes, FromBytes};
@@ -109,6 +114,7 @@ impl ArcMemPages {
         Ok(Self::from_raw(addr, len, Some(file)))
     }
 
+    #[cfg(target_os = "linux")]
     pub fn from_memfd(size: usize, prot: Option<i32>, name: Option<&CStr>) -> Result<Self> {
         let name = name.unwrap_or(c"anon");
         let fd = ffi!(unsafe { libc::memfd_create(name.as_ptr(), MFD_CLOEXEC) })?;
@@ -610,8 +616,8 @@ mod test {
     fn test_ram_bus_read() {
         let bus = RamBus::new(FakeVmMemory);
         let prot = PROT_READ | PROT_WRITE;
-        let mem1 = ArcMemPages::from_memfd(PAGE_SIZE, Some(prot), None).unwrap();
-        let mem2 = ArcMemPages::from_memfd(PAGE_SIZE, Some(prot), None).unwrap();
+        let mem1 = ArcMemPages::from_anonymous(PAGE_SIZE, Some(prot)).unwrap();
+        let mem2 = ArcMemPages::from_anonymous(PAGE_SIZE, Some(prot)).unwrap();
 
         if mem1.addr > mem2.addr {
             bus.add(0x0, mem1).unwrap();
