@@ -88,6 +88,7 @@ struct RunArgs {
     #[arg(short, long)]
     kernel: Option<PathBuf>,
 
+    #[cfg(target_arch = "x86_64")]
     #[arg(long)]
     pvh: Option<PathBuf>,
 
@@ -198,6 +199,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
             .add_fw_cfg(params.into_iter())
             .context(error::CreateDevice)?;
         let mut dev = fw_cfg.lock();
+        #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &args.kernel {
             dev.add_kernel_data(File::open(kernel).with_context(|_| error::OpenFile {
                 path: kernel.to_owned(),
@@ -267,14 +269,19 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
             initramfs: args.initramfs,
             cmd_line: args.cmd_line,
         })
-    } else if let Some(pvh_kernel) = args.pvh {
-        Some(Payload {
-            executable: pvh_kernel,
-            exec_type: ExecType::Pvh,
-            initramfs: args.initramfs,
-            cmd_line: args.cmd_line,
-        })
     } else {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(pvh_kernel) = args.pvh {
+            Some(Payload {
+                executable: pvh_kernel,
+                exec_type: ExecType::Pvh,
+                initramfs: args.initramfs,
+                cmd_line: args.cmd_line,
+            })
+        } else {
+            None
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         None
     };
     if let Some(payload) = payload {

@@ -12,11 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "x86_64")]
+pub mod acpi;
+
 use core::fmt;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
-use std::mem::{size_of, size_of_val};
+#[cfg(target_arch = "x86_64")]
+use std::mem::size_of;
+use std::mem::size_of_val;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,17 +33,19 @@ use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+#[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::AcpiTable;
+#[cfg(target_arch = "x86_64")]
 use crate::loader::linux::bootparams::{
     BootE820Entry, BootParams, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
 };
 use crate::mem;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
+#[cfg(target_arch = "x86_64")]
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-pub mod acpi;
-
+#[cfg(target_arch = "x86_64")]
 use acpi::create_acpi_loader;
 
 pub const PORT_SELECTOR: u16 = 0x510;
@@ -238,6 +245,7 @@ impl FwCfg {
         self.get_file_dir_mut()[0..4].copy_from_slice(header.as_bytes());
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn add_e820(&mut self, mem_regions: &[(usize, MemRegionEntry)]) -> Result<()> {
         let mut bytes = vec![];
         for (addr, region) in mem_regions.iter() {
@@ -262,6 +270,7 @@ impl FwCfg {
         self.add_item(item)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn add_acpi(&mut self, acpi_table: AcpiTable) -> Result<()> {
         let [table_loader, acpi_rsdp, apci_tables] = create_acpi_loader(acpi_table);
         self.add_item(table_loader)?;
@@ -269,6 +278,7 @@ impl FwCfg {
         self.add_item(apci_tables)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn add_kernel_data(&mut self, file: File) -> Result<()> {
         let mut buffer = vec![0u8; size_of::<BootParams>()];
         file.read_exact_at(buffer.as_bytes_mut(), 0)?;

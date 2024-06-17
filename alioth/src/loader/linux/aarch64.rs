@@ -12,12 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
+use std::path::Path;
 
-#[cfg(target_arch = "aarch64")]
-pub use aarch64::load;
-#[cfg(target_arch = "x86_64")]
-pub use x86_64::load;
+use crate::loader::{InitState, Result};
+use crate::mem::mapped::RamBus;
+use crate::mem::MemRegionEntry;
+
+pub fn load<P: AsRef<Path>>(
+    _memory: &RamBus,
+    _mem_regions: &[(usize, MemRegionEntry)],
+    _kernel: P,
+    _cmd_line: Option<&str>,
+    _initramfs: Option<P>,
+) -> Result<InitState> {
+    unimplemented!()
+}

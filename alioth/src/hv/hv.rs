@@ -33,7 +33,7 @@ use crate::arch::cpuid::Cpuid;
 use crate::arch::reg::Reg;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
-
+#[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 
 #[trace_error]
@@ -212,8 +212,10 @@ pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum Coco {
+    #[cfg(target_arch = "x86_64")]
     #[serde(alias = "sev")]
     AmdSev { policy: SevPolicy },
+    #[cfg(target_arch = "x86_64")]
     #[serde(alias = "snp", alias = "sev-snp")]
     AmdSnp { policy: SnpPolicy },
 }
@@ -226,10 +228,12 @@ pub struct VmConfig {
 pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
+    #[cfg(target_arch = "x86_64")]
     type IntxSender: IntxSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
+    #[cfg(target_arch = "x86_64")]
     fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error>;
     fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;

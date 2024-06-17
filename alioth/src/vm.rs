@@ -24,6 +24,7 @@ use thiserror::Error;
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 use crate::device::pvpanic::PvPanic;
+#[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::{self, Payload};

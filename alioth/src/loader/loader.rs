@@ -27,6 +27,7 @@ pub mod elf;
 pub mod firmware;
 #[path = "linux/linux.rs"]
 pub mod linux;
+#[cfg(target_arch = "x86_64")]
 #[path = "xen/xen.rs"]
 pub mod xen;
 
@@ -41,6 +42,7 @@ pub struct Payload {
 #[derive(Debug)]
 pub enum ExecType {
     Linux,
+    #[cfg(target_arch = "x86_64")]
     Pvh,
     Firmware,
 }
