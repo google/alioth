@@ -12,21 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_os = "macos")]
+#[path = "hvf/hvf.rs"]
+mod hvf;
 #[cfg(target_os = "linux")]
 #[path = "kvm/kvm.rs"]
 mod kvm;
 #[cfg(test)]
 pub(crate) mod test;
-#[cfg(target_os = "linux")]
-pub use kvm::{Kvm, KvmConfig, KvmError};
-use macros::trace_error;
-use serde::Deserialize;
-use snafu::Snafu;
-
 use std::fmt::Debug;
 use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+
+use macros::trace_error;
+use serde::Deserialize;
+use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::Cpuid;
@@ -35,6 +36,11 @@ use crate::arch::reg::Reg;
 use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
+
+#[cfg(target_os = "macos")]
+pub use hvf::Hvf;
+#[cfg(target_os = "linux")]
+pub use kvm::{Kvm, KvmConfig, KvmError};
 
 #[trace_error]
 #[derive(Snafu)]
@@ -85,6 +91,7 @@ pub enum Error {
     RunVcpu { error: std::io::Error },
     #[snafu(display("Failed to stop a VCPU"))]
     StopVcpu { error: std::io::Error },
+    #[cfg(target_os = "linux")]
     #[snafu(display("KVM internal error"), context(false))]
     KvmErr { source: Box<KvmError> },
 }

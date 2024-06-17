@@ -25,8 +25,10 @@ pub mod dev;
 pub mod pci;
 #[path = "queue/queue.rs"]
 pub mod queue;
+#[cfg(target_os = "linux")]
 #[path = "vhost/vhost.rs"]
 pub mod vhost;
+#[cfg(target_os = "linux")]
 pub mod vu;
 
 #[derive(Debug, Error)]
@@ -70,6 +72,7 @@ pub enum Error {
     #[error("vhost-user backend is missing device feature {0:#x}")]
     VuMissingDeviceFeature(u64),
 
+    #[cfg(target_os = "linux")]
     #[error("vhost-user backend is missing protocol feature {0:x?}")]
     VuMissingProtocolFeature(vu::VuFeature),
 

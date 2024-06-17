@@ -35,9 +35,12 @@ use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
 
 pub mod blk;
 pub mod entropy;
+#[cfg(target_os = "linux")]
 pub mod fs;
+#[cfg(target_os = "linux")]
 #[path = "net/net.rs"]
 pub mod net;
+#[cfg(target_os = "linux")]
 #[path = "vsock/vsock.rs"]
 pub mod vsock;
 

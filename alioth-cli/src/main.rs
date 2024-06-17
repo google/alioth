@@ -17,12 +17,18 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
+#[cfg(target_os = "macos")]
+use alioth::hv::Hvf;
+#[cfg(target_os = "linux")]
 use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
+#[cfg(target_os = "linux")]
 use alioth::virtio::dev::fs::VuFsParam;
+#[cfg(target_os = "linux")]
 use alioth::virtio::dev::net::NetParam;
+#[cfg(target_os = "linux")]
 use alioth::virtio::dev::vsock::VhostVsockParam;
 use alioth::vm::Machine;
 use clap::{Args, Parser, Subcommand};
@@ -57,23 +63,34 @@ enum Command {
 
 #[derive(Debug, Deserialize, Clone)]
 enum Hypervisor {
+    #[cfg(target_os = "linux")]
     #[serde(alias = "kvm")]
     Kvm(KvmConfig),
+    #[cfg(target_os = "macos")]
+    Hvf,
 }
 
 impl Default for Hypervisor {
     fn default() -> Self {
         #[cfg(target_os = "linux")]
-        Hypervisor::Kvm(KvmConfig::default())
+        {
+            Hypervisor::Kvm(KvmConfig::default())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Hypervisor::Hvf
+        }
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize, Clone)]
 enum FsParam {
     #[serde(alias = "vu")]
     Vu(VuFsParam),
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize, Clone)]
 enum VsockParam {
     #[serde(alias = "vhost")]
@@ -169,8 +186,11 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         Hypervisor::default()
     };
     let hypervisor = match hv_config {
-        Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config).context(error::Hypervisor),
-    }?;
+        #[cfg(target_os = "linux")]
+        Hypervisor::Kvm(kvm_config) => Kvm::new(kvm_config).context(error::Hypervisor)?,
+        #[cfg(target_os = "macos")]
+        Hypervisor::Hvf => Hvf {},
+    };
     let coco = match args.coco {
         None => None,
         Some(c) => Some(serde_aco::from_arg(&c).context(error::ParseArg { arg: c })?),
@@ -227,6 +247,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)
             .context(error::CreateDevice)?;
     }
+    #[cfg(target_os = "linux")]
     for (index, net_opt) in args.net.into_iter().enumerate() {
         let net_param: NetParam =
             serde_aco::from_arg(&net_opt).context(error::ParseArg { arg: net_opt })?;
@@ -238,6 +259,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         vm.add_virtio_dev(format!("virtio-blk-{index}"), param)
             .context(error::CreateDevice)?;
     }
+    #[cfg(target_os = "linux")]
     for (index, fs) in args.fs.into_iter().enumerate() {
         let param: FsParam = serde_aco::from_arg(&fs).context(error::ParseArg { arg: fs })?;
         match param {
@@ -246,6 +268,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
                 .context(error::CreateDevice)?,
         };
     }
+    #[cfg(target_os = "linux")]
     if let Some(vsock) = args.vsock {
         let param = serde_aco::from_arg(&vsock).context(error::ParseArg { arg: vsock })?;
         match param {
