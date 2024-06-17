@@ -487,3 +487,59 @@ pub struct KvmOneReg {
     pub id: u64,
     pub addr: u64,
 }
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct KvmCreateDevice {
+    pub type_: KvmDevType,
+    pub fd: i32,
+    pub flags: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct KvmDeviceAttr {
+    pub _flags: u32,
+    pub group: u32,
+    pub attr: u64,
+    pub addr: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+c_enum! {
+    pub struct KvmDevType(u32);
+    {
+        ARM_VGIC_V2 = 5;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+c_enum! {
+    pub struct KvmDevArmVgicGrp(u32);
+    {
+        ADDR = 0;
+        DIST_REGS = 1;
+        CPU_REGS = 2;
+        NR_IRQS = 3;
+        CTL = 4;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+c_enum! {
+    pub struct KvmVgicV2AddrType(u64);
+    {
+        DIST = 0;
+        CPU = 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+c_enum! {
+    pub struct KvmDevArmVgicCtrl(u64);
+    {
+        INIT = 0;
+    }
+}

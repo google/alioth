@@ -17,8 +17,8 @@ use std::thread::JoinHandle;
 
 use crate::arch::reg::{Reg, SReg};
 use crate::hv::{
-    Hypervisor, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result,
-    Vcpu, Vm, VmEntry, VmExit, VmMemory,
+    GicV2, Hypervisor, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender,
+    Result, Vcpu, Vm, VmEntry, VmExit, VmMemory,
 };
 
 #[derive(Debug)]
@@ -173,6 +173,33 @@ impl IoeventFdRegistry for HvfIoeventFdRegistry {
 }
 
 #[derive(Debug)]
+pub struct HvfGicV2 {}
+
+impl GicV2 for HvfGicV2 {
+    fn init(&self) -> Result<()> {
+        unimplemented!()
+    }
+    fn get_dist_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
+        unimplemented!()
+    }
+    fn set_dist_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
+        unimplemented!()
+    }
+    fn get_cpu_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
+        unimplemented!()
+    }
+    fn set_cpu_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
+        unimplemented!()
+    }
+    fn get_num_irqs(&self) -> Result<u32> {
+        unimplemented!()
+    }
+    fn set_num_irqs(&self, _val: u32) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+#[derive(Debug)]
 pub struct HvfVm {}
 
 impl Vm for HvfVm {
@@ -193,6 +220,16 @@ impl Vm for HvfVm {
         unimplemented!()
     }
     fn stop_vcpu<T>(_id: u32, _handle: &JoinHandle<T>) -> Result<()> {
+        unimplemented!()
+    }
+
+    type GicV2 = HvfGicV2;
+
+    fn create_gic_v2(
+        &self,
+        _distributor_base: u64,
+        _cpu_interface_base: u64,
+    ) -> Result<Self::GicV2> {
         unimplemented!()
     }
 }
