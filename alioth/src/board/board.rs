@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::size_of;
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -20,23 +22,21 @@ use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
-use zerocopy::AsBytes;
 
-use crate::arch::layout::{EBDA_START, PCIE_CONFIG_START};
+use crate::arch::layout::PCIE_CONFIG_START;
 use crate::device::fw_cfg::FwCfg;
-use crate::firmware::acpi::bindings::AcpiTableRsdp;
-use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
-use crate::loader::{self, firmware, linux, xen, ExecType, InitState, Payload};
+#[cfg(target_arch = "x86_64")]
+use crate::loader::xen;
+use crate::loader::{self, firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::{PciBus, CONFIG_ADDRESS};
 use crate::pci::config::Command;
 use crate::pci::{self, PciBar, PciDevice};
 
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::ArchBoard;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86_64::ArchBoard;
 
@@ -104,31 +104,6 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
-        let mut acpi_table = create_acpi(self.config.num_cpu);
-        if self.config.coco.is_none() {
-            let ram = self.memory.ram_bus();
-            acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
-            ram.write_range(
-                EBDA_START,
-                size_of::<AcpiTableRsdp>(),
-                acpi_table.rsdp().as_bytes(),
-            )?;
-            ram.write_range(
-                EBDA_START + size_of::<AcpiTableRsdp>(),
-                acpi_table.tables().len(),
-                acpi_table.tables(),
-            )?;
-        }
-        if let Some(fw_cfg) = &*self.fw_cfg.lock() {
-            let mut dev = fw_cfg.lock();
-            dev.add_acpi(acpi_table)?;
-            let mem_regions = self.memory.mem_region_entries();
-            dev.add_e820(&mem_regions)?;
-        }
-        Ok(())
-    }
-
     fn load_payload(&self) -> Result<InitState, Error> {
         let payload = self.payload.read();
         let Some(payload) = payload.as_ref() else {
@@ -143,6 +118,7 @@ where
                 payload.cmd_line.as_deref(),
                 payload.initramfs.as_ref(),
             )?,
+            #[cfg(target_arch = "x86_64")]
             ExecType::Pvh => xen::load(
                 &self.memory.ram_bus(),
                 &mem_regions,
@@ -254,13 +230,8 @@ where
         }
         loop {
             let vcpus = self.vcpus.read();
+            self.coco_init(id)?;
             if id == 0 {
-                if let Some(coco) = &self.config.coco {
-                    match coco {
-                        Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
-                        Coco::AmdSnp { policy } => self.vm.snp_launch_start(*policy)?,
-                    }
-                }
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
@@ -271,24 +242,7 @@ where
                 self.create_firmware_data(&init_state)?;
             }
             self.init_ap(id, &mut vcpu, &vcpus)?;
-            if let Some(coco) = &self.config.coco {
-                self.sync_vcpus(&vcpus);
-                if id == 0 {
-                    match coco {
-                        Coco::AmdSev { policy } => {
-                            if policy.es() {
-                                self.vm.sev_launch_update_vmsa()?;
-                            }
-                            self.vm.sev_launch_measure()?;
-                            self.vm.sev_launch_finish()?;
-                        }
-                        Coco::AmdSnp { .. } => {
-                            self.vm.snp_launch_finish()?;
-                        }
-                    }
-                }
-                self.sync_vcpus(&vcpus);
-            }
+            self.coco_finalize(id, &vcpus)?;
             drop(vcpus);
 
             let reboot = self.vcpu_loop(&mut vcpu, id)?;
