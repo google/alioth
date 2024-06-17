@@ -43,8 +43,8 @@ use crate::hv::Cpuid;
 use crate::hv::{error, Coco, Hypervisor, MemMapOption, Result, VmConfig};
 
 use bindings::{
-    KvmCap, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap,
-    KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES, KVM_X86_DEFAULT_VM, KVM_X86_SNP_VM,
+    KvmCap, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType,
+    KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES,
 };
 use ioctls::{
     kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_create_vm, kvm_enable_cap,
@@ -144,9 +144,9 @@ impl Hypervisor for Kvm {
         let vcpu_mmap_size =
             unsafe { kvm_get_vcpu_mmap_size(&self.fd) }.context(error::CreateVm)? as usize;
         let kvm_vm_type = if let Some(Coco::AmdSnp { .. }) = &config.coco {
-            KVM_X86_SNP_VM
+            KvmVmType::SNP
         } else {
-            KVM_X86_DEFAULT_VM
+            KvmVmType::DEFAULT
         };
         let vm_fd = unsafe { kvm_create_vm(&self.fd, kvm_vm_type) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };

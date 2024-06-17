@@ -21,11 +21,16 @@ use crate::c_enum;
 pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
 
-pub const KVM_X86_DEFAULT_VM: u64 = 0;
-// pub const KVM_X86_SW_PROTECTED_VM: u64 = 1;
-// pub const KVM_X86_SEV_VM: u64 = 2;
-// pub const KVM_X86_SEV_ES_VM: u64 = 3;
-pub const KVM_X86_SNP_VM: u64 = 4;
+c_enum! {
+    pub struct KvmVmType(u64);
+    {
+        DEFAULT = 0;
+        SW_PROTECTED = 1;
+        SEV = 2;
+        SEV_ES = 3;
+        SNP = 4;
+    }
+}
 
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
