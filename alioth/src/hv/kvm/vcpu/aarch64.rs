@@ -15,8 +15,10 @@
 use snafu::ResultExt;
 
 use crate::arch::reg::{Reg, SReg};
-use crate::hv::kvm::bindings::KvmOneReg;
-use crate::hv::kvm::ioctls::{kvm_get_one_reg, kvm_set_one_reg};
+use crate::hv::kvm::bindings::{KvmArmVcpuFeature, KvmCap, KvmOneReg};
+use crate::hv::kvm::ioctls::{
+    kvm_arm_preferred_target, kvm_arm_vcpu_init, kvm_get_one_reg, kvm_set_one_reg,
+};
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{error, Result};
 
@@ -29,6 +31,19 @@ const fn encode_system_reg(reg: SReg) -> u64 {
 }
 
 impl KvmVcpu {
+    pub fn kvm_vcpu_init(&self, is_bsp: bool) -> Result<()> {
+        let mut arm_cpu_init =
+            unsafe { kvm_arm_preferred_target(&self.vm) }.context(error::CreateVcpu)?;
+        if self.vm.check_extension(KvmCap::ARM_PSCI_0_2)? == 1 {
+            arm_cpu_init.features[0] |= KvmArmVcpuFeature::PSCI_0_2.bits();
+        }
+        if !is_bsp {
+            arm_cpu_init.features[0] |= KvmArmVcpuFeature::POWER_OFF.bits();
+        }
+        unsafe { kvm_arm_vcpu_init(&self.fd, &arm_cpu_init) }.context(error::CreateVcpu)?;
+        Ok(())
+    }
+
     fn get_one_reg(&self, reg: u64) -> Result<u64> {
         let mut val = 0;
         let one_reg = KvmOneReg {

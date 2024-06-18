@@ -14,7 +14,7 @@
 
 use crate::arch::layout::{GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START};
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
-use crate::hv::{GicV2, Hypervisor, Vm};
+use crate::hv::{GicV2, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 
@@ -44,15 +44,18 @@ where
     }
 
     pub fn init_ap(&self, _id: u32, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
-    pub fn init_boot_vcpu(&self, _vcpu: &mut V::Vcpu, _init_state: &InitState) -> Result<()> {
-        unimplemented!()
+    pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
+        vcpu.set_regs(&init_state.regs)?;
+        vcpu.set_sregs(&init_state.sregs)?;
+        Ok(())
     }
 
-    pub fn init_vcpu(&self, _id: u32, _vcpu: &mut V::Vcpu) -> Result<()> {
-        unimplemented!()
+    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
+        vcpu.reset(id == 0)?;
+        Ok(())
     }
 
     pub fn create_ram(&self) -> Result<()> {

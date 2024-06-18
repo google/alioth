@@ -116,7 +116,7 @@ impl VmInner {
         Ok(())
     }
 
-    fn check_extension(&self, id: KvmCap) -> Result<i32, Error> {
+    pub fn check_extension(&self, id: KvmCap) -> Result<i32, Error> {
         let ret = unsafe { kvm_check_extension(self, id) };
         match ret {
             Ok(num) => Ok(num),
@@ -558,6 +558,7 @@ impl Vm for KvmVm {
         Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
             kvm_run,
+            vm: self.vm.clone(),
         })
     }
 
