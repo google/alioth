@@ -23,13 +23,15 @@ use crate::hv::kvm::bindings::{
     KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmRegs, KvmSregs, KvmSregs2,
 };
 #[cfg(target_arch = "aarch64")]
-use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDeviceAttr};
+use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDeviceAttr, KvmVcpuInit};
+#[cfg(target_arch = "x86_64")]
+use crate::ioctl_writeread_buf;
 #[cfg(target_arch = "x86_64")]
 use crate::utils::ioctls::ioctl_iowr;
 use crate::utils::ioctls::{ioctl_io, ioctl_ior};
-use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread};
-#[cfg(target_arch = "x86_64")]
-use crate::{ioctl_read, ioctl_writeread_buf};
+use crate::{
+    ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
+};
 
 ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
 ioctl_write_val!(kvm_create_vm, ioctl_io(KVMIO, 0x01), KvmVmType);
@@ -84,6 +86,11 @@ ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
 #[cfg(not(target_arch = "x86_64"))]
 ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
+
+#[cfg(target_arch = "aarch64")]
+ioctl_write_ptr!(kvm_arm_vcpu_init, KVMIO, 0xae, KvmVcpuInit);
+#[cfg(target_arch = "aarch64")]
+ioctl_read!(kvm_arm_preferred_target, KVMIO, 0xaf, KvmVcpuInit);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_writeread!(kvm_memory_encrypt_op, ioctl_iowr::<u64>(KVMIO, 0xba));

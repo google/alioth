@@ -25,6 +25,10 @@ use crate::hv::{
 pub struct HvfVcpu {}
 
 impl Vcpu for HvfVcpu {
+    fn reset(&self, _is_bsp: bool) -> Result<()> {
+        unimplemented!()
+    }
+
     fn dump(&self) -> Result<()> {
         unimplemented!()
     }

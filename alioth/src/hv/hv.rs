@@ -118,6 +118,9 @@ impl Default for MemMapOption {
 }
 
 pub trait Vcpu {
+    #[cfg(target_arch = "aarch64")]
+    fn reset(&self, is_bsp: bool) -> Result<()>;
+
     fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
     fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
 

@@ -426,6 +426,7 @@ c_enum! {
         NR_MEMSLOTS = 10;
         IRQFD = 32;
         SIGNAL_MSI = 77;
+        ARM_PSCI_0_2 = 102;
         EXIT_HYPERCALL = 201;
         // GUEST_MEMFD = 234;
         // VM_TYPES = 235;
@@ -541,5 +542,23 @@ c_enum! {
     pub struct KvmDevArmVgicCtrl(u64);
     {
         INIT = 0;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuInit {
+    pub target: u32,
+    pub features: [u32; 7],
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct KvmArmVcpuFeature: u32 {
+        const POWER_OFF = 1 << 0;
+        const EL1_32BIT = 1 << 1;
+        const PSCI_0_2 = 1 << 2;
+        const PMU_V3 = 1 << 3;
     }
 }

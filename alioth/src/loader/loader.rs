@@ -17,9 +17,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::arch::reg::Reg;
 #[cfg(target_arch = "x86_64")]
-use crate::arch::reg::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
+use crate::arch::reg::{Reg, SReg};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
@@ -50,7 +50,6 @@ pub enum ExecType {
 #[derive(Debug, Clone, Default)]
 pub struct InitState {
     pub regs: Vec<(Reg, u64)>,
-    #[cfg(target_arch = "x86_64")]
     pub sregs: Vec<(SReg, u64)>,
     #[cfg(target_arch = "x86_64")]
     pub dt_regs: Vec<(DtReg, DtRegVal)>,

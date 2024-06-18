@@ -21,6 +21,7 @@ use std::io::ErrorKind;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::{OwnedFd, RawFd};
 use std::ptr::null_mut;
+use std::sync::Arc;
 
 use libc::{mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 use snafu::ResultExt;
@@ -33,6 +34,7 @@ use crate::arch::reg::{Reg, SReg};
 use crate::ffi;
 use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
+use crate::hv::kvm::vm::VmInner;
 use crate::hv::kvm::{kvm_error, KvmError};
 use crate::hv::{error, Error, Vcpu, VmEntry, VmExit};
 
@@ -89,9 +91,16 @@ impl Drop for KvmRunBlock {
 pub struct KvmVcpu {
     pub(super) kvm_run: KvmRunBlock,
     pub(super) fd: OwnedFd,
+    #[allow(dead_code)]
+    pub(super) vm: Arc<VmInner>,
 }
 
 impl Vcpu for KvmVcpu {
+    #[cfg(target_arch = "aarch64")]
+    fn reset(&self, is_bsp: bool) -> Result<(), Error> {
+        self.kvm_vcpu_init(is_bsp)
+    }
+
     fn get_reg(&self, reg: Reg) -> Result<u64, Error> {
         self.kvm_get_reg(reg)
     }
