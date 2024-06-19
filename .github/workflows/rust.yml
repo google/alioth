@@ -15,8 +15,14 @@ jobs:
   build_test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        target:
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - name: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - name: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.target.os }}
 
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
@@ -28,13 +34,16 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.target.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install toolchain
+        run: rustup target add ${{ matrix.target.name }}
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose --target ${{ matrix.target.name }}
+        if: matrix.target.name != 'aarch64-unknown-linux-gnu'
       - name: Format
         run: cargo fmt --check
       # TODO: some KVM related tests cannot run in github runners.
       # - name: Run tests
       #   run: cargo test --verbose
       - name: Clippy
-        run: cargo clippy
+        run: cargo clippy --target ${{ matrix.target.name }}
