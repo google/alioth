@@ -12,11 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arch::layout::{GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START};
+use std::sync::Arc;
+
+use crate::arch::layout::{
+    GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START, MEM_64_START, RAM_32_SIZE, RAM_32_START,
+};
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
 use crate::hv::{GicV2, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
+use crate::mem::{AddrOpt, MemRegion, MemRegionType};
 
 pub struct ArchBoard<V>
 where
@@ -59,7 +64,33 @@ where
     }
 
     pub fn create_ram(&self) -> Result<()> {
-        unimplemented!()
+        let mem_size = self.config.mem_size;
+        let memory = &self.memory;
+        if mem_size > RAM_32_SIZE {
+            memory.add_region(
+                AddrOpt::Fixed(RAM_32_START),
+                Arc::new(MemRegion::with_mapped(
+                    ArcMemPages::from_anonymous(RAM_32_SIZE as usize, None)?,
+                    MemRegionType::Ram,
+                )),
+            )?;
+            memory.add_region(
+                AddrOpt::Fixed(MEM_64_START),
+                Arc::new(MemRegion::with_mapped(
+                    ArcMemPages::from_anonymous((mem_size - RAM_32_SIZE) as usize, None)?,
+                    MemRegionType::Ram,
+                )),
+            )?;
+        } else {
+            memory.add_region(
+                AddrOpt::Fixed(RAM_32_START),
+                Arc::new(MemRegion::with_mapped(
+                    ArcMemPages::from_anonymous(mem_size as usize, None)?,
+                    MemRegionType::Ram,
+                )),
+            )?;
+        }
+        Ok(())
     }
 
     pub fn coco_init(&self, _id: u32) -> Result<()> {

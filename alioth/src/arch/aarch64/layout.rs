@@ -19,5 +19,10 @@ pub const GIC_V2_CPU_INTERFACE_START: u64 = 0x1000_1000; // size 8 KiB
 
 pub const MMIO_32_END: u64 = 0x3000_0000; // 768 MiB, size = 512 MiB
 pub const PCIE_CONFIG_START: u64 = 0x3000_0000; // 768 MiB
+
+pub const RAM_32_START: u64 = 0x4000_0000; // 1 GiB
+pub const RAM_32_END: u64 = 0xc000_0000; // 3 GiB
+pub const RAM_32_SIZE: u64 = RAM_32_END - RAM_32_START; // 2 GiB
+
 pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB
 pub const PAGE_SIZE: u64 = 0x1000; // 4KiB
