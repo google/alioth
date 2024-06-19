@@ -14,6 +14,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod endian;
 #[cfg(target_os = "linux")]
 pub mod ioctls;
 

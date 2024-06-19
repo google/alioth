@@ -15,3 +15,5 @@
 #[path = "acpi/acpi.rs"]
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;
+#[path = "dt/dt.rs"]
+pub mod dt;
