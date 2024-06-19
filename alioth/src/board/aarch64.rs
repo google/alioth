@@ -103,11 +103,11 @@ where
     }
 
     pub fn coco_init(&self, _id: u32) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
     pub fn coco_finalize(&self, _id: u32, _vcpus: &VcpuGuard) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
     pub fn arch_init(&self) -> Result<()> {
