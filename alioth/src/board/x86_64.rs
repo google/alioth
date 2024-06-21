@@ -118,7 +118,7 @@ where
             }
             _ => unimplemented!(),
         };
-        let range_ref = ram.get_slice::<u8>(desc.base as usize, desc.len as usize)?;
+        let range_ref = ram.get_slice::<u8>(desc.base as u64, desc.len as u64)?;
         let range_bytes =
             unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
         ram_bus.mark_private_memory(desc.base as _, desc.len as _, true)?;
@@ -163,7 +163,7 @@ where
                     let offset = desc_offset + i * size_of::<SevMetadataDesc>();
                     self.update_snp_desc(offset, fw_range)?;
                 }
-                let fw_gpa = (MEM_64_START - fw_range.len()) as u64;
+                let fw_gpa = MEM_64_START - fw_range.len() as u64;
                 ram_bus.mark_private_memory(fw_gpa, fw_range.len() as _, true)?;
                 self.vm
                     .snp_launch_update(fw_range, fw_gpa, SnpPageType::Normal)
@@ -227,7 +227,7 @@ where
         let ram_bus = memory.ram_bus();
 
         let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
-        let pages_low = ArcMemPages::from_memfd(low_mem_size, None, Some(c"ram-low"))?;
+        let pages_low = ArcMemPages::from_memfd(low_mem_size as usize, None, Some(c"ram-low"))?;
         let region_low = MemRegion {
             size: low_mem_size,
             ranges: vec![MemRange::Mapped(pages_low.clone())],
@@ -260,7 +260,7 @@ where
         }
         if config.mem_size > RAM_32_SIZE {
             let mem_hi_size = config.mem_size - RAM_32_SIZE;
-            let mem_hi = ArcMemPages::from_memfd(mem_hi_size, None, Some(c"ram-high"))?;
+            let mem_hi = ArcMemPages::from_memfd(mem_hi_size as usize, None, Some(c"ram-high"))?;
             let region_hi = MemRegion::with_mapped(mem_hi.clone(), MemRegionType::Ram);
             memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
             if let Some(coco) = &self.config.coco {
@@ -312,15 +312,15 @@ where
         let mut acpi_table = create_acpi(self.config.num_cpu);
         if self.config.coco.is_none() {
             let ram = self.memory.ram_bus();
-            acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
+            acpi_table.relocate(EBDA_START + size_of::<AcpiTableRsdp>() as u64);
             ram.write_range(
                 EBDA_START,
-                size_of::<AcpiTableRsdp>(),
+                size_of::<AcpiTableRsdp>() as u64,
                 acpi_table.rsdp().as_bytes(),
             )?;
             ram.write_range(
-                EBDA_START + size_of::<AcpiTableRsdp>(),
-                acpi_table.tables().len(),
+                EBDA_START + size_of::<AcpiTableRsdp>() as u64,
+                acpi_table.tables().len() as u64,
                 acpi_table.tables(),
             )?;
         }

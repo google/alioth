@@ -45,11 +45,11 @@ pub trait ChangeLayout: Debug + Send + Sync + 'static {
 pub enum Error {
     #[error("{new_item:#x?} overlaps with {exist_item:#x?}")]
     Overlap {
-        new_item: [usize; 2],
-        exist_item: [usize; 2],
+        new_item: [u64; 2],
+        exist_item: [u64; 2],
     },
     #[error("(addr={addr:#x}, size={size:#x}) is out of range")]
-    OutOfRange { addr: usize, size: usize },
+    OutOfRange { addr: u64, size: u64 },
     #[error("io: {source:#x?}")]
     Io {
         #[from]
@@ -58,9 +58,9 @@ pub enum Error {
     #[error("mmap: {0}")]
     Mmap(#[source] std::io::Error),
     #[error("offset {offset:#x} exceeds limit {limit:#x}")]
-    ExceedLimit { offset: usize, limit: usize },
+    ExceedLimit { offset: u64, limit: u64 },
     #[error("{0:#x} is not mapped")]
-    NotMapped(usize),
+    NotMapped(u64),
     #[error("zero memory size")]
     ZeroMemorySize,
     #[error("lock poisoned")]
@@ -89,11 +89,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum MemRange {
     Mapped(ArcMemPages),
     Emulated(MmioRange),
-    Span(usize),
+    Span(u64),
 }
 
 impl MemRange {
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> u64 {
         match self {
             MemRange::Mapped(pages) => pages.size(),
             MemRange::Emulated(range) => range.size(),
@@ -113,12 +113,12 @@ pub enum MemRegionType {
 
 #[derive(Debug, Clone, Copy)]
 pub struct MemRegionEntry {
-    pub size: usize,
+    pub size: u64,
     pub type_: MemRegionType,
 }
 
 pub trait MemRegionCallback: Debug + Send + Sync + 'static {
-    fn mapped(&self, addr: usize) -> Result<()>;
+    fn mapped(&self, addr: u64) -> Result<()>;
     fn unmapped(&self) -> Result<()> {
         log::debug!("{} unmapped", type_name::<Self>());
         Ok(())
@@ -127,7 +127,7 @@ pub trait MemRegionCallback: Debug + Send + Sync + 'static {
 
 #[derive(Debug)]
 pub struct MemRegion {
-    pub size: usize,
+    pub size: u64,
     pub ranges: Vec<MemRange>,
     pub entries: Vec<MemRegionEntry>,
     pub callbacks: Mutex<Vec<Box<dyn MemRegionCallback>>>,
@@ -168,7 +168,7 @@ impl MemRegion {
 }
 
 impl SlotBackend for Arc<MemRegion> {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         self.size
     }
 }
@@ -189,7 +189,7 @@ impl IoRegion {
 }
 
 impl SlotBackend for Arc<IoRegion> {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         self.range.size()
     }
 }
@@ -197,7 +197,7 @@ impl SlotBackend for Arc<IoRegion> {
 #[derive(Debug, Clone, Copy)]
 pub enum AddrOpt {
     Any,
-    Fixed(usize),
+    Fixed(u64),
     Below4G,
     Above4G,
 }
@@ -236,7 +236,7 @@ impl Memory {
         regions: &mut Addressable<Arc<MemRegion>>,
         addr: AddrOpt,
         region: Arc<MemRegion>,
-    ) -> Result<usize> {
+    ) -> Result<u64> {
         match addr {
             AddrOpt::Fixed(addr) => {
                 let _region = regions.add(addr, region)?;
@@ -244,7 +244,7 @@ impl Memory {
             }
             AddrOpt::Any | AddrOpt::Above4G => {
                 let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
-                regions.add_within(MEM_64_START, usize::MAX, align, region)
+                regions.add_within(MEM_64_START, u64::MAX, align, region)
             }
             AddrOpt::Below4G => {
                 let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
@@ -253,7 +253,7 @@ impl Memory {
         }
     }
 
-    pub fn add_region(&self, addr: AddrOpt, region: Arc<MemRegion>) -> Result<usize> {
+    pub fn add_region(&self, addr: AddrOpt, region: Arc<MemRegion>) -> Result<u64> {
         region.validate()?;
         let mut regions = self.regions.lock();
         let addr = Self::alloc(&mut regions, addr, region.clone())?;
@@ -273,7 +273,7 @@ impl Memory {
         Ok(addr)
     }
 
-    fn unmap_region(&self, addr: usize, region: &MemRegion) -> Result<()> {
+    fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
         let mut offset = 0;
         for range in &region.ranges {
             match range {
@@ -294,7 +294,7 @@ impl Memory {
         Ok(())
     }
 
-    pub fn remove_region(&self, addr: usize) -> Result<Arc<MemRegion>> {
+    pub fn remove_region(&self, addr: u64) -> Result<Arc<MemRegion>> {
         let mut regions = self.regions.lock();
         let region = regions.remove(addr)?;
         self.unmap_region(addr, &region)?;
@@ -319,7 +319,7 @@ impl Memory {
         Ok(())
     }
 
-    pub fn mem_region_entries(&self) -> Vec<(usize, MemRegionEntry)> {
+    pub fn mem_region_entries(&self) -> Vec<(u64, MemRegionEntry)> {
         let mut entries = vec![];
         let regions = self.regions.lock();
         for (start, region) in regions.iter() {
@@ -339,18 +339,18 @@ impl Memory {
     pub fn add_io_region(&self, port: Option<u16>, region: Arc<IoRegion>) -> Result<u16, Error> {
         let mut regions = self.io_regions.lock();
         // TODO: allocate port dynamically
-        regions.add(port.unwrap() as usize, region.clone())?;
+        regions.add(port.unwrap() as u64, region.clone())?;
         self.io_bus
-            .add(port.unwrap() as usize, region.range.clone())?;
+            .add(port.unwrap() as u64, region.range.clone())?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
-            callback.mapped(port.unwrap() as usize)?;
+            callback.mapped(port.unwrap() as u64)?;
         }
         Ok(port.unwrap())
     }
 
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
-        self.io_bus.remove(port as usize)?;
+        self.io_bus.remove(port as u64)?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.unmapped()?;
@@ -360,7 +360,7 @@ impl Memory {
 
     pub fn remove_io_region(&self, port: u16) -> Result<Arc<IoRegion>> {
         let mut io_regions = self.io_regions.lock();
-        let io_region = io_regions.remove(port as usize)?;
+        let io_region = io_regions.remove(port as u64)?;
         self.unmap_io_region(port, &io_region)?;
         Ok(io_region)
     }
@@ -385,7 +385,7 @@ impl Memory {
         }
     }
 
-    pub fn handle_mmio(&self, gpa: usize, write: Option<u64>, size: u8) -> Result<VmEntry> {
+    pub fn handle_mmio(&self, gpa: u64, write: Option<u64>, size: u8) -> Result<VmEntry> {
         if let Some(val) = write {
             match self.mmio_bus.write(gpa, size, val) {
                 Ok(()) => Ok(VmEntry::None),
@@ -410,13 +410,13 @@ impl Memory {
             return Ok(VmEntry::Reboot);
         }
         if let Some(val) = write {
-            match self.io_bus.write(port as usize, size, val as u64) {
+            match self.io_bus.write(port as u64, size, val as u64) {
                 Ok(()) => Ok(VmEntry::None),
                 Err(Error::Action(action)) => self.handle_action(action),
                 Err(e) => Err(e),
             }
         } else {
-            let data = self.io_bus.read(port as usize, size)? as u32;
+            let data = self.io_bus.read(port as u64, size)? as u32;
             Ok(VmEntry::Io { data })
         }
     }
@@ -434,17 +434,17 @@ mod test {
     fn test_memory_add_remove() {
         #[derive(Debug)]
         struct TestMmio {
-            size: usize,
+            size: u64,
         }
 
         impl Mmio for TestMmio {
-            fn read(&self, _offset: usize, _size: u8) -> Result<u64> {
+            fn read(&self, _offset: u64, _size: u8) -> Result<u64> {
                 Ok(0)
             }
-            fn write(&self, _offset: usize, _size: u8, _val: u64) -> Result<()> {
+            fn write(&self, _offset: u64, _size: u8, _val: u64) -> Result<()> {
                 Ok(())
             }
-            fn size(&self) -> usize {
+            fn size(&self) -> u64 {
                 self.size
             }
         }

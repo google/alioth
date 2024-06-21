@@ -150,8 +150,8 @@ impl VmMemory for KvmMemory {
     fn mem_map(
         &self,
         slot: u32,
-        gpa: usize,
-        size: usize,
+        gpa: u64,
+        size: u64,
         hva: usize,
         option: MemMapOption,
     ) -> Result<(), Error> {
@@ -174,7 +174,7 @@ impl VmMemory for KvmMemory {
                 userspace_addr: hva as _,
                 flags,
                 guest_memfd: memfd.as_raw_fd() as _,
-                guest_memfd_offset: gpa as u64,
+                guest_memfd_offset: gpa,
                 ..Default::default()
             };
             unsafe { kvm_set_user_memory_region2(&self.vm, &region) }
@@ -188,27 +188,21 @@ impl VmMemory for KvmMemory {
             };
             unsafe { kvm_set_user_memory_region(&self.vm, &region) }
         }
-        .context(error::GuestMap {
-            hva,
-            gpa: gpa as u64,
-            size,
-        })?;
+        .context(error::GuestMap { hva, gpa, size })?;
         Ok(())
     }
 
-    fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error> {
+    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<(), Error> {
         let flags = KvmMemFlag::empty();
         let region = KvmUserspaceMemoryRegion {
             slot,
-            guest_phys_addr: gpa as _,
+            guest_phys_addr: gpa,
             memory_size: 0,
             userspace_addr: 0,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }.context(error::GuestUnmap {
-            gpa: gpa as u64,
-            size,
-        })?;
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }
+            .context(error::GuestUnmap { gpa, size })?;
         Ok(())
     }
 
@@ -513,9 +507,9 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
         })
     }
 
-    fn register(&self, fd: &Self::IoeventFd, gpa: usize, len: u8, data: Option<u64>) -> Result<()> {
+    fn register(&self, fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
         let mut request = KvmIoEventFd {
-            addr: gpa as u64,
+            addr: gpa,
             len: len as u32,
             fd: fd.as_fd().as_raw_fd(),
             ..Default::default()

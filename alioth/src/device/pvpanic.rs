@@ -36,18 +36,18 @@ const PVPANIC_VENDOR_ID: u16 = 0x1b36;
 const PVPANIC_DEVICE_ID: u16 = 0x0011;
 
 #[derive(Debug)]
-struct PvPanicBar<const N: usize>;
+struct PvPanicBar<const N: u64>;
 
-impl<const N: usize> Mmio for PvPanicBar<N> {
-    fn size(&self) -> usize {
+impl<const N: u64> Mmio for PvPanicBar<N> {
+    fn size(&self) -> u64 {
         N
     }
 
-    fn read(&self, _offset: usize, _size: u8) -> mem::Result<u64> {
+    fn read(&self, _offset: u64, _size: u8) -> mem::Result<u64> {
         Ok(PvPanicByte::all().bits() as u64)
     }
 
-    fn write(&self, _offset: usize, _size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, _offset: u64, _size: u8, val: u64) -> mem::Result<()> {
         log::info!("pvpanic: {:x?}", PvPanicByte::from_bits_retain(val as u8));
         Err(mem::Error::Action(Action::Shutdown))
     }
@@ -60,7 +60,7 @@ pub struct PvPanic {
 
 impl PvPanic {
     pub fn new() -> Self {
-        const BAR_SIZE: usize = 0x1000;
+        const BAR_SIZE: u64 = 0x1000;
         let header = DeviceHeader {
             common: CommonHeader {
                 vendor: PVPANIC_VENDOR_ID,

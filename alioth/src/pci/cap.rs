@@ -129,21 +129,21 @@ pub trait PciCap: Mmio {
 }
 
 impl SlotBackend for Box<dyn PciCap> {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         Mmio::size(self.as_ref())
     }
 }
 
 impl Mmio for Box<dyn PciCap> {
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         Mmio::read(self.as_ref(), offset, size)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
         Mmio::write(self.as_ref(), offset, size, val)
     }
 
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         Mmio::size(self.as_ref())
     }
 }
@@ -172,15 +172,15 @@ impl PciCapList {
 }
 
 impl Mmio for PciCapList {
-    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         self.inner.read(offset, size)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
         self.inner.write(offset, size, val)
     }
 
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         4096
     }
 }
@@ -189,7 +189,7 @@ impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
     type Error = Error;
     fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
         let bus = MmioBus::new();
-        let mut ptr = size_of::<DeviceHeader>();
+        let mut ptr = size_of::<DeviceHeader>() as u64;
         let num_caps = caps.len();
         for (index, mut cap) in caps.into_iter().enumerate() {
             let next = if index == num_caps - 1 {
@@ -211,16 +211,16 @@ pub struct MsixCapMmio {
 }
 
 impl Mmio for MsixCapMmio {
-    fn size(&self) -> usize {
-        size_of::<MsixCap>()
+    fn size(&self) -> u64 {
+        size_of::<MsixCap>() as u64
     }
 
-    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         let cap = self.cap.read();
         Mmio::read(&*cap, offset, size)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
         if offset == 2 && size == 2 {
             let mut cap = self.cap.write();
             let control = MsixMsgCtrl(val as u16);
@@ -292,16 +292,16 @@ impl<F> Mmio for MsixTableMmio<F>
 where
     F: IrqFd,
 {
-    fn size(&self) -> usize {
-        size_of::<MsixTableEntry>() * self.entries.len()
+    fn size(&self) -> u64 {
+        (size_of::<MsixTableEntry>() * self.entries.len()) as u64
     }
 
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         if size != 4 || offset & 0b11 != 0 {
             log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
             return Ok(0);
         }
-        let index = offset / size_of::<MsixTableEntry>();
+        let index = offset as usize / size_of::<MsixTableEntry>();
         let Some(entry) = self.entries.get(index) else {
             log::error!(
                 "MSI-X table size: {}, accessing index {index}",
@@ -310,7 +310,7 @@ where
             return Ok(0);
         };
         let entry = entry.read();
-        let ret = match offset % size_of::<MsixTableEntry>() {
+        let ret = match offset as usize % size_of::<MsixTableEntry>() {
             0 => entry.get_addr_lo(),
             4 => entry.get_addr_hi(),
             8 => entry.get_data(),
@@ -320,13 +320,13 @@ where
         Ok(ret as u64)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
         if size != 4 || offset & 0b11 != 0 {
             log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
             return Ok(());
         }
         let val = val as u32;
-        let index = offset / size_of::<MsixTableEntry>();
+        let index = offset as usize / size_of::<MsixTableEntry>();
         let Some(entry) = self.entries.get(index) else {
             log::error!(
                 "MSI-X table size: {}, accessing index {index}",
@@ -335,7 +335,7 @@ where
             return Ok(());
         };
         let mut entry = entry.write();
-        match offset % size_of::<MsixTableEntry>() {
+        match offset as usize % size_of::<MsixTableEntry>() {
             0 => entry.set_addr_lo(val)?,
             4 => entry.set_addr_hi(val)?,
             8 => entry.set_data(val)?,

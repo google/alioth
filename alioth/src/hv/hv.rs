@@ -50,13 +50,13 @@ pub enum Error {
     GuestMap {
         hva: usize,
         gpa: u64,
-        size: usize,
+        size: u64,
         error: std::io::Error,
     },
     #[snafu(display("Failed to unmap gpa {gpa:#x}, size {size:#x}"))]
     GuestUnmap {
         gpa: u64,
-        size: usize,
+        size: u64,
         error: std::io::Error,
     },
     #[snafu(display("Hypervisor is missing capability: {cap}"))]
@@ -169,13 +169,13 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     fn mem_map(
         &self,
         slot: u32,
-        gpa: usize,
-        size: usize,
+        gpa: u64,
+        size: u64,
         hva: usize,
         option: MemMapOption,
     ) -> Result<(), Error>;
 
-    fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error>;
+    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<(), Error>;
 
     fn max_mem_slots(&self) -> Result<u32, Error>;
 
@@ -194,7 +194,7 @@ pub trait IoeventFd: Debug + Send + Sync + AsFd + 'static {}
 pub trait IoeventFdRegistry: Debug + Send + Sync + 'static {
     type IoeventFd: IoeventFd;
     fn create(&self) -> Result<Self::IoeventFd>;
-    fn register(&self, fd: &Self::IoeventFd, gpa: usize, len: u8, data: Option<u64>) -> Result<()>;
+    fn register(&self, fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
     #[cfg(target_arch = "x86_64")]
     fn register_port(
         &self,
@@ -289,7 +289,7 @@ pub enum VmExit {
         size: u8,
     },
     Mmio {
-        addr: usize,
+        addr: u64,
         write: Option<u64>,
         size: u8,
     },

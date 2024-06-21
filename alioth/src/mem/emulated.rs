@@ -20,29 +20,29 @@ use crate::mem::Result;
 use parking_lot::RwLock;
 
 pub trait Mmio: Debug + Send + Sync + 'static {
-    fn read(&self, offset: usize, size: u8) -> Result<u64>;
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<()>;
-    fn size(&self) -> usize;
+    fn read(&self, offset: u64, size: u8) -> Result<u64>;
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<()>;
+    fn size(&self) -> u64;
 }
 
 pub type MmioRange = Arc<dyn Mmio>;
 
 impl Mmio for MmioRange {
-    fn read(&self, offset: usize, size: u8) -> Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64> {
         Mmio::read(self.as_ref(), offset, size)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<()> {
         Mmio::write(self.as_ref(), offset, size, val)
     }
 
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         Mmio::size(self.as_ref())
     }
 }
 
 impl SlotBackend for MmioRange {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         Mmio::size(self.as_ref())
     }
 }
@@ -51,12 +51,13 @@ impl SlotBackend for MmioRange {
 macro_rules! impl_mmio_for_zerocopy {
     ($ty:ident) => {
         impl $crate::mem::emulated::Mmio for $ty {
-            fn size(&self) -> usize {
-                ::core::mem::size_of::<Self>()
+            fn size(&self) -> u64 {
+                ::core::mem::size_of::<Self>() as u64
             }
 
-            fn read(&self, offset: usize, size: u8) -> $crate::mem::Result<u64> {
+            fn read(&self, offset: u64, size: u8) -> $crate::mem::Result<u64> {
                 let bytes = AsBytes::as_bytes(self);
+                let offset = offset as usize;
                 let val = match size {
                     1 => bytes.get(offset).map(|b| *b as u64),
                     2 => u16::read_from_prefix(&bytes[offset..]).map(|w| w as u64),
@@ -75,7 +76,7 @@ macro_rules! impl_mmio_for_zerocopy {
                 }
             }
 
-            fn write(&self, offset: usize, size: u8, val: u64) -> $crate::mem::Result<()> {
+            fn write(&self, offset: u64, size: u8, val: u64) -> $crate::mem::Result<()> {
                 ::log::error!(
                     "{}: write 0x{val:0width$x} to readonly offset 0x{offset:x}.",
                     ::core::any::type_name::<Self>(),
@@ -118,18 +119,18 @@ where
         self.inner.read().is_empty()
     }
 
-    pub fn add(&self, addr: usize, range: R) -> Result<()> {
+    pub fn add(&self, addr: u64, range: R) -> Result<()> {
         let mut inner = self.inner.write();
         inner.add(addr, range)?;
         Ok(())
     }
 
-    pub(super) fn remove(&self, addr: usize) -> Result<R> {
+    pub(super) fn remove(&self, addr: u64) -> Result<R> {
         let mut inner = self.inner.write();
         inner.remove(addr)
     }
 
-    pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
+    pub fn read(&self, addr: u64, size: u8) -> Result<u64> {
         let inner = self.inner.read();
         match inner.search(addr) {
             Some((start, dev)) => dev.read(addr - start, size),
@@ -137,7 +138,7 @@ where
         }
     }
 
-    pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
+    pub fn write(&self, addr: u64, size: u8, val: u64) -> Result<()> {
         let inner = self.inner.read();
         match inner.search(addr) {
             Some((start, dev)) => dev.write(addr - start, size, val),

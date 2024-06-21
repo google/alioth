@@ -158,29 +158,29 @@ impl<'g, 'm> SplitLayout<'g, 'm> {
 
     fn get_indirect(
         &self,
-        addr: usize,
-        readable: &mut Vec<(usize, usize)>,
-        writeable: &mut Vec<(usize, usize)>,
+        addr: u64,
+        readable: &mut Vec<(u64, u64)>,
+        writeable: &mut Vec<(u64, u64)>,
     ) -> Result<()> {
         let mut id = 0;
         loop {
-            let desc: Desc = self.guard.read(addr + id * size_of::<Desc>())?;
+            let desc: Desc = self.guard.read(addr + id * size_of::<Desc>() as u64)?;
             let flag = DescFlag::from_bits_retain(desc.flag);
             assert!(!flag.contains(DescFlag::INDIRECT));
             if flag.contains(DescFlag::WRITE) {
-                writeable.push((desc.addr as usize, desc.len as usize));
+                writeable.push((desc.addr, desc.len as u64));
             } else {
-                readable.push((desc.addr as usize, desc.len as usize));
+                readable.push((desc.addr, desc.len as u64));
             }
             if flag.contains(DescFlag::NEXT) {
-                id = desc.next as usize;
+                id = desc.next as u64;
             } else {
                 return Ok(());
             }
         }
     }
 
-    pub fn get_desc_iov(&self, mut id: u16) -> Result<(Vec<(usize, usize)>, Vec<(usize, usize)>)> {
+    pub fn get_desc_iov(&self, mut id: u16) -> Result<(Vec<(u64, u64)>, Vec<(u64, u64)>)> {
         let mut readable = Vec::new();
         let mut writeable = Vec::new();
         loop {
@@ -188,11 +188,11 @@ impl<'g, 'm> SplitLayout<'g, 'm> {
             let flag = DescFlag::from_bits_retain(desc.flag);
             if flag.contains(DescFlag::INDIRECT) {
                 assert_eq!(desc.len & 0xf, 0);
-                self.get_indirect(desc.addr as usize, &mut readable, &mut writeable)?;
+                self.get_indirect(desc.addr, &mut readable, &mut writeable)?;
             } else if flag.contains(DescFlag::WRITE) {
-                writeable.push((desc.addr as usize, desc.len as usize));
+                writeable.push((desc.addr, desc.len as u64));
             } else {
-                readable.push((desc.addr as usize, desc.len as usize));
+                readable.push((desc.addr, desc.len as u64));
             }
             if flag.contains(DescFlag::NEXT) {
                 id = desc.next;
@@ -276,35 +276,31 @@ impl<'m, 'q> QueueGuard for SplitQueueGuard<'m, 'q> {
     fn queue(&self) -> Result<impl LockedQueue> {
         let mut avail_event = None;
         let mut used_event = None;
-        let queue_size = self.register.size as usize;
+        let queue_size = self.register.size as u64;
         if self.register.feature.contains(VirtioFeature::EVENT_IDX) {
-            let avail_event_gpa = self.register.used as usize
-                + size_of::<UsedHeader>()
-                + queue_size * size_of::<UsedElem>();
+            let avail_event_gpa = self.register.used
+                + size_of::<UsedHeader>() as u64
+                + queue_size * size_of::<UsedElem>() as u64;
             avail_event = Some(self.guard.get_ref(avail_event_gpa)?);
-            let used_event_gpa = self.register.avail as usize
-                + size_of::<AvailHeader>()
-                + queue_size * size_of::<u16>();
+            let used_event_gpa = self.register.avail
+                + size_of::<AvailHeader>() as u64
+                + queue_size * size_of::<u16>() as u64;
             used_event = Some(self.guard.get_ref(used_event_gpa)?);
         }
-        let used = self
-            .guard
-            .get_ref::<UsedHeader>(self.register.used as usize)?;
+        let used = self.guard.get_ref::<UsedHeader>(self.register.used)?;
         let used_index = unsafe { &*used.get() }.idx;
-        let avail_ring_gpa = self.register.avail as usize + size_of::<AvailHeader>();
-        let used_ring_gpa = self.register.used as usize + size_of::<UsedHeader>();
+        let avail_ring_gpa = self.register.avail + size_of::<AvailHeader>() as u64;
+        let used_ring_gpa = self.register.used + size_of::<UsedHeader>() as u64;
         Ok(SplitLayout {
             guard: &self.guard,
-            avail: self.guard.get_ref(self.register.avail as usize)?,
+            avail: self.guard.get_ref(self.register.avail)?,
             avail_ring: self.guard.get_slice(avail_ring_gpa, queue_size)?,
             used_event,
             used,
             used_index,
             used_ring: self.guard.get_slice(used_ring_gpa, queue_size)?,
             avail_event,
-            desc: self
-                .guard
-                .get_slice(self.register.desc as usize, queue_size)?,
+            desc: self.guard.get_slice(self.register.desc, queue_size)?,
         })
     }
 }

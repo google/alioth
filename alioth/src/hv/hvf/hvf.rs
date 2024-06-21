@@ -55,8 +55,8 @@ impl VmMemory for HvfMemory {
     fn mem_map(
         &self,
         _slot: u32,
-        _gpa: usize,
-        _size: usize,
+        _gpa: u64,
+        _size: u64,
         _hva: usize,
         _option: MemMapOption,
     ) -> Result<()> {
@@ -67,7 +67,7 @@ impl VmMemory for HvfMemory {
         unimplemented!()
     }
 
-    fn unmap(&self, _slot: u32, _gpa: usize, _size: usize) -> Result<()> {
+    fn unmap(&self, _slot: u32, _gpa: u64, _size: u64) -> Result<()> {
         unimplemented!()
     }
 
@@ -156,7 +156,7 @@ impl IoeventFdRegistry for HvfIoeventFdRegistry {
     fn register(
         &self,
         _fd: &Self::IoeventFd,
-        _gpa: usize,
+        _gpa: u64,
         _len: u8,
         _data: Option<u64>,
     ) -> Result<()> {

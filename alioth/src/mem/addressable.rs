@@ -18,7 +18,7 @@ use crate::align_up;
 use crate::mem::{Error, Result};
 
 pub trait SlotBackend {
-    fn size(&self) -> usize;
+    fn size(&self) -> u64;
 }
 
 #[derive(Debug)]
@@ -26,7 +26,7 @@ struct Slot<B>
 where
     B: SlotBackend,
 {
-    addr: usize,
+    addr: u64,
     backend: B,
 }
 
@@ -34,7 +34,7 @@ impl<B> Slot<B>
 where
     B: SlotBackend,
 {
-    fn new(addr: usize, backend: B) -> Result<Self> {
+    fn new(addr: u64, backend: B) -> Result<Self> {
         if backend.size() == 0 {
             return Err(Error::ZeroSizedSlot);
         }
@@ -47,7 +47,7 @@ where
         }
     }
 
-    fn max_addr(&self) -> usize {
+    fn max_addr(&self) -> u64 {
         (self.backend.size() - 1) + self.addr
     }
 }
@@ -77,14 +77,14 @@ where
         Self::default()
     }
 
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (usize, &B)> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (u64, &B)> {
         self.slots.iter().map(|slot| (slot.addr, &slot.backend))
     }
 
     pub fn drain(
         &mut self,
         range: impl RangeBounds<usize>,
-    ) -> impl DoubleEndedIterator<Item = (usize, B)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (u64, B)> + '_ {
         self.slots.drain(range).map(|s| (s.addr, s.backend))
     }
 
@@ -92,7 +92,7 @@ where
         self.slots.is_empty()
     }
 
-    pub fn last(&self) -> Option<(usize, &B)> {
+    pub fn last(&self) -> Option<(u64, &B)> {
         self.slots.last().map(|slot| (slot.addr, &slot.backend))
     }
 }
@@ -101,7 +101,7 @@ impl<B> Addressable<B>
 where
     B: SlotBackend,
 {
-    pub fn add(&mut self, addr: usize, backend: B) -> Result<&mut B> {
+    pub fn add(&mut self, addr: u64, backend: B) -> Result<&mut B> {
         let slot = Slot::new(addr, backend)?;
         let result = match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Err(&self.slots[index]),
@@ -128,13 +128,7 @@ where
         }
     }
 
-    pub fn add_within(
-        &mut self,
-        start: usize,
-        max: usize,
-        align: usize,
-        backend: B,
-    ) -> Result<usize> {
+    pub fn add_within(&mut self, start: u64, max: u64, align: u64, backend: B) -> Result<u64> {
         if backend.size() == 0 {
             return Err(Error::ZeroSizedSlot);
         }
@@ -173,14 +167,14 @@ where
         }
     }
 
-    pub fn remove(&mut self, addr: usize) -> Result<B> {
+    pub fn remove(&mut self, addr: u64) -> Result<B> {
         match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Ok(self.slots.remove(index).backend),
             Err(_) => Err(Error::NotMapped(addr)),
         }
     }
 
-    pub fn search(&self, addr: usize) -> Option<(usize, &B)> {
+    pub fn search(&self, addr: u64) -> Option<(u64, &B)> {
         match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Some((self.slots[index].addr, &self.slots[index].backend)),
             Err(0) => None,
@@ -195,7 +189,7 @@ where
         }
     }
 
-    pub fn search_next(&self, addr: usize) -> Option<(usize, &B)> {
+    pub fn search_next(&self, addr: u64) -> Option<(u64, &B)> {
         match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Some((self.slots[index].addr, &self.slots[index].backend)),
             Err(0) => None,
@@ -219,11 +213,11 @@ mod test {
 
     #[derive(Debug, PartialEq)]
     struct Backend {
-        size: usize,
+        size: u64,
     }
 
     impl SlotBackend for Backend {
-        fn size(&self) -> usize {
+        fn size(&self) -> u64 {
             self.size
         }
     }
@@ -231,10 +225,10 @@ mod test {
     #[test]
     fn test_new_slot() {
         assert_matches!(
-            Slot::new(usize::MAX, Backend { size: 0x10 }),
+            Slot::new(u64::MAX, Backend { size: 0x10 }),
             Err(Error::OutOfRange {
                 size: 0x10,
-                addr: usize::MAX,
+                addr: u64::MAX,
             })
         );
         assert_matches!(Slot::new(0, Backend { size: 0 }), Err(Error::ZeroSizedSlot));
@@ -334,11 +328,11 @@ mod test {
         assert_matches!(memory.remove(0x2001), Err(Error::NotMapped(0x2001)));
 
         assert_matches!(
-            memory.add(0usize.wrapping_sub(0x2000), Backend { size: 0x2000 }),
+            memory.add(0u64.wrapping_sub(0x2000), Backend { size: 0x2000 }),
             Ok(_)
         );
         assert_matches!(
-            memory.add(0usize.wrapping_sub(0x1000), Backend { size: 0x1000 }),
+            memory.add(0u64.wrapping_sub(0x1000), Backend { size: 0x1000 }),
             Err(_)
         )
     }
@@ -351,13 +345,13 @@ mod test {
             .unwrap_err();
 
         assert_matches!(
-            memory.add_within(0xff0, usize::MAX, 0x1000, Backend { size: 0x1000 }),
+            memory.add_within(0xff0, u64::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0x1000)
         );
         // slots: [0x1000, 0x1fff]
 
         assert_matches!(
-            memory.add_within(0, usize::MAX, 0x1000, Backend { size: 0x2000 }),
+            memory.add_within(0, u64::MAX, 0x1000, Backend { size: 0x2000 }),
             Ok(0x2000)
         );
         // slots: [0x1000, 0x1fff], [0x2000, 0x3fff]
@@ -367,20 +361,20 @@ mod test {
             .unwrap_err();
 
         assert_matches!(
-            memory.add_within(0, usize::MAX, 0x1000, Backend { size: 0x1000 }),
+            memory.add_within(0, u64::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0)
         );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff]
 
         assert_matches!(
-            memory.add_within(0x5000, usize::MAX, 0x1000, Backend { size: 0x1000 }),
+            memory.add_within(0x5000, u64::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0x5000)
         );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
         // [0x5000, 0x5fff]
 
         assert_matches!(
-            memory.add_within(0, usize::MAX, 0x4000, Backend { size: 0x1000 }),
+            memory.add_within(0, u64::MAX, 0x4000, Backend { size: 0x1000 }),
             Ok(0x4000)
         );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
@@ -388,8 +382,8 @@ mod test {
 
         assert_matches!(
             memory.add_within(
-                0usize.wrapping_sub(0x9000),
-                usize::MAX,
+                0u64.wrapping_sub(0x9000),
+                u64::MAX,
                 0x2000,
                 Backend { size: 0x1000 }
             ),
@@ -401,8 +395,8 @@ mod test {
 
         assert_matches!(
             memory.add_within(
-                0usize.wrapping_sub(0x4000),
-                usize::MAX,
+                0u64.wrapping_sub(0x4000),
+                u64::MAX,
                 0x1000,
                 Backend { size: 0x1000 }
             ),
@@ -415,15 +409,15 @@ mod test {
 
         memory
             .add_within(
-                0usize.wrapping_sub(0x9000),
-                usize::MAX,
+                0u64.wrapping_sub(0x9000),
+                u64::MAX,
                 0x1000,
                 Backend { size: 0x4000 },
             )
             .unwrap_err();
 
         memory
-            .add_within(usize::MAX - 1, usize::MAX, 0x1000, Backend { size: 0x1000 })
+            .add_within(u64::MAX - 1, u64::MAX, 0x1000, Backend { size: 0x1000 })
             .unwrap_err();
     }
 }
