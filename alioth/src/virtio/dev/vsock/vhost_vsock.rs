@@ -126,9 +126,9 @@ impl Virtio for VhostVsock {
         let mem = memory.lock_layout();
         for (index, (gpa, user_mem)) in mem.iter().enumerate() {
             table.num += 1;
-            table.regions[index].gpa = gpa as u64;
+            table.regions[index].gpa = gpa;
             table.regions[index].hva = user_mem.pages.addr() as u64;
-            table.regions[index].size = user_mem.pages.size() as u64;
+            table.regions[index].size = user_mem.pages.size();
         }
         self.vhost_dev.set_mem_table(&table)?;
         for (index, (queue, error_fd)) in
@@ -160,9 +160,9 @@ impl Virtio for VhostVsock {
             let virtq_addr = VirtqAddr {
                 index,
                 flags: 0,
-                desc_hva: mem.translate(queue.desc.load(Ordering::Acquire) as usize)? as _,
-                used_hva: mem.translate(queue.device.load(Ordering::Acquire) as usize)? as _,
-                avail_hva: mem.translate(queue.driver.load(Ordering::Acquire) as usize)? as _,
+                desc_hva: mem.translate(queue.desc.load(Ordering::Acquire))? as _,
+                used_hva: mem.translate(queue.device.load(Ordering::Acquire))? as _,
+                avail_hva: mem.translate(queue.driver.load(Ordering::Acquire))? as _,
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;

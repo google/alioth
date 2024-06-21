@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub const MMIO_32_START: usize = 0x1000_0000; // 256 MiB
-pub const MMIO_32_END: usize = 0x3000_0000; // 768 MiB, size = 512 MiB
-pub const PCIE_CONFIG_START: usize = 0x3000_0000; // 768 MiB
-pub const MEM_64_START: usize = 0x1_0000_0000; // 4GiB
-pub const PAGE_SIZE: usize = 0x1000; // 4KiB
+pub const MMIO_32_START: u64 = 0x1000_0000; // 256 MiB
+pub const MMIO_32_END: u64 = 0x3000_0000; // 768 MiB, size = 512 MiB
+pub const PCIE_CONFIG_START: u64 = 0x3000_0000; // 768 MiB
+pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB
+pub const PAGE_SIZE: u64 = 0x1000; // 4KiB

@@ -201,11 +201,11 @@ impl<I> Mmio for Serial<I>
 where
     I: IntxSender + Sync + Send + 'static,
 {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         8
     }
 
-    fn read(&self, offset: usize, _size: u8) -> Result<u64, mem::Error> {
+    fn read(&self, offset: u64, _size: u8) -> Result<u64, mem::Error> {
         let mut reg = self.reg.lock();
         let ret = match offset as u16 {
             DIVISOR_LATCH_LSB if reg.line_control.divisor_latch_access() => reg.divisor as u8,
@@ -241,7 +241,7 @@ where
         Ok(ret as u64)
     }
 
-    fn write(&self, offset: usize, _size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, _size: u8, val: u64) -> Result<(), mem::Error> {
         let byte = val as u8;
         let mut reg = self.reg.lock();
         match offset as u16 {

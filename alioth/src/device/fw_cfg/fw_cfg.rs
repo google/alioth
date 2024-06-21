@@ -106,7 +106,7 @@ pub enum FwCfgContent {
 
 struct FwCfgContentAccess<'a> {
     content: &'a FwCfgContent,
-    offset: usize,
+    offset: u32,
 }
 
 impl<'a> Read for FwCfgContentAccess<'a> {
@@ -116,15 +116,15 @@ impl<'a> Read for FwCfgContentAccess<'a> {
                 Seek::seek(&mut (&*f), SeekFrom::Start(offset + self.offset as u64))?;
                 Read::read(&mut (&*f), buf)
             }
-            FwCfgContent::Bytes(b) => match b.get(self.offset..) {
+            FwCfgContent::Bytes(b) => match b.get(self.offset as usize..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
-            FwCfgContent::Slice(b) => match b.get(self.offset..) {
+            FwCfgContent::Slice(b) => match b.get(self.offset as usize..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
-            FwCfgContent::U32(n) => match n.to_le_bytes().get(self.offset..) {
+            FwCfgContent::U32(n) => match n.to_le_bytes().get(self.offset as usize..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
@@ -139,17 +139,17 @@ impl Default for FwCfgContent {
 }
 
 impl FwCfgContent {
-    fn size(&self) -> Result<usize> {
+    fn size(&self) -> Result<u32> {
         let ret = match self {
             FwCfgContent::Bytes(v) => v.len(),
             FwCfgContent::File(offset, f) => (f.metadata()?.len() - offset) as usize,
             FwCfgContent::Slice(s) => s.len(),
             FwCfgContent::U32(n) => size_of_val(n),
         };
-        Ok(ret)
+        u32::try_from(ret).map_err(|_| std::io::ErrorKind::InvalidInput.into())
     }
 
-    fn access(&self, offset: usize) -> FwCfgContentAccess {
+    fn access(&self, offset: u32) -> FwCfgContentAccess {
         FwCfgContentAccess {
             content: self,
             offset,
@@ -167,7 +167,7 @@ pub struct FwCfgItem {
 #[derive(Debug)]
 pub struct FwCfg {
     selector: u16,
-    data_offset: usize,
+    data_offset: u32,
     dma_address: u64,
     items: Vec<FwCfgItem>,                           // 0x20 and above
     known_items: [FwCfgContent; FW_CFG_KNOWN_ITEMS], // 0x0 to 0x19
@@ -246,7 +246,7 @@ impl FwCfg {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn add_e820(&mut self, mem_regions: &[(usize, MemRegionEntry)]) -> Result<()> {
+    pub(crate) fn add_e820(&mut self, mem_regions: &[(u64, MemRegionEntry)]) -> Result<()> {
         let mut bytes = vec![];
         for (addr, region) in mem_regions.iter() {
             let type_ = match region.type_ {
@@ -257,8 +257,8 @@ impl FwCfg {
                 MemRegionType::Hidden => continue,
             };
             let entry = BootE820Entry {
-                addr: *addr as u64,
-                size: region.size as u64,
+                addr: *addr,
+                size: region.size,
                 type_,
             };
             bytes.extend_from_slice(entry.as_bytes());
@@ -314,14 +314,8 @@ impl FwCfg {
         let index = self.items.len();
         let c_name = create_file_name(&item.name);
         let size = item.content.size()?;
-        let item_size = if size > u32::MAX as usize {
-            // TODO use FileTooLarge
-            return Err(ErrorKind::Unsupported.into());
-        } else {
-            size as u32
-        };
         let cfg_file = FwCfgFile {
-            size_be: item_size.to_be(),
+            size_be: size.to_be(),
             select_be: (FW_CFG_FILE_FIRST + index as u16).to_be(),
             _reserved: 0,
             name: c_name,
@@ -336,15 +330,15 @@ impl FwCfg {
     fn dma_read_content(
         &self,
         content: &FwCfgContent,
-        offset: usize,
-        len: usize,
-        address: usize,
-    ) -> Result<usize> {
+        offset: u32,
+        len: u32,
+        address: u64,
+    ) -> Result<u32> {
         let content_size = content.size()?.saturating_sub(offset);
         let op_size = std::cmp::min(content_size, len);
         let r = self
             .memory
-            .write_range(address, op_size, content.access(offset));
+            .write_range(address, op_size as u64, content.access(offset));
         match r {
             Err(e) => {
                 log::error!("fw_cfg: dam read error: {e:x?}");
@@ -354,7 +348,7 @@ impl FwCfg {
         }
     }
 
-    fn dma_read(&mut self, selector: u16, len: usize, address: usize) -> Result<()> {
+    fn dma_read(&mut self, selector: u16, len: u32, address: u64) -> Result<()> {
         let op_size = if let Some(content) = self.known_items.get(selector as usize) {
             self.dma_read_content(content, self.data_offset, len, address)
         } else if let Some(item) = self.items.get((selector - FW_CFG_FILE_FIRST) as usize) {
@@ -363,16 +357,16 @@ impl FwCfg {
             log::error!("fw_cfg: selector {selector:#x} does not exist.");
             Err(ErrorKind::NotFound.into())
         }?;
-        self.data_offset += op_size as usize;
+        self.data_offset += op_size;
         Ok(())
     }
 
-    fn dma_write(&self, _selector: u16, _len: usize, _address: usize) -> Result<()> {
+    fn dma_write(&self, _selector: u16, _len: u32, _address: u64) -> Result<()> {
         unimplemented!()
     }
 
     fn do_dma(&mut self) {
-        let dma_address = self.dma_address as usize;
+        let dma_address = self.dma_address;
         let dma_access = match self.memory.read::<FwCfgDmaAccess>(dma_address) {
             Ok(access) => access,
             Err(e) => {
@@ -384,8 +378,8 @@ impl FwCfg {
         if control.select() {
             self.selector = control.select() as u16;
         }
-        let len = u32::from_be(dma_access.length_be) as usize;
-        let addr = u64::from_be(dma_access.address_be) as usize;
+        let len = u32::from_be(dma_access.length_be);
+        let addr = u64::from_be(dma_access.address_be);
         let ret = if control.read() {
             self.dma_read(self.selector, len, addr)
         } else if control.write() {
@@ -402,17 +396,17 @@ impl FwCfg {
             access_resp.set_error(true);
         }
         if let Err(e) = self.memory.write(
-            dma_address + FwCfgDmaAccess::OFFSET_CONTROL_BE,
+            dma_address + FwCfgDmaAccess::OFFSET_CONTROL_BE as u64,
             &access_resp.0.to_be(),
         ) {
             log::error!("fw_cfg: finishing dma: {e:?}")
         }
     }
 
-    fn read_content(content: &FwCfgContent, offset: usize) -> Option<u8> {
+    fn read_content(content: &FwCfgContent, offset: u32) -> Option<u8> {
         match content {
-            FwCfgContent::Bytes(b) => b.get(offset).copied(),
-            FwCfgContent::Slice(s) => s.get(offset).copied(),
+            FwCfgContent::Bytes(b) => b.get(offset as usize).copied(),
+            FwCfgContent::Slice(s) => s.get(offset as usize).copied(),
             FwCfgContent::File(o, f) => {
                 let mut buf = [0u8];
                 match f.read_exact_at(&mut buf, o + offset as u64) {
@@ -423,7 +417,7 @@ impl FwCfg {
                     }
                 }
             }
-            FwCfgContent::U32(n) => n.to_le_bytes().get(offset).copied(),
+            FwCfgContent::U32(n) => n.to_le_bytes().get(offset as usize).copied(),
         }
     }
 
@@ -454,11 +448,11 @@ impl FwCfg {
 }
 
 impl Mmio for Mutex<FwCfg> {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         16
     }
 
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         let mut fw_cfg = self.lock();
         let port = offset as u16 + PORT_SELECTOR;
         let ret = match (port, size) {
@@ -485,7 +479,7 @@ impl Mmio for Mutex<FwCfg> {
         Ok(ret)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
         let mut fw_cfg = self.lock();
         let port = offset as u16 + PORT_SELECTOR;
         match (port, size) {

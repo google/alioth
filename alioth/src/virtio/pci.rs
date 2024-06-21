@@ -242,13 +242,13 @@ impl<M> Mmio for VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
 {
-    fn size(&self) -> usize {
-        size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()
+    fn size(&self) -> u64 {
+        (size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()) as u64
     }
 
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         let reg = &*self.reg;
-        let ret = match (offset, size as usize) {
+        let ret = match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
                 reg.device_feature_sel.load(Ordering::Acquire) as u64
             }
@@ -370,9 +370,9 @@ where
         Ok(ret)
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
         let reg = &*self.reg;
-        match (offset, size as usize) {
+        match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
                 reg.device_feature_sel.store(val as u8, Ordering::Release);
             }
@@ -531,10 +531,10 @@ impl<R> MemRegionCallback for IoeventFdCallback<R>
 where
     R: IoeventFdRegistry,
 {
-    fn mapped(&self, addr: usize) -> mem::Result<()> {
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
         for (q_index, fd) in self.ioeventfds.iter().enumerate() {
-            let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY;
-            let notify_addr = base_addr + q_index * size_of::<u32>();
+            let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
+            let notify_addr = base_addr + (q_index * size_of::<u32>()) as u64;
             self.registry.register(fd, notify_addr, 0, None)?;
             log::info!("q-{q_index} ioeventfd registered at {notify_addr:x}",)
         }
@@ -818,7 +818,7 @@ where
             entries: msix_entries,
         })));
         bar0.ranges
-            .push(MemRange::Span((12 << 10) - msix_table_size));
+            .push(MemRange::Span((12 << 10) - msix_table_size as u64));
         bar0.ranges.push(MemRange::Emulated(registers.clone()));
         bar0.callbacks.lock().push(Box::new(IoeventFdCallback {
             registry: ioeventfd_reg,
@@ -829,14 +829,14 @@ where
         }
         let mut bars = PciBar::empty_6();
         let mut bar_masks = [0; 6];
-        let bar0_mask = !((bar0.size as u64).next_power_of_two() - 1);
+        let bar0_mask = !(bar0.size.next_power_of_two() - 1);
         bar_masks[0] = bar0_mask as u32;
         bar_masks[1] = (bar0_mask >> 32) as u32;
         bars[0] = PciBar::Mem64(Arc::new(bar0));
         header.bars[0] = BAR_MEM64;
 
         if let Some(region) = &dev.shared_mem_regions {
-            let bar2_mask = !((region.size as u64).next_power_of_two() - 1);
+            let bar2_mask = !(region.size.next_power_of_two() - 1);
             bar_masks[2] = bar2_mask as u32;
             bar_masks[3] = (bar2_mask >> 32) as u32;
             bars[2] = PciBar::Mem64(region.clone());

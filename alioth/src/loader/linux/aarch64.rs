@@ -20,7 +20,7 @@ use crate::mem::MemRegionEntry;
 
 pub fn load<P: AsRef<Path>>(
     _memory: &RamBus,
-    _mem_regions: &[(usize, MemRegionEntry)],
+    _mem_regions: &[(u64, MemRegionEntry)],
     _kernel: P,
     _cmd_line: Option<&str>,
     _initramfs: Option<P>,

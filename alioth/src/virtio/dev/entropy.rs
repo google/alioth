@@ -14,7 +14,6 @@
 
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
-use std::mem::size_of;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::sync::Arc;
 
@@ -35,15 +34,15 @@ use crate::virtio::{IrqSender, Result, FEATURE_BUILT_IN};
 pub struct EntropyConfig;
 
 impl Mmio for EntropyConfig {
-    fn size(&self) -> usize {
-        size_of::<Self>()
+    fn size(&self) -> u64 {
+        0
     }
 
-    fn read(&self, _offset: usize, _size: u8) -> mem::Result<u64> {
+    fn read(&self, _offset: u64, _size: u8) -> mem::Result<u64> {
         Ok(0)
     }
 
-    fn write(&self, _offset: usize, _size: u8, _val: u64) -> mem::Result<()> {
+    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<()> {
         Ok(())
     }
 }

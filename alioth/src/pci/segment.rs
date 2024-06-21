@@ -40,12 +40,12 @@ impl PciSegment {
 }
 
 impl Mmio for PciSegment {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         // 256 MiB: 256 buses, 32 devices, 8 functions
         256 * 32 * 8 * 4096
     }
 
-    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         let bdf = Bdf((offset >> 12) as u16);
         let configs = self.configs.read();
         if let Some(config) = configs.get(&bdf) {
@@ -55,7 +55,7 @@ impl Mmio for PciSegment {
         }
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
         let bdf = Bdf((offset >> 12) as u16);
         let configs = self.configs.read();
         if let Some(config) = configs.get(&bdf) {

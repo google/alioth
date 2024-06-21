@@ -91,7 +91,7 @@ fn search_pvh_note<F: Read + Seek>(
 // https://xenbits.xen.org/docs/4.18-testing/misc/pvh.html
 pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
-    mem_regions: &[(usize, MemRegionEntry)],
+    mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
     cmd_line: Option<&str>,
     initramfs: Option<P>,
@@ -125,8 +125,8 @@ pub fn load<P: AsRef<Path>>(
             )?;
         }
         if program_header.file_sz > 0 {
-            let addr = program_header.paddr as usize;
-            let size = program_header.file_sz as usize;
+            let addr = program_header.paddr;
+            let size = program_header.file_sz;
             kernel_file.seek(SeekFrom::Start(program_header.offset))?;
             memory.write_range(addr, size, &mut kernel_file)?;
             log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size);
@@ -162,8 +162,8 @@ pub fn load<P: AsRef<Path>>(
         start_info: HvmStartInfo {
             magic: XEN_HVM_START_MAGIC_VALUE,
             version: XEN_HVM_START_INFO_V1,
-            cmdline_paddr: KERNEL_CMD_LINE_START as u64,
-            rsdp_paddr: EBDA_START as u64,
+            cmdline_paddr: KERNEL_CMD_LINE_START,
+            rsdp_paddr: EBDA_START,
             ..Default::default()
         },
         ..Default::default()
@@ -171,26 +171,30 @@ pub fn load<P: AsRef<Path>>(
 
     // load cmd line
     if let Some(cmd_line) = cmd_line {
-        if cmd_line.len() > KERNEL_CMD_LINE_LIMIT {
+        if cmd_line.len() as u64 > KERNEL_CMD_LINE_LIMIT {
             return Err(Error::CmdLineTooLong(cmd_line.len(), KERNEL_CMD_LINE_LIMIT));
         }
-        memory.write_range(KERNEL_CMD_LINE_START, cmd_line.len(), cmd_line.as_bytes())?;
-        start_info_page.start_info.cmdline_paddr = KERNEL_CMD_LINE_START as u64;
+        memory.write_range(
+            KERNEL_CMD_LINE_START,
+            cmd_line.len() as u64,
+            cmd_line.as_bytes(),
+        )?;
+        start_info_page.start_info.cmdline_paddr = KERNEL_CMD_LINE_START;
     }
 
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
         let initramfs = File::open(initramfs)?;
-        let initramfs_size = initramfs.metadata()?.len() as usize;
+        let initramfs_size = initramfs.metadata()?.len();
         let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size, 2 << 30)?;
         let initramfs_end = initramfs_gpa + initramfs_size;
         memory.write_range(initramfs_gpa, initramfs_size, initramfs)?;
         start_info_page.start_info.nr_modules = 1;
         start_info_page.start_info.modlist_paddr =
-            (HVM_START_INFO_START + offset_of!(StartInfoPage, initramfs)) as u64;
+            HVM_START_INFO_START + offset_of!(StartInfoPage, initramfs) as u64;
         start_info_page.initramfs.paddr = initramfs_gpa as u64;
-        start_info_page.initramfs.size = initramfs_size as u64;
+        start_info_page.initramfs.size = initramfs_size;
         log::info!(
             "initramfs loaded at {:#x} - {:#x}, ",
             initramfs_gpa,
@@ -212,8 +216,8 @@ pub fn load<P: AsRef<Path>>(
             MemRegionType::Hidden => continue,
         };
         start_info_page.memory_map[index] = HvmMemmapTableEntry {
-            addr: *addr as u64,
-            size: region.size as u64,
+            addr: *addr,
+            size: region.size,
             type_,
             reserved: 0,
         };
@@ -221,7 +225,7 @@ pub fn load<P: AsRef<Path>>(
     }
     start_info_page.start_info.memmap_entries = index as u32;
     start_info_page.start_info.memmap_paddr =
-        (HVM_START_INFO_START + offset_of!(StartInfoPage, memory_map)) as u64;
+        HVM_START_INFO_START + offset_of!(StartInfoPage, memory_map) as u64;
 
     memory.write(HVM_START_INFO_START, &start_info_page)?;
 
@@ -259,7 +263,7 @@ pub fn load<P: AsRef<Path>>(
         boot_ldtr.to_desc(),
     ];
     let gdtr = DtRegVal {
-        base: BOOT_GDT_START as u64,
+        base: BOOT_GDT_START,
         limit: size_of_val(&gdt) as u16 - 1,
     };
     memory.write(BOOT_GDT_START, &gdt)?;
@@ -268,7 +272,7 @@ pub fn load<P: AsRef<Path>>(
 
     Ok(InitState {
         regs: vec![
-            (Reg::Rbx, HVM_START_INFO_START as u64),
+            (Reg::Rbx, HVM_START_INFO_START),
             (Reg::Rflags, Rflags::RESERVED_1.bits() as u64),
             (Reg::Rip, entry_point),
         ],

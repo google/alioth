@@ -22,7 +22,7 @@ impl KvmVcpu {
     pub(super) fn handle_mmio(&mut self) -> Result<VmExit, Error> {
         let kvm_mmio = unsafe { &self.kvm_run.exit.mmio };
         let exit = VmExit::Mmio {
-            addr: kvm_mmio.phys_addr as usize,
+            addr: kvm_mmio.phys_addr,
             write: if kvm_mmio.is_write > 0 {
                 Some(u64::from_ne_bytes(kvm_mmio.data))
             } else {

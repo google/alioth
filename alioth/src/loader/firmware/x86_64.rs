@@ -25,10 +25,10 @@ use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory};
 
 pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcMemPages)> {
     let mut file = File::open(path)?;
-    let size = file.metadata()?.len() as usize;
+    let size = file.metadata()?.len();
     assert_eq!(size & 0xfff, 0);
 
-    let mut rom = ArcMemPages::from_memfd(size, None, Some(c"rom"))?;
+    let mut rom = ArcMemPages::from_memfd(size as usize, None, Some(c"rom"))?;
     file.read_exact(rom.as_slice_mut())?;
 
     let gpa = MEM_64_START - size;

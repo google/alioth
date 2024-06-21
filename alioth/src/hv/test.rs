@@ -21,15 +21,15 @@ impl crate::hv::VmMemory for FakeVmMemory {
     fn mem_map(
         &self,
         _slot: u32,
-        _gpa: usize,
-        _size: usize,
+        _gpa: u64,
+        _size: u64,
         _hva: usize,
         _option: MemMapOption,
     ) -> Result<()> {
         Ok(())
     }
 
-    fn unmap(&self, _slot: u32, _gpa: usize, _size: usize) -> Result<()> {
+    fn unmap(&self, _slot: u32, _gpa: u64, _size: u64) -> Result<()> {
         Ok(())
     }
 

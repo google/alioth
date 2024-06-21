@@ -77,7 +77,7 @@ pub const STATE_SHUTDOWN: u8 = 2;
 pub const STATE_REBOOT_PENDING: u8 = 3;
 
 pub struct BoardConfig {
-    pub mem_size: usize,
+    pub mem_size: u64,
     pub num_cpu: u32,
     pub coco: Option<Coco>,
 }

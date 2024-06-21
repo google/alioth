@@ -142,9 +142,9 @@ impl ChangeLayout for UpdateCommandCallback {
                     if !self.changed.contains(Command::MEM) {
                         continue;
                     }
-                    let mut addr = (bar & !BAR_MEM_MASK) as usize;
+                    let mut addr = (bar & !BAR_MEM_MASK) as u64;
                     if matches!(pci_bar, PciBar::Mem64(_)) {
-                        addr |= (self.bars[i + 1] as usize) << 32;
+                        addr |= (self.bars[i + 1] as u64) << 32;
                     }
                     if self.current.contains(Command::MEM) {
                         memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
@@ -192,8 +192,8 @@ impl ChangeLayout for MoveBarCallback {
         } else {
             let src_addr = self.src & !(BAR_MEM_MASK as u64);
             let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
-            let region = memory.remove_region(src_addr as usize)?;
-            memory.add_region(AddrOpt::Fixed(dst_addr as usize), region)?;
+            let region = memory.remove_region(src_addr)?;
+            memory.add_region(AddrOpt::Fixed(dst_addr), region)?;
         }
         Ok(())
     }
@@ -231,12 +231,13 @@ impl HeaderData {
 
     fn write_header(
         &mut self,
-        offset: usize,
+        offset: u64,
         size: u8,
         val: u64,
         pci_bars: &[PciBar; 6],
     ) -> Option<Box<dyn ChangeLayout>> {
         let bdf = self.bdf;
+        let offset = offset as usize;
         match &mut self.header {
             ConfigHeader::Device(header) => match (offset, size as usize) {
                 CommonHeader::LAYOUT_COMMAND => {
@@ -351,11 +352,12 @@ impl EmulatedHeader {
 }
 
 impl Mmio for EmulatedHeader {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         0x40
     }
 
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let offset = offset as usize;
         let data = self.data.read();
         let bytes = match &data.header {
             ConfigHeader::Device(header) => AsBytes::as_bytes(header),
@@ -370,7 +372,7 @@ impl Mmio for EmulatedHeader {
         Ok(ret.unwrap_or(0))
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
         let mut data = self.data.write();
         if let Some(callback) = data.write_header(offset, size, val, &self.bars) {
             Err(mem::Error::Action(mem::Action::ChangeLayout { callback }))
@@ -391,23 +393,23 @@ pub struct EmulatedConfig {
 }
 
 impl Mmio for EmulatedConfig {
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
-        if offset < size_of::<DeviceHeader>() {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        if offset < size_of::<DeviceHeader>() as u64 {
             self.header.read(offset, size)
         } else {
             self.caps.read(offset, size)
         }
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
-        if offset < size_of::<DeviceHeader>() {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+        if offset < size_of::<DeviceHeader>() as u64 {
             self.header.write(offset, size, val)
         } else {
             self.caps.write(offset, size, val)
         }
     }
 
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         4096
     }
 }

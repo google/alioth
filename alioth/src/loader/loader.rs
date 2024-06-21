@@ -56,7 +56,7 @@ pub struct InitState {
     pub dt_regs: Vec<(DtReg, DtRegVal)>,
     #[cfg(target_arch = "x86_64")]
     pub seg_regs: Vec<(SegReg, SegRegVal)>,
-    pub initramfs: Option<Range<usize>>,
+    pub initramfs: Option<Range<u64>>,
 }
 
 #[derive(Debug, Error)]
@@ -80,7 +80,7 @@ pub enum Error {
     NotRelocatableKernel,
 
     #[error("kernel command line too long, length: {0}, limit: {1}")]
-    CmdLineTooLong(usize, usize),
+    CmdLineTooLong(usize, u64),
 
     #[error("cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}")]
     InitramfsAddrLimit {
@@ -103,10 +103,10 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn search_initramfs_address(
-    entries: &[(usize, MemRegionEntry)],
-    size: usize,
-    addr_max: usize,
-) -> Result<usize, Error> {
+    entries: &[(u64, MemRegionEntry)],
+    size: u64,
+    addr_max: u64,
+) -> Result<u64, Error> {
     for (start, entry) in entries.iter().rev() {
         let region_max = entry.size - 1 + start;
         let limit = std::cmp::min(region_max, addr_max);

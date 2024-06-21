@@ -42,8 +42,8 @@ bitfield! {
 }
 
 impl Address {
-    pub fn to_ecam_addr(self) -> usize {
-        let v = self.0 as usize;
+    pub fn to_ecam_addr(self) -> u64 {
+        let v = self.0 as u64;
         ((v & 0xff_ff00) << 4) | (v & 0xfc)
     }
 }
@@ -55,11 +55,11 @@ pub struct PciIoBus {
 }
 
 impl Mmio for PciIoBus {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         8
     }
 
-    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         match offset {
             0 => {
                 assert_eq!(size, 4);
@@ -74,7 +74,7 @@ impl Mmio for PciIoBus {
         }
     }
 
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
         match offset {
             0 => {
                 assert_eq!(size, 4);
