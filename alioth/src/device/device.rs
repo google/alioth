@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod console;
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
 pub mod pvpanic;
+#[cfg(target_arch = "x86_64")]
 pub mod serial;
