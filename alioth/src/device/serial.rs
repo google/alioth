@@ -13,24 +13,17 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
-use std::io::{self, ErrorKind};
-use std::mem::MaybeUninit;
+use std::io;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
-use libc::{
-    cfmakeraw, fcntl, tcgetattr, tcsetattr, termios, F_GETFL, F_SETFL, OPOST, O_NONBLOCK,
-    STDIN_FILENO, STDOUT_FILENO, TCSANOW,
-};
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token, Waker};
 use parking_lot::Mutex;
 
+use crate::device::console::{Console, UartRecv};
 use crate::hv::IntxSender;
+use crate::mem;
 use crate::mem::emulated::Mmio;
-use crate::{ffi, mem};
 
 const TX_HOLDING_REGISTER: u16 = 0x0;
 const RX_BUFFER_REGISTER: u16 = 0x0;
@@ -190,11 +183,10 @@ struct SerialReg {
 
 #[derive(Debug)]
 pub struct Serial<I> {
-    base_port: u16,
+    name: Arc<String>,
     irq_sender: Arc<I>,
     reg: Arc<Mutex<SerialReg>>,
-    worker_thread: Option<JoinHandle<()>>,
-    exit_waker: Waker,
+    console: Console,
 }
 
 impl<I> Mmio for Serial<I>
@@ -230,11 +222,7 @@ where
             MODEM_STATUS_REGISTER => reg.modem_status,
             SCRATCH_REGISTER => reg.scratch,
             _ => {
-                log::error!(
-                    "Serial {:#x}: read unreachable port {:#x}",
-                    self.base_port,
-                    offset as u16 + self.base_port
-                );
+                log::error!("{}: read unreachable offset {offset:#x}", self.name,);
                 0x0
             }
         };
@@ -263,16 +251,7 @@ where
                     }
                     reg.line_status |= LineStatus::DATA_READY;
                 } else {
-                    if let Err(e) =
-                        ffi!(unsafe { libc::write(STDOUT_FILENO, &byte as *const u8 as _, 1) })
-                    {
-                        log::error!(
-                            "Serial {:#x}: cannot write byte {:#02x}: {:?}",
-                            self.base_port,
-                            byte,
-                            e
-                        )
-                    }
+                    self.console.transmit(&[byte]);
                     if reg
                         .interrupt_enable
                         .contains(InterruptEnable::TX_HOLDING_REGISTER_EMPTY)
@@ -297,146 +276,34 @@ where
             SCRATCH_REGISTER => {
                 reg.scratch = byte;
             }
-            _ => log::error!(
-                "Serial {:#x}: write unreachable offset {:#x}",
-                self.base_port,
-                offset as u16 + self.base_port
-            ),
+            _ => log::error!("{}: write unreachable offset {:#x}", self.name, offset),
         }
         Ok(())
     }
 }
 
-struct StdinBackup {
-    termios: Option<termios>,
-    flag: Option<i32>,
-}
-
-impl StdinBackup {
-    fn new() -> StdinBackup {
-        let mut termios_backup = None;
-        let mut t = MaybeUninit::uninit();
-        match ffi!(unsafe { tcgetattr(STDIN_FILENO, t.as_mut_ptr()) }) {
-            Ok(_) => termios_backup = Some(unsafe { t.assume_init() }),
-            Err(e) => log::error!("tcgetattr() failed: {}", e),
-        }
-        let mut flag_backup = None;
-        match ffi! { unsafe { fcntl(STDIN_FILENO, F_GETFL) } } {
-            Ok(f) => flag_backup = Some(f),
-            Err(e) => log::error!("fcntl(STDIN_FILENO, F_GETFL) failed: {}", e),
-        }
-        StdinBackup {
-            termios: termios_backup,
-            flag: flag_backup,
-        }
-    }
-}
-
-impl Drop for StdinBackup {
-    fn drop(&mut self) {
-        if let Some(t) = self.termios.take() {
-            if let Err(e) = ffi!(unsafe { tcsetattr(STDIN_FILENO, 1, &t) }) {
-                log::error!("Restroing termios: {:?}", e);
-            }
-        }
-        if let Some(f) = self.flag.take() {
-            if let Err(e) = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, f) }) {
-                log::error!("Restoring stdin flag to {:#x}: {:?}", f, e)
-            }
-        }
-    }
-}
-
-struct SeiralWorker<I> {
-    pub base_port: u16,
+struct SerialRecv<I: IntxSender> {
+    pub name: Arc<String>,
     pub irq_sender: Arc<I>,
     pub reg: Arc<Mutex<SerialReg>>,
-    pub poll: Poll,
 }
 
-impl<I> SeiralWorker<I>
-where
-    I: IntxSender,
-{
-    fn setup_termios(&mut self) -> io::Result<()> {
-        let mut raw_termios = MaybeUninit::uninit();
-        ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
-        unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
-        unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
-        ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) })?;
-
-        let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
-        ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) })?;
-        self.poll.registry().register(
-            &mut SourceFd(&STDIN_FILENO),
-            TOKEN_STDIN,
-            Interest::READABLE,
-        )?;
-
-        Ok(())
-    }
-
-    fn read_input(data: &mut VecDeque<u8>) -> io::Result<usize> {
-        let mut total_size = 0;
-        let mut buf = [0u8; 16];
-        loop {
-            match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) }) {
-                Ok(0) => break,
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Ok(len) => {
-                    data.extend(&buf[0..len as usize]);
-                    total_size += len as usize;
-                }
-                Err(e) => Err(e)?,
+impl<I: IntxSender> UartRecv for SerialRecv<I> {
+    fn receive(&self, bytes: &[u8]) {
+        let mut reg = self.reg.lock();
+        reg.data.extend(bytes);
+        if reg
+            .interrupt_enable
+            .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
+        {
+            reg.interrupt_identification.set_rx_data_available();
+            if let Err(e) = self.irq_sender.send() {
+                log::error!("{}: sending interrupt: {e:?}", self.name);
             }
         }
-        Ok(total_size)
-    }
-
-    fn send_irq(&self) {
-        if let Err(e) = self.irq_sender.send() {
-            log::error!("Serial {:#x}: sending interrupt: {:?}", self.base_port, e);
-        }
-    }
-
-    fn do_work_inner(&mut self) -> io::Result<()> {
-        self.setup_termios()?;
-        let mut events = Events::with_capacity(16);
-        loop {
-            self.poll.poll(&mut events, None)?;
-            for event in events.iter() {
-                if event.token() == TOKEN_SHUTDOWN {
-                    return Ok(());
-                }
-                let mut reg = self.reg.lock();
-                if Self::read_input(&mut reg.data)? == 0 {
-                    continue;
-                }
-                if reg
-                    .interrupt_enable
-                    .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
-                {
-                    reg.interrupt_identification.set_rx_data_available();
-                    self.send_irq()
-                }
-                reg.line_status |= LineStatus::DATA_READY;
-            }
-        }
-    }
-
-    fn do_work(&mut self) {
-        log::trace!("Serial {:#x}: start", self.base_port);
-        let _backup = StdinBackup::new();
-        if let Err(e) = self.do_work_inner() {
-            log::error!("Serial {:#x}: {:?}", self.base_port, e)
-        } else {
-            log::trace!("Serial {:#x}: done", self.base_port)
-        }
+        reg.line_status |= LineStatus::DATA_READY;
     }
 }
-
-const TOKEN_SHUTDOWN: Token = Token(1);
-const TOKEN_STDIN: Token = Token(0);
 
 impl<I> Serial<I>
 where
@@ -445,45 +312,25 @@ where
     pub fn new(base_port: u16, intx_sender: I) -> io::Result<Self> {
         let irq_sender = Arc::new(intx_sender);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
-        let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
-        let mut worker = SeiralWorker {
-            base_port,
-            reg: reg.clone(),
-            poll,
+        let name = Arc::new(format!("serial_{:#x}", base_port));
+        let uart_recv = SerialRecv {
             irq_sender: irq_sender.clone(),
+            name: name.clone(),
+            reg: reg.clone(),
         };
-        let worker_thread = std::thread::Builder::new()
-            .name(format!("serial_{:#x}", base_port))
-            .spawn(move || worker.do_work())?;
+        let console = Console::new(name.clone(), uart_recv)?;
         let serial = Serial {
+            name,
             reg,
-            base_port,
             irq_sender,
-            worker_thread: Some(worker_thread),
-            exit_waker: waker,
+            console,
         };
         Ok(serial)
     }
 
     fn send_irq(&self) {
         if let Err(e) = self.irq_sender.send() {
-            log::error!("Serial {:#x}: sending interrupt: {:?}", self.base_port, e);
-        }
-    }
-}
-
-impl<I> Drop for Serial<I> {
-    fn drop(&mut self) {
-        if let Err(e) = self.exit_waker.wake() {
-            log::error!("Serial {:#x}: {:?}", self.base_port, e);
-            return;
-        }
-        let Some(thread) = self.worker_thread.take() else {
-            return;
-        };
-        if let Err(e) = thread.join() {
-            log::error!("Serial {:#x}: {:?}", self.base_port, e);
+            log::error!("{}: sending interrupt: {e:?}", self.name);
         }
     }
 }
