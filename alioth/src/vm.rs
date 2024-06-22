@@ -73,7 +73,7 @@ where
 {
     board: Arc<Board<H::Vm>>,
     event_rx: Receiver<u32>,
-    event_tx: Sender<u32>,
+    _event_tx: Sender<u32>,
 }
 
 impl<H> Machine<H>
@@ -89,7 +89,7 @@ where
         let memory = Memory::new(vm_memory);
         let arch = ArchBoard::new(&hv, &vm, &config)?;
 
-        let board = Board {
+        let board = Arc::new(Board {
             vm,
             memory,
             arch,
@@ -102,14 +102,31 @@ where
             pci_bus: PciBus::new(),
             pci_devs: RwLock::new(Vec::new()),
             fw_cfg: Mutex::new(None),
-        };
+        });
 
         let (event_tx, event_rx) = mpsc::channel();
+
+        let mut vcpus = board.vcpus.write();
+        for vcpu_id in 0..board.config.num_cpu {
+            let (boot_tx, boot_rx) = mpsc::channel();
+            let event_tx = event_tx.clone();
+            let board = board.clone();
+            let handle = thread::Builder::new()
+                .name(format!("vcpu_{}", vcpu_id))
+                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
+            event_rx.recv().unwrap();
+            vcpus.push((handle, boot_tx));
+        }
+        drop(vcpus);
+
+        board.arch_init()?;
+
         let machine = Machine {
-            board: Arc::new(board),
+            board,
             event_rx,
-            event_tx,
+            _event_tx: event_tx,
         };
+
         Ok(machine)
     }
 
@@ -190,17 +207,7 @@ where
     }
 
     pub fn boot(&mut self) -> Result<(), Error> {
-        let mut vcpus = self.board.vcpus.write();
-        for vcpu_id in 0..self.board.config.num_cpu {
-            let (boot_tx, boot_rx) = mpsc::channel();
-            let event_tx = self.event_tx.clone();
-            let board = self.board.clone();
-            let handle = thread::Builder::new()
-                .name(format!("vcpu_{}", vcpu_id))
-                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
-            self.event_rx.recv().unwrap();
-            vcpus.push((handle, boot_tx));
-        }
+        let vcpus = self.board.vcpus.read();
         self.board.state.store(STATE_RUNNING, Ordering::Release);
         for (_, boot_tx) in vcpus.iter() {
             boot_tx.send(()).unwrap();
