@@ -21,14 +21,20 @@ use std::thread;
 use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
+#[cfg(target_arch = "aarch64")]
+use crate::arch::layout::PL011_START;
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
+#[cfg(target_arch = "aarch64")]
+use crate::device::pl011::Pl011;
 use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
 use crate::hv::{self, Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
+#[cfg(target_arch = "aarch64")]
+use crate::mem::{AddrOpt, MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::PciDevice;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
@@ -99,6 +105,8 @@ where
             vcpus: Arc::new(RwLock::new(Vec::new())),
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
             io_devs: RwLock::new(Vec::new()),
+            #[cfg(target_arch = "aarch64")]
+            mmio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
             pci_devs: RwLock::new(Vec::new()),
             fw_cfg: Mutex::new(None),
@@ -135,6 +143,20 @@ where
         let irq_sender = self.board.vm.create_irq_sender(4)?;
         let com1 = Serial::new(0x3f8, irq_sender)?;
         self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn add_pl011(&self) -> Result<(), Error> {
+        let irq_line = self.board.vm.create_irq_sender(1)?;
+        let pl011_dev = Pl011::new(PL011_START, irq_line)?;
+        self.board.mmio_devs.write().push((
+            AddrOpt::Fixed(PL011_START),
+            Arc::new(MemRegion::with_emulated(
+                Arc::new(pl011_dev),
+                MemRegionType::Hidden,
+            )),
+        ));
         Ok(())
     }
 
