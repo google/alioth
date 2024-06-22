@@ -251,12 +251,10 @@ pub struct VmConfig {
 pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
-    #[cfg(target_arch = "x86_64")]
     type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
-    #[cfg(target_arch = "x86_64")]
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::AtomicU32;
 
 use snafu::ResultExt;
 
@@ -66,10 +65,7 @@ impl Kvm {
         } else {
             None
         };
-        Ok(VmArch {
-            sev_fd,
-            pin_map: AtomicU32::new(0),
-        })
+        Ok(VmArch { sev_fd })
     }
 
     pub(super) fn vm_init_arch(&self, config: &VmConfig, kvm_vm: &KvmVm) -> Result<()> {

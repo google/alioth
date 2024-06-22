@@ -162,6 +162,7 @@ impl Hypervisor for Kvm {
                 ioeventfds: Mutex::new(HashMap::new()),
                 msi_table: RwLock::new(HashMap::new()),
                 next_msi_gsi: AtomicU32::new(0),
+                pin_map: AtomicU32::new(0),
                 #[cfg(target_arch = "x86_64")]
                 arch: kvm_vm_arch,
             }),

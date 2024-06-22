@@ -236,6 +236,11 @@ impl Vm for HvfVm {
     ) -> Result<Self::GicV2> {
         unimplemented!()
     }
+
+    type IrqSender = HvfIrqSender;
+    fn create_irq_sender(&self, _pin: u8) -> Result<Self::IrqSender> {
+        unimplemented!()
+    }
 }
 
 #[derive(Debug)]

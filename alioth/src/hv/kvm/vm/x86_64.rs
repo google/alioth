@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::os::fd::{AsFd, AsRawFd};
-use std::sync::atomic::AtomicU32;
 
 use snafu::ResultExt;
 
@@ -33,7 +32,6 @@ use crate::hv::Result;
 #[derive(Debug)]
 pub struct VmArch {
     pub sev_fd: Option<SevFd>,
-    pub pin_map: AtomicU32,
 }
 
 impl KvmVm {
