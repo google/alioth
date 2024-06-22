@@ -204,6 +204,8 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     let mut vm = Machine::new(hypervisor, board_config).context(error::CreateVm)?;
     #[cfg(target_arch = "x86_64")]
     vm.add_com1().context(error::CreateDevice)?;
+    #[cfg(target_arch = "aarch64")]
+    vm.add_pl011().context(error::CreateDevice)?;
 
     if args.pvpanic {
         vm.add_pvpanic().context(error::CreateDevice)?;

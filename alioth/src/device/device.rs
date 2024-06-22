@@ -15,6 +15,8 @@
 pub mod console;
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
+#[cfg(target_arch = "aarch64")]
+pub mod pl011;
 pub mod pvpanic;
 #[cfg(target_arch = "x86_64")]
 pub mod serial;

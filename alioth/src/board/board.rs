@@ -97,6 +97,8 @@ where
     pub payload: RwLock<Option<Payload>>,
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
+    #[cfg(target_arch = "aarch64")]
+    pub mmio_devs: RwLock<Vec<(AddrOpt, Arc<MemRegion>)>>,
     pub pci_bus: PciBus,
     pub pci_devs: RwLock<Vec<PciDevice>>,
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
@@ -237,6 +239,10 @@ where
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
+                }
+                #[cfg(target_arch = "aarch64")]
+                for (addr, dev) in self.mmio_devs.read().iter() {
+                    self.memory.add_region(*addr, dev.clone())?;
                 }
                 self.add_pci_devs()?;
                 let init_state = self.load_payload()?;
