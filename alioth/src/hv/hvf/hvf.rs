@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 
 use crate::arch::reg::{Reg, SReg};
 use crate::hv::{
-    GicV2, Hypervisor, IntxSender, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender,
+    GicV2, Hypervisor, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender,
     Result, Vcpu, Vm, VmEntry, VmExit, VmMemory,
 };
 
@@ -89,8 +89,8 @@ impl VmMemory for HvfMemory {
 }
 
 #[derive(Debug)]
-pub struct HvfIntxSender {}
-impl IntxSender for HvfIntxSender {
+pub struct HvfIrqSender {}
+impl IrqSender for HvfIrqSender {
     fn send(&self) -> Result<()> {
         unimplemented!()
     }

@@ -132,8 +132,8 @@ where
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
-        let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
-        let com1 = Serial::new(0x3f8, com1_intx_sender)?;
+        let irq_sender = self.board.vm.create_irq_sender(4)?;
+        let com1 = Serial::new(0x3f8, irq_sender)?;
         self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
         Ok(())
     }

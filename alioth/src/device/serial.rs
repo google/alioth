@@ -21,7 +21,7 @@ use bitflags::bitflags;
 use parking_lot::Mutex;
 
 use crate::device::console::{Console, UartRecv};
-use crate::hv::IntxSender;
+use crate::hv::IrqSender;
 use crate::mem;
 use crate::mem::emulated::Mmio;
 
@@ -191,7 +191,7 @@ pub struct Serial<I> {
 
 impl<I> Mmio for Serial<I>
 where
-    I: IntxSender + Sync + Send + 'static,
+    I: IrqSender + Sync + Send + 'static,
 {
     fn size(&self) -> u64 {
         8
@@ -282,13 +282,13 @@ where
     }
 }
 
-struct SerialRecv<I: IntxSender> {
+struct SerialRecv<I: IrqSender> {
     pub name: Arc<String>,
     pub irq_sender: Arc<I>,
     pub reg: Arc<Mutex<SerialReg>>,
 }
 
-impl<I: IntxSender> UartRecv for SerialRecv<I> {
+impl<I: IrqSender> UartRecv for SerialRecv<I> {
     fn receive(&self, bytes: &[u8]) {
         let mut reg = self.reg.lock();
         reg.data.extend(bytes);
@@ -307,10 +307,10 @@ impl<I: IntxSender> UartRecv for SerialRecv<I> {
 
 impl<I> Serial<I>
 where
-    I: IntxSender + Sync + Send + 'static,
+    I: IrqSender + Sync + Send + 'static,
 {
-    pub fn new(base_port: u16, intx_sender: I) -> io::Result<Self> {
-        let irq_sender = Arc::new(intx_sender);
+    pub fn new(base_port: u16, irq_sender: I) -> io::Result<Self> {
+        let irq_sender = Arc::new(irq_sender);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
         let name = Arc::new(format!("serial_{:#x}", base_port));
         let uart_recv = SerialRecv {
