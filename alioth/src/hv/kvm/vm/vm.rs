@@ -48,7 +48,7 @@ use crate::hv::kvm::ioctls::{
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::kvm::{kvm_error, KvmError};
 #[cfg(target_arch = "x86_64")]
-use crate::hv::IntxSender;
+use crate::hv::IrqSender;
 use crate::hv::{
     error, Error, IoeventFd, IoeventFdRegistry, IrqFd, MemMapOption, MsiSender, Result, Vm,
     VmMemory,
@@ -249,14 +249,14 @@ impl VmMemory for KvmMemory {
 
 #[cfg(target_arch = "x86_64")]
 #[derive(Debug)]
-pub struct KvmIntxSender {
+pub struct KvmIrqSender {
     pin: u8,
     vm: Arc<VmInner>,
     event_fd: OwnedFd,
 }
 
 #[cfg(target_arch = "x86_64")]
-impl Drop for KvmIntxSender {
+impl Drop for KvmIrqSender {
     fn drop(&mut self) {
         let pin_flag = 1 << (self.pin as u32);
         self.vm.arch.pin_map.fetch_and(!pin_flag, Ordering::AcqRel);
@@ -277,7 +277,7 @@ impl Drop for KvmIntxSender {
 }
 
 #[cfg(target_arch = "x86_64")]
-impl IntxSender for KvmIntxSender {
+impl IrqSender for KvmIrqSender {
     fn send(&self) -> Result<(), Error> {
         ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })
             .context(error::SendInterrupt)?;
@@ -547,7 +547,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 impl Vm for KvmVm {
     type Vcpu = KvmVcpu;
     #[cfg(target_arch = "x86_64")]
-    type IntxSender = KvmIntxSender;
+    type IrqSender = KvmIrqSender;
     type MsiSender = KvmMsiSender;
     type Memory = KvmMemory;
     type IoeventFdRegistry = KvmIoeventFdRegistry;
@@ -581,11 +581,10 @@ impl Vm for KvmVm {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
+    fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error> {
         let pin_flag = 1 << pin;
         if self.vm.arch.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
-            return Err(std::io::ErrorKind::AlreadyExists.into())
-                .context(error::CreateIntx { pin });
+            return Err(std::io::ErrorKind::AlreadyExists.into()).context(error::CreateIrq { pin });
         }
         if self.vm.check_extension(KvmCap::IRQFD)? == 0 {
             return error::Capability {
@@ -594,15 +593,15 @@ impl Vm for KvmVm {
             .fail();
         }
         let event_fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })
-            .context(error::CreateIntx { pin })?;
+            .context(error::CreateIrq { pin })?;
         let request = KvmIrqfd {
             fd: event_fd as u32,
             gsi: pin as u32,
             ..Default::default()
         };
         self.vm.update_routing_table(&self.vm.msi_table.read())?;
-        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::CreateIntx { pin })?;
-        Ok(KvmIntxSender {
+        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::CreateIrq { pin })?;
+        Ok(KvmIrqSender {
             pin,
             vm: self.vm.clone(),
             event_fd: unsafe { OwnedFd::from_raw_fd(event_fd) },

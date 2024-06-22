@@ -83,8 +83,8 @@ pub enum Error {
     IrqFd { error: std::io::Error },
     #[snafu(display("Failed to configure an IoeventFd"))]
     IoeventFd { error: std::io::Error },
-    #[snafu(display("Failed to create an IntxSender for pin {pin}"))]
-    CreateIntx { pin: u8, error: std::io::Error },
+    #[snafu(display("Failed to create an IrqSender for pin {pin}"))]
+    CreateIrq { pin: u8, error: std::io::Error },
     #[snafu(display("Failed to send an interrupt"))]
     SendInterrupt { error: std::io::Error },
     #[snafu(display("Failed to run a VCPU"))]
@@ -151,16 +151,16 @@ pub trait Vcpu {
     fn dump(&self) -> Result<(), Error>;
 }
 
-pub trait IntxSender: Debug + Send + Sync + 'static {
+pub trait IrqSender: Debug + Send + Sync + 'static {
     fn send(&self) -> Result<(), Error>;
 }
 
-impl<T> IntxSender for Arc<T>
+impl<T> IrqSender for Arc<T>
 where
-    T: IntxSender,
+    T: IrqSender,
 {
     fn send(&self) -> Result<(), Error> {
-        IntxSender::send(self.as_ref())
+        IrqSender::send(self.as_ref())
     }
 }
 
@@ -252,12 +252,12 @@ pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
     #[cfg(target_arch = "x86_64")]
-    type IntxSender: IntxSender + Send + Sync;
+    type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
     #[cfg(target_arch = "x86_64")]
-    fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error>;
+    fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(&self) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
