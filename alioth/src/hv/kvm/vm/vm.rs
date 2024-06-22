@@ -54,8 +54,6 @@ use crate::hv::{
     VmMemory,
 };
 
-#[cfg(target_arch = "aarch64")]
-pub use aarch64::VmArch;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::VmArch;
 
@@ -66,6 +64,7 @@ pub(super) struct VmInner {
     pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
     pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
     pub(super) next_msi_gsi: AtomicU32,
+    #[cfg(target_arch = "x86_64")]
     pub(super) arch: VmArch,
 }
 
