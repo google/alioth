@@ -15,7 +15,7 @@
 use std::os::fd::OwnedFd;
 
 use crate::hv::kvm::bindings::KvmVmType;
-use crate::hv::kvm::vm::{KvmVm, VmArch};
+use crate::hv::kvm::vm::KvmVm;
 use crate::hv::kvm::Kvm;
 use crate::hv::{Result, VmConfig};
 
@@ -30,10 +30,6 @@ impl Kvm {
         _vm_fd: &OwnedFd,
     ) -> Result<Option<OwnedFd>> {
         Ok(None)
-    }
-
-    pub(super) fn create_vm_arch(&self, _config: &VmConfig) -> Result<VmArch> {
-        Ok(VmArch {})
     }
 
     pub(super) fn vm_init_arch(&self, _config: &VmConfig, _kvm_vm: &KvmVm) -> Result<()> {

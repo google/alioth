@@ -99,6 +99,7 @@ pub enum KvmError {
 #[derive(Debug)]
 pub struct Kvm {
     fd: OwnedFd,
+    #[cfg(target_arch = "x86_64")]
     config: KvmConfig,
 }
 
@@ -134,7 +135,11 @@ impl Kvm {
         ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) }).context(error::SetupSignal)?;
         ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })
             .context(error::SetupSignal)?;
-        Ok(Kvm { fd: kvm_fd, config })
+        Ok(Kvm {
+            fd: kvm_fd,
+            #[cfg(target_arch = "x86_64")]
+            config,
+        })
     }
 }
 
@@ -147,6 +152,7 @@ impl Hypervisor for Kvm {
         let kvm_vm_type = Self::determine_vm_type(config)?;
         let vm_fd = unsafe { kvm_create_vm(&self.fd, kvm_vm_type) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
+        #[cfg(target_arch = "x86_64")]
         let kvm_vm_arch = self.create_vm_arch(config)?;
         let memfd = self.create_guest_memfd(config, &fd)?;
         let kvm_vm = KvmVm {
@@ -156,6 +162,7 @@ impl Hypervisor for Kvm {
                 ioeventfds: Mutex::new(HashMap::new()),
                 msi_table: RwLock::new(HashMap::new()),
                 next_msi_gsi: AtomicU32::new(0),
+                #[cfg(target_arch = "x86_64")]
                 arch: kvm_vm_arch,
             }),
             vcpu_mmap_size,
