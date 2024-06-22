@@ -239,7 +239,6 @@ where
                     self.memory.add_io_dev(Some(*port), dev.clone())?;
                 }
                 self.add_pci_devs()?;
-                self.arch_init()?;
                 let init_state = self.load_payload()?;
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
