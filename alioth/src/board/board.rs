@@ -306,6 +306,8 @@ where
                 Ok(STATE_REBOOT_PENDING) | Err(STATE_RUNNING) => {}
                 _ => break Ok(()),
             }
+
+            self.reset_vcpu(id, &mut vcpu)?;
         }
     }
 

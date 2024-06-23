@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::kvm::bindings::{KvmExitIo, KvmMapGpaRangeFlag, KVM_HC_MAP_GPA_RANGE};
+use crate::hv::kvm::bindings::{
+    KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent, KVM_HC_MAP_GPA_RANGE,
+};
 use crate::hv::{Error, VmExit};
 
 use super::vcpu::KvmVcpu;
@@ -73,6 +75,15 @@ impl KvmVcpu {
                 })
             }
             _ => unimplemented!(),
+        }
+    }
+
+    pub(super) fn handle_system_event(&mut self) -> Result<VmExit, Error> {
+        let kvm_system_event = unsafe { &self.kvm_run.exit.system_event };
+        match kvm_system_event.type_ {
+            KvmSystemEvent::SHUTDOWN => Ok(VmExit::Shutdown),
+            KvmSystemEvent::RESET => Ok(VmExit::Reboot),
+            _ => Ok(VmExit::Unknown(format!("{kvm_system_event:#x?}",))),
         }
     }
 }
