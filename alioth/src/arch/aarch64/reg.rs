@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::c_enum;
+use bitfield::bitfield;
 use bitflags::bitflags;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -58,8 +59,12 @@ pub const fn encode(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
 }
 
 c_enum! {
+    /// https://developer.arm.com/documentation/ddi0601/2020-12/Index-by-Encoding
     pub struct SReg(u16);
     {
+        /// Exception Syndrome Register (EL2)
+        ESR_EL2 = encode(3, 4, 5, 2, 0);
+        /// Multiprocessor Affinity Register
         MPIDR_EL1 = encode(3, 0, 0, 0, 5);
     }
 }
@@ -94,4 +99,18 @@ bitflags! {
         const EL_BIT2 = 1 << 2;
         const EL_H = 1 << 0;
     }
+}
+
+bitfield! {
+    /// Exception Syndrome Register (EL2)
+    ///
+    /// https://developer.arm.com/documentation/ddi0595/2020-12/AArch64-Registers/ESR-EL2--Exception-Syndrome-Register--EL2-
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct EsrEl2(u64);
+    impl Debug;
+    pub iss2, _: 36, 32;
+    pub ec, _: 31, 26;
+    pub il, _: 25;
+    pub iss, _: 24, 0;
 }

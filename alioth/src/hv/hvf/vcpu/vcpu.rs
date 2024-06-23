@@ -13,10 +13,24 @@
 // limitations under the License.
 
 use crate::arch::reg::{Reg, SReg};
+use crate::hv::hvf::bindings::{hv_vcpu_destroy, HvVcpuExit};
+use crate::hv::hvf::check_ret;
 use crate::hv::{Result, Vcpu, VmEntry, VmExit};
 
 #[derive(Debug)]
-pub struct HvfVcpu {}
+pub struct HvfVcpu {
+    pub exit: *mut HvVcpuExit,
+    pub vcpu_id: u64,
+}
+
+impl Drop for HvfVcpu {
+    fn drop(&mut self) {
+        let ret = unsafe { hv_vcpu_destroy(self.vcpu_id) };
+        if let Err(e) = check_ret(ret) {
+            log::error!("hv_vcpu_destroy: {e:?}");
+        }
+    }
+}
 
 impl Vcpu for HvfVcpu {
     fn reset(&self, _is_bsp: bool) -> Result<()> {

@@ -12,15 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::os::fd::{AsFd, BorrowedFd};
+use std::ptr::null_mut;
 use std::thread::JoinHandle;
 
-use crate::hv::hvf::bindings::hv_vm_destroy;
+use parking_lot::Mutex;
+use snafu::ResultExt;
+
+use crate::hv::hvf::bindings::{hv_vcpu_create, hv_vm_destroy};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
-    GicV2, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result, Vm,
-    VmMemory,
+    error, GicV2, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result,
+    Vm, VmMemory,
 };
 
 #[derive(Debug)]
@@ -173,7 +178,9 @@ impl GicV2 for HvfGicV2 {
 }
 
 #[derive(Debug)]
-pub struct HvfVm {}
+pub struct HvfVm {
+    pub(super) vcpus: Mutex<HashMap<u32, u64>>,
+}
 
 impl Drop for HvfVm {
     fn drop(&mut self) {
@@ -195,8 +202,13 @@ impl Vm for HvfVm {
     fn create_msi_sender(&self) -> Result<Self::MsiSender> {
         unimplemented!()
     }
-    fn create_vcpu(&self, _id: u32) -> Result<Self::Vcpu> {
-        unimplemented!()
+    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
+        let mut exit = null_mut();
+        let mut vcpu_id = 0;
+        let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
+        check_ret(ret).context(error::CreateVcpu)?;
+        self.vcpus.lock().insert(id, vcpu_id);
+        Ok(HvfVcpu { exit, vcpu_id })
     }
     fn create_vm_memory(&mut self) -> Result<Self::Memory> {
         unimplemented!()
