@@ -20,7 +20,9 @@ use std::thread::JoinHandle;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::hv::hvf::bindings::{hv_vcpu_create, hv_vm_destroy};
+use crate::hv::hvf::bindings::{
+    hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap, HvMemoryFlag,
+};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
@@ -36,25 +38,42 @@ impl VmMemory for HvfMemory {
         unimplemented!()
     }
     fn max_mem_slots(&self) -> Result<u32> {
-        unimplemented!()
+        error::Capability { cap: "MaxMemSlots" }.fail()
     }
     fn mem_map(
         &self,
         _slot: u32,
-        _gpa: u64,
-        _size: u64,
-        _hva: usize,
-        _option: MemMapOption,
+        gpa: u64,
+        size: u64,
+        hva: usize,
+        option: MemMapOption,
     ) -> Result<()> {
-        unimplemented!()
+        if option.log_dirty {
+            return error::Capability { cap: "log dirty" }.fail();
+        }
+        let mut flags = HvMemoryFlag::empty();
+        if option.read {
+            flags |= HvMemoryFlag::READ;
+        }
+        if option.write {
+            flags |= HvMemoryFlag::WRITE;
+        }
+        if option.exec {
+            flags |= HvMemoryFlag::EXEC;
+        }
+        let ret = unsafe { hv_vm_map(hva as *const u8, gpa, size as usize, flags) };
+        check_ret(ret).context(error::GuestMap { hva, gpa, size })?;
+        Ok(())
     }
 
     fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
         unimplemented!()
     }
 
-    fn unmap(&self, _slot: u32, _gpa: u64, _size: u64) -> Result<()> {
-        unimplemented!()
+    fn unmap(&self, _slot: u32, gpa: u64, size: u64) -> Result<()> {
+        let ret = unsafe { hv_vm_unmap(gpa, size as usize) };
+        check_ret(ret).context(error::GuestUnmap { gpa, size })?;
+        Ok(())
     }
 
     fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
