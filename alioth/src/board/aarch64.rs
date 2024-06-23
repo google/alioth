@@ -72,6 +72,11 @@ where
         Ok(())
     }
 
+    pub fn reset_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
+        vcpu.reset(id == 0)?;
+        Ok(())
+    }
+
     pub fn create_ram(&self) -> Result<()> {
         let mem_size = self.config.mem_size;
         let memory = &self.memory;

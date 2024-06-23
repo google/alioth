@@ -229,7 +229,23 @@ c_enum! {
         HYPERCALL = 3;
         MMIO = 6;
         SHUTDOWN = 8;
+        SYSTEM_EVENT = 24;
     }
+}
+
+c_enum! {
+    pub struct KvmSystemEvent(u32);
+    {
+        SHUTDOWN = 1;
+        RESET = 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvmRunExitSystemEvent {
+    pub type_: KvmSystemEvent,
+    pub flags: u64,
 }
 
 #[repr(C)]
@@ -255,6 +271,7 @@ pub union KvmRunExit {
     pub mmio: KvmRunExitMmio,
     pub io: KvmRunExitIo,
     pub hypercall: KvmRunExitHypercall,
+    pub system_event: KvmRunExitSystemEvent,
     pub padding: [u8; 256],
 }
 

@@ -227,6 +227,10 @@ where
         Ok(())
     }
 
+    pub fn reset_vcpu(&self, _id: u32, _vcpu: &mut V::Vcpu) -> Result<()> {
+        Ok(())
+    }
+
     pub fn create_ram(&self) -> Result<()> {
         let config = &self.config;
         let memory = &self.memory;
