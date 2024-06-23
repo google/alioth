@@ -12,8 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::os::raw::c_void;
+
+use crate::arch::reg::EsrEl2;
+use crate::c_enum;
+
+c_enum! {
+    #[derive(Default)]
+    pub struct HvExitReason(u32);
+    {
+        CANCEL = 0;
+        EXCEPTION = 1;
+        VTIMER_ACTIVATED = 2;
+        UNKNOWN = 3;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct HvVcpuExitException {
+    pub syndrome: EsrEl2,
+    pub virtual_address: u64,
+    pub physical_address: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct HvVcpuExit {
+    pub reason: HvExitReason,
+    pub exception: HvVcpuExitException,
+}
+
 #[link(name = "Hypervisor", kind = "framework")]
 extern "C" {
     pub fn hv_vm_create(config: *mut i32) -> i32;
     pub fn hv_vm_destroy() -> i32;
+    pub fn hv_vcpu_create(vcpu: &mut u64, exit: &mut *mut HvVcpuExit, config: *mut c_void) -> i32;
+    pub fn hv_vcpu_destroy(vcpu: u64) -> i32;
 }

@@ -105,7 +105,7 @@ macro_rules! c_enum {
         $(#[$attr:meta])*
         $vs:vis struct $EnumName:ident($TyName:ty);
         {
-            $($VARIANT:ident = $value:expr;)*
+            $( $(#[$vattr:meta])* $VARIANT:ident = $value:expr;)*
         }
     ) => {
         #[repr(transparent)]
@@ -114,7 +114,7 @@ macro_rules! c_enum {
         $vs struct $EnumName($TyName);
 
         impl $EnumName {
-            $(pub const $VARIANT: $EnumName = $EnumName($value);)*
+            $($(#[$vattr])* pub const $VARIANT: $EnumName = $EnumName($value);)*
 
             pub const fn raw(self) -> $TyName {
                 self.0

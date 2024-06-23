@@ -17,10 +17,12 @@ mod bindings;
 mod vcpu;
 mod vm;
 
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::ptr::null_mut;
 
 use bindings::hv_vm_create;
+use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::hv::{error, Hypervisor, Result, VmConfig};
@@ -61,6 +63,8 @@ impl Hypervisor for Hvf {
     fn create_vm(&self, _config: &VmConfig) -> Result<Self::Vm> {
         let ret = unsafe { hv_vm_create(null_mut()) };
         check_ret(ret).context(error::CreateVm)?;
-        Ok(HvfVm {})
+        Ok(HvfVm {
+            vcpus: Mutex::new(HashMap::new()),
+        })
     }
 }
