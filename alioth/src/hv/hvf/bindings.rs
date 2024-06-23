@@ -14,6 +14,8 @@
 
 use std::os::raw::c_void;
 
+use bitflags::bitflags;
+
 use crate::arch::reg::EsrEl2;
 use crate::c_enum;
 
@@ -43,10 +45,22 @@ pub struct HvVcpuExit {
     pub exception: HvVcpuExitException,
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    #[repr(transparent)]
+    pub struct HvMemoryFlag: u64 {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const EXEC = 1 << 2;
+    }
+}
+
 #[link(name = "Hypervisor", kind = "framework")]
 extern "C" {
     pub fn hv_vm_create(config: *mut i32) -> i32;
     pub fn hv_vm_destroy() -> i32;
     pub fn hv_vcpu_create(vcpu: &mut u64, exit: &mut *mut HvVcpuExit, config: *mut c_void) -> i32;
     pub fn hv_vcpu_destroy(vcpu: u64) -> i32;
+    pub fn hv_vm_map(addr: *const u8, ipa: u64, size: usize, flags: HvMemoryFlag) -> i32;
+    pub fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
 }
