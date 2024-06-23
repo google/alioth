@@ -33,7 +33,9 @@ use crate::loader::xen;
 use crate::loader::{self, firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
-use crate::pci::bus::{PciBus, CONFIG_ADDRESS};
+use crate::pci::bus::PciBus;
+#[cfg(target_arch = "x86_64")]
+use crate::pci::bus::CONFIG_ADDRESS;
 use crate::pci::config::Command;
 use crate::pci::{self, PciBar, PciDevice};
 
@@ -140,6 +142,7 @@ where
     }
 
     fn add_pci_devs(&self) -> Result<()> {
+        #[cfg(target_arch = "x86_64")]
         self.memory
             .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
         self.memory.add_region(
