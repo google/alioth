@@ -15,6 +15,8 @@
 use std::os::fd::{AsFd, BorrowedFd};
 use std::thread::JoinHandle;
 
+use crate::hv::hvf::bindings::hv_vm_destroy;
+use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
     GicV2, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result, Vm,
@@ -172,6 +174,15 @@ impl GicV2 for HvfGicV2 {
 
 #[derive(Debug)]
 pub struct HvfVm {}
+
+impl Drop for HvfVm {
+    fn drop(&mut self) {
+        let ret = unsafe { hv_vm_destroy() };
+        if let Err(e) = check_ret(ret) {
+            log::error!("hv_vm_destroy: {e:?}");
+        }
+    }
+}
 
 impl Vm for HvfVm {
     type Vcpu = HvfVcpu;
