@@ -62,24 +62,20 @@ enum Command {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[cfg_attr(target_os = "macos", derive(Default))]
 enum Hypervisor {
     #[cfg(target_os = "linux")]
     #[serde(alias = "kvm")]
     Kvm(KvmConfig),
     #[cfg(target_os = "macos")]
+    #[default]
     Hvf,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for Hypervisor {
     fn default() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            Hypervisor::Kvm(KvmConfig::default())
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Hypervisor::Hvf
-        }
+        Hypervisor::Kvm(KvmConfig::default())
     }
 }
 
