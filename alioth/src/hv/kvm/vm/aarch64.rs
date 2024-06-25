@@ -12,87 +12,64 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::MaybeUninit;
-use std::os::fd::{FromRawFd, OwnedFd};
-
-use snafu::ResultExt;
-
 use crate::hv::kvm::bindings::{
-    KvmCreateDevice, KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmDeviceAttr,
-    KvmVgicV2AddrType,
+    KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicV2AddrType,
 };
-use crate::hv::kvm::ioctls::{kvm_create_device, kvm_get_device_attr, kvm_set_device_attr};
+use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
 use crate::hv::kvm::Result;
-use crate::hv::{error, GicV2};
+use crate::hv::GicV2;
 
 #[derive(Debug)]
 pub struct KvmGicV2 {
-    fd: OwnedFd,
-}
-
-impl KvmGicV2 {
-    fn set_attr<T>(&self, group: u32, attr: u64, val: &T) -> Result<()> {
-        let attr = KvmDeviceAttr {
-            group,
-            attr,
-            addr: val as *const _ as _,
-            _flags: 0,
-        };
-        unsafe { kvm_set_device_attr(&self.fd, &attr) }.context(error::SetVmParam)?;
-        Ok(())
-    }
-
-    fn get_attr<T>(&self, group: u32, attr: u64) -> Result<T> {
-        let mut val = MaybeUninit::uninit();
-        let attr = KvmDeviceAttr {
-            group,
-            attr,
-            addr: val.as_mut_ptr() as _,
-            _flags: 0,
-        };
-        unsafe { kvm_get_device_attr(&self.fd, &attr) }.context(error::SetVmParam)?;
-        Ok(unsafe { val.assume_init() })
-    }
+    dev: KvmDevice,
 }
 
 impl GicV2 for KvmGicV2 {
     fn init(&self) -> Result<()> {
-        let attr = KvmDeviceAttr {
-            group: KvmDevArmVgicGrp::CTL.raw(),
-            attr: KvmDevArmVgicCtrl::INIT.raw(),
-            addr: 0,
-            _flags: 0,
-        };
-        unsafe { kvm_set_device_attr(&self.fd, &attr) }.context(error::SetVmParam)?;
+        self.dev.set_attr(
+            KvmDevArmVgicGrp::CTL.raw(),
+            KvmDevArmVgicCtrl::INIT.raw(),
+            &(),
+        )?;
         Ok(())
     }
 
     fn get_dist_reg(&self, cpu_index: u32, offset: u16) -> Result<u32> {
         let attr = (cpu_index as u64) << 32 | (offset as u64);
-        self.get_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr)
+        let v = self.dev.get_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr)?;
+        Ok(v)
     }
 
     fn set_dist_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()> {
         let attr = (cpu_index as u64) << 32 | (offset as u64);
-        self.set_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr, &val)
+        self.dev
+            .set_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr, &val)?;
+        Ok(())
     }
 
     fn get_cpu_reg(&self, cpu_index: u32, offset: u16) -> Result<u32> {
         let attr = (cpu_index as u64) << 32 | (offset as u64);
-        self.get_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr)
+        let v = self.dev.get_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr)?;
+        Ok(v)
     }
+
     fn set_cpu_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()> {
         let attr = (cpu_index as u64) << 32 | (offset as u64);
-        self.set_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr, &val)
+        self.dev
+            .set_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr, &val)?;
+        Ok(())
     }
 
     fn get_num_irqs(&self) -> Result<u32> {
-        self.get_attr(KvmDevArmVgicGrp::NR_IRQS.raw(), 0)
+        let n = self.dev.get_attr(KvmDevArmVgicGrp::NR_IRQS.raw(), 0)?;
+        Ok(n)
     }
 
     fn set_num_irqs(&self, val: u32) -> Result<()> {
-        self.set_attr(KvmDevArmVgicGrp::NR_IRQS.raw(), 0, &val)
+        self.dev
+            .set_attr(KvmDevArmVgicGrp::NR_IRQS.raw(), 0, &val)?;
+        Ok(())
     }
 }
 
@@ -102,21 +79,14 @@ impl KvmVm {
         distributor_base: u64,
         cpu_interface_base: u64,
     ) -> Result<KvmGicV2> {
-        let mut create_device = KvmCreateDevice {
-            type_: KvmDevType::ARM_VGIC_V2,
-            fd: 0,
-            flags: 0,
-        };
-        unsafe { kvm_create_device(&self.vm, &mut create_device) }.context(error::CreateDevice)?;
-        let gic = KvmGicV2 {
-            fd: unsafe { OwnedFd::from_raw_fd(create_device.fd) },
-        };
-        gic.set_attr(
+        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_VGIC_V2)?;
+        let gic = KvmGicV2 { dev };
+        gic.dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
             KvmVgicV2AddrType::DIST.raw(),
             &distributor_base,
         )?;
-        gic.set_attr(
+        gic.dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
             KvmVgicV2AddrType::CPU.raw(),
             &cpu_interface_base,

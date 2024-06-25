@@ -18,6 +18,8 @@ mod aarch64;
 mod x86_64;
 
 mod bindings;
+#[cfg(target_arch = "aarch64")]
+mod device;
 mod ioctls;
 #[path = "sev/sev.rs"]
 mod sev;
@@ -48,6 +50,8 @@ use crate::ffi;
 use crate::hv::Cpuid;
 use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
 
+#[cfg(target_arch = "aarch64")]
+use bindings::KvmDevType;
 use bindings::KVM_API_VERSION;
 #[cfg(target_arch = "x86_64")]
 use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_MAX_CPUID_ENTRIES};
@@ -94,6 +98,15 @@ pub enum KvmError {
     },
     #[snafu(display("Failed to create guest memfd"))]
     GuestMemfd { error: std::io::Error },
+    #[cfg(target_arch = "aarch64")]
+    #[snafu(display("Failed to create in-kernel device {type_:?}"))]
+    CreateDevice {
+        type_: KvmDevType,
+        error: std::io::Error,
+    },
+    #[cfg(target_arch = "aarch64")]
+    #[snafu(display("Failed to configure device attributes"))]
+    DeviceAttr { error: std::io::Error },
 }
 
 #[derive(Debug)]
