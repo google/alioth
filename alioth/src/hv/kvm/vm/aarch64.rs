@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{
-    KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicV2AddrType,
+    KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
 };
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
 use crate::hv::kvm::Result;
-use crate::hv::GicV2;
+use crate::hv::{GicV2, GicV3, Its};
 
 #[derive(Debug)]
 pub struct KvmGicV2 {
@@ -83,14 +83,82 @@ impl KvmVm {
         let gic = KvmGicV2 { dev };
         gic.dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
-            KvmVgicV2AddrType::DIST.raw(),
+            KvmVgicAddrType::DIST_V2.raw(),
             &distributor_base,
         )?;
         gic.dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
-            KvmVgicV2AddrType::CPU.raw(),
+            KvmVgicAddrType::CPU_V2.raw(),
             &cpu_interface_base,
         )?;
         Ok(gic)
+    }
+}
+
+#[derive(Debug)]
+pub struct KvmGicV3 {
+    dev: KvmDevice,
+}
+
+impl GicV3 for KvmGicV3 {
+    fn init(&self) -> Result<()> {
+        self.dev.set_attr(
+            KvmDevArmVgicGrp::CTL.raw(),
+            KvmDevArmVgicCtrl::INIT.raw(),
+            &(),
+        )?;
+        Ok(())
+    }
+}
+
+impl KvmVm {
+    pub fn kvm_create_gic_v3(
+        &self,
+        distributor_base: u64,
+        redistributor_base: u64,
+        redistributor_count: u32,
+    ) -> Result<KvmGicV3> {
+        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_VGIC_V3)?;
+        dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::DIST_V3.raw(),
+            &distributor_base,
+        )?;
+        let mut redist_region = KvmVgicV3RedistRegion(redistributor_base);
+        redist_region.set_count(redistributor_count as u64);
+        dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::REDIST_REGION_V3.raw(),
+            &redist_region,
+        )?;
+        Ok(KvmGicV3 { dev })
+    }
+}
+
+#[derive(Debug)]
+pub struct KvmIts {
+    dev: KvmDevice,
+}
+
+impl Its for KvmIts {
+    fn init(&self) -> Result<()> {
+        self.dev.set_attr(
+            KvmDevArmVgicGrp::CTL.raw(),
+            KvmDevArmVgicCtrl::INIT.raw(),
+            &(),
+        )?;
+        Ok(())
+    }
+}
+
+impl KvmVm {
+    pub fn kvm_create_its(&self, base: u64) -> Result<KvmIts> {
+        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_ITS)?;
+        dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::ITS.raw(),
+            &base,
+        )?;
+        Ok(KvmIts { dev })
     }
 }

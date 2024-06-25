@@ -663,6 +663,25 @@ impl Vm for KvmVm {
     fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2> {
         self.kvm_create_gic_v2(distributor_base, cpu_interface_base)
     }
+
+    #[cfg(target_arch = "aarch64")]
+    type GicV3 = aarch64::KvmGicV3;
+    #[cfg(target_arch = "aarch64")]
+    fn create_gic_v3(
+        &self,
+        distributor_base: u64,
+        redistributor_base: u64,
+        redistributor_count: u32,
+    ) -> Result<Self::GicV3> {
+        self.kvm_create_gic_v3(distributor_base, redistributor_base, redistributor_count)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    type Its = aarch64::KvmIts;
+    #[cfg(target_arch = "aarch64")]
+    fn create_its(&self, base: u64) -> Result<Self::Its> {
+        self.kvm_create_its(base)
+    }
 }
 
 #[cfg(test)]

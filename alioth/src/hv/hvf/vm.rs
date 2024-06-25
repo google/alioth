@@ -26,8 +26,8 @@ use crate::hv::hvf::bindings::{
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
-    error, GicV2, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result,
-    Vm, VmMemory,
+    error, GicV2, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
+    MsiSender, Result, Vm, VmMemory,
 };
 
 #[derive(Debug)]
@@ -197,6 +197,24 @@ impl GicV2 for HvfGicV2 {
 }
 
 #[derive(Debug)]
+pub struct HvfGicV3;
+
+impl GicV3 for HvfGicV3 {
+    fn init(&self) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+#[derive(Debug)]
+pub struct HvfIts;
+
+impl Its for HvfIts {
+    fn init(&self) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+#[derive(Debug)]
 pub struct HvfVm {
     pub(super) vcpus: Mutex<HashMap<u32, u64>>,
 }
@@ -248,6 +266,19 @@ impl Vm for HvfVm {
 
     type IrqSender = HvfIrqSender;
     fn create_irq_sender(&self, _pin: u8) -> Result<Self::IrqSender> {
+        unimplemented!()
+    }
+    type GicV3 = HvfGicV3;
+    fn create_gic_v3(
+        &self,
+        _distributor_base: u64,
+        _redistributor_base: u64,
+        _redistributor_count: u32,
+    ) -> Result<Self::GicV3> {
+        unimplemented!()
+    }
+    type Its = HvfIts;
+    fn create_its(&self, _base: u64) -> Result<Self::Its> {
         unimplemented!()
     }
 }

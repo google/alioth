@@ -233,6 +233,16 @@ pub trait GicV2: Debug + Send + Sync + 'static {
     fn set_num_irqs(&self, val: u32) -> Result<()>;
 }
 
+#[cfg(target_arch = "aarch64")]
+pub trait GicV3: Debug + Send + Sync + 'static {
+    fn init(&self) -> Result<()>;
+}
+
+#[cfg(target_arch = "aarch64")]
+pub trait Its: Debug + Send + Sync + 'static {
+    fn init(&self) -> Result<()>;
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub enum Coco {
     #[cfg(target_arch = "x86_64")]
@@ -289,6 +299,21 @@ pub trait Vm {
     type GicV2: GicV2;
     #[cfg(target_arch = "aarch64")]
     fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2>;
+
+    #[cfg(target_arch = "aarch64")]
+    type GicV3: GicV3;
+    #[cfg(target_arch = "aarch64")]
+    fn create_gic_v3(
+        &self,
+        distributor_base: u64,
+        redistributor_base: u64,
+        redistributor_count: u32,
+    ) -> Result<Self::GicV3>;
+
+    #[cfg(target_arch = "aarch64")]
+    type Its: Its;
+    #[cfg(target_arch = "aarch64")]
+    fn create_its(&self, base: u64) -> Result<Self::Its>;
 }
 
 pub trait Hypervisor {
