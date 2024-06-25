@@ -14,6 +14,8 @@
 
 use std::fmt::{Debug, Formatter, Result};
 
+#[cfg(target_arch = "aarch64")]
+use bitfield::bitfield;
 use bitflags::bitflags;
 
 use crate::c_enum;
@@ -530,6 +532,8 @@ c_enum! {
     pub struct KvmDevType(u32);
     {
         ARM_VGIC_V2 = 5;
+        ARM_VGIC_V3 = 7;
+        ARM_ITS = 8;
     }
 }
 
@@ -542,15 +546,21 @@ c_enum! {
         CPU_REGS = 2;
         NR_IRQS = 3;
         CTL = 4;
+        REDIS_REG = 5;
+        CPU_SYSREGS = 6;
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 c_enum! {
-    pub struct KvmVgicV2AddrType(u64);
+    pub struct KvmVgicAddrType(u64);
     {
-        DIST = 0;
-        CPU = 1;
+        DIST_V2 = 0;
+        CPU_V2 = 1;
+        DIST_V3 = 2;
+        REDIST_V3 = 3;
+        ITS = 4;
+        REDIST_REGION_V3 = 5;
     }
 }
 
@@ -559,7 +569,22 @@ c_enum! {
     pub struct KvmDevArmVgicCtrl(u64);
     {
         INIT = 0;
+        ITS_SAVE_TABLES = 1;
+        ITS_RESTORE_TABLES = 2;
+        VGIC_SAVE_PENDING_TABLES = 3;
+        ITS_RESET = 4;
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct KvmVgicV3RedistRegion(u64);
+    impl Debug;
+    pub count, set_count: 63, 52;
+    pub base, set_base: 51, 16;
+    pub index, set_index: 11, 0;
 }
 
 #[cfg(target_arch = "aarch64")]
