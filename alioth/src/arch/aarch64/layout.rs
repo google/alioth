@@ -17,6 +17,9 @@ pub const MMIO_32_START: u64 = 0x1000_0000; // 256 MiB
 pub const GIC_V2_DIST_START: u64 = 0x1000_0000; // size 4 KiB
 pub const GIC_V2_CPU_INTERFACE_START: u64 = 0x1000_1000; // size 8 KiB
 
+pub const GIC_V3_DIST_START: u64 = 0x1000_0000; // size 64 KiB
+pub const GIC_V3_REDIST_START: u64 = 0x1001_0000; // size 64 KiB * 2 * num_cpu
+
 pub const PL011_START: u64 = 0x2fff_f000;
 
 pub const MMIO_32_END: u64 = 0x3000_0000; // 768 MiB, size = 512 MiB

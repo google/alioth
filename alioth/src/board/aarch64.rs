@@ -19,21 +19,29 @@ use parking_lot::Mutex;
 
 use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START,
-    MEM_64_START, PL011_START, RAM_32_SIZE, RAM_32_START,
+    GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PL011_START, RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::SReg;
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
-use crate::hv::{GicV2, Hypervisor, Vcpu, Vm};
+use crate::hv::{GicV2, GicV3, Hypervisor, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegion, MemRegionType};
+
+enum Gic<V>
+where
+    V: Vm,
+{
+    V2(V::GicV2),
+    V3(V::GicV3),
+}
 
 pub struct ArchBoard<V>
 where
     V: Vm,
 {
-    gic_v2: V::GicV2,
+    gic: Gic<V>,
     mpidrs: Mutex<Vec<u64>>,
 }
 
@@ -42,9 +50,16 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let gic_v2 = vm.create_gic_v2(GIC_V2_DIST_START, GIC_V2_CPU_INTERFACE_START)?;
+        let ret = vm.create_gic_v3(GIC_V3_DIST_START, GIC_V3_REDIST_START, config.num_cpu);
+        let gic = match ret {
+            Ok(v3) => Gic::V3(v3),
+            Err(e) => {
+                log::error!("Cannot create gic v3: {e:?}trying v2...");
+                Gic::V2(vm.create_gic_v2(GIC_V2_DIST_START, GIC_V2_CPU_INTERFACE_START)?)
+            }
+        };
         let mpidrs = Mutex::new(vec![u64::MAX; config.num_cpu as usize]);
-        Ok(ArchBoard { gic_v2, mpidrs })
+        Ok(ArchBoard { gic, mpidrs })
     }
 }
 
@@ -116,7 +131,10 @@ where
     }
 
     pub fn arch_init(&self) -> Result<()> {
-        self.arch.gic_v2.init()?;
+        match &self.arch.gic {
+            Gic::V2(v2) => v2.init(),
+            Gic::V3(v3) => v3.init(),
+        }?;
         Ok(())
     }
 
@@ -267,7 +285,10 @@ where
         let irq_pins = [13, 14, 11, 10];
         let ppi = 1;
         let level_trigger = 4;
-        let cpu_mask = (1 << self.config.num_cpu) - 1;
+        let cpu_mask = match self.arch.gic {
+            Gic::V2(_) => (1 << self.config.num_cpu) - 1,
+            Gic::V3(_) => 0,
+        };
         for pin in irq_pins {
             interrupts.extend([ppi, pin, cpu_mask << 8 | level_trigger]);
         }
@@ -306,6 +327,32 @@ where
             .insert(format!("intc@{GIC_V2_DIST_START:x}"), node);
     }
 
+    fn create_gicv3_node(&self, root: &mut Node) {
+        let node = Node {
+            props: HashMap::from([
+                ("compatible", PropVal::Str("arm,gic-v3")),
+                ("#interrupt-cells", PropVal::U32(3)),
+                ("#address-cells", PropVal::U32(2)),
+                ("#size-cells", PropVal::U32(2)),
+                ("interrupt-controller", PropVal::Empty),
+                (
+                    "reg",
+                    PropVal::U64List(vec![
+                        GIC_V3_DIST_START,
+                        64 << 10,
+                        GIC_V3_REDIST_START,
+                        self.config.num_cpu as u64 * (128 << 10),
+                    ]),
+                ),
+                ("phandle", PropVal::U32(PHANDLE_GIC)),
+            ]),
+            nodes: HashMap::new(),
+        };
+
+        root.nodes
+            .insert(format!("intc@{GIC_V3_DIST_START:x}"), node);
+    }
+
     // Documentation/devicetree/bindings/arm/psci.yaml
     fn create_psci_node(&self, root: &mut Node) {
         let node = Node {
@@ -333,7 +380,10 @@ where
         self.create_pl011_node(root);
         self.create_memory_node(root);
         self.create_cpu_nodes(root);
-        self.create_gicv2_node(root);
+        match self.arch.gic {
+            Gic::V2(_) => self.create_gicv2_node(root),
+            Gic::V3(_) => self.create_gicv3_node(root),
+        }
         self.create_clock_node(root);
         self.create_timer_node(root);
         self.create_psci_node(root);
