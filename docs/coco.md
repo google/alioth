@@ -1,13 +1,17 @@
 # Confidential Compute (coco)
 
-Alioth supports booting confidential guests on the following platforms:
+Alioth supports booting confidential guests on the following platforms,
 
 - AMD-SEV [^sev]
 
-## AMD-SEV guest with Oak/Stage0 firmware
+  The implementation takes QEMU [^qemu] as a reference.
 
-WARNING: the current implementation takes QEMU [^qemu] as a reference and should
-be used in testing environments only.
+> [!IMPORTANT]
+>
+> Alioth confidential VMs should be used in testing environments only since the
+> code base has not gone through any serious security reviews.
+
+## AMD-SEV guest with Oak/Stage0 firmware
 
 To launch an SEV guest,
 
@@ -16,6 +20,7 @@ To launch an SEV guest,
    command line in a text file,
 3. for SEV guests, `POLICY=0x1`, for SEV-ES guests, `POLICY=0x5`,
 4. launch the guest by
+
    ```bash
    ./alioth run -f /path/to/oak_stage0.bin \
        --mem-size 1G \
@@ -25,6 +30,21 @@ To launch an SEV guest,
        --fw-cfg name=opt/stage0/cmdline,file=/path/to/cmdline.txt \
        --coco sev,policy=$POLICY
    ```
+
+To launch an SEV-SNP guest, pass `--coco snp,policy=0x30000` instead.
+
+> [!NOTE]
+>
+> An SEV-SNP guest needs the host KVM to support `KVM_X86_SNP_VM`, which is
+> scheduled to be merged into Linux 6.11.
+
+As of 2024-06-25, to try out SEV-SNP with a bleeding edge host Linux kernel,
+
+- checkout the branch `kvm-coco-queue` of the
+  [Linux KVM tree](https://git.kernel.org/pub/scm/virt/kvm/kvm.git/),
+- merge the branch `snp-host-latest` of
+  [AMDESE/linux](https://github.com/AMDESE/linux),
+- build and install the kernel on the test machine.
 
 [^sev]:
     [AMD Secure Encrypted Virtualization (SEV)](https://www.amd.com/en/developer/sev.html)
