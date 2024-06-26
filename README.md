@@ -42,7 +42,7 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
   [coco.md](docs/coco.md) for details.
 - VirtIO devices
   - `net` backed by a tap device,
-  - `vsock` backed by host `/dev/vsock`,
+  - `vsock` backed by host `/dev/vhost-vsock`,
   - `blk` backed by a raw-formatted image,
   - `entropy` backed by host `/dev/uramdom`,
   - `fs` backed by [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) with
