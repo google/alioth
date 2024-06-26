@@ -1,34 +1,83 @@
 # Alioth
 
-Alioth is a toy virtual machine monitor based on KVM. Complementary to the
-official tutorial [Using the KVM API](https://lwn.net/Articles/658511/), it demonstrates
-detailed steps for building a type-2 hypervisor and booting a Linux guest kernel.
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/google/alioth/rust.yml)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/google/alioth)
+![Crates.io Version](https://img.shields.io/crates/v/alioth)
+![Crates.io License](https://img.shields.io/crates/l/alioth)
 
-## Get started
+Alioth is an experimental [KVM](https://docs.kernel.org/virt/kvm/api.html)-based
+type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 
-* Build Alioth from source,
+> [!IMPORTANT]
+>
+> Disclaimer: Alioth is not an officially supported Google product.
 
-    ```sh
-    cargo build --release --target x86_64-unknown-linux-gnu
-    ```
+## Quick start
 
-* Make an initramfs with [u-root](https://github.com/u-root/u-root?tab=readme-ov-file#examples),
-
-* Boot a Linux kernel with 2 CPUs and 4 GiB memory:
+- Install Alioth from source,
 
   ```sh
-  cargo run --release --target x86_64-unknown-linux-gnu -- \
-      -l info \
-      --log-to-file \
+  cargo install alioth-cli --git https://github.com/google/alioth.git
+  ```
+
+- Make an initramfs with
+  [u-root](https://github.com/u-root/u-root?tab=readme-ov-file#examples).
+
+- Boot a Linux kernel with 2 CPUs and 4 GiB memory,
+
+  ```sh
+  alioth -l info --log-to-file \
       run \
       --kernel /path/to/vmlinuz \
       --cmd-line "console=ttyS0" \
       --initramfs /path/to/initramfs \
       --mem-size 4G \
-      --num-cpu=2
+      --num-cpu 2
   ```
 
+## Features
 
-## Disclaimer
+- Runs on `x86_64` and `aarch64` (WIP).
+- Boots confidential VMs with AMD SEV, SEV-ES, or SEV-SNP, see
+  [coco.md](docs/coco.md) for details.
+- VirtIO devices
+  - `net` backed by a tap device,
+  - `vsock` backed by host `/dev/vsock`,
+  - `blk` backed by a raw-formatted image,
+  - `entropy` backed by host `/dev/uramdom`,
+  - `fs` backed by [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) with
+    experimental Direct Access (DAX).
+- Other devices
+  - serial console: 16450 on `x86_64`, pl011 on `aarch64`,
+  - [fw_cfg](https://www.qemu.org/docs/master/specs/fw_cfg.html) (QEMU Firmware
+    Configuration Device),
+  - [pvpanic](https://www.qemu.org/docs/master/specs/pvpanic.html).
 
-Disclaimer: Alioth is not an officially supported Google product.
+## TODOs
+
+- [ ] create GIC V3 and ITS on `aarch64` to enable MSI-X for VirtIO devices,
+- [ ] device passthrough with VFIO,
+- [ ] finish error handling refactoring work started in
+      [#37](https://github.com/google/alioth/pull/37),
+- [ ] explore a better solution to ACPI DSDT to replace the pre-compiled AML
+      bytes,
+- [ ] increase test coverage,
+- [ ] add missing documents,
+- [ ] (long term) port Alioth to Apple's
+      [Hypervisor](https://developer.apple.com/documentation/hypervisor)
+      framework,
+- [ ] performance, performance, and performance!
+
+## Acknowledgment
+
+The virtualization implementation in Alioth takes the following projects as
+references,
+
+- [QEMU](https://gitlab.com/qemu-project/qemu.git)
+- [crosvm](https://chromium.googlesource.com/crosvm/crosvm/)
+- [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)
+- [xhyve](https://github.com/machyve/xhyve)
+
+The error handling practice ([#37](https://github.com/google/alioth/pull/37)) is
+inspired by [GreptimeDB](https://github.com/GreptimeTeam/greptimedb)'s
+[`stack_trace_debug`](https://greptimedb.rs/common_macro/attr.stack_trace_debug.html).
