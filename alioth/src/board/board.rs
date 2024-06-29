@@ -37,7 +37,7 @@ use crate::pci::bus::PciBus;
 #[cfg(target_arch = "x86_64")]
 use crate::pci::bus::CONFIG_ADDRESS;
 use crate::pci::config::Command;
-use crate::pci::{self, PciBar, PciDevice};
+use crate::pci::{self, PciBar};
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::ArchBoard;
@@ -102,7 +102,6 @@ where
     #[cfg(target_arch = "aarch64")]
     pub mmio_devs: RwLock<Vec<(AddrOpt, Arc<MemRegion>)>>,
     pub pci_bus: PciBus,
-    pub pci_devs: RwLock<Vec<PciDevice>>,
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
 }
 
@@ -152,7 +151,8 @@ where
                 MemRegionType::Reserved,
             )),
         )?;
-        for dev in self.pci_devs.read().iter() {
+        let devices = self.pci_bus.segment.devices.read();
+        for (_, dev) in devices.iter() {
             let config = dev.dev.config();
             let header = config.get_header();
             for (index, bar) in header.bars.iter().enumerate() {
@@ -287,7 +287,8 @@ where
             self.sync_vcpus(&vcpus);
 
             if id == 0 {
-                for dev in self.pci_devs.read().iter() {
+                let devices = self.pci_bus.segment.devices.read();
+                for (_, dev) in devices.iter() {
                     dev.dev.reset()?;
                 }
                 self.memory.reset()?;

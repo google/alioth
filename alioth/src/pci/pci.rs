@@ -31,7 +31,7 @@ pub mod segment;
 use config::{HeaderData, PciConfig};
 
 bitfield! {
-    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct Bdf(u16);
     impl Debug;
     bus, _: 15, 8;
