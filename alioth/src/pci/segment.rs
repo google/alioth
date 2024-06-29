@@ -15,27 +15,80 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::mem;
 use crate::mem::emulated::Mmio;
 use crate::pci::config::PciConfig;
-use crate::pci::{Bdf, Error, Result};
+use crate::pci::{Bdf, Pci, PciDevice, Result};
+
+#[derive(Debug)]
+struct EmptyDevice;
+
+impl Pci for EmptyDevice {
+    fn config(&self) -> Arc<dyn PciConfig> {
+        unreachable!()
+    }
+
+    fn reset(&self) -> Result<()> {
+        unreachable!()
+    }
+}
 
 #[derive(Debug)]
 pub struct PciSegment {
-    pub(super) configs: RwLock<HashMap<Bdf, Arc<dyn PciConfig>>>,
+    pub devices: RwLock<HashMap<Bdf, PciDevice>>,
+    pub(super) next_bdf: Mutex<u16>,
 }
 
 impl PciSegment {
-    pub fn add(&self, bdf: Bdf, config: Arc<dyn PciConfig>) -> Result<()> {
-        let mut configs = self.configs.write();
-        if let Some(c) = configs.insert(bdf, config) {
-            configs.insert(bdf, c);
-            Err(Error::BdfExists(bdf))
+    fn add_dev(
+        configs: &mut HashMap<Bdf, PciDevice>,
+        bdf: Bdf,
+        dev: PciDevice,
+    ) -> Option<PciDevice> {
+        let name = dev.name.clone();
+        if let Some(exist_dev) = configs.insert(bdf, dev) {
+            if exist_dev.name == name {
+                None
+            } else {
+                configs.insert(bdf, exist_dev)
+            }
         } else {
-            Ok(())
+            None
         }
+    }
+
+    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<String>) -> Option<Bdf> {
+        let mut empty_dev = PciDevice {
+            name: name.clone(),
+            dev: Arc::new(EmptyDevice),
+        };
+        let mut configs = self.devices.write();
+        match bdf {
+            Some(bdf) => {
+                if Self::add_dev(&mut configs, bdf, empty_dev).is_none() {
+                    return Some(bdf);
+                }
+            }
+            None => {
+                let mut next_dev = self.next_bdf.lock();
+                for _ in 0..(u16::MAX >> 3) {
+                    let bdf = Bdf(*next_dev);
+                    *next_dev += 8;
+                    match Self::add_dev(&mut configs, bdf, empty_dev) {
+                        None => return Some(bdf),
+                        Some(d) => empty_dev = d,
+                    }
+                }
+            }
+        };
+        None
+    }
+
+    pub fn add(&self, bdf: Bdf, config: PciDevice) -> Option<PciDevice> {
+        let mut configs = self.devices.write();
+        Self::add_dev(&mut configs, bdf, config)
     }
 }
 
@@ -47,9 +100,9 @@ impl Mmio for PciSegment {
 
     fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.configs.read();
+        let configs = self.devices.read();
         if let Some(config) = configs.get(&bdf) {
-            config.read(offset & 0xfff, size)
+            config.dev.config().read(offset & 0xfff, size)
         } else {
             Ok(u64::MAX)
         }
@@ -57,9 +110,9 @@ impl Mmio for PciSegment {
 
     fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
         let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.configs.read();
+        let configs = self.devices.read();
         if let Some(config) = configs.get(&bdf) {
-            config.write(offset & 0xfff, size, val)
+            config.dev.config().write(offset & 0xfff, size, val)
         } else {
             Ok(())
         }

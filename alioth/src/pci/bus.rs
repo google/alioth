@@ -21,10 +21,9 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::mem;
 use crate::mem::emulated::Mmio;
-use crate::pci::config::PciConfig;
 use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, Error, Pci, Result};
+use crate::pci::{Bdf, PciDevice, Result};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;
@@ -95,16 +94,19 @@ impl Mmio for PciIoBus {
 pub struct PciBus {
     pub io_bus: Arc<PciIoBus>,
     pub segment: Arc<PciSegment>,
-    last_dev: Mutex<u16>,
 }
 
 impl PciBus {
     pub fn new() -> Self {
-        let bridge = HostBridge::new();
-        let configs = HashMap::from([(Bdf(0), bridge.config())]);
+        let bridge = PciDevice::new(
+            Arc::new("host_bridge".to_owned()),
+            Arc::new(HostBridge::new()),
+        );
+        let devices = HashMap::from([(Bdf(0), bridge)]);
 
         let segment = Arc::new(PciSegment {
-            configs: RwLock::new(configs),
+            devices: RwLock::new(devices),
+            next_bdf: Mutex::new(8),
         });
         PciBus {
             io_bus: Arc::new(PciIoBus {
@@ -112,29 +114,15 @@ impl PciBus {
                 segment: segment.clone(),
             }),
             segment,
-            last_dev: Mutex::new(0),
         }
     }
 
-    pub fn add(&self, bdf: Option<Bdf>, config: Arc<dyn PciConfig>) -> Result<Bdf> {
-        match bdf {
-            Some(bdf) => {
-                self.segment.add(bdf, config)?;
-                Ok(bdf)
-            }
-            None => {
-                let mut last_dev = self.last_dev.lock();
-                for _ in 0..(u16::MAX >> 3) {
-                    *last_dev += 8;
-                    match self.segment.add(Bdf(*last_dev), config.clone()) {
-                        Ok(_) => return Ok(Bdf(*last_dev)),
-                        Err(Error::BdfExists(_)) => continue,
-                        Err(e) => return Err(e),
-                    }
-                }
-                Err(Error::NoBdfSlots)
-            }
-        }
+    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<String>) -> Option<Bdf> {
+        self.segment.reserve(bdf, name)
+    }
+
+    pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {
+        self.segment.add(bdf, dev)
     }
 }
 

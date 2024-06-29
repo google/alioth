@@ -36,7 +36,7 @@ use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
 use crate::mem::{AddrOpt, MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
-use crate::pci::PciDevice;
+use crate::pci::{Bdf, PciDevice};
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 use crate::{mem, pci, virtio};
@@ -108,7 +108,6 @@ where
             #[cfg(target_arch = "aarch64")]
             mmio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
-            pci_devs: RwLock::new(Vec::new()),
             fw_cfg: Mutex::new(None),
         });
 
@@ -160,20 +159,25 @@ where
         Ok(())
     }
 
-    pub fn add_pci_dev(&mut self, dev: PciDevice) -> Result<(), Error> {
+    pub fn add_pci_dev(&mut self, bdf: Option<Bdf>, dev: PciDevice) -> Result<(), Error> {
+        let name = dev.name.clone();
+        let bdf = if let Some(bdf) = bdf {
+            bdf
+        } else {
+            self.board.pci_bus.reserve(None, name.clone()).unwrap()
+        };
         let config = dev.dev.config();
-        let bdf = self.board.pci_bus.add(None, config.clone())?;
+        self.board.pci_bus.add(bdf, dev);
         let header = config.get_header();
         header.set_bdf(bdf);
-        log::info!("{} located at {bdf}", dev.name);
-        self.board.pci_devs.write().push(dev);
+        log::info!("{bdf}: device: {name}");
         Ok(())
     }
 
     pub fn add_pvpanic(&mut self) -> Result<(), Error> {
         let dev = PvPanic::new();
         let pci_dev = PciDevice::new("pvpanic".to_owned().into(), Arc::new(dev));
-        self.add_pci_dev(pci_dev)
+        self.add_pci_dev(None, pci_dev)
     }
 
     pub fn add_fw_cfg(
@@ -220,7 +224,7 @@ where
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender, registry)?;
         let dev = Arc::new(dev);
         let pci_dev = PciDevice::new(name.clone(), dev.clone());
-        self.add_pci_dev(pci_dev)?;
+        self.add_pci_dev(None, pci_dev)?;
         Ok(dev)
     }
 
