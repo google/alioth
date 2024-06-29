@@ -428,13 +428,22 @@ impl<const N: usize> Debug for KvmIrqRouting<N> {
     }
 }
 
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(transparent)]
+    pub struct KvmMsiFlag: u32 {
+        #[cfg(target_arch = "aarch64")]
+        const VALID_DEVID = 1 << 0;
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmMsi {
     pub address_lo: u32,
     pub address_hi: u32,
     pub data: u32,
-    pub flags: u32,
+    pub flags: KvmMsiFlag,
     pub devid: u32,
     pub pad: [u8; 12usize],
 }

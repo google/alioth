@@ -211,6 +211,7 @@ where
         D: Virtio,
     {
         let name = Arc::new(name);
+        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let dev = param.build(name.clone())?;
         let registry = self.board.vm.create_ioeventfd_registry()?;
         let virtio_dev = VirtioDevice::new(
@@ -220,11 +221,14 @@ where
             &registry,
             self.board.config.coco.is_some(),
         )?;
-        let msi_sender = self.board.vm.create_msi_sender()?;
+        let msi_sender = self.board.vm.create_msi_sender(
+            #[cfg(target_arch = "aarch64")]
+            u32::from(bdf.0),
+        )?;
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender, registry)?;
         let dev = Arc::new(dev);
         let pci_dev = PciDevice::new(name.clone(), dev.clone());
-        self.add_pci_dev(None, pci_dev)?;
+        self.add_pci_dev(Some(bdf), pci_dev)?;
         Ok(dev)
     }
 

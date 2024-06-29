@@ -31,6 +31,8 @@ use snafu::ResultExt;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
+#[cfg(target_arch = "aarch64")]
+use crate::hv::kvm::bindings::KvmMsiFlag;
 #[cfg(target_arch = "x86_64")]
 use crate::hv::kvm::bindings::KVM_IRQCHIP_IOAPIC;
 use crate::hv::kvm::bindings::{
@@ -419,6 +421,8 @@ const MAX_GSI_ROUTES: usize = 256;
 #[derive(Debug)]
 pub struct KvmMsiSender {
     vm: Arc<VmInner>,
+    #[cfg(target_arch = "aarch64")]
+    devid: u32,
 }
 
 impl MsiSender for KvmMsiSender {
@@ -429,6 +433,10 @@ impl MsiSender for KvmMsiSender {
             address_lo: addr as u32,
             address_hi: (addr >> 32) as u32,
             data,
+            #[cfg(target_arch = "aarch64")]
+            devid: self.devid,
+            #[cfg(target_arch = "aarch64")]
+            flags: KvmMsiFlag::VALID_DEVID,
             ..Default::default()
         };
         unsafe { kvm_signal_msi(&self.vm, &kvm_msi) }.context(error::SendInterrupt)?;
@@ -599,7 +607,10 @@ impl Vm for KvmVm {
         })
     }
 
-    fn create_msi_sender(&self) -> Result<Self::MsiSender> {
+    fn create_msi_sender(
+        &self,
+        #[cfg(target_arch = "aarch64")] devid: u32,
+    ) -> Result<Self::MsiSender> {
         if self.vm.check_extension(KvmCap::SIGNAL_MSI)? == 0 {
             return error::Capability {
                 cap: "KVM_CAP_SIGNAL_MSI",
@@ -608,6 +619,8 @@ impl Vm for KvmVm {
         }
         Ok(KvmMsiSender {
             vm: self.vm.clone(),
+            #[cfg(target_arch = "aarch64")]
+            devid,
         })
     }
 

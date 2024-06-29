@@ -266,7 +266,10 @@ pub trait Vm {
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
-    fn create_msi_sender(&self) -> Result<Self::MsiSender>;
+    fn create_msi_sender(
+        &self,
+        #[cfg(target_arch = "aarch64")] devid: u32,
+    ) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
     fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;

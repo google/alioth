@@ -236,7 +236,7 @@ impl Vm for HvfVm {
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
         unimplemented!()
     }
-    fn create_msi_sender(&self) -> Result<Self::MsiSender> {
+    fn create_msi_sender(&self, _devid: u32) -> Result<Self::MsiSender> {
         unimplemented!()
     }
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
