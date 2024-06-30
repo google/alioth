@@ -379,19 +379,12 @@ impl Default for KvmIrqRoutingType {
     }
 }
 
-bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmIrqRoutingEntryFlag: u32 {
-        const MSI_VALID_DEVID = 1 << 0;
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct KvmIrqRoutingEntry {
     pub gsi: u32,
     pub type_: u32,
-    pub flags: u32,
+    pub flags: KvmMsiFlag,
     pub pad: u32,
     pub routing: KvmIrqRoutingType,
 }
