@@ -92,10 +92,17 @@ impl VmInner {
             }
             entries[index].gsi = *gsi;
             entries[index].type_ = KVM_IRQ_ROUTING_MSI;
+            #[cfg(target_arch = "aarch64")]
+            {
+                entries[index].flags = KvmMsiFlag::VALID_DEVID;
+            }
             entries[index].routing.msi = KvmIrqRoutingMsi {
                 address_hi: entry.addr_hi,
                 address_lo: entry.addr_lo,
                 data: entry.data,
+                #[cfg(target_arch = "aarch64")]
+                devid: entry.devid,
+                #[cfg(not(target_arch = "aarch64"))]
                 devid: 0,
             };
             index += 1;
@@ -287,6 +294,8 @@ pub(crate) struct KvmMsiEntryData {
     data: u32,
     masked: bool,
     dirty: bool,
+    #[cfg(target_arch = "aarch64")]
+    devid: u32,
 }
 
 #[derive(Debug)]
@@ -456,6 +465,8 @@ impl MsiSender for KvmMsiSender {
                 % (MAX_GSI_ROUTES as u32 - 24)
                 + 24;
             let new_entry = KvmMsiEntryData {
+                #[cfg(target_arch = "aarch64")]
+                devid: self.devid,
                 masked: true,
                 ..Default::default()
             };
