@@ -95,30 +95,29 @@ where
     pub fn create_ram(&self) -> Result<()> {
         let mem_size = self.config.mem_size;
         let memory = &self.memory;
-        if mem_size > RAM_32_SIZE {
-            memory.add_region(
-                AddrOpt::Fixed(RAM_32_START),
-                Arc::new(MemRegion::with_mapped(
-                    ArcMemPages::from_anonymous(RAM_32_SIZE as usize, None)?,
-                    MemRegionType::Ram,
-                )),
-            )?;
+
+        let low_mem_size = std::cmp::min(mem_size, RAM_32_SIZE);
+        #[cfg(target_os = "linux")]
+        let pages_low = ArcMemPages::from_memfd(low_mem_size as usize, None, Some(c"ram-low"))?;
+        #[cfg(not(target_os = "linux"))]
+        let pages_low = ArcMemPages::from_anonymous(low_mem_size as usize, None)?;
+        memory.add_region(
+            AddrOpt::Fixed(RAM_32_START),
+            Arc::new(MemRegion::with_mapped(pages_low, MemRegionType::Ram)),
+        )?;
+
+        let high_mem_size = mem_size.saturating_sub(RAM_32_SIZE) as usize;
+        if high_mem_size > 0 {
+            #[cfg(target_os = "linux")]
+            let pages_high = ArcMemPages::from_memfd(high_mem_size, None, Some(c"ram-high"))?;
+            #[cfg(not(target_os = "linux"))]
+            let pages_high = ArcMemPages::from_anonymous(high_mem_size, None)?;
             memory.add_region(
                 AddrOpt::Fixed(MEM_64_START),
-                Arc::new(MemRegion::with_mapped(
-                    ArcMemPages::from_anonymous((mem_size - RAM_32_SIZE) as usize, None)?,
-                    MemRegionType::Ram,
-                )),
-            )?;
-        } else {
-            memory.add_region(
-                AddrOpt::Fixed(RAM_32_START),
-                Arc::new(MemRegion::with_mapped(
-                    ArcMemPages::from_anonymous(mem_size as usize, None)?,
-                    MemRegionType::Ram,
-                )),
+                Arc::new(MemRegion::with_mapped(pages_high, MemRegionType::Ram)),
             )?;
         }
+
         Ok(())
     }
 
