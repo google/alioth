@@ -100,15 +100,22 @@ pub struct PciBus {
 
 impl PciBus {
     pub fn new() -> Self {
-        let bridge = PciDevice::new(
-            Arc::new("host_bridge".to_owned()),
-            Arc::new(HostBridge::new()),
-        );
-        let devices = HashMap::from([(Bdf(0), bridge)]);
+        let devices = if cfg!(target_arch = "x86_64") {
+            let bridge = PciDevice::new(
+                Arc::new("host_bridge".to_owned()),
+                Arc::new(HostBridge::new()),
+            );
+            HashMap::from([(Bdf(0), bridge)])
+        } else {
+            HashMap::new()
+        };
 
         let segment = Arc::new(PciSegment {
             devices: RwLock::new(devices),
+            #[cfg(target_arch = "x86_64")]
             next_bdf: Mutex::new(8),
+            #[cfg(not(target_arch = "x86_64"))]
+            next_bdf: Mutex::new(0),
         });
         PciBus {
             io_bus: Arc::new(PciIoBus {
