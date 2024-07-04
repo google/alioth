@@ -25,7 +25,9 @@ use std::thread::JoinHandle;
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 
-use crate::arch::layout::PCIE_CONFIG_START;
+use crate::arch::layout::{
+    MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_END, PCIE_MMIO_32_START, RAM_32_SIZE,
+};
 use crate::device::fw_cfg::FwCfg;
 use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
@@ -33,11 +35,10 @@ use crate::loader::xen;
 use crate::loader::{self, firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
+use crate::pci;
 use crate::pci::bus::PciBus;
 #[cfg(target_arch = "x86_64")]
 use crate::pci::bus::CONFIG_ADDRESS;
-use crate::pci::config::Command;
-use crate::pci::{self, PciBar};
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::ArchBoard;
@@ -78,10 +79,18 @@ pub const STATE_RUNNING: u8 = 1;
 pub const STATE_SHUTDOWN: u8 = 2;
 pub const STATE_REBOOT_PENDING: u8 = 3;
 
+pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
+
 pub struct BoardConfig {
     pub mem_size: u64,
     pub num_cpu: u32,
     pub coco: Option<Coco>,
+}
+
+impl BoardConfig {
+    pub fn pcie_mmio_64_start(&self) -> u64 {
+        (self.mem_size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
+    }
 }
 
 type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
@@ -151,29 +160,14 @@ where
                 MemRegionType::Reserved,
             )),
         )?;
-        let devices = self.pci_bus.segment.devices.read();
-        for (_, dev) in devices.iter() {
-            let config = dev.dev.config();
-            let header = config.get_header();
-            for (index, bar) in header.bars.iter().enumerate() {
-                match bar {
-                    PciBar::Empty => {}
-                    PciBar::Mem32(region) => {
-                        let addr = self.memory.add_region(AddrOpt::Below4G, region.clone())?;
-                        log::info!("{}: BAR {index} located at {addr:#x}", dev.name);
-                    }
-                    PciBar::Mem64(region) => {
-                        let addr = self.memory.add_region(AddrOpt::Above4G, region.clone())?;
-                        log::info!("{}: BAR {index} located at {addr:#x}", dev.name);
-                    }
-                    PciBar::Io(region) => {
-                        let addr = self.memory.add_io_region(None, region.clone())?;
-                        log::info!("{}: IO BAR {index} located at {addr:#x}", dev.name);
-                    }
-                }
-            }
-            header.set_command(Command::MEM | Command::IO);
-        }
+        self.pci_bus.assign_resources(&[
+            (0x1000, 0x10000),
+            (PCIE_MMIO_32_START, PCIE_MMIO_32_END),
+            (
+                self.config.pcie_mmio_64_start(),
+                self.config.pcie_mmio_64_start() + PCIE_MMIO_64_SIZE,
+            ),
+        ]);
         Ok(())
     }
 

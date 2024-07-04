@@ -13,17 +13,19 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::iter::zip;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use bitfield::bitfield;
 use parking_lot::{Mutex, RwLock};
 
-use crate::mem;
 use crate::mem::emulated::Mmio;
+use crate::pci::config::{BAR_IO, BAR_MEM64};
 use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
 use crate::pci::{Bdf, PciDevice, Result};
+use crate::{align_up, mem};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;
@@ -123,6 +125,71 @@ impl PciBus {
 
     pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {
         self.segment.add(bdf, dev)
+    }
+
+    /// Assigns addresses to all devices' base address registers
+    ///
+    /// `resources` is an array of 3 `(start, end)` tuples, corresponds to
+    ///
+    /// - IO space,
+    /// - 32-bit memory space,
+    /// - 64-bit memory space,
+    ///
+    /// respectively.
+    pub fn assign_resources(&self, resources: &[(u64, u64); 3]) {
+        let mut bar_lists = [const { vec![] }; 3];
+        let devices = self.segment.devices.read();
+        for (bdf, dev) in devices.iter() {
+            let config = dev.dev.config();
+            let header = config.get_header().data.read();
+            let mut index = 0;
+            while index < 6 {
+                let bar_index = index;
+                index += 1;
+                let Some((val, mask)) = header.get_bar(bar_index) else {
+                    continue;
+                };
+                let mut mask = mask as u64;
+                if val & BAR_MEM64 == BAR_MEM64 {
+                    let (_, mask_hi) = header.get_bar(bar_index + 1).unwrap();
+                    mask |= (mask_hi as u64) << 32;
+                    index += 1;
+                }
+                if mask == 0 {
+                    continue;
+                }
+                let bar_list = if val & BAR_IO == BAR_IO {
+                    &mut bar_lists[0]
+                } else if val & BAR_MEM64 == BAR_MEM64 {
+                    &mut bar_lists[2]
+                } else {
+                    &mut bar_lists[1]
+                };
+                bar_list.push((*bdf, dev, bar_index, 1 << mask.trailing_zeros()));
+            }
+        }
+        for bar_list in bar_lists.iter_mut() {
+            bar_list.sort_by_key(|(bdf, _, index, size)| (u64::MAX - size, *bdf, *index));
+        }
+        for (bar_list, (start, end)) in zip(bar_lists, resources) {
+            let mut addr = *start;
+            for (bdf, dev, index, size) in bar_list {
+                let config = dev.dev.config();
+                let mut header = config.get_header().data.write();
+                let aligned_addr = align_up!(addr, size);
+                if aligned_addr + size > *end {
+                    log::error!(
+                        "{bdf}: cannot map BAR {index} into address range {start:#x}..{end:#x}"
+                    );
+                    continue;
+                }
+                header.set_bar(index, aligned_addr as u32);
+                if aligned_addr > u32::MAX as u64 {
+                    header.set_bar(index + 1, (aligned_addr >> 32) as u32);
+                }
+                addr = aligned_addr + size;
+            }
+        }
     }
 }
 
