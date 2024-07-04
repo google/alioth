@@ -18,13 +18,14 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::arch::layout::{
-    DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_V2_CPU_INTERFACE_START, GIC_V2_DIST_START,
-    GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PL011_START, RAM_32_SIZE, RAM_32_START,
+    DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_ITS_START, GIC_V2_CPU_INTERFACE_START,
+    GIC_V2_DIST_START, GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PL011_START,
+    RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::SReg;
 use crate::board::{Board, BoardConfig, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
-use crate::hv::{GicV2, GicV3, Hypervisor, Vcpu, Vm};
+use crate::hv::{GicV2, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRegion, MemRegionType};
@@ -34,7 +35,7 @@ where
     V: Vm,
 {
     V2(V::GicV2),
-    V3(V::GicV3),
+    V3 { gic: V::GicV3, its: V::Its },
 }
 
 pub struct ArchBoard<V>
@@ -50,9 +51,13 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let ret = vm.create_gic_v3(GIC_V3_DIST_START, GIC_V3_REDIST_START, config.num_cpu);
+        let gicv3_with_its = |gic| vm.create_its(GIC_ITS_START).map(|its| Gic::V3 { gic, its });
+        let ret = vm
+            .create_gic_v3(GIC_V3_DIST_START, GIC_V3_REDIST_START, config.num_cpu)
+            .and_then(gicv3_with_its);
+
         let gic = match ret {
-            Ok(v3) => Gic::V3(v3),
+            Ok(gic_v3) => gic_v3,
             Err(e) => {
                 log::error!("Cannot create gic v3: {e:?}trying v2...");
                 Gic::V2(vm.create_gic_v2(GIC_V2_DIST_START, GIC_V2_CPU_INTERFACE_START)?)
@@ -131,9 +136,12 @@ where
 
     pub fn arch_init(&self) -> Result<()> {
         match &self.arch.gic {
-            Gic::V2(v2) => v2.init(),
-            Gic::V3(v3) => v3.init(),
-        }?;
+            Gic::V2(v2) => v2.init()?,
+            Gic::V3 { gic, its } => {
+                gic.init()?;
+                its.init()?;
+            }
+        };
         Ok(())
     }
 
@@ -286,7 +294,7 @@ where
         let level_trigger = 4;
         let cpu_mask = match self.arch.gic {
             Gic::V2(_) => (1 << self.config.num_cpu) - 1,
-            Gic::V3(_) => 0,
+            Gic::V3 { .. } => 0,
         };
         for pin in irq_pins {
             interrupts.extend([ppi, pin, cpu_mask << 8 | level_trigger]);
@@ -326,7 +334,17 @@ where
             .insert(format!("intc@{GIC_V2_DIST_START:x}"), node);
     }
 
+    // Documentation/devicetree/bindings/interrupt-controller/arm,gic-v3.yaml
     fn create_gicv3_node(&self, root: &mut Node) {
+        let its_node = Node {
+            props: HashMap::from([
+                ("compatible", PropVal::Str("arm,gic-v3-its")),
+                ("msi-controller", PropVal::Empty),
+                ("#msi-cells", PropVal::U32(1)),
+                ("reg", PropVal::U64List(vec![GIC_ITS_START, 128 << 10])),
+            ]),
+            nodes: HashMap::new(),
+        };
         let node = Node {
             props: HashMap::from([
                 ("compatible", PropVal::Str("arm,gic-v3")),
@@ -334,6 +352,7 @@ where
                 ("#address-cells", PropVal::U32(2)),
                 ("#size-cells", PropVal::U32(2)),
                 ("interrupt-controller", PropVal::Empty),
+                ("ranges", PropVal::Empty),
                 (
                     "reg",
                     PropVal::U64List(vec![
@@ -345,7 +364,7 @@ where
                 ),
                 ("phandle", PropVal::U32(PHANDLE_GIC)),
             ]),
-            nodes: HashMap::new(),
+            nodes: HashMap::from([(format!("its@{GIC_ITS_START:x}"), its_node)]),
         };
 
         root.nodes
@@ -381,7 +400,7 @@ where
         self.create_cpu_nodes(root);
         match self.arch.gic {
             Gic::V2(_) => self.create_gicv2_node(root),
-            Gic::V3(_) => self.create_gicv3_node(root),
+            Gic::V3 { .. } => self.create_gicv3_node(root),
         }
         self.create_clock_node(root);
         self.create_timer_node(root);
