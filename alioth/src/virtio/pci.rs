@@ -32,7 +32,8 @@ use crate::pci::cap::{
     MsixTableMmioEntry, PciCap, PciCapHdr, PciCapId, PciCapList,
 };
 use crate::pci::config::{
-    CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, BAR_MEM64, BAR_PREFETCHABLE,
+    CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, BAR_MEM32, BAR_MEM64,
+    BAR_PREFETCHABLE,
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
@@ -831,18 +832,23 @@ where
         let mut bar_masks = [0; 6];
         let bar0_mask = !(bar0.size.next_power_of_two() - 1);
         bar_masks[0] = bar0_mask as u32;
-        bar_masks[1] = (bar0_mask >> 32) as u32;
-        bars[0] = PciBar::Mem64(Arc::new(bar0));
-        header.bars[0] = BAR_MEM64;
+        bars[0] = PciBar::Mem32(Arc::new(bar0));
+        header.bars[0] = BAR_MEM32;
 
         if let Some(region) = &dev.shared_mem_regions {
             let bar2_mask = !(region.size.next_power_of_two() - 1);
             bar_masks[2] = bar2_mask as u32;
-            bar_masks[3] = (bar2_mask >> 32) as u32;
-            bars[2] = PciBar::Mem64(region.clone());
             let mut not_emulated = |r| !matches!(r, &MemRange::Emulated(_));
             let prefetchable = region.ranges.iter().all(&mut not_emulated);
-            header.bars[2] = BAR_MEM64 | if prefetchable { BAR_PREFETCHABLE } else { 0 };
+            if prefetchable {
+                bar_masks[3] = (bar2_mask >> 32) as u32;
+                bars[2] = PciBar::Mem64(region.clone());
+                header.bars[2] = BAR_MEM64 | BAR_PREFETCHABLE;
+            } else {
+                assert!(region.size <= u32::MAX as u64);
+                bars[2] = PciBar::Mem32(region.clone());
+                header.bars[2] = BAR_MEM32;
+            }
         }
 
         let config = Arc::new(EmulatedConfig::new_device(
