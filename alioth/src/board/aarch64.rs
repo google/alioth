@@ -19,11 +19,13 @@ use parking_lot::Mutex;
 
 use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_ITS_START, GIC_V2_CPU_INTERFACE_START,
-    GIC_V2_DIST_START, GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PL011_START,
-    RAM_32_SIZE, RAM_32_START,
+    GIC_V2_DIST_START, GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PCIE_CONFIG_START,
+    PCIE_MMIO_32_NON_PREFETCHABLE_END, PCIE_MMIO_32_NON_PREFETCHABLE_START,
+    PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, RAM_32_SIZE,
+    RAM_32_START,
 };
 use crate::arch::reg::SReg;
-use crate::board::{Board, BoardConfig, Result, VcpuGuard};
+use crate::board::{Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};
@@ -342,6 +344,7 @@ where
                 ("msi-controller", PropVal::Empty),
                 ("#msi-cells", PropVal::U32(1)),
                 ("reg", PropVal::U64List(vec![GIC_ITS_START, 128 << 10])),
+                ("phandle", PropVal::PHandle(PHANDLE_MSI)),
             ]),
             nodes: HashMap::new(),
         };
@@ -383,6 +386,67 @@ where
         root.nodes.insert("psci".to_owned(), node);
     }
 
+    // https://elinux.org/Device_Tree_Usage#PCI_Host_Bridge
+    // Documentation/devicetree/bindings/pci/host-generic-pci.yaml
+    // IEEE Std 1275-1994
+    fn create_pci_bridge_node(&self, root: &mut Node) {
+        let devices = self.pci_bus.segment.devices.read();
+        let Some(max_bus) = devices.iter().map(|(bdf, _)| bdf.bus()).max() else {
+            return;
+        };
+        let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
+        let prefetchable = 1 << 30;
+        let mem_32 = 0b10 << 24;
+        let mem_64 = 0b11 << 24;
+        let node = Node {
+            props: HashMap::from([
+                ("compatible", PropVal::Str("pci-host-ecam-generic")),
+                ("device_type", PropVal::Str("pci")),
+                ("reg", PropVal::U64List(vec![PCIE_CONFIG_START, 256 << 20])),
+                ("bus-range", PropVal::U64List(vec![0, max_bus as u64])),
+                ("#address-cells", PropVal::U32(3)),
+                ("#size-cells", PropVal::U32(2)),
+                (
+                    "ranges",
+                    PropVal::U32List(vec![
+                        mem_32 | prefetchable,
+                        0,
+                        PCIE_MMIO_32_PREFETCHABLE_START as u32,
+                        0,
+                        PCIE_MMIO_32_PREFETCHABLE_START as u32,
+                        0,
+                        (PCIE_MMIO_32_PREFETCHABLE_END - PCIE_MMIO_32_PREFETCHABLE_START) as u32,
+                        mem_32,
+                        0,
+                        PCIE_MMIO_32_NON_PREFETCHABLE_START as u32,
+                        0,
+                        PCIE_MMIO_32_NON_PREFETCHABLE_START as u32,
+                        0,
+                        (PCIE_MMIO_32_NON_PREFETCHABLE_END - PCIE_MMIO_32_NON_PREFETCHABLE_START)
+                            as u32,
+                        mem_64 | prefetchable,
+                        (pcie_mmio_64_start >> 32) as u32,
+                        pcie_mmio_64_start as u32,
+                        (pcie_mmio_64_start >> 32) as u32,
+                        pcie_mmio_64_start as u32,
+                        (PCIE_MMIO_64_SIZE >> 32) as u32,
+                        PCIE_MMIO_64_SIZE as u32,
+                    ]),
+                ),
+                (
+                    "msi-map",
+                    // Identity map from RID (BDF) to msi-specifier.
+                    // Documentation/devicetree/bindings/pci/pci-msi.txt
+                    PropVal::U32List(vec![0, PHANDLE_MSI, 0, 0x10000]),
+                ),
+                ("msi-parent", PropVal::PHandle(PHANDLE_MSI)),
+            ]),
+            nodes: HashMap::new(),
+        };
+        root.nodes
+            .insert(format!("pci@{PCIE_CONFIG_START:x}"), node);
+    }
+
     pub fn create_firmware_data(&self, init_state: &InitState) -> Result<()> {
         let mut device_tree = DeviceTree::new();
         let root = &mut device_tree.root;
@@ -400,7 +464,10 @@ where
         self.create_cpu_nodes(root);
         match self.arch.gic {
             Gic::V2(_) => self.create_gicv2_node(root),
-            Gic::V3 { .. } => self.create_gicv3_node(root),
+            Gic::V3 { .. } => {
+                self.create_gicv3_node(root);
+                self.create_pci_bridge_node(root);
+            }
         }
         self.create_clock_node(root);
         self.create_timer_node(root);
@@ -416,3 +483,4 @@ where
 
 const PHANDLE_GIC: u32 = 1;
 const PHANDLE_CLOCK: u32 = 2;
+const PHANDLE_MSI: u32 = 3;

@@ -34,9 +34,9 @@ bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct Bdf(u16);
     impl Debug;
-    bus, _: 15, 8;
-    dev, _: 7, 3;
-    func, _: 2, 0;
+    pub u8, bus, _: 15, 8;
+    pub dev, _: 7, 3;
+    pub func, _: 2, 0;
 }
 
 impl Display for Bdf {
