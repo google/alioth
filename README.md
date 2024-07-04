@@ -37,7 +37,7 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 
 ## Features
 
-- Runs on `x86_64` and `aarch64` (WIP).
+- Runs on `x86_64` and `aarch64`.
 - Boots confidential VMs with AMD SEV, SEV-ES, or SEV-SNP, see
   [coco.md](docs/coco.md) for details.
 - VirtIO devices
@@ -55,7 +55,6 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 
 ## TODOs
 
-- [ ] create GIC V3 and ITS on `aarch64` to enable MSI-X for VirtIO devices,
 - [ ] device passthrough with VFIO,
 - [ ] finish error handling refactoring work started in
       [#37](https://github.com/google/alioth/pull/37),
