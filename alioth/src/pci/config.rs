@@ -329,9 +329,13 @@ impl HeaderData {
                         }
                     }
                 }
+                DeviceHeader::LAYOUT_EXPANSION_ROM => {
+                    log::info!("{bdf}: write {val:#010x} to expansion_rom: ignored");
+                    None
+                }
                 _ => {
                     log::warn!(
-                        "{bdf}: unaligned write offset = {offset:#x}, size = {size}, val = {val:#x}"
+                        "{bdf}: unknown write: offset = {offset:#x}, size = {size}, val = {val:#x}"
                     );
                     None
                 }
