@@ -22,6 +22,7 @@ use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{APIC_START, IOAPIC_START};
 use crate::unsafe_impl_zerocopy;
+use crate::utils::wrapping_sum;
 
 use bindings::{
     AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
@@ -33,14 +34,6 @@ use bindings::{
 
 unsafe_impl_zerocopy!(AcpiTableMcfg<1>, FromBytes, FromZeroes, AsBytes);
 unsafe_impl_zerocopy!(AcpiTableXsdt<3>, FromBytes, FromZeroes, AsBytes);
-
-#[inline]
-fn wrapping_sum<'a, T>(data: T) -> u8
-where
-    T: IntoIterator<Item = &'a u8>,
-{
-    data.into_iter().fold(0u8, |accu, e| accu.wrapping_add(*e))
-}
 
 const OEM_ID: [u8; 6] = *b"ALIOTH";
 
