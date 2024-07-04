@@ -223,6 +223,12 @@ impl HeaderData {
         }
     }
 
+    pub fn get_bar(&self, index: usize) -> Option<(u32, u32)> {
+        match &self.header {
+            ConfigHeader::Device(header) => Some((header.bars[index], self.bar_masks[index])),
+        }
+    }
+
     pub fn set_command(&mut self, command: Command) {
         match &mut self.header {
             ConfigHeader::Device(header) => header.common.command = command,

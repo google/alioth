@@ -35,5 +35,8 @@ pub const KERNEL_IMAGE_START: u64 = 0x4020_0000; // 1 GiB + 2 MiB
 pub const RAM_32_END: u64 = 0xc000_0000; // 3 GiB
 pub const RAM_32_SIZE: u64 = RAM_32_END - RAM_32_START; // 2 GiB
 
+pub const PCIE_MMIO_32_START: u64 = 0xc000_0000; // 3 GiB
+pub const PCIE_MMIO_32_END: u64 = 0x1_0000_0000; // 4 GiB, size = 1 GiB
+
 pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB
 pub const PAGE_SIZE: u64 = 0x1000; // 4KiB
