@@ -41,6 +41,15 @@ macro_rules! mask_bits {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn wrapping_sum<'a, T>(data: T) -> u8
+where
+    T: IntoIterator<Item = &'a u8>,
+{
+    data.into_iter().fold(0u8, |accu, e| accu.wrapping_add(*e))
+}
+
 pub fn get_low32(num: u64) -> u32 {
     num as u32
 }
