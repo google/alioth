@@ -21,7 +21,7 @@ use bitfield::bitfield;
 use parking_lot::{Mutex, RwLock};
 
 use crate::mem::emulated::Mmio;
-use crate::pci::config::{BAR_IO, BAR_MEM64};
+use crate::pci::config::{BAR_IO, BAR_MEM64, BAR_PREFETCHABLE};
 use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
 use crate::pci::{Bdf, PciDevice, Result};
@@ -129,15 +129,16 @@ impl PciBus {
 
     /// Assigns addresses to all devices' base address registers
     ///
-    /// `resources` is an array of 3 `(start, end)` tuples, corresponds to
+    /// `resources` is an array of 4 `(start, end)` tuples, corresponds to
     ///
     /// - IO space,
-    /// - 32-bit memory space,
-    /// - 64-bit memory space,
+    /// - 32-bit non-prefetchable memory space,
+    /// - 32-bit prefetchable memory space,
+    /// - 64-bit prefetchable memory space,
     ///
     /// respectively.
-    pub fn assign_resources(&self, resources: &[(u64, u64); 3]) {
-        let mut bar_lists = [const { vec![] }; 3];
+    pub fn assign_resources(&self, resources: &[(u64, u64); 4]) {
+        let mut bar_lists = [const { vec![] }; 4];
         let devices = self.segment.devices.read();
         for (bdf, dev) in devices.iter() {
             let config = dev.dev.config();
@@ -160,7 +161,11 @@ impl PciBus {
                 }
                 let bar_list = if val & BAR_IO == BAR_IO {
                     &mut bar_lists[0]
-                } else if val & BAR_MEM64 == BAR_MEM64 {
+                } else if val & (BAR_MEM64 | BAR_PREFETCHABLE) == BAR_MEM64 | BAR_PREFETCHABLE {
+                    &mut bar_lists[3]
+                } else if val & (BAR_MEM64 | BAR_PREFETCHABLE) == BAR_MEM64 {
+                    unreachable!("{bdf}: BAR {index} is 64-bit but not prefetchable")
+                } else if val & BAR_PREFETCHABLE == BAR_PREFETCHABLE {
                     &mut bar_lists[2]
                 } else {
                     &mut bar_lists[1]

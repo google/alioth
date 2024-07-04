@@ -26,7 +26,9 @@ use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 
 use crate::arch::layout::{
-    MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_END, PCIE_MMIO_32_START, RAM_32_SIZE,
+    MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_NON_PREFETCHABLE_END,
+    PCIE_MMIO_32_NON_PREFETCHABLE_START, PCIE_MMIO_32_PREFETCHABLE_END,
+    PCIE_MMIO_32_PREFETCHABLE_START, RAM_32_SIZE,
 };
 use crate::device::fw_cfg::FwCfg;
 use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
@@ -160,13 +162,18 @@ where
                 MemRegionType::Reserved,
             )),
         )?;
+        let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
         self.pci_bus.assign_resources(&[
             (0x1000, 0x10000),
-            (PCIE_MMIO_32_START, PCIE_MMIO_32_END),
             (
-                self.config.pcie_mmio_64_start(),
-                self.config.pcie_mmio_64_start() + PCIE_MMIO_64_SIZE,
+                PCIE_MMIO_32_NON_PREFETCHABLE_START,
+                PCIE_MMIO_32_NON_PREFETCHABLE_END,
             ),
+            (
+                PCIE_MMIO_32_PREFETCHABLE_START,
+                PCIE_MMIO_32_PREFETCHABLE_END,
+            ),
+            (pcie_mmio_64_start, pcie_mmio_64_start + PCIE_MMIO_64_SIZE),
         ]);
         Ok(())
     }
