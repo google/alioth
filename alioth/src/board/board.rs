@@ -96,6 +96,7 @@ impl BoardConfig {
 }
 
 type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
+type VcpuHandle = (JoinHandle<Result<()>>, Sender<()>);
 
 pub struct Board<V>
 where
@@ -103,7 +104,7 @@ where
 {
     pub vm: V,
     pub memory: Memory,
-    pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
+    pub vcpus: Arc<RwLock<Vec<VcpuHandle>>>,
     pub arch: ArchBoard<V>,
     pub config: BoardConfig,
     pub state: AtomicU8,

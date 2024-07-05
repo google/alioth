@@ -82,6 +82,12 @@ where
     _event_tx: Sender<u32>,
 }
 
+pub type VirtioPciDev<D, H> = VirtioPciDevice<
+    D,
+    <<H as Hypervisor>::Vm as Vm>::MsiSender,
+    <<<H as Hypervisor>::Vm as Vm>::IoeventFdRegistry as IoeventFdRegistry>::IoeventFd,
+>;
+
 impl<H> Machine<H>
 where
     H: Hypervisor + 'static,
@@ -196,16 +202,7 @@ where
         &mut self,
         name: String,
         param: P,
-    ) -> Result<
-        Arc<
-            VirtioPciDevice<
-                D,
-                <<H as Hypervisor>::Vm as Vm>::MsiSender,
-                <<<H as Hypervisor>::Vm as Vm>::IoeventFdRegistry as IoeventFdRegistry>::IoeventFd,
-            >,
-        >,
-        Error,
-    >
+    ) -> Result<Arc<VirtioPciDev<D, H>>, Error>
     where
         P: DevParam<Device = D>,
         D: Virtio,

@@ -113,6 +113,8 @@ struct SplitLayout<'g, 'm> {
     desc: &'g [UnsafeCell<Desc>],
 }
 
+type DescIov = (Vec<(u64, u64)>, Vec<(u64, u64)>);
+
 impl<'g, 'm> SplitLayout<'g, 'm> {
     pub fn avail_index(&self) -> u16 {
         unsafe { &*self.avail.get() }.idx
@@ -180,7 +182,7 @@ impl<'g, 'm> SplitLayout<'g, 'm> {
         }
     }
 
-    pub fn get_desc_iov(&self, mut id: u16) -> Result<(Vec<(u64, u64)>, Vec<(u64, u64)>)> {
+    pub fn get_desc_iov(&self, mut id: u16) -> Result<DescIov> {
         let mut readable = Vec::new();
         let mut writeable = Vec::new();
         loop {
