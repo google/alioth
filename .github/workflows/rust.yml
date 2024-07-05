@@ -33,6 +33,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
             target/
           key: ${{ matrix.target.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install toolchain
@@ -41,7 +42,11 @@ jobs:
         run: cargo build --verbose --target ${{ matrix.target.name }}
         if: matrix.target.name != 'aarch64-unknown-linux-gnu'
       - name: Format
-        run: cargo fmt --check
+        run: > 
+          rustup toolchain install nightly &&
+          rustup component add --toolchain nightly-x86_64-unknown-linux-gnu rustfmt &&
+          cargo +nightly fmt --check
+        if: matrix.target.name == 'x86_64-unknown-linux-gnu'
       # TODO: some KVM related tests cannot run in github runners.
       # - name: Run tests
       #   run: cargo test --verbose
