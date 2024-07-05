@@ -48,8 +48,8 @@ enum HvfReg {
 }
 
 impl Reg {
-    fn to_hvf_reg(&self) -> HvfReg {
-        match *self {
+    fn to_hvf_reg(self) -> HvfReg {
+        match self {
             Reg::X0 => HvfReg::Reg(HvReg::X0),
             Reg::X1 => HvfReg::Reg(HvReg::X1),
             Reg::X2 => HvfReg::Reg(HvReg::X2),
