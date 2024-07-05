@@ -47,8 +47,8 @@ jobs:
           rustup component add --toolchain nightly-x86_64-unknown-linux-gnu rustfmt &&
           cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
-      # TODO: some KVM related tests cannot run in github runners.
-      # - name: Run tests
-      #   run: cargo test --verbose
+      - name: Run tests
+        run: cargo test --target ${{ matrix.target.name }}
+        if: matrix.target.name != 'aarch64-unknown-linux-gnu'
       - name: Clippy
         run: cargo clippy --target ${{ matrix.target.name }} -- -D warnings
