@@ -16,8 +16,49 @@ use std::os::raw::c_void;
 
 use bitflags::bitflags;
 
-use crate::arch::reg::EsrEl2;
+use crate::arch::reg::{EsrEl2, SReg};
 use crate::c_enum;
+
+c_enum! {
+    pub struct HvReg(u32);
+    {
+        X0 = 0;
+        X1 = 1;
+        X2 = 2;
+        X3 = 3;
+        X4 = 4;
+        X5 = 5;
+        X6 = 6;
+        X7 = 7;
+        X8 = 8;
+        X9 = 9;
+        X10 = 10;
+        X11 = 11;
+        X12 = 12;
+        X13 = 13;
+        X14 = 14;
+        X15 = 15;
+        X16 = 16;
+        X17 = 17;
+        X18 = 18;
+        X19 = 19;
+        X20 = 20;
+        X21 = 21;
+        X22 = 22;
+        X23 = 23;
+        X24 = 24;
+        X25 = 25;
+        X26 = 26;
+        X27 = 27;
+        X28 = 28;
+        X29 = 29;
+        X30 = 30;
+        PC= 31;
+        FPCR = 32;
+        FPSR = 33;
+        CPSR = 34;
+    }
+}
 
 c_enum! {
     #[derive(Default)]
@@ -61,6 +102,10 @@ extern "C" {
     pub fn hv_vm_destroy() -> i32;
     pub fn hv_vcpu_create(vcpu: &mut u64, exit: &mut *mut HvVcpuExit, config: *mut c_void) -> i32;
     pub fn hv_vcpu_destroy(vcpu: u64) -> i32;
+    pub fn hv_vcpu_get_reg(vcpu: u64, reg: HvReg, value: &mut u64) -> i32;
+    pub fn hv_vcpu_set_reg(vcpu: u64, reg: HvReg, value: u64) -> i32;
+    pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: SReg, val: u64) -> i32;
+    pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: SReg, val: &mut u64) -> i32;
     pub fn hv_vm_map(addr: *const u8, ipa: u64, size: usize, flags: HvMemoryFlag) -> i32;
     pub fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
 }

@@ -66,6 +66,8 @@ c_enum! {
         ESR_EL2 = encode(3, 4, 5, 2, 0);
         /// Multiprocessor Affinity Register
         MPIDR_EL1 = encode(3, 0, 0, 0, 5);
+        /// Stack Pointer (EL0)
+        SP_EL0 = encode(3, 0, 4, 1, 0);
     }
 }
 
