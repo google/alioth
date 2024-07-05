@@ -721,6 +721,7 @@ mod test {
     use crate::hv::{Hypervisor, Kvm, MemMapOption, VmConfig};
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_mem_map() {
         let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };

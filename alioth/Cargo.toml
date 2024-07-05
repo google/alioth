@@ -7,6 +7,9 @@ repository.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+test-hv = []
+
 [dependencies]
 thiserror = "1"
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }

@@ -320,6 +320,7 @@ mod test {
     };
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_vcpu_regs() {
         use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
@@ -467,6 +468,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_kvm_run() {
         use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
