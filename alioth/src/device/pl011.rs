@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 
 use crate::device::console::{Console, UartRecv};
 use crate::hv::IrqSender;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::{hv, mem};
 
 /// RW width 12/8 Data Register
@@ -228,7 +228,7 @@ where
         Ok(ret as u64)
     }
 
-    fn write(&self, offset: u64, _size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, _size: u8, val: u64) -> mem::Result<Action> {
         let mut reg = self.reg.lock();
         match offset {
             UART_DR => {
@@ -254,7 +254,7 @@ where
             UART_DMACR => reg.dmacr = val as u32,
             _ => {}
         }
-        Ok(())
+        Ok(Action::None)
     }
 }
 

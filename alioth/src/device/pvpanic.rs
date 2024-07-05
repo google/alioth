@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use bitflags::bitflags;
 
-use crate::mem::emulated::Mmio;
-use crate::mem::{self, Action, MemRegion};
+use crate::mem::emulated::{Action, Mmio};
+use crate::mem::{self, MemRegion};
 use crate::pci::cap::PciCapList;
 use crate::pci::config::{
     CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, BAR_MEM64, BAR_PREFETCHABLE,
@@ -47,9 +47,9 @@ impl<const N: u64> Mmio for PvPanicBar<N> {
         Ok(PvPanicByte::all().bits() as u64)
     }
 
-    fn write(&self, _offset: u64, _size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, _offset: u64, _size: u8, val: u64) -> mem::Result<Action> {
         log::info!("pvpanic: {:x?}", PvPanicByte::from_bits_retain(val as u8));
-        Err(mem::Error::Action(Action::Shutdown))
+        Ok(Action::Shutdown)
     }
 }
 

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 
 use crate::mem;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::pci::config::PciConfig;
 use crate::pci::{Bdf, Pci, PciDevice, Result};
 
@@ -108,13 +108,13 @@ impl Mmio for PciSegment {
         }
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let bdf = Bdf((offset >> 12) as u16);
         let configs = self.devices.read();
         if let Some(config) = configs.get(&bdf) {
             config.dev.config().write(offset & 0xfff, size, val)
         } else {
-            Ok(())
+            Ok(Action::None)
         }
     }
 }

@@ -23,7 +23,7 @@ use mio::event::Event;
 use mio::Registry;
 
 use crate::mem;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::handlers::reader_to_queue;
@@ -42,8 +42,8 @@ impl Mmio for EntropyConfig {
         Ok(0)
     }
 
-    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<()> {
-        Ok(())
+    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
+        Ok(Action::None)
     }
 }
 

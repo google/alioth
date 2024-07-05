@@ -16,12 +16,23 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::mem::addressable::{Addressable, SlotBackend};
-use crate::mem::Result;
+use crate::mem::{Memory, Result};
 use parking_lot::RwLock;
+
+pub trait ChangeLayout: Debug + Send + Sync + 'static {
+    fn change(&self, memory: &Memory) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub enum Action {
+    None,
+    Shutdown,
+    ChangeLayout { callback: Box<dyn ChangeLayout> },
+}
 
 pub trait Mmio: Debug + Send + Sync + 'static {
     fn read(&self, offset: u64, size: u8) -> Result<u64>;
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<()>;
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<Action>;
     fn size(&self) -> u64;
 }
 
@@ -32,7 +43,7 @@ impl Mmio for MmioRange {
         Mmio::read(self.as_ref(), offset, size)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> Result<Action> {
         Mmio::write(self.as_ref(), offset, size, val)
     }
 
@@ -76,13 +87,18 @@ macro_rules! impl_mmio_for_zerocopy {
                 }
             }
 
-            fn write(&self, offset: u64, size: u8, val: u64) -> $crate::mem::Result<()> {
+            fn write(
+                &self,
+                offset: u64,
+                size: u8,
+                val: u64,
+            ) -> $crate::mem::Result<$crate::mem::emulated::Action> {
                 ::log::error!(
                     "{}: write 0x{val:0width$x} to readonly offset 0x{offset:x}.",
                     ::core::any::type_name::<Self>(),
                     width = 2 * size as usize
                 );
-                Ok(())
+                Ok($crate::mem::emulated::Action::None)
             }
         }
     };
@@ -138,11 +154,11 @@ where
         }
     }
 
-    pub fn write(&self, addr: u64, size: u8, val: u64) -> Result<()> {
+    pub fn write(&self, addr: u64, size: u8, val: u64) -> Result<Action> {
         let inner = self.inner.read();
         match inner.search(addr) {
             Some((start, dev)) => dev.write(addr - start, size, val),
-            None => Ok(()),
+            None => Ok(Action::None),
         }
     }
 }
