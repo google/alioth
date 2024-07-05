@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod vmentry;
+mod vmexit;
+
 use snafu::ResultExt;
 
 use crate::arch::reg::{Reg, SReg};
 use crate::hv::hvf::bindings::{
-    hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
-    HvReg, HvVcpuExit,
+    hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg, hv_vcpu_run, hv_vcpu_set_reg,
+    hv_vcpu_set_sys_reg, HvExitReason, HvReg, HvVcpuExit,
 };
 use crate::hv::hvf::check_ret;
 use crate::hv::{error, Result, Vcpu, VmEntry, VmExit};
@@ -26,6 +29,8 @@ use crate::hv::{error, Result, Vcpu, VmEntry, VmExit};
 pub struct HvfVcpu {
     pub exit: *mut HvVcpuExit,
     pub vcpu_id: u64,
+    pub vmexit: VmExit,
+    pub exit_reg: Option<HvReg>,
 }
 
 impl Drop for HvfVcpu {
@@ -92,8 +97,28 @@ impl Vcpu for HvfVcpu {
         unimplemented!()
     }
 
-    fn run(&mut self, _entry: VmEntry) -> Result<VmExit> {
-        unimplemented!()
+    fn run(&mut self, entry: VmEntry) -> Result<VmExit> {
+        match entry {
+            VmEntry::None => {}
+            VmEntry::Mmio { data } => self.entry_mmio(data),
+            VmEntry::Shutdown => return Ok(VmExit::Shutdown),
+            _ => unimplemented!("{entry:?}"),
+        }
+        let ret = unsafe { hv_vcpu_run(self.vcpu_id) };
+        check_ret(ret).context(error::RunVcpu)?;
+
+        let exit = unsafe { &*self.exit };
+        match exit.reason {
+            HvExitReason::EXCEPTION => {
+                if self.decode_exception(&exit.exception) {
+                    Ok(self.vmexit.clone())
+                } else {
+                    self.dump()?;
+                    Ok(VmExit::Unknown(format!("{:?}", exit)))
+                }
+            }
+            _ => todo!(),
+        }
     }
 
     fn get_reg(&self, reg: Reg) -> Result<u64> {
@@ -137,8 +162,14 @@ impl Vcpu for HvfVcpu {
 
 #[cfg(test)]
 mod test {
+    use std::ptr::null_mut;
+
+    use assert_matches::assert_matches;
+    use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
     use crate::arch::reg::Reg;
-    use crate::hv::{Hvf, Hypervisor, Vcpu, Vm, VmConfig};
+    use crate::ffi;
+    use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmConfig, VmEntry, VmExit, VmMemory};
 
     #[test]
     fn test_vcpu_regs() {
@@ -186,5 +217,59 @@ mod test {
         for (reg, val) in regs {
             assert_eq!(vcpu.get_reg(reg).unwrap(), val);
         }
+    }
+
+    #[test]
+    fn test_vcpu_run() {
+        let hvf = Hvf {};
+        let config = VmConfig { coco: None };
+        let mut vm = hvf.create_vm(&config).unwrap();
+        let memory = vm.create_vm_memory().unwrap();
+
+        let prot = PROT_WRITE | PROT_READ;
+        let flag = MAP_ANONYMOUS | MAP_PRIVATE;
+        let user_mem = ffi!(
+            unsafe { mmap(null_mut(), 0x4000, prot, flag, -1, 0,) },
+            MAP_FAILED
+        )
+        .unwrap();
+        let mmap_option = MemMapOption {
+            read: true,
+            write: true,
+            exec: true,
+            ..Default::default()
+        };
+        memory
+            .mem_map(0, 0, 0x4000, user_mem as usize, mmap_option)
+            .unwrap();
+
+        const CODE: [u8; 20] = [
+            0x00, 0x00, 0x8a, 0xd2, // mov x0, #0x5000
+            0x01, 0x00, 0x40, 0xf9, // ldr x1, [x0]
+            0x21, 0x10, 0x00, 0x91, // add x1, x1, #4
+            0x00, 0x01, 0x8a, 0xd2, // mov x0, #0x5008
+            0x01, 0x00, 0x00, 0xf9, // str x1, [x0]
+        ];
+        unsafe { ((user_mem as usize + 0x1000) as *mut [u8; 20]).write(CODE) };
+
+        let mut vcpu = vm.create_vcpu(0).unwrap();
+        vcpu.set_regs(&[(Reg::Pc, 0x1000)]).unwrap();
+        assert_matches!(
+            vcpu.run(VmEntry::None),
+            Ok(VmExit::Mmio {
+                addr: 0x5000,
+                write: None,
+                size: 8
+            })
+        );
+        assert_matches!(
+            vcpu.run(VmEntry::Mmio { data: 0x10 }),
+            Ok(VmExit::Mmio {
+                addr: 0x5008,
+                write: Some(0x14),
+                size: 8
+            })
+        );
+        assert_matches!(vcpu.run(VmEntry::Shutdown), Ok(VmExit::Shutdown))
     }
 }

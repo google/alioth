@@ -106,6 +106,7 @@ extern "C" {
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: HvReg, value: u64) -> i32;
     pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: SReg, val: u64) -> i32;
     pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: SReg, val: &mut u64) -> i32;
+    pub fn hv_vcpu_run(vcpu: u64) -> i32;
     pub fn hv_vm_map(addr: *const u8, ipa: u64, size: usize, flags: HvMemoryFlag) -> i32;
     pub fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
 }
