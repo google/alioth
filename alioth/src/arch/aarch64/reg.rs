@@ -112,7 +112,35 @@ bitfield! {
     pub struct EsrEl2(u64);
     impl Debug;
     pub iss2, _: 36, 32;
-    pub ec, _: 31, 26;
+    pub u8, into EsrEl2Ec, ec, _: 31, 26;
     pub il, _: 25;
-    pub iss, _: 24, 0;
+    pub u32, iss, _: 24, 0;
+}
+
+c_enum! {
+    pub struct EsrEl2Ec(u8);
+    {
+        DATA_ABORT_LOWER = 0b100100;
+        INSTR_ABRT_LOWER = 0b100000;
+    }
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct EsrEl2DataAbort(u32);
+    impl Debug;
+    pub isv, _: 24;
+    pub sas, _: 23, 22;
+    pub sse, _: 21;
+    pub srt, _: 20, 16;
+    pub sf, _: 15;
+    pub ar, _: 14;
+    pub vncr, _: 13;
+    pub set, _: 12, 11;
+    pub fnv, _: 10;
+    pub ea, _: 9;
+    pub cm, _: 8;
+    pub s1ptw, _: 7;
+    pub wnr, _: 6;
+    pub dfsc, _: 5, 0;
 }

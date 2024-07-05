@@ -27,7 +27,7 @@ use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
     error, GicV2, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
-    MsiSender, Result, Vm, VmMemory,
+    MsiSender, Result, Vm, VmExit, VmMemory,
 };
 
 #[derive(Debug)]
@@ -245,10 +245,15 @@ impl Vm for HvfVm {
         let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
         check_ret(ret).context(error::CreateVcpu)?;
         self.vcpus.lock().insert(id, vcpu_id);
-        Ok(HvfVcpu { exit, vcpu_id })
+        Ok(HvfVcpu {
+            exit,
+            vcpu_id,
+            vmexit: VmExit::Shutdown,
+            exit_reg: None,
+        })
     }
     fn create_vm_memory(&mut self) -> Result<Self::Memory> {
-        unimplemented!()
+        Ok(HvfMemory {})
     }
     fn stop_vcpu<T>(_id: u32, _handle: &JoinHandle<T>) -> Result<()> {
         unimplemented!()

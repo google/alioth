@@ -153,6 +153,12 @@ macro_rules! c_enum {
                 value.0
             }
         }
+
+        impl From<$TyName> for $EnumName {
+            fn from(value: $TyName) -> Self {
+                $EnumName(value)
+            }
+        }
     }
 }
 
