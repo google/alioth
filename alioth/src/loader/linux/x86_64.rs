@@ -174,7 +174,7 @@ pub fn load<P: AsRef<Path>>(
             KERNEL_CMD_LINE_START + KERNEL_CMD_LINE_LIMIT,
         ),
     );
-    let num_page = (max_addr as u64 + (1 << 30) - 1) >> 30;
+    let num_page = (max_addr + (1 << 30) - 1) >> 30;
     for i in 0..num_page {
         let pdpte = (i << 30) | (Entry::P | Entry::RW | Entry::PS).bits() as u64;
         memory.write(pdpt_start + i * size_of::<u64>() as u64, &pdpte)?;
