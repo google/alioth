@@ -28,18 +28,8 @@ pub mod emulated;
 pub mod mapped;
 
 use addressable::{Addressable, SlotBackend};
-use emulated::{MmioBus, MmioRange};
+use emulated::{Action, MmioBus, MmioRange};
 use mapped::{ArcMemPages, RamBus};
-
-#[derive(Debug)]
-pub enum Action {
-    Shutdown,
-    ChangeLayout { callback: Box<dyn ChangeLayout> },
-}
-
-pub trait ChangeLayout: Debug + Send + Sync + 'static {
-    fn change(&self, memory: &Memory) -> Result<()>;
-}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -69,8 +59,6 @@ pub enum Error {
     CanotAllocate,
     #[error("{0}")]
     Hv(#[from] hv::Error),
-    #[error("cannot handle action: {0:x?}")]
-    Action(Action),
     #[error("not aligned")]
     NotAligned,
     #[error("not backed by continuous host memory")]
@@ -377,6 +365,7 @@ impl Drop for Memory {
 impl Memory {
     fn handle_action(&self, action: Action) -> Result<VmEntry> {
         match action {
+            Action::None => Ok(VmEntry::None),
             Action::Shutdown => Ok(VmEntry::Shutdown),
             Action::ChangeLayout { callback } => {
                 callback.change(self)?;
@@ -387,11 +376,8 @@ impl Memory {
 
     pub fn handle_mmio(&self, gpa: u64, write: Option<u64>, size: u8) -> Result<VmEntry> {
         if let Some(val) = write {
-            match self.mmio_bus.write(gpa, size, val) {
-                Ok(()) => Ok(VmEntry::None),
-                Err(Error::Action(action)) => self.handle_action(action),
-                Err(e) => Err(e),
-            }
+            let action = self.mmio_bus.write(gpa, size, val)?;
+            self.handle_action(action)
         } else {
             let data = self.mmio_bus.read(gpa, size)?;
             Ok(VmEntry::Mmio { data })
@@ -410,11 +396,8 @@ impl Memory {
             return Ok(VmEntry::Reboot);
         }
         if let Some(val) = write {
-            match self.io_bus.write(port as u64, size, val as u64) {
-                Ok(()) => Ok(VmEntry::None),
-                Err(Error::Action(action)) => self.handle_action(action),
-                Err(e) => Err(e),
-            }
+            let action = self.io_bus.write(port as u64, size, val as u64)?;
+            self.handle_action(action)
         } else {
             let data = self.io_bus.read(port as u64, size)? as u32;
             Ok(VmEntry::Io { data })
@@ -427,7 +410,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::hv::test::FakeVmMemory;
-    use crate::mem::emulated::Mmio;
+    use crate::mem::emulated::{Action, Mmio};
     use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory, Result, MMIO_32_START};
 
     #[test]
@@ -441,8 +424,8 @@ mod test {
             fn read(&self, _offset: u64, _size: u8) -> Result<u64> {
                 Ok(0)
             }
-            fn write(&self, _offset: u64, _size: u8, _val: u64) -> Result<()> {
-                Ok(())
+            fn write(&self, _offset: u64, _size: u8, _val: u64) -> Result<Action> {
+                Ok(Action::None)
             }
             fn size(&self) -> u64 {
                 self.size

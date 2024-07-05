@@ -21,8 +21,8 @@ use macros::Layout;
 use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::emulated::Mmio;
-use crate::mem::{AddrOpt, ChangeLayout};
+use crate::mem::emulated::{Action, ChangeLayout, Mmio};
+use crate::mem::AddrOpt;
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
 use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
@@ -382,12 +382,12 @@ impl Mmio for EmulatedHeader {
         Ok(ret.unwrap_or(0))
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let mut data = self.data.write();
         if let Some(callback) = data.write_header(offset, size, val, &self.bars) {
-            Err(mem::Error::Action(mem::Action::ChangeLayout { callback }))
+            Ok(Action::ChangeLayout { callback })
         } else {
-            Ok(())
+            Ok(Action::None)
         }
     }
 }
@@ -411,7 +411,7 @@ impl Mmio for EmulatedConfig {
         }
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         if offset < size_of::<DeviceHeader>() as u64 {
             self.header.write(offset, size, val)
         } else {

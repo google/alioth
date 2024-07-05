@@ -40,7 +40,7 @@ use crate::loader::linux::bootparams::{
     BootE820Entry, BootParams, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
 };
 use crate::mem;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 #[cfg(target_arch = "x86_64")]
 use crate::mem::{MemRegionEntry, MemRegionType};
@@ -479,7 +479,7 @@ impl Mmio for Mutex<FwCfg> {
         Ok(ret)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let mut fw_cfg = self.lock();
         let port = offset as u16 + PORT_SELECTOR;
         match (port, size) {
@@ -502,7 +502,7 @@ impl Mmio for Mutex<FwCfg> {
                 width = 2 * size as usize,
             ),
         };
-        Ok(())
+        Ok(Action::None)
     }
 }
 

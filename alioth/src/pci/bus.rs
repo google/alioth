@@ -20,7 +20,7 @@ use std::sync::Arc;
 use bitfield::bitfield;
 use parking_lot::{Mutex, RwLock};
 
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::pci::config::{BAR_IO, BAR_MEM64, BAR_PREFETCHABLE};
 use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
@@ -75,20 +75,20 @@ impl Mmio for PciIoBus {
         }
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         match offset {
             0 => {
                 assert_eq!(size, 4);
                 self.address.store(val as u32, Ordering::Release);
+                Ok(Action::None)
             }
             4..=7 => {
                 let addr = Address(self.address.load(Ordering::Acquire));
                 self.segment
-                    .write(addr.to_ecam_addr() | (offset & 0b11), size, val)?;
+                    .write(addr.to_ecam_addr() | (offset & 0b11), size, val)
             }
-            _ => {}
+            _ => Ok(Action::None),
         }
-        Ok(())
     }
 }
 

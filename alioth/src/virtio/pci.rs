@@ -25,7 +25,7 @@ use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::{IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
     MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
@@ -371,7 +371,7 @@ where
         Ok(ret)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let reg = &*self.reg;
         match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
@@ -515,7 +515,7 @@ where
                 );
             }
         }
-        Ok(())
+        Ok(Action::None)
     }
 }
 

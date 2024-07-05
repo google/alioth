@@ -22,7 +22,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
-use crate::mem::emulated::{Mmio, MmioBus};
+use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::config::DeviceHeader;
 use crate::pci::Error;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
@@ -139,7 +139,7 @@ impl Mmio for Box<dyn PciCap> {
         Mmio::read(self.as_ref(), offset, size)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         Mmio::write(self.as_ref(), offset, size, val)
     }
 
@@ -176,7 +176,7 @@ impl Mmio for PciCapList {
         self.inner.read(offset, size)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         self.inner.write(offset, size, val)
     }
 
@@ -220,14 +220,14 @@ impl Mmio for MsixCapMmio {
         Mmio::read(&*cap, offset, size)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         if offset == 2 && size == 2 {
             let mut cap = self.cap.write();
             let control = MsixMsgCtrl(val as u16);
             cap.control.set_enabled(control.enabled());
             cap.control.set_masked(control.masked());
         }
-        Ok(())
+        Ok(Action::None)
     }
 }
 
@@ -251,12 +251,12 @@ macro_rules! impl_msix_table_mmio_entry_method {
                 MsixTableMmioEntry::IrqFd(f) => f.$get(),
             }
         }
-        fn $set(&mut self, val: u32) -> mem::Result<()> {
+        fn $set(&mut self, val: u32) -> mem::Result<Action> {
             match self {
                 MsixTableMmioEntry::Entry(e) => e.$field = val,
                 MsixTableMmioEntry::IrqFd(f) => f.$set(val)?,
             }
-            Ok(())
+            Ok(Action::None)
         }
     };
 }
@@ -268,12 +268,12 @@ where
     impl_msix_table_mmio_entry_method!(addr_lo, get_addr_lo, set_addr_lo);
     impl_msix_table_mmio_entry_method!(addr_hi, get_addr_hi, set_addr_hi);
     impl_msix_table_mmio_entry_method!(data, get_data, set_data);
-    fn set_masked(&mut self, val: bool) -> mem::Result<()> {
+    fn set_masked(&mut self, val: bool) -> mem::Result<Action> {
         match self {
             MsixTableMmioEntry::Entry(e) => e.control.set_masked(val),
             MsixTableMmioEntry::IrqFd(f) => f.set_masked(val)?,
         }
-        Ok(())
+        Ok(Action::None)
     }
     pub fn get_masked(&self) -> bool {
         match self {
@@ -320,10 +320,10 @@ where
         Ok(ret as u64)
     }
 
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<()> {
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         if size != 4 || offset & 0b11 != 0 {
             log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
-            return Ok(());
+            return Ok(Action::None);
         }
         let val = val as u32;
         let index = offset as usize / size_of::<MsixTableEntry>();
@@ -332,7 +332,7 @@ where
                 "MSI-X table size: {}, accessing index {index}",
                 self.entries.len()
             );
-            return Ok(());
+            return Ok(Action::None);
         };
         let mut entry = entry.write();
         match offset as usize % size_of::<MsixTableEntry>() {
@@ -342,6 +342,6 @@ where
             12 => entry.set_masked(MsixVectorCtrl(val).masked())?,
             _ => unreachable!(),
         };
-        Ok(())
+        Ok(Action::None)
     }
 }

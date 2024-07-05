@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use crate::device::console::{Console, UartRecv};
 use crate::hv::IrqSender;
 use crate::mem;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 
 const TX_HOLDING_REGISTER: u16 = 0x0;
 const RX_BUFFER_REGISTER: u16 = 0x0;
@@ -229,7 +229,7 @@ where
         Ok(ret as u64)
     }
 
-    fn write(&self, offset: u64, _size: u8, val: u64) -> Result<(), mem::Error> {
+    fn write(&self, offset: u64, _size: u8, val: u64) -> mem::Result<Action> {
         let byte = val as u8;
         let mut reg = self.reg.lock();
         match offset as u16 {
@@ -278,7 +278,7 @@ where
             }
             _ => log::error!("{}: write unreachable offset {:#x}", self.name, offset),
         }
-        Ok(())
+        Ok(Action::None)
     }
 }
 
