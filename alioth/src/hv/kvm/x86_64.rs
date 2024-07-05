@@ -118,6 +118,7 @@ mod test {
     use crate::hv::Hypervisor;
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_get_supported_cpuid() {
         let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let mut kvm_cpuid_exist = false;

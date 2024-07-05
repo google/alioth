@@ -172,6 +172,7 @@ mod test {
     use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmConfig, VmEntry, VmExit, VmMemory};
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_vcpu_regs() {
         let hvf = Hvf {};
         let config = VmConfig { coco: None };
@@ -220,6 +221,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_vcpu_run() {
         let hvf = Hvf {};
         let config = VmConfig { coco: None };
