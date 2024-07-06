@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use bitfield::bitfield;
 use parking_lot::RwLock;
-use thiserror::Error;
+use snafu::Snafu;
 
+use crate::errors::{trace_error, DebugTrace};
 use crate::mem;
 use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
 
@@ -45,22 +46,12 @@ impl Display for Bdf {
     }
 }
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("{0:?} already exists")]
-    BdfExists(Bdf),
-
-    #[error("cannot find appropriate bdf")]
-    NoBdfSlots,
-
-    #[error("invalid bar index {0}")]
-    InvalidBar(usize),
-
-    #[error("reset failed")]
-    ResetFailed,
+    #[snafu(display("Failed to access guest memory"), context(false))]
+    Memory { source: Box<crate::mem::Error> },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
