@@ -32,7 +32,11 @@ fn extract_type_from_box(ty: &Type) -> Option<&Type> {
     let GenericArgument::Type(ty) = generic_arg else {
         return None;
     };
-    Some(ty)
+    if matches!(ty, Type::TraitObject(_)) {
+        None
+    } else {
+        Some(ty)
+    }
 }
 
 pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
