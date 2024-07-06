@@ -21,7 +21,7 @@ use crate::arch::layout::MEM_64_START;
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::{InitState, Result};
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory};
+use crate::mem::{MemRegion, MemRegionType, Memory};
 
 pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcMemPages)> {
     let mut file = File::open(path)?;
@@ -33,7 +33,7 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
 
     let gpa = MEM_64_START - size;
     memory.add_region(
-        AddrOpt::Fixed(gpa),
+        gpa,
         Arc::new(MemRegion::with_mapped(rom.clone(), MemRegionType::Reserved)),
     )?;
     let boot_cs = SegRegVal {

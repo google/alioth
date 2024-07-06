@@ -34,7 +34,7 @@ use crate::hv::{self, Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
-use crate::mem::{AddrOpt, MemRegion, MemRegionType};
+use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
@@ -156,7 +156,7 @@ where
         let irq_line = self.board.vm.create_irq_sender(1)?;
         let pl011_dev = Pl011::new(PL011_START, irq_line)?;
         self.board.mmio_devs.write().push((
-            AddrOpt::Fixed(PL011_START),
+            PL011_START,
             Arc::new(MemRegion::with_emulated(
                 Arc::new(pl011_dev),
                 MemRegionType::Hidden,

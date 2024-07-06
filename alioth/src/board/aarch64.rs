@@ -30,7 +30,7 @@ use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{AddrOpt, MemRegion, MemRegionType};
+use crate::mem::{MemRegion, MemRegionType};
 
 enum Gic<V>
 where
@@ -109,7 +109,7 @@ where
         #[cfg(not(target_os = "linux"))]
         let pages_low = ArcMemPages::from_anonymous(low_mem_size as usize, None)?;
         memory.add_region(
-            AddrOpt::Fixed(RAM_32_START),
+            RAM_32_START,
             Arc::new(MemRegion::with_mapped(pages_low, MemRegionType::Ram)),
         )?;
 
@@ -120,7 +120,7 @@ where
             #[cfg(not(target_os = "linux"))]
             let pages_high = ArcMemPages::from_anonymous(high_mem_size, None)?;
             memory.add_region(
-                AddrOpt::Fixed(MEM_64_START),
+                MEM_64_START,
                 Arc::new(MemRegion::with_mapped(pages_high, MemRegionType::Ram)),
             )?;
         }
