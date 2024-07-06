@@ -41,7 +41,7 @@ use crate::utils::{
 };
 use crate::virtio::dev::{Register, WakeEvent};
 use crate::virtio::queue::Queue;
-use crate::virtio::{DevStatus, Error, IrqSender, Result};
+use crate::virtio::{error, DevStatus, IrqSender, Result};
 use crate::{impl_mmio_for_zerocopy, mem};
 
 use super::dev::{Virtio, VirtioDevice};
@@ -92,7 +92,7 @@ where
     fn get_irqfd(&self, vector: u16) -> Result<RawFd> {
         let entries = &**self.msix_entries;
         let Some(entry) = entries.get(vector as usize) else {
-            return Err(Error::InvalidMsixVector(vector));
+            return error::InvalidMsixVector { vector }.fail();
         };
         let mut entry = entry.write();
         match &*entry {
@@ -139,7 +139,7 @@ where
 
     fn queue_irqfd(&self, idx: u16) -> Result<RawFd> {
         let Some(vector) = self.msix_vector.queues.get(idx as usize) else {
-            return Err(Error::InvalidQueueIndex(idx));
+            return error::InvalidQueueIndex { index: idx }.fail();
         };
         self.get_irqfd(vector.load(Ordering::Acquire))
     }

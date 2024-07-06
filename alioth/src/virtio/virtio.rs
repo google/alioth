@@ -14,11 +14,12 @@
 
 use std::fmt::Debug;
 use std::os::fd::RawFd;
+use std::path::PathBuf;
 
 use bitflags::bitflags;
-use thiserror::Error;
+use snafu::Snafu;
 
-use crate::{hv, mem};
+use crate::errors::{trace_error, DebugTrace};
 
 #[path = "dev/dev.rs"]
 pub mod dev;
@@ -31,59 +32,45 @@ pub mod vhost;
 #[cfg(target_os = "linux")]
 pub mod vu;
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] hv::Error),
-
-    #[error("IO: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] crate::pci::Error),
-
-    #[error("Invalid descriptor id {0}")]
-    InvalidDescriptor(u16),
-
-    #[error("invalid queue index {0}")]
-    InvalidQueueIndex(u16),
-
-    #[error("invalid msix vector {0}")]
-    InvalidMsixVector(u16),
-
-    #[error("Invalid vhost user response message, want {0}, got {1}")]
-    InvalidVhostRespMsg(u32, u32),
-
-    #[error("Invalid vhost user message size, want {0}, get {1}")]
-    VuMessageSizeMismatch(usize, usize),
-
-    #[error("Invalid vhost user message payload size, want {0}, got {1}")]
-    VuInvalidPayloadSize(usize, u32),
-
-    #[error("vhost-user backend replied error code {0:#x} to request {1:#x}")]
-    VuRequestErr(u64, u32),
-
-    #[error("vhost-user backend signals an error of queue {0:#x}")]
-    VuQueueErr(u16),
-
-    #[error("vhost-user backend is missing device feature {0:#x}")]
-    VuMissingDeviceFeature(u64),
-
+    #[snafu(display("Hypervisor internal error"), context(false))]
+    HvError { source: Box<crate::hv::Error> },
+    #[snafu(display("Failed to access guest memory"), context(false))]
+    Memory { source: Box<crate::mem::Error> },
+    #[snafu(display("PCI bus error"), context(false))]
+    PciBus { source: crate::pci::Error },
+    #[snafu(display("Cannot access file {path:?}"))]
+    AccessFile {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
+    #[snafu(display("Failed to create a poll"))]
+    CreatePoll { error: std::io::Error },
+    #[snafu(display("Failed to create a thread waker"))]
+    CreateWaker { error: std::io::Error },
+    #[snafu(display("Failed to register/deregister an event source"))]
+    EventSource { error: std::io::Error },
+    #[snafu(display("Failed to poll events"))]
+    PollEvents { error: std::io::Error },
+    #[snafu(display("Failed to create a worker thread"))]
+    WorkerThread { error: std::io::Error },
+    #[snafu(display("Invalid descriptor id {id}"))]
+    InvalidDescriptor { id: u16 },
+    #[snafu(display("Invalid queue index {index}"))]
+    InvalidQueueIndex { index: u16 },
+    #[snafu(display("Invalid msix vector {vector}"))]
+    InvalidMsixVector { vector: u16 },
     #[cfg(target_os = "linux")]
-    #[error("vhost-user backend is missing protocol feature {0:x?}")]
-    VuMissingProtocolFeature(vu::VuFeature),
-
-    #[error("insufficient buffer (size {0}) for holding {1} fds")]
-    VuInsufficientBuffer(usize, usize),
-
-    #[error("vhost backend is missing device feature {0:#x}")]
-    VhostMissingDeviceFeature(u64),
-
-    #[error("vhost-{0} signals an error of queue {1:#x}")]
-    VhostQueueErr(&'static str, u16),
+    #[snafu(display("vhost-user error"), context(false))]
+    Vu { source: Box<vu::Error> },
+    #[cfg(target_os = "linux")]
+    #[snafu(display("vhost error"), context(false))]
+    Vhost { source: Box<vhost::Error> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;

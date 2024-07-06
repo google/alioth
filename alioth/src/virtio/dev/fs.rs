@@ -37,9 +37,10 @@ use crate::mem::{MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
-    DeviceConfig, MemoryRegion, MemorySingleRegion, VirtqAddr, VirtqState, VuDev, VuFeature,
+    error as vu_error, DeviceConfig, Error, MemoryRegion, MemorySingleRegion, VirtqAddr,
+    VirtqState, VuDev, VuFeature,
 };
-use crate::virtio::{DeviceId, Error, IrqSender, Result, VirtioFeature};
+use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
 #[repr(C, align(4))]
@@ -90,7 +91,10 @@ impl VuFs {
         let virtio_feat = VirtioFeature::from_bits_retain(dev_feat);
         let need_feat = VirtioFeature::VHOST_PROTOCOL | VirtioFeature::VERSION_1;
         if !virtio_feat.contains(need_feat) {
-            return Err(Error::VuMissingDeviceFeature(need_feat.bits()));
+            return vu_error::DeviceFeature {
+                feature: need_feat.bits(),
+            }
+            .fail()?;
         }
 
         let prot_feat = VuFeature::from_bits_retain(vu_dev.get_protocol_features()?);
@@ -104,7 +108,10 @@ impl VuFs {
             need_feat |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD;
         }
         if !prot_feat.contains(need_feat) {
-            return Err(Error::VuMissingProtocolFeature(need_feat & !prot_feat));
+            return vu_error::ProtocolFeature {
+                feature: need_feat & !prot_feat,
+            }
+            .fail()?;
         }
         vu_dev.set_protocol_features(&need_feat.bits())?;
 
@@ -275,11 +282,17 @@ impl Virtio for VuFs {
     ) -> Result<()> {
         let q_index = event.token().0;
         if q_index < queues.len() {
-            return Err(Error::VuQueueErr(q_index as _));
+            return vu_error::QueueErr {
+                index: q_index as u16,
+            }
+            .fail()?;
         }
 
         let Some(dax_region) = &self.dax_region else {
-            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+            return vu_error::ProtocolFeature {
+                feature: VuFeature::BACKEND_REQ,
+            }
+            .fail()?;
         };
         loop {
             let mut fs_map = VuFsMap::new_zeroed();
@@ -289,11 +302,15 @@ impl Virtio for VuFs {
                 .receive_from_channel(fs_map.as_bytes_mut(), &mut fds);
             let (request, size) = match ret {
                 Ok((r, s)) => (r, s),
-                Err(Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) => return Err(e),
+                Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e)?,
             };
             if size as usize != size_of_val(&fs_map) {
-                return Err(Error::VuInvalidPayloadSize(size_of_val(&fs_map), size));
+                return vu_error::PayloadSize {
+                    want: size_of_val(&fs_map),
+                    got: size,
+                }
+                .fail()?;
             }
             match request {
                 VHOST_USER_BACKEND_FS_MAP => {
@@ -396,7 +413,7 @@ impl Virtio for VuFs {
                 .set_virtq_kick(&(q_index as u64), fd.as_fd().as_raw_fd())?;
             Ok(true)
         } else {
-            Err(Error::InvalidQueueIndex(q_index))
+            error::InvalidQueueIndex { index: q_index }.fail()
         }
     }
 

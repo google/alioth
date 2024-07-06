@@ -16,9 +16,11 @@ pub mod bindings;
 pub mod ioctls;
 
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::virtio::Result;
+use snafu::{ResultExt, Snafu};
+
+use crate::errors::{trace_error, DebugTrace};
 
 use bindings::{MemoryMultipleRegion, VhostFeature, VirtqAddr, VirtqFile, VirtqState};
 use ioctls::{
@@ -28,6 +30,25 @@ use ioctls::{
     vhost_vsock_set_guest_cid, vhost_vsock_set_running,
 };
 
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, visibility(pub(crate)), context(suffix(false)))]
+pub enum Error {
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
+    #[snafu(display("Cannot access device {path:?}"))]
+    AccessDevice {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[snafu(display("vhost backend is missing device feature {feature:#x}"))]
+    VhostMissingDeviceFeature { feature: u64 },
+    #[snafu(display("vhost-{dev} signals an error of queue {index:#x}"))]
+    VhostQueueErr { dev: &'static str, index: u16 },
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
+
 #[derive(Debug)]
 pub struct VhostDev {
     fd: File,
@@ -35,9 +56,10 @@ pub struct VhostDev {
 
 impl VhostDev {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Ok(VhostDev {
-            fd: File::open(path)?,
-        })
+        let fd = File::open(&path).context(error::AccessDevice {
+            path: path.as_ref(),
+        })?;
+        Ok(VhostDev { fd })
     }
 
     pub fn get_features(&self) -> Result<u64> {

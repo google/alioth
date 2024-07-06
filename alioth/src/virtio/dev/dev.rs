@@ -24,6 +24,7 @@ use bitflags::Flags;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
+use snafu::ResultExt;
 
 use crate::hv::{IoeventFd, IoeventFdRegistry};
 use crate::mem::emulated::Mmio;
@@ -31,7 +32,7 @@ use crate::mem::mapped::RamBus;
 use crate::mem::MemRegion;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
-use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
+use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 
 pub mod blk;
 pub mod entropy;
@@ -183,7 +184,7 @@ where
     where
         R: IoeventFdRegistry<IoeventFd = E>,
     {
-        let poll = Poll::new()?;
+        let poll = Poll::new().context(error::CreatePoll)?;
         let device_config = dev.config();
         let mut dev_feat = dev.feature();
         if restricted_memory {
@@ -208,15 +209,18 @@ where
         );
         for (index, fd) in ioeventfds.iter().enumerate() {
             if !dev.offload_ioeventfd(index as u16, fd)? {
-                poll.registry().register(
-                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
-                    Token(TOKEN_IS_QUEUE as usize | index),
-                    Interest::READABLE,
-                )?;
+                poll.registry()
+                    .register(
+                        &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                        Token(TOKEN_IS_QUEUE as usize | index),
+                        Interest::READABLE,
+                    )
+                    .context(error::EventSource)?;
             }
         }
         let token = TOKEN_IS_QUEUE | TOKEN_WORKER_EVENT;
-        let waker = Waker::new(poll.registry(), Token(token as usize))?;
+        let waker =
+            Waker::new(poll.registry(), Token(token as usize)).context(error::CreateWaker)?;
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
         let mut device_worker = DeviceWorker {
@@ -237,7 +241,8 @@ where
                 } else {
                     log::debug!("worker {}: done", device_worker.name)
                 }
-            })?;
+            })
+            .context(error::WorkerThread)?;
         log::debug!(
             "{name}: created with {:x?} {:x?}",
             VirtioFeature::from_bits_retain(reg.device_feature & !D::Feature::all().bits()),
@@ -310,7 +315,9 @@ where
     fn wait_start(&mut self) -> Result<WakeEvent<S>> {
         let mut events = Events::with_capacity(1);
         loop {
-            self.poll.poll(&mut events, None)?;
+            self.poll
+                .poll(&mut events, None)
+                .context(error::PollEvents)?;
             while let Ok(wake_event) = self.event_rx.try_recv() {
                 match &wake_event {
                     WakeEvent::Start { .. } | WakeEvent::Shutdown | WakeEvent::Reset => {
@@ -378,7 +385,9 @@ where
         self.handle_wake_events(&irq_sender)?;
         let mut events = Events::with_capacity(128);
         loop {
-            self.poll.poll(&mut events, None)?;
+            self.poll
+                .poll(&mut events, None)
+                .context(error::PollEvents)?;
             for event in events.iter() {
                 let ret = self.handle_event(event, &irq_sender)?;
                 if ret != DevAction::Continue {
