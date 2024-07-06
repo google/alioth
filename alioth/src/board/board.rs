@@ -302,6 +302,7 @@ where
                 let devices = self.pci_bus.segment.devices.read();
                 for (bdf, dev) in devices.iter() {
                     dev.dev.reset().context(error::ResetPci { bdf: *bdf })?;
+                    dev.dev.config().reset();
                 }
                 self.memory.reset()?;
             }

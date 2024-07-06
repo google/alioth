@@ -593,6 +593,8 @@ impl PciCap for VirtioPciCap {
     fn set_next(&mut self, val: u8) {
         self.header.next = val
     }
+
+    fn reset(&self) {}
 }
 
 #[repr(C, align(4))]
@@ -608,6 +610,7 @@ impl PciCap for VirtioPciCap64 {
     fn set_next(&mut self, val: u8) {
         PciCap::set_next(&mut self.cap, val)
     }
+    fn reset(&self) {}
 }
 
 #[repr(C, align(4))]
@@ -622,6 +625,7 @@ impl PciCap for VirtioPciNotifyCap {
     fn set_next(&mut self, val: u8) {
         self.cap.header.next = val;
     }
+    fn reset(&self) {}
 }
 
 #[derive(Debug)]

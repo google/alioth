@@ -358,6 +358,11 @@ impl EmulatedHeader {
         let mut header = self.data.write();
         header.set_command(command)
     }
+
+    pub fn reset(&self) {
+        let mut header = self.data.write();
+        header.set_command(Command::empty());
+    }
 }
 
 impl Mmio for EmulatedHeader {
@@ -393,6 +398,7 @@ impl Mmio for EmulatedHeader {
 
 pub trait PciConfig: Mmio {
     fn get_header(&self) -> &EmulatedHeader;
+    fn reset(&self);
 }
 
 #[derive(Debug)]
@@ -449,5 +455,10 @@ impl EmulatedConfig {
 impl PciConfig for EmulatedConfig {
     fn get_header(&self) -> &EmulatedHeader {
         &self.header
+    }
+
+    fn reset(&self) {
+        self.header.reset();
+        self.caps.reset();
     }
 }

@@ -109,7 +109,7 @@ pub struct MmioBus<R = MmioRange>
 where
     R: Debug + SlotBackend,
 {
-    inner: RwLock<Addressable<R>>,
+    pub(crate) inner: RwLock<Addressable<R>>,
 }
 
 impl<R> Default for MmioBus<R>

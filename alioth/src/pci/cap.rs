@@ -126,6 +126,7 @@ impl Default for MsixTableEntry {
 
 pub trait PciCap: Mmio {
     fn set_next(&mut self, val: u8);
+    fn reset(&self);
 }
 
 impl SlotBackend for Box<dyn PciCap> {
@@ -168,6 +169,13 @@ impl PciCapList {
 
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    pub fn reset(&self) {
+        let inner = self.inner.inner.read();
+        for (_, cap) in inner.iter() {
+            cap.reset();
+        }
     }
 }
 
@@ -234,6 +242,12 @@ impl Mmio for MsixCapMmio {
 impl PciCap for MsixCapMmio {
     fn set_next(&mut self, val: u8) {
         self.cap.write().header.next = val;
+    }
+
+    fn reset(&self) {
+        let mut cap = self.cap.write();
+        cap.control.set_enabled(false);
+        cap.control.set_masked(false);
     }
 }
 
