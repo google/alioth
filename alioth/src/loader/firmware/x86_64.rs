@@ -17,25 +17,32 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use snafu::ResultExt;
+
 use crate::arch::layout::MEM_64_START;
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
-use crate::loader::{InitState, Result};
+use crate::loader::{error, InitState, Result};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRegion, MemRegionType, Memory};
 
 pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcMemPages)> {
-    let mut file = File::open(path)?;
-    let size = file.metadata()?.len();
-    assert_eq!(size & 0xfff, 0);
+    let access_firmware = error::AccessFile {
+        path: path.as_ref(),
+    };
+    let mut file = File::open(&path).context(access_firmware)?;
+    let size = file.metadata().context(access_firmware)?.len();
+    if size & 0xfff != 0 {
+        return error::SizeNotAligned { size }.fail();
+    }
 
-    let mut rom = ArcMemPages::from_memfd(size as usize, None, Some(c"rom"))?;
-    file.read_exact(rom.as_slice_mut())?;
+    let mut rom =
+        ArcMemPages::from_memfd(size as usize, None, Some(c"rom")).context(error::AddMemSlot)?;
+    file.read_exact(rom.as_slice_mut())
+        .context(access_firmware)?;
 
     let gpa = MEM_64_START - size;
-    memory.add_region(
-        gpa,
-        Arc::new(MemRegion::with_mapped(rom.clone(), MemRegionType::Reserved)),
-    )?;
+    let region = Arc::new(MemRegion::with_mapped(rom.clone(), MemRegionType::Reserved));
+    memory.add_region(gpa, region).context(error::AddMemSlot)?;
     let boot_cs = SegRegVal {
         selector: 0xf000,
         base: 0xffff0000,
