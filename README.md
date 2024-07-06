@@ -56,8 +56,6 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 ## TODOs
 
 - [ ] device passthrough with VFIO,
-- [ ] finish error handling refactoring work started in
-      [#37](https://github.com/google/alioth/pull/37),
 - [ ] explore a better solution to ACPI DSDT to replace the pre-compiled AML
       bytes,
 - [ ] increase test coverage,
