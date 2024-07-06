@@ -31,8 +31,8 @@ use crate::virtio::queue::VirtQueue;
 use crate::virtio::vhost::bindings::{
     MemoryMultipleRegion, MemoryRegion, VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND,
 };
-use crate::virtio::vhost::VhostDev;
-use crate::virtio::{Error, IrqSender, Result, VirtioFeature};
+use crate::virtio::vhost::{error, VhostDev};
+use crate::virtio::{IrqSender, Result, VirtioFeature};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VhostVsockParam {
@@ -72,9 +72,10 @@ impl VhostVsock {
         let known_feat = VirtioFeature::from_bits_truncate(dev_feat).bits()
             | VsockFeature::from_bits_truncate(dev_feat).bits();
         if !VirtioFeature::from_bits_retain(known_feat).contains(VirtioFeature::VERSION_1) {
-            return Err(Error::VhostMissingDeviceFeature(
-                VirtioFeature::VERSION_1.bits(),
-            ));
+            return error::VhostMissingDeviceFeature {
+                feature: VirtioFeature::VERSION_1.bits(),
+            }
+            .fail()?;
         }
         Ok(VhostVsock {
             name,
@@ -167,7 +168,8 @@ impl Virtio for VhostVsock {
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
         }
-        self.vhost_dev.vsock_set_running(true)
+        self.vhost_dev.vsock_set_running(true)?;
+        Ok(())
     }
 
     fn reset(&mut self, registry: &Registry) {
@@ -197,7 +199,12 @@ impl Virtio for VhostVsock {
         _registry: &Registry,
     ) -> Result<()> {
         let q_index = event.token();
-        Err(Error::VhostQueueErr("vsock", q_index.0 as _))
+        error::VhostQueueErr {
+            dev: "vsock",
+            index: q_index.0 as u16,
+        }
+        .fail()?;
+        Ok(())
     }
 
     fn handle_queue(

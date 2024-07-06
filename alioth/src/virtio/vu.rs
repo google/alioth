@@ -17,15 +17,16 @@ use std::iter::zip;
 use std::mem::{size_of, size_of_val};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
+use snafu::{ResultExt, Snafu};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::errors::{trace_error, DebugTrace};
 use crate::ffi;
-use crate::virtio::{Error, Result};
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -179,6 +180,37 @@ pub struct Message {
     pub size: u32,
 }
 
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, visibility(pub(crate)), context(suffix(false)))]
+pub enum Error {
+    #[snafu(display("Cannot access socket {path:?}"))]
+    AccessSocket {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
+    #[snafu(display("Invalid vhost-user response message, want {want}, got {got}"))]
+    InvalidResp { want: u32, got: u32 },
+    #[snafu(display("Invalid vhost-user message size, want {want}, get {got}"))]
+    MsgSize { want: usize, got: usize },
+    #[snafu(display("Invalid vhost-user message payload size, want {want}, got {got}"))]
+    PayloadSize { want: usize, got: u32 },
+    #[snafu(display("vhost-user backend replied error code {ret:#x} to request {req:#x}"))]
+    RequestErr { ret: u64, req: u32 },
+    #[snafu(display("vhost-user backend signaled an error of queue {index:#x}"))]
+    QueueErr { index: u16 },
+    #[snafu(display("vhost-user backend is missing device feature {feature:#x}"))]
+    DeviceFeature { feature: u64 },
+    #[snafu(display("vhost-user backend is missing protocol feature {feature:x?}"))]
+    ProtocolFeature { feature: VuFeature },
+    #[snafu(display("Insufficient buffer (len {len}) for holding {need} fds"))]
+    InsufficientBuffer { len: usize, need: usize },
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
+
 #[derive(Debug)]
 pub struct VuDev {
     conn: UnixStream,
@@ -188,7 +220,9 @@ pub struct VuDev {
 impl VuDev {
     pub fn new<P: AsRef<Path>>(sock: P) -> Result<Self> {
         Ok(VuDev {
-            conn: UnixStream::connect(sock)?,
+            conn: UnixStream::connect(&sock).context(error::AccessSocket {
+                path: sock.as_ref(),
+            })?,
             channel: None,
         })
     }
@@ -277,21 +311,37 @@ impl VuDev {
         let read_size = (&self.conn).read_vectored(&mut bufs)?;
         let expect_size = size_of::<Message>() + bufs[1].len();
         if read_size != expect_size {
-            return Err(Error::VuMessageSizeMismatch(expect_size, read_size));
+            return error::MsgSize {
+                want: expect_size,
+                got: read_size,
+            }
+            .fail();
         }
         if resp.request != req {
-            return Err(Error::InvalidVhostRespMsg(req, resp.request));
+            return error::InvalidResp {
+                want: req,
+                got: resp.request,
+            }
+            .fail();
         }
         if size_of::<R>() != 0 {
             if resp.size != size_of::<R>() as u32 {
-                return Err(Error::VuInvalidPayloadSize(size_of::<R>(), resp.size));
+                return error::PayloadSize {
+                    want: size_of::<R>(),
+                    got: resp.size,
+                }
+                .fail();
             }
         } else {
             if resp.size != size_of::<u64>() as u32 {
-                return Err(Error::VuInvalidPayloadSize(size_of::<u64>(), resp.size));
+                return error::PayloadSize {
+                    want: size_of::<u64>(),
+                    got: resp.size,
+                }
+                .fail();
             }
             if ret_code != 0 {
-                return Err(Error::VuRequestErr(ret_code, req));
+                return error::RequestErr { ret: ret_code, req }.fail();
             }
         }
         Ok(payload)
@@ -382,12 +432,19 @@ impl VuDev {
             msg_flags: 0,
         };
         let Some(channel) = &self.channel else {
-            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+            return error::ProtocolFeature {
+                feature: VuFeature::BACKEND_REQ,
+            }
+            .fail();
         };
         let r_size = ffi!(unsafe { libc::recvmsg(channel.as_raw_fd(), &mut uds_msg, 0) })? as usize;
         let expected_size = size_of::<Message>() + msg.size as usize;
         if r_size != expected_size {
-            return Err(Error::VuMessageSizeMismatch(expected_size, r_size));
+            return error::MsgSize {
+                want: expected_size,
+                got: r_size,
+            }
+            .fail();
         }
 
         let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&uds_msg) };
@@ -402,7 +459,11 @@ impl VuDev {
         let count =
             (cmsg_ptr as usize + cmsg.cmsg_len - cmsg_data_ptr as usize) / size_of::<RawFd>();
         if count > fds.len() {
-            return Err(Error::VuInsufficientBuffer(fds.len(), count));
+            return error::InsufficientBuffer {
+                len: fds.len(),
+                need: count,
+            }
+            .fail();
         }
         for (fd, index) in zip(fds.iter_mut(), 0..count) {
             *fd = Some(unsafe {
@@ -414,7 +475,10 @@ impl VuDev {
 
     pub fn ack_request<T: AsBytes>(&self, req: u32, payload: &T) -> Result<()> {
         let Some(channel) = &self.channel else {
-            return Err(Error::VuMissingProtocolFeature(VuFeature::BACKEND_REQ));
+            return error::ProtocolFeature {
+                feature: VuFeature::BACKEND_REQ,
+            }
+            .fail();
         };
         let msg = Message {
             request: req,

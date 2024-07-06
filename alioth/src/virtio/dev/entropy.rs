@@ -21,6 +21,7 @@ use bitflags::bitflags;
 use libc::O_NONBLOCK;
 use mio::event::Event;
 use mio::Registry;
+use snafu::ResultExt;
 
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
@@ -28,7 +29,7 @@ use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::{IrqSender, Result, FEATURE_BUILT_IN};
+use crate::virtio::{error, IrqSender, Result, FEATURE_BUILT_IN};
 
 #[derive(Debug, Clone)]
 pub struct EntropyConfig;
@@ -63,7 +64,8 @@ impl Entropy {
     pub fn new(name: Arc<String>) -> Result<Self> {
         let mut options = OpenOptions::new();
         options.custom_flags(O_NONBLOCK).read(true);
-        let file = options.open("/dev/urandom")?;
+        let path = "/dev/urandom";
+        let file = options.open(path).context(error::AccessFile { path })?;
         Ok(Entropy {
             name,
             source: file,

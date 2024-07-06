@@ -21,13 +21,14 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use mio::event::Event;
 use mio::Registry;
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
-use crate::virtio::{DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
+use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
 c_enum! {
@@ -144,8 +145,15 @@ pub struct Block {
 
 impl Block {
     pub fn new(param: BlockParam, name: Arc<String>) -> Result<Self> {
-        let disk = OpenOptions::new().read(true).write(true).open(param.path)?;
-        let len = disk.metadata()?.len();
+        let access_disk = error::AccessFile {
+            path: param.path.as_path(),
+        };
+        let disk = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&param.path)
+            .context(access_disk)?;
+        let len = disk.metadata().context(access_disk)?.len();
         let config = BlockConfig {
             capacity: len / SECTOR_SIZE as u64,
             num_queues: 1,

@@ -23,7 +23,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::mapped::{RamBus, RamLayoutGuard};
 use crate::virtio::queue::{Descriptor, LockedQueue, Queue, QueueGuard, VirtQueue};
-use crate::virtio::{Error, Result, VirtioFeature};
+use crate::virtio::{error, Result, VirtioFeature};
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes)]
@@ -154,7 +154,7 @@ impl<'g, 'm> SplitLayout<'g, 'm> {
     pub fn get_desc(&self, id: u16) -> Result<&Desc> {
         match self.desc.get(id as usize) {
             Some(desc) => Ok(unsafe { &*desc.get() }),
-            None => Err(Error::InvalidDescriptor(id)),
+            None => error::InvalidDescriptor { id }.fail(),
         }
     }
 
