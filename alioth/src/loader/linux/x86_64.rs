@@ -23,6 +23,7 @@ use crate::arch::reg::{
     Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
 };
 use crate::mem::mapped::RamBus;
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromZeroes};
 
 use crate::arch::layout::{
@@ -35,7 +36,7 @@ use crate::loader::linux::bootparams::{
     BootE820Entry, BootParams, XLoadFlags, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
     MAGIC_AA55, MAGIC_HDRS, SETUP_HEADER_OFFSET,
 };
-use crate::loader::{search_initramfs_address, Error, InitState};
+use crate::loader::{error, search_initramfs_address, Error, InitState};
 
 // loading bzImage and ramdisk above 4G in 64bit.
 const MINIMAL_VERSION: u16 = 0x020c;
@@ -48,11 +49,19 @@ pub fn load<P: AsRef<Path>>(
     initramfs: Option<P>,
 ) -> Result<InitState, Error> {
     let mut boot_params = BootParams::new_zeroed();
-    let kernel_file = File::open(kernel)?;
-    let kernel_meta = kernel_file.metadata()?;
-    let mut kernel = BufReader::new(kernel_file);
-    kernel.seek(SeekFrom::Start(SETUP_HEADER_OFFSET))?;
-    kernel.read_exact(boot_params.hdr.as_bytes_mut())?;
+    let access_kernel = error::AccessFile {
+        path: kernel.as_ref(),
+    };
+    let kernel = File::open(&kernel).context(access_kernel)?;
+    let kernel_meta = kernel.metadata().context(access_kernel)?;
+    let mut kernel = BufReader::new(kernel);
+
+    kernel
+        .seek(SeekFrom::Start(SETUP_HEADER_OFFSET))
+        .context(access_kernel)?;
+    kernel
+        .read_exact(boot_params.hdr.as_bytes_mut())
+        .context(access_kernel)?;
 
     // For backwards compatibility, if the setup_sects field contains 0,
     // the real value is 4.
@@ -61,30 +70,33 @@ pub fn load<P: AsRef<Path>>(
     }
 
     if boot_params.hdr.boot_flag != MAGIC_AA55 {
-        return Err(Error::MissingMagic {
+        return error::MissingMagic {
             magic: MAGIC_AA55 as u64,
             found: boot_params.hdr.boot_flag as u64,
-        });
+        }
+        .fail();
     }
     if boot_params.hdr.header != MAGIC_HDRS {
-        return Err(Error::MissingMagic {
+        return error::MissingMagic {
             magic: MAGIC_HDRS as u64,
             found: boot_params.hdr.header as u64,
-        });
+        }
+        .fail();
     }
     if boot_params.hdr.version < MINIMAL_VERSION {
-        return Err(Error::TooOld {
+        return error::TooOld {
             name: "bzimage",
             min: MINIMAL_VERSION as u64,
             found: boot_params.hdr.version as u64,
-        });
+        }
+        .fail();
     }
     if !XLoadFlags::from_bits_retain(boot_params.hdr.xloadflags).contains(XLoadFlags::XLF_KERNEL_64)
     {
-        return Err(Error::Not64BitKernel);
+        return error::Not64Bit.fail();
     }
     if boot_params.hdr.relocatable_kernel == 0 {
-        return Err(Error::NotRelocatableKernel);
+        return error::NotRelocatable.fail();
     }
 
     boot_params.hdr.type_of_loader = 0xff;
@@ -94,7 +106,11 @@ pub fn load<P: AsRef<Path>>(
         let cmd_line_limit =
             std::cmp::min(boot_params.hdr.cmdline_size as u64, KERNEL_CMD_LINE_LIMIT);
         if cmd_line.len() as u64 > cmd_line_limit {
-            return Err(Error::CmdLineTooLong(cmd_line.len(), cmd_line_limit));
+            return error::CmdLineTooLong {
+                len: cmd_line.len(),
+                limit: cmd_line_limit,
+            }
+            .fail();
         }
         memory.write_range(
             KERNEL_CMD_LINE_START,
@@ -107,15 +123,20 @@ pub fn load<P: AsRef<Path>>(
 
     // load kernel image
     let kernel_offset = (boot_params.hdr.setup_sects as u64 + 1) * 512;
-    kernel.seek(SeekFrom::Start(kernel_offset))?;
+    kernel
+        .seek(SeekFrom::Start(kernel_offset))
+        .context(access_kernel)?;
     let kernel_size = kernel_meta.len() - kernel_offset;
     memory.write_range(KERNEL_IMAGE_START, kernel_size, kernel)?;
 
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        let initramfs = File::open(initramfs)?;
-        let initramfs_size = initramfs.metadata()?.len();
+        let access_initramfs = error::AccessFile {
+            path: initramfs.as_ref(),
+        };
+        let initramfs = File::open(&initramfs).context(access_initramfs)?;
+        let initramfs_size = initramfs.metadata().context(access_initramfs)?.len();
         let initramfs_gpa = search_initramfs_address(
             mem_regions,
             initramfs_size,

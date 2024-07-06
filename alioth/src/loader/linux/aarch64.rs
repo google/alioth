@@ -16,11 +16,12 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::layout::{DEVICE_TREE_START, KERNEL_IMAGE_START};
 use crate::arch::reg::{Pstate, Reg};
-use crate::loader::{search_initramfs_address, Error, InitState, Result};
+use crate::loader::{error, search_initramfs_address, InitState, Result};
 use crate::mem::mapped::RamBus;
 use crate::mem::MemRegionEntry;
 
@@ -48,21 +49,27 @@ pub fn load<P: AsRef<Path>>(
     _cmd_line: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
-    let kernel_file = File::open(kernel)?;
-    let kernel_meta = kernel_file.metadata()?;
-    let mut kernel = BufReader::new(kernel_file);
+    let access_kernel = error::AccessFile {
+        path: kernel.as_ref(),
+    };
+    let kernel = File::open(&kernel).context(access_kernel)?;
+    let kernel_meta = kernel.metadata().context(access_kernel)?;
+    let mut kernel = BufReader::new(kernel);
     let mut header = ImageHeader::new_zeroed();
-    kernel.read_exact(header.as_bytes_mut())?;
+    kernel
+        .read_exact(header.as_bytes_mut())
+        .context(access_kernel)?;
     if header.magic != IMAGE_MAGIC {
-        return Err(Error::MissingMagic {
+        return error::MissingMagic {
             magic: IMAGE_MAGIC as u64,
             found: header.magic as u64,
-        });
+        }
+        .fail();
     }
     if header.image_size == 0 {
         header.text_offset = 0x80000;
     }
-    kernel.seek(SeekFrom::Start(0))?;
+    kernel.seek(SeekFrom::Start(0)).context(access_kernel)?;
     let kernel_image_start = KERNEL_IMAGE_START + header.text_offset;
     memory.write_range(kernel_image_start, kernel_meta.len(), kernel)?;
     let kernel_image_end = KERNEL_IMAGE_START + header.text_offset + kernel_meta.len();
@@ -73,12 +80,15 @@ pub fn load<P: AsRef<Path>>(
 
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        let initramfs = File::open(initramfs)?;
-        let initramfs_size = initramfs.metadata()?.len();
+        let access_initramfs = error::AccessFile {
+            path: initramfs.as_ref(),
+        };
+        let initramfs = File::open(&initramfs).context(access_initramfs)?;
+        let initramfs_size = initramfs.metadata().context(access_initramfs)?.len();
         let initramfs_gpa =
             search_initramfs_address(mem_regions, initramfs_size, KERNEL_IMAGE_START + (1 << 30))?;
         if initramfs_gpa < kernel_image_end {
-            return Err(Error::CannotLoadInitramfs);
+            return error::CannotLoadInitramfs.fail();
         }
         let initramfs_end = initramfs_gpa + initramfs_size;
         memory.write_range(initramfs_gpa, initramfs_size, initramfs)?;

@@ -17,6 +17,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{offset_of, size_of, size_of_val};
 use std::path::Path;
 
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromZeroes};
 
 use crate::align_up;
@@ -32,7 +33,7 @@ use crate::loader::xen::start_info::{
     XEN_HVM_MEMMAP_TYPE_ACPI, XEN_HVM_MEMMAP_TYPE_PMEM, XEN_HVM_MEMMAP_TYPE_RAM,
     XEN_HVM_MEMMAP_TYPE_RESERVED, XEN_HVM_START_INFO_V1, XEN_HVM_START_MAGIC_VALUE,
 };
-use crate::loader::{search_initramfs_address, Error, InitState, Result};
+use crate::loader::{error, search_initramfs_address, InitState, Result};
 use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
@@ -55,7 +56,7 @@ fn search_pvh_note<F: Read + Seek>(
     offset: u64,
     size: u64,
     align: u64,
-) -> Result<Option<u64>> {
+) -> std::io::Result<Option<u64>> {
     let mut pos = 0;
     while pos < size {
         file.seek(SeekFrom::Start(offset + pos))?;
@@ -96,57 +97,77 @@ pub fn load<P: AsRef<Path>>(
     cmd_line: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
-    let mut kernel_file = BufReader::new(File::open(kernel)?);
+    let access_kernel = error::AccessFile {
+        path: kernel.as_ref(),
+    };
+    let mut kernel = BufReader::new(File::open(&kernel).context(access_kernel)?);
 
     // load kernel
     let mut elf_header = Elf64Header::new_zeroed();
-    kernel_file.read_exact(elf_header.as_bytes_mut())?;
+    kernel
+        .read_exact(elf_header.as_bytes_mut())
+        .context(access_kernel)?;
     if elf_header.ident_magic != ELF_HEADER_MAGIC {
-        return Err(Error::MissingMagic {
+        return error::MissingMagic {
             magic: u32::from_ne_bytes(ELF_HEADER_MAGIC) as u64,
             found: u32::from_ne_bytes(elf_header.ident_magic) as u64,
-        });
+        }
+        .fail();
     }
-    assert_eq!(elf_header.ident_class, ELF_IDENT_CLASS_64);
+    if elf_header.ident_class != ELF_IDENT_CLASS_64 {
+        return error::Not64Bit.fail();
+    }
     assert_eq!(elf_header.ident_data, ELF_IDENT_LITTLE_ENDIAN);
 
     let mut pvh_entry = None;
 
-    kernel_file.seek(SeekFrom::Start(elf_header.ph_off))?;
+    kernel
+        .seek(SeekFrom::Start(elf_header.ph_off))
+        .context(access_kernel)?;
     let mut program_header = Elf64ProgramHeader::new_vec_zeroed(elf_header.ph_num as usize);
-    kernel_file.read_exact(program_header.as_bytes_mut())?;
+    kernel
+        .read_exact(program_header.as_bytes_mut())
+        .context(access_kernel)?;
     for program_header in program_header.iter() {
         if program_header.type_ == PT_NOTE && pvh_entry.is_none() {
             pvh_entry = search_pvh_note(
-                &mut kernel_file,
+                &mut kernel,
                 program_header.offset,
                 program_header.file_sz,
                 program_header.align,
-            )?;
+            )
+            .context(access_kernel)?;
         }
         if program_header.file_sz > 0 {
             let addr = program_header.paddr;
             let size = program_header.file_sz;
-            kernel_file.seek(SeekFrom::Start(program_header.offset))?;
-            memory.write_range(addr, size, &mut kernel_file)?;
+            kernel
+                .seek(SeekFrom::Start(program_header.offset))
+                .context(access_kernel)?;
+            memory.write_range(addr, size, &mut kernel)?;
             log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size);
         }
     }
 
     if pvh_entry.is_none() && elf_header.sh_num > 0 {
-        kernel_file.seek(SeekFrom::Start(elf_header.sh_off))?;
+        kernel
+            .seek(SeekFrom::Start(elf_header.sh_off))
+            .context(access_kernel)?;
         let mut sections = Elf64SectionHeader::new_vec_zeroed(elf_header.sh_num as usize);
-        kernel_file.read_exact(sections.as_bytes_mut())?;
+        kernel
+            .read_exact(sections.as_bytes_mut())
+            .context(access_kernel)?;
         for section in sections.iter() {
             if section.type_ != SHT_NOTE {
                 continue;
             }
             pvh_entry = search_pvh_note(
-                &mut kernel_file,
+                &mut kernel,
                 section.offset,
                 section.size,
                 section.addr_align,
-            )?;
+            )
+            .context(access_kernel)?;
             if pvh_entry.is_some() {
                 break;
             }
@@ -154,7 +175,7 @@ pub fn load<P: AsRef<Path>>(
     }
 
     let Some(entry_point) = pvh_entry else {
-        return Err(Error::NoEntryPoint);
+        return error::NoEntryPoint.fail();
     };
     log::info!("PVH entry = {:#x?}", entry_point);
 
@@ -172,7 +193,11 @@ pub fn load<P: AsRef<Path>>(
     // load cmd line
     if let Some(cmd_line) = cmd_line {
         if cmd_line.len() as u64 > KERNEL_CMD_LINE_LIMIT {
-            return Err(Error::CmdLineTooLong(cmd_line.len(), KERNEL_CMD_LINE_LIMIT));
+            return error::CmdLineTooLong {
+                len: cmd_line.len(),
+                limit: KERNEL_CMD_LINE_LIMIT,
+            }
+            .fail();
         }
         memory.write_range(
             KERNEL_CMD_LINE_START,
@@ -185,8 +210,11 @@ pub fn load<P: AsRef<Path>>(
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        let initramfs = File::open(initramfs)?;
-        let initramfs_size = initramfs.metadata()?.len();
+        let access_initramfs = error::AccessFile {
+            path: initramfs.as_ref(),
+        };
+        let initramfs = File::open(&initramfs).context(access_initramfs)?;
+        let initramfs_size = initramfs.metadata().context(access_initramfs)?.len();
         let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size, 2 << 30)?;
         let initramfs_end = initramfs_gpa + initramfs_size;
         memory.write_range(initramfs_gpa, initramfs_size, initramfs)?;

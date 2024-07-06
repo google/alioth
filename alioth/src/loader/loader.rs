@@ -15,11 +15,12 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
-use thiserror::Error;
+use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
+use crate::errors::{trace_error, DebugTrace};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
@@ -58,40 +59,36 @@ pub struct InitState {
     pub initramfs: Option<Range<u64>>,
 }
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("mem: {0}")]
-    Mem(#[from] crate::mem::Error),
-
-    #[error("msssing magic number {magic:#x}, found {found:#x}")]
-    MissingMagic { magic: u64, found: u64 },
-
-    #[error("cannot find entry point")]
-    NoEntryPoint,
-
-    #[error("not a 64bit kernel")]
-    Not64BitKernel,
-
-    #[error("not a relocatable kernel")]
-    NotRelocatableKernel,
-
-    #[error("kernel command line too long, length: {0}, limit: {1}")]
-    CmdLineTooLong(usize, u64),
-
-    #[error("cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}")]
-    InitramfsAddrLimit {
-        addr: usize,
-        max: usize,
-        addr_max: usize,
+    #[snafu(display("Cannot access file {path:?}"))]
+    AccessFile {
+        path: PathBuf,
+        error: std::io::Error,
     },
-
-    #[error("cannot find a memory region to load initramfs")]
+    #[snafu(display("Firmware image size is not 4-KiB aligned"))]
+    SizeNotAligned { size: u64 },
+    #[snafu(display("Failed to add a guest memory slot"))]
+    AddMemSlot { source: Box<crate::mem::Error> },
+    #[snafu(display("Failed to access guest memory"), context(false))]
+    RwMemory { source: Box<crate::mem::Error> },
+    #[snafu(display("Missing magic number {magic:#x}, found {found:#x}"))]
+    MissingMagic { magic: u64, found: u64 },
+    #[snafu(display("Cannot find payload entry point"))]
+    NoEntryPoint,
+    #[snafu(display("Not a 64-bit kernel"))]
+    Not64Bit,
+    #[snafu(display("Not a relocatable kernel"))]
+    NotRelocatable,
+    #[snafu(display("Kernel command line too long, length: {len}, limit: {limit}"))]
+    CmdLineTooLong { len: usize, limit: u64 },
+    #[snafu(display("Cannot find a memory region to load initramfs"))]
     CannotLoadInitramfs,
-
-    #[error("{name} too old, minimum supported version {min:#x}, found version {found:#x}")]
+    #[snafu(display(
+        "{name} is too old, minimum supported version {min:#x}, found version {found:#x}"
+    ))]
     TooOld {
         name: &'static str,
         min: u64,
@@ -117,5 +114,5 @@ pub fn search_initramfs_address(
             return Ok(load_addr);
         }
     }
-    Err(Error::CannotLoadInitramfs)
+    error::CannotLoadInitramfs.fail()
 }
