@@ -22,7 +22,6 @@ use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
-use crate::mem::AddrOpt;
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
 use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
@@ -147,7 +146,7 @@ impl ChangeLayout for UpdateCommandCallback {
                         addr |= (self.bars[i + 1] as u64) << 32;
                     }
                     if self.current.contains(Command::MEM) {
-                        memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
+                        memory.add_region(addr, region.clone())?;
                     } else {
                         memory.remove_region(addr)?;
                     }
@@ -158,7 +157,7 @@ impl ChangeLayout for UpdateCommandCallback {
                     }
                     let port = (bar & !BAR_IO_MASK) as u16;
                     if self.current.contains(Command::IO) {
-                        memory.add_io_region(Some(port), region.clone())?;
+                        memory.add_io_region(port, region.clone())?;
                     } else {
                         memory.remove_io_region(port)?;
                     }
@@ -188,12 +187,12 @@ impl ChangeLayout for MoveBarCallback {
             let src_port = self.src & !(BAR_IO_MASK as u64);
             let dst_port = self.dst & !(BAR_IO_MASK as u64);
             let region = memory.remove_io_region(src_port as u16)?;
-            memory.add_io_region(Some(dst_port as u16), region)?;
+            memory.add_io_region(dst_port as u16, region)?;
         } else {
             let src_addr = self.src & !(BAR_MEM_MASK as u64);
             let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
             let region = memory.remove_region(src_addr)?;
-            memory.add_region(AddrOpt::Fixed(dst_addr), region)?;
+            memory.add_region(dst_addr, region)?;
         }
         Ok(())
     }

@@ -20,7 +20,6 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::arch::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 use crate::hv::{self, VmEntry, VmMemory};
 
 pub mod addressable;
@@ -182,14 +181,6 @@ impl SlotBackend for Arc<IoRegion> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum AddrOpt {
-    Any,
-    Fixed(u64),
-    Below4G,
-    Above4G,
-}
-
 #[derive(Debug)]
 pub struct Memory {
     ram_bus: Arc<RamBus>,
@@ -220,31 +211,10 @@ impl Memory {
         self.ram_bus.clone()
     }
 
-    fn alloc(
-        regions: &mut Addressable<Arc<MemRegion>>,
-        addr: AddrOpt,
-        region: Arc<MemRegion>,
-    ) -> Result<u64> {
-        match addr {
-            AddrOpt::Fixed(addr) => {
-                let _region = regions.add(addr, region)?;
-                Ok(addr)
-            }
-            AddrOpt::Any | AddrOpt::Above4G => {
-                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
-                regions.add_within(MEM_64_START, u64::MAX, align, region)
-            }
-            AddrOpt::Below4G => {
-                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
-                regions.add_within(MMIO_32_START, MMIO_32_END - 1, align, region)
-            }
-        }
-    }
-
-    pub fn add_region(&self, addr: AddrOpt, region: Arc<MemRegion>) -> Result<u64> {
+    pub fn add_region(&self, addr: u64, region: Arc<MemRegion>) -> Result<()> {
         region.validate()?;
         let mut regions = self.regions.lock();
-        let addr = Self::alloc(&mut regions, addr, region.clone())?;
+        regions.add(addr, region.clone())?;
         let mut offset = 0;
         for range in &region.ranges {
             match range {
@@ -258,7 +228,7 @@ impl Memory {
         for callback in callbacks.iter() {
             callback.mapped(addr)?;
         }
-        Ok(addr)
+        Ok(())
     }
 
     fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
@@ -320,21 +290,19 @@ impl Memory {
         entries
     }
 
-    pub fn add_io_dev(&self, port: Option<u16>, dev: MmioRange) -> Result<u16, Error> {
+    pub fn add_io_dev(&self, port: u16, dev: MmioRange) -> Result<()> {
         self.add_io_region(port, Arc::new(IoRegion::new(dev)))
     }
 
-    pub fn add_io_region(&self, port: Option<u16>, region: Arc<IoRegion>) -> Result<u16, Error> {
+    pub fn add_io_region(&self, port: u16, region: Arc<IoRegion>) -> Result<()> {
         let mut regions = self.io_regions.lock();
-        // TODO: allocate port dynamically
-        regions.add(port.unwrap() as u64, region.clone())?;
-        self.io_bus
-            .add(port.unwrap() as u64, region.range.clone())?;
+        regions.add(port as u64, region.clone())?;
+        self.io_bus.add(port as u64, region.range.clone())?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
-            callback.mapped(port.unwrap() as u64)?;
+            callback.mapped(port as u64)?;
         }
-        Ok(port.unwrap())
+        Ok(())
     }
 
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
@@ -402,74 +370,5 @@ impl Memory {
             let data = self.io_bus.read(port as u64, size)? as u32;
             Ok(VmEntry::Io { data })
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::sync::Arc;
-
-    use crate::hv::test::FakeVmMemory;
-    use crate::mem::emulated::{Action, Mmio};
-    use crate::mem::{AddrOpt, MemRegion, MemRegionType, Memory, Result, MMIO_32_START};
-
-    #[test]
-    fn test_memory_add_remove() {
-        #[derive(Debug)]
-        struct TestMmio {
-            size: u64,
-        }
-
-        impl Mmio for TestMmio {
-            fn read(&self, _offset: u64, _size: u8) -> Result<u64> {
-                Ok(0)
-            }
-            fn write(&self, _offset: u64, _size: u8, _val: u64) -> Result<Action> {
-                Ok(Action::None)
-            }
-            fn size(&self) -> u64 {
-                self.size
-            }
-        }
-
-        let memory = Memory::new(FakeVmMemory);
-        assert_eq!(
-            memory
-                .add_region(
-                    AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emulated(
-                        Arc::new(TestMmio { size: 0x1000 }),
-                        MemRegionType::Reserved
-                    )),
-                )
-                .unwrap(),
-            MMIO_32_START
-        );
-        assert_eq!(
-            memory
-                .add_region(
-                    AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emulated(
-                        Arc::new(TestMmio { size: 0x1000 }),
-                        MemRegionType::Reserved
-                    )),
-                )
-                .unwrap(),
-            MMIO_32_START + 0x1000,
-        );
-        memory.remove_region(MMIO_32_START).unwrap();
-
-        assert_eq!(
-            memory
-                .add_region(
-                    AddrOpt::Below4G,
-                    Arc::new(MemRegion::with_emulated(
-                        Arc::new(TestMmio { size: 0x1000 }),
-                        MemRegionType::Reserved
-                    )),
-                )
-                .unwrap(),
-            MMIO_32_START,
-        );
     }
 }

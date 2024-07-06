@@ -36,7 +36,7 @@ use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::xen;
 use crate::loader::{self, firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
-use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
+use crate::mem::{self, MemRegion, MemRegionType, Memory};
 use crate::pci;
 use crate::pci::bus::PciBus;
 #[cfg(target_arch = "x86_64")]
@@ -112,7 +112,7 @@ where
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     #[cfg(target_arch = "aarch64")]
-    pub mmio_devs: RwLock<Vec<(AddrOpt, Arc<MemRegion>)>>,
+    pub mmio_devs: RwLock<Vec<(u64, Arc<MemRegion>)>>,
     pub pci_bus: PciBus,
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
 }
@@ -155,9 +155,9 @@ where
     fn add_pci_devs(&self) -> Result<()> {
         #[cfg(target_arch = "x86_64")]
         self.memory
-            .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
+            .add_io_dev(CONFIG_ADDRESS, self.pci_bus.io_bus.clone())?;
         self.memory.add_region(
-            AddrOpt::Fixed(PCIE_CONFIG_START),
+            PCIE_CONFIG_START,
             Arc::new(MemRegion::with_emulated(
                 self.pci_bus.segment.clone(),
                 MemRegionType::Reserved,
@@ -243,7 +243,7 @@ where
             if id == 0 {
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
-                    self.memory.add_io_dev(Some(*port), dev.clone())?;
+                    self.memory.add_io_dev(*port, dev.clone())?;
                 }
                 #[cfg(target_arch = "aarch64")]
                 for (addr, dev) in self.mmio_devs.read().iter() {

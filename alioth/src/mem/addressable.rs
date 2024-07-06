@@ -14,7 +14,6 @@
 
 use std::ops::RangeBounds;
 
-use crate::align_up;
 use crate::mem::{Error, Result};
 
 pub trait SlotBackend {
@@ -125,45 +124,6 @@ where
                 // TODO add some compiler hint to eliminate bound check?
                 Ok(&mut self.slots[index].backend)
             }
-        }
-    }
-
-    pub fn add_within(&mut self, start: u64, max: u64, align: u64, backend: B) -> Result<u64> {
-        if backend.size() == 0 {
-            return Err(Error::ZeroSizedSlot);
-        }
-        let mut index = match self.slots.binary_search_by_key(&start, |s| s.addr) {
-            Ok(idx) | Err(idx) => idx,
-        };
-        let mut prev_end = if index > 0 {
-            let prev = &self.slots[index - 1];
-            prev.max_addr().checked_add(1).ok_or(Error::CanotAllocate)?
-        } else {
-            0
-        };
-        prev_end = std::cmp::max(prev_end, start);
-        loop {
-            let addr = align_up!(prev_end, align);
-            if addr < prev_end {
-                break Err(Error::CanotAllocate);
-            }
-            let Some(addr_max) = addr.checked_add(backend.size() - 1) else {
-                break Err(Error::CanotAllocate);
-            };
-            if addr_max > max {
-                break Err(Error::CanotAllocate);
-            }
-            if index < self.slots.len() && addr_max >= self.slots[index].addr {
-                prev_end = self.slots[index]
-                    .max_addr()
-                    .checked_add(1)
-                    .ok_or(Error::CanotAllocate)?;
-                index += 1;
-                continue;
-            }
-            let backend = Slot { addr, backend };
-            self.slots.insert(index, backend);
-            break Ok(addr);
         }
     }
 
@@ -335,89 +295,5 @@ mod test {
             memory.add(0u64.wrapping_sub(0x1000), Backend { size: 0x1000 }),
             Err(_)
         )
-    }
-
-    #[test]
-    fn test_add_within() {
-        let mut memory = Addressable::<Backend>::new();
-        memory
-            .add_within(0, 0x1000, 1, Backend { size: 0 })
-            .unwrap_err();
-
-        assert_matches!(
-            memory.add_within(0xff0, u64::MAX, 0x1000, Backend { size: 0x1000 }),
-            Ok(0x1000)
-        );
-        // slots: [0x1000, 0x1fff]
-
-        assert_matches!(
-            memory.add_within(0, u64::MAX, 0x1000, Backend { size: 0x2000 }),
-            Ok(0x2000)
-        );
-        // slots: [0x1000, 0x1fff], [0x2000, 0x3fff]
-
-        memory
-            .add_within(0, 0x3fff, 0x1000, Backend { size: 0x2000 })
-            .unwrap_err();
-
-        assert_matches!(
-            memory.add_within(0, u64::MAX, 0x1000, Backend { size: 0x1000 }),
-            Ok(0)
-        );
-        // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff]
-
-        assert_matches!(
-            memory.add_within(0x5000, u64::MAX, 0x1000, Backend { size: 0x1000 }),
-            Ok(0x5000)
-        );
-        // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
-        // [0x5000, 0x5fff]
-
-        assert_matches!(
-            memory.add_within(0, u64::MAX, 0x4000, Backend { size: 0x1000 }),
-            Ok(0x4000)
-        );
-        // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
-        // [0x4000, 0x4fff], [0x5000, 0x5fff]
-
-        assert_matches!(
-            memory.add_within(
-                0u64.wrapping_sub(0x9000),
-                u64::MAX,
-                0x2000,
-                Backend { size: 0x1000 }
-            ),
-            Ok(0xffff_ffff_ffff_8000)
-        );
-        // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
-        // [0x4000, 0x4fff], [0x5000, 0x5fff],
-        // [0xffff_ffff_ffff_8000, 0xffff_ffff_ffff_8fff]
-
-        assert_matches!(
-            memory.add_within(
-                0u64.wrapping_sub(0x4000),
-                u64::MAX,
-                0x1000,
-                Backend { size: 0x1000 }
-            ),
-            Ok(0xffff_ffff_ffff_c000)
-        );
-        // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
-        // [0x4000, 0x4fff], [0x5000, 0x5fff],
-        // [0xffff_ffff_ffff_8000, 0xffff_ffff_ffff_8fff],
-        // [0xffff_ffff_ffff_c000, 0xffff_ffff_ffff_cfff]
-
-        memory
-            .add_within(
-                0u64.wrapping_sub(0x9000),
-                u64::MAX,
-                0x1000,
-                Backend { size: 0x4000 },
-            )
-            .unwrap_err();
-
-        memory
-            .add_within(u64::MAX - 1, u64::MAX, 0x1000, Backend { size: 0x1000 })
-            .unwrap_err();
     }
 }

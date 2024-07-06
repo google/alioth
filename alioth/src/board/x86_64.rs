@@ -36,7 +36,7 @@ use crate::firmware::acpi::{
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
+use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
 
 pub struct ArchBoard<V> {
@@ -266,7 +266,7 @@ where
             ],
             callbacks: Mutex::new(vec![]),
         };
-        memory.add_region(AddrOpt::Fixed(0), Arc::new(region_low))?;
+        memory.add_region(0, Arc::new(region_low))?;
         if let Some(coco) = &self.config.coco {
             ram_bus.register_encrypted_pages(&pages_low)?;
             if let Coco::AmdSnp { .. } = coco {
@@ -277,7 +277,7 @@ where
             let mem_hi_size = config.mem_size - RAM_32_SIZE;
             let mem_hi = ArcMemPages::from_memfd(mem_hi_size as usize, None, Some(c"ram-high"))?;
             let region_hi = MemRegion::with_mapped(mem_hi.clone(), MemRegionType::Ram);
-            memory.add_region(AddrOpt::Fixed(MEM_64_START), Arc::new(region_hi))?;
+            memory.add_region(MEM_64_START, Arc::new(region_hi))?;
             if let Some(coco) = &self.config.coco {
                 ram_bus.register_encrypted_pages(&mem_hi)?;
                 if let Coco::AmdSnp { .. } = coco {
