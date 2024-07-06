@@ -157,9 +157,9 @@ pub enum Error {
     #[snafu(display("Failed to access system hypervisor"))]
     Hypervisor { source: alioth::hv::Error },
     #[snafu(display("Failed to create a VM"))]
-    CreateVm { error: alioth::vm::Error },
+    CreateVm { source: alioth::vm::Error },
     #[snafu(display("Failed to create a device"))]
-    CreateDevice { error: alioth::vm::Error },
+    CreateDevice { source: alioth::vm::Error },
     #[snafu(display("Failed to open {path:?}"))]
     OpenFile {
         path: PathBuf,
@@ -170,9 +170,9 @@ pub enum Error {
     #[snafu(display("{s} is not a valid CString"))]
     CreateCString { s: String },
     #[snafu(display("Failed to boot a VM"))]
-    BootVm { error: alioth::vm::Error },
+    BootVm { source: alioth::vm::Error },
     #[snafu(display("VM did not shutdown peacefully"))]
-    WaitVm { error: alioth::vm::Error },
+    WaitVm { source: alioth::vm::Error },
 }
 
 fn main_run(args: RunArgs) -> Result<(), Error> {

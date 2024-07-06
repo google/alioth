@@ -11,7 +11,6 @@ license.workspace = true
 test-hv = []
 
 [dependencies]
-thiserror = "1"
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 bitflags = "2.4.0"
 bitfield = "0.15.0"
