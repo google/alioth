@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
-use thiserror::Error;
+use snafu::{ResultExt, Snafu};
 
 use crate::arch::layout::{
     MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_NON_PREFETCHABLE_END,
@@ -31,47 +31,57 @@ use crate::arch::layout::{
     PCIE_MMIO_32_PREFETCHABLE_START, RAM_32_SIZE,
 };
 use crate::device::fw_cfg::FwCfg;
-use crate::hv::{self, Coco, Vcpu, Vm, VmEntry, VmExit};
+use crate::errors::{trace_error, DebugTrace};
+use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::loader::xen;
-use crate::loader::{self, firmware, linux, ExecType, InitState, Payload};
+use crate::loader::{firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
-use crate::mem::{self, MemRegion, MemRegionType, Memory};
-use crate::pci;
+use crate::mem::{MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
 #[cfg(target_arch = "x86_64")]
 use crate::pci::bus::CONFIG_ADDRESS;
+use crate::pci::Bdf;
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::ArchBoard;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86_64::ArchBoard;
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] hv::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] pci::Error),
-
-    #[error("loader: {0}")]
-    Loader(#[from] loader::Error),
-
-    #[error("cannot handle {0:#x?}")]
-    VmExit(String),
-
-    #[error("host io: {0}")]
-    HostIo(#[from] std::io::Error),
-
-    #[error("ACPI bytes exceed EBDA area")]
-    AcpiTooLong,
-
-    #[error("memory too small")]
-    MemoryTooSmall,
+    #[snafu(display("Hypervisor internal error"), context(false))]
+    HvError { source: Box<crate::hv::Error> },
+    #[snafu(display("Failed to access guest memory"), context(false))]
+    Memory { source: Box<crate::mem::Error> },
+    #[snafu(display("Failed to load payload"), context(false))]
+    Loader { source: Box<crate::loader::Error> },
+    #[snafu(display("Failed to create VCPU-{id}"))]
+    CreateVcpu {
+        id: u32,
+        source: Box<crate::hv::Error>,
+    },
+    #[snafu(display("Failed to run VCPU-{id}"))]
+    RunVcpu {
+        id: u32,
+        source: Box<crate::hv::Error>,
+    },
+    #[snafu(display("Failed to stop VCPU-{id}"))]
+    StopVcpu {
+        id: u32,
+        source: Box<crate::hv::Error>,
+    },
+    #[snafu(display("Failed to reset PCI {bdf}"))]
+    ResetPci {
+        bdf: Bdf,
+        source: Box<crate::pci::Error>,
+    },
+    #[snafu(display("Cannot handle vmexit: {msg}"))]
+    VmExit { msg: String },
+    #[snafu(display("Failed to configure firmware"))]
+    Firmware { error: std::io::Error },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -182,7 +192,7 @@ where
     fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
-            let vm_exit = vcpu.run(vm_entry)?;
+            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { id })?;
             vm_entry = match vm_exit {
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
                 VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
@@ -207,7 +217,7 @@ where
                         .mark_private_memory(gpa, size, private)?;
                     VmEntry::None
                 }
-                VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
+                VmExit::Unknown(msg) => break error::VmExit { msg }.fail(),
             };
         }
     }
@@ -230,7 +240,7 @@ where
         event_tx: &Sender<u32>,
         boot_rx: &Receiver<()>,
     ) -> Result<(), Error> {
-        let mut vcpu = self.vm.create_vcpu(id)?;
+        let mut vcpu = self.vm.create_vcpu(id).context(error::CreateVcpu { id })?;
         event_tx.send(id).unwrap();
         self.init_vcpu(id, &mut vcpu)?;
         boot_rx.recv().unwrap();
@@ -276,7 +286,7 @@ where
                     for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
                         if id != vcpu_id as u32 {
                             log::info!("vcpu{id} to kill {vcpu_id}");
-                            V::stop_vcpu(vcpu_id as u32, handle)?;
+                            V::stop_vcpu(vcpu_id as u32, handle).context(error::StopVcpu { id })?;
                         }
                     }
                 }
@@ -290,8 +300,8 @@ where
 
             if id == 0 {
                 let devices = self.pci_bus.segment.devices.read();
-                for (_, dev) in devices.iter() {
-                    dev.dev.reset()?;
+                for (bdf, dev) in devices.iter() {
+                    dev.dev.reset().context(error::ResetPci { bdf: *bdf })?;
                 }
                 self.memory.reset()?;
             }

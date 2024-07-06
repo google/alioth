@@ -20,13 +20,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::cpuid::Cpuid;
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
-use crate::board::{Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
+use crate::board::{error, Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt,
 };
@@ -408,9 +409,9 @@ where
         }
         if let Some(fw_cfg) = &*self.fw_cfg.lock() {
             let mut dev = fw_cfg.lock();
-            dev.add_acpi(acpi_table)?;
+            dev.add_acpi(acpi_table).context(error::Firmware)?;
             let mem_regions = self.memory.mem_region_entries();
-            dev.add_e820(&mem_regions)?;
+            dev.add_e820(&mem_regions).context(error::Firmware)?;
         }
         Ok(())
     }
