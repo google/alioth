@@ -18,7 +18,7 @@ use std::ffi::CStr;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 use std::ops::Deref;
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
@@ -34,13 +34,13 @@ use libc::{
     PROT_EXEC, PROT_READ, PROT_WRITE,
 };
 use parking_lot::{RwLock, RwLockReadGuard};
+use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::ffi;
 use crate::hv::{MemMapOption, VmMemory};
-
-use super::addressable::{Addressable, SlotBackend};
-use super::{Error, Result};
+use crate::mem::addressable::{Addressable, SlotBackend};
+use crate::mem::{error, Error, Result};
 
 #[derive(Debug)]
 struct MemPages {
@@ -142,10 +142,11 @@ impl ArcMemPages {
     fn get_valid_range(&self, offset: usize, len: usize) -> Result<(usize, usize)> {
         let end = offset.wrapping_add(len).wrapping_sub(1);
         if offset >= self.size || end < offset {
-            return Err(Error::OutOfRange {
-                addr: offset as _,
-                size: len as _,
-            });
+            return error::ExceedsLimit {
+                addr: offset as u64,
+                size: len as u64,
+            }
+            .fail();
         }
         let valid_len = std::cmp::min(self.size - offset, len);
         Ok((self.addr + offset, valid_len))
@@ -157,10 +158,11 @@ impl ArcMemPages {
     {
         let s = self.get_partial_slice(offset, size_of::<T>())?;
         match FromBytes::read_from(s) {
-            None => Err(Error::OutOfRange {
-                addr: offset as _,
-                size: size_of::<T>() as _,
-            }),
+            None => error::ExceedsLimit {
+                addr: offset as u64,
+                size: size_of::<T>() as u64,
+            }
+            .fail(),
             Some(v) => Ok(v),
         }
     }
@@ -171,10 +173,11 @@ impl ArcMemPages {
     {
         let s = self.get_partial_slice_mut(offset, size_of::<T>())?;
         match AsBytes::write_to(val, s) {
-            None => Err(Error::OutOfRange {
-                addr: offset as _,
-                size: size_of::<T>() as _,
-            }),
+            None => error::ExceedsLimit {
+                addr: offset as u64,
+                size: size_of::<T>() as u64,
+            }
+            .fail(),
             Some(()) => Ok(()),
         }
     }
@@ -293,7 +296,7 @@ impl Addressable<MappedSlot> {
 
     fn get_partial_slice(&self, gpa: u64, len: u64) -> Result<&[u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
-            return Err(Error::NotMapped(gpa));
+            return error::NotMapped { addr: gpa }.fail();
         };
         user_mem
             .pages
@@ -302,7 +305,7 @@ impl Addressable<MappedSlot> {
 
     fn get_partial_slice_mut(&self, gpa: u64, len: u64) -> Result<&mut [u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
-            return Err(Error::NotMapped(gpa));
+            return error::NotMapped { addr: gpa }.fail();
         };
         user_mem
             .pages
@@ -314,9 +317,17 @@ impl Addressable<MappedSlot> {
         let host_ref = self.get_partial_slice(gpa, total_len)?;
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
         if host_ref.len() as u64 != total_len {
-            Err(Error::NotContinuous)
+            error::NotContinuous {
+                addr: gpa,
+                size: total_len,
+            }
+            .fail()
         } else if !ptr.is_aligned() {
-            Err(Error::NotAligned)
+            error::NotAligned {
+                addr: ptr as u64,
+                align: align_of::<T>(),
+            }
+            .fail()
         } else {
             Ok(unsafe { &*core::ptr::slice_from_raw_parts(ptr, len as usize) })
         }
@@ -326,9 +337,17 @@ impl Addressable<MappedSlot> {
         let host_ref = self.get_partial_slice(gpa, size_of::<T>() as u64)?;
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
         if host_ref.len() != size_of::<T>() {
-            Err(Error::NotContinuous)
+            error::NotContinuous {
+                addr: gpa,
+                size: size_of::<T>() as u64,
+            }
+            .fail()
         } else if !ptr.is_aligned() {
-            Err(Error::NotAligned)
+            error::NotAligned {
+                addr: ptr as u64,
+                align: align_of::<T>(),
+            }
+            .fail()
         } else {
             Ok(unsafe { &*ptr })
         }
@@ -520,7 +539,7 @@ impl RamBus {
     pub fn read_range(&self, gpa: u64, len: u64, dst: &mut impl Write) -> Result<()> {
         let inner = self.inner.read();
         for r in inner.slice_iter(gpa, len) {
-            dst.write_all(r?)?;
+            dst.write_all(r?).context(error::Write)?;
         }
         Ok(())
     }
@@ -528,7 +547,7 @@ impl RamBus {
     pub fn write_range(&self, gpa: u64, len: u64, mut src: impl Read) -> Result<()> {
         let inner = self.inner.read();
         for r in inner.slice_iter_mut(gpa, len) {
-            src.read_exact(r?)?;
+            src.read_exact(r?).context(error::Read)?;
         }
         Ok(())
     }

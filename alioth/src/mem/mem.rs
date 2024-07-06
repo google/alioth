@@ -18,9 +18,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use thiserror::Error;
+use snafu::Snafu;
 
-use crate::hv::{self, VmEntry, VmMemory};
+use crate::errors::{trace_error, DebugTrace};
+use crate::hv::{VmEntry, VmMemory};
 
 pub mod addressable;
 pub mod emulated;
@@ -30,44 +31,41 @@ use addressable::{Addressable, SlotBackend};
 use emulated::{Action, MmioBus, MmioRange};
 use mapped::{ArcMemPages, RamBus};
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, visibility(pub), context(suffix(false)))]
 pub enum Error {
-    #[error("{new_item:#x?} overlaps with {exist_item:#x?}")]
+    #[snafu(display("Hypervisor internal error"), context(false))]
+    HvError { source: Box<crate::hv::Error> },
+    #[snafu(display("Cannot add a zero-sized slot"))]
+    ZeroSizedSlot,
+    #[snafu(display("(addr={addr:#x}, size={size:#x}) exceeds the address limit"))]
+    ExceedsLimit { addr: u64, size: u64 },
+    #[snafu(display("{new_item:#x?} overlaps with {exist_item:#x?}"))]
     Overlap {
         new_item: [u64; 2],
         exist_item: [u64; 2],
     },
-    #[error("(addr={addr:#x}, size={size:#x}) is out of range")]
-    OutOfRange { addr: u64, size: u64 },
-    #[error("io: {source:#x?}")]
-    Io {
-        #[from]
-        source: std::io::Error,
-    },
-    #[error("mmap: {0}")]
-    Mmap(#[source] std::io::Error),
-    #[error("offset {offset:#x} exceeds limit {limit:#x}")]
-    ExceedLimit { offset: u64, limit: u64 },
-    #[error("{0:#x} is not mapped")]
-    NotMapped(u64),
-    #[error("zero memory size")]
-    ZeroMemorySize,
-    #[error("lock poisoned")]
-    LockPoisoned,
-    #[error("cannot allocate")]
-    CanotAllocate,
-    #[error("{0}")]
-    Hv(#[from] hv::Error),
-    #[error("not aligned")]
-    NotAligned,
-    #[error("not backed by continuous host memory")]
-    NotContinuous,
-    #[error("adding a slot of size 0")]
-    ZeroSizedSlot,
-    #[error("total length of region entries does not match mam range size")]
-    MemRegionEntryMismatch,
-    #[error("total length of backends does not match the mem range size")]
-    MemRangeMismatch,
+    #[snafu(display("{addr:#x} is not mapped"))]
+    NotMapped { addr: u64 },
+    #[snafu(display(
+        "Sum of region entry sizes {sum:#x} does not match the region total size {size:#x}"
+    ))]
+    RegionEntryMismatch { sum: u64, size: u64 },
+    #[snafu(display("Sum of backend range sizes {sum:#x} exceeds the region total size"))]
+    BackendTooBig { sum: u64, size: u64 },
+    #[snafu(display("address {addr:#x} is not {align}-byte aligned"))]
+    NotAligned { addr: u64, align: usize },
+    #[snafu(display(
+        "Guest address {addr:#x} (size = {:#x}) is not backed by continuous host memory"
+    ))]
+    NotContinuous { addr: u64, size: u64 },
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
+    #[snafu(display("Failed to write data to destination"))]
+    Write { error: std::io::Error },
+    #[snafu(display("Failed to read data from source"))]
+    Read { error: std::io::Error },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -144,11 +142,19 @@ impl MemRegion {
     pub fn validate(&self) -> Result<()> {
         let entries_size = self.entries.iter().fold(0, |accu, e| accu + e.size);
         if entries_size != self.size {
-            return Err(Error::MemRegionEntryMismatch);
+            return error::RegionEntryMismatch {
+                sum: entries_size,
+                size: self.size,
+            }
+            .fail();
         }
         let ranges_size = self.ranges.iter().fold(0, |accu, r| accu + r.size());
         if ranges_size > self.size {
-            return Err(Error::MemRangeMismatch);
+            return error::BackendTooBig {
+                sum: ranges_size,
+                size: self.size,
+            }
+            .fail();
         }
         Ok(())
     }

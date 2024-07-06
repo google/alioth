@@ -14,7 +14,7 @@
 
 use std::ops::RangeBounds;
 
-use crate::mem::{Error, Result};
+use crate::mem::{error, Result};
 
 pub trait SlotBackend {
     fn size(&self) -> u64;
@@ -35,13 +35,14 @@ where
 {
     fn new(addr: u64, backend: B) -> Result<Self> {
         if backend.size() == 0 {
-            return Err(Error::ZeroSizedSlot);
+            return error::ZeroSizedSlot.fail();
         }
         match (backend.size() - 1).checked_add(addr) {
-            None => Err(Error::OutOfRange {
+            None => error::ExceedsLimit {
                 addr,
                 size: backend.size(),
-            }),
+            }
+            .fail(),
             Some(_) => Ok(Self { addr, backend }),
         }
     }
@@ -115,10 +116,11 @@ where
             }
         };
         match result {
-            Err(curr_slot) => Err(Error::Overlap {
+            Err(curr_slot) => error::Overlap {
                 new_item: [slot.addr, slot.max_addr()],
                 exist_item: [curr_slot.addr, curr_slot.max_addr()],
-            }),
+            }
+            .fail(),
             Ok(index) => {
                 self.slots.insert(index, slot);
                 // TODO add some compiler hint to eliminate bound check?
@@ -130,7 +132,7 @@ where
     pub fn remove(&mut self, addr: u64) -> Result<B> {
         match self.slots.binary_search_by_key(&addr, |s| s.addr) {
             Ok(index) => Ok(self.slots.remove(index).backend),
-            Err(_) => Err(Error::NotMapped(addr)),
+            Err(_) => error::NotMapped { addr }.fail(),
         }
     }
 
@@ -169,6 +171,8 @@ where
 mod test {
     use assert_matches::assert_matches;
 
+    use crate::mem::Error;
+
     use super::*;
 
     #[derive(Debug, PartialEq)]
@@ -186,12 +190,16 @@ mod test {
     fn test_new_slot() {
         assert_matches!(
             Slot::new(u64::MAX, Backend { size: 0x10 }),
-            Err(Error::OutOfRange {
+            Err(Error::ExceedsLimit {
                 size: 0x10,
                 addr: u64::MAX,
+                ..
             })
         );
-        assert_matches!(Slot::new(0, Backend { size: 0 }), Err(Error::ZeroSizedSlot));
+        assert_matches!(
+            Slot::new(0, Backend { size: 0 }),
+            Err(Error::ZeroSizedSlot { .. })
+        );
 
         let slot = Slot::new(0x1000, Backend { size: 0x1000 }).unwrap();
         assert_eq!(slot.max_addr(), 0x1fff);
@@ -211,14 +219,16 @@ mod test {
             memory.add(0x1000, Backend { size: 0x2000 }),
             Err(Error::Overlap {
                 new_item: [0x1000, 0x2fff],
-                exist_item: [0x1000, 0x1fff]
+                exist_item: [0x1000, 0x1fff],
+                ..
             })
         );
         assert_matches!(
             memory.add(0x1, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x1, 0x1000],
-                exist_item: [0x1000, 0x1fff]
+                exist_item: [0x1000, 0x1fff],
+                ..
             })
         );
 
@@ -229,14 +239,16 @@ mod test {
             memory.add(0x0, Backend { size: 0x2000 }),
             Err(Error::Overlap {
                 new_item: [0x0, 0x1fff],
-                exist_item: [0x1000, 0x1fff]
+                exist_item: [0x1000, 0x1fff],
+                ..
             })
         );
         assert_matches!(
             memory.add(0x3000, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x3000, 0x3fff],
-                exist_item: [0x2000, 0x3fff]
+                exist_item: [0x2000, 0x3fff],
+                ..
             })
         );
 
@@ -244,14 +256,16 @@ mod test {
             memory.add(0x4000, Backend { size: 0x1001 }),
             Err(Error::Overlap {
                 new_item: [0x4000, 0x5000],
-                exist_item: [0x5000, 0x5fff]
+                exist_item: [0x5000, 0x5fff],
+                ..
             })
         );
         assert_matches!(
             memory.add(0x3fff, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x3fff, 0x4ffe],
-                exist_item: [0x2000, 0x3fff]
+                exist_item: [0x2000, 0x3fff],
+                ..
             })
         );
         memory.add(0x4000, Backend { size: 0x1000 }).unwrap();
@@ -285,7 +299,10 @@ mod test {
         drop(iter);
 
         assert_matches!(memory.remove(0x1000), Ok(Backend { size: 0x1000 }));
-        assert_matches!(memory.remove(0x2001), Err(Error::NotMapped(0x2001)));
+        assert_matches!(
+            memory.remove(0x2001),
+            Err(Error::NotMapped { addr: 0x2001, .. })
+        );
 
         assert_matches!(
             memory.add(0u64.wrapping_sub(0x2000), Backend { size: 0x2000 }),
