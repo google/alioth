@@ -12,26 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
 use parking_lot::{Condvar, Mutex, RwLock};
-use thiserror::Error;
+use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "aarch64")]
 use crate::arch::layout::PL011_START;
-use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::board::{ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl011::Pl011;
 use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
-use crate::hv::{self, Hypervisor, IoeventFdRegistry, Vm, VmConfig};
-use crate::loader::{self, Payload};
+use crate::errors::{trace_error, DebugTrace};
+use crate::hv::{Hypervisor, IoeventFdRegistry, Vm, VmConfig};
+use crate::loader::Payload;
 use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
 use crate::mem::{MemRegion, MemRegionType};
@@ -39,36 +39,28 @@ use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
-use crate::{mem, pci, virtio};
 
-#[derive(Debug, Error)]
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] hv::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("host io: {0}")]
-    HostIo(#[from] std::io::Error),
-
-    #[error("loader: {0}")]
-    Loader(#[from] loader::Error),
-
-    #[error("board: {0}")]
-    Board(#[from] board::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] pci::Error),
-
-    #[error("Virtio: {0}")]
-    Virtio(#[from] virtio::Error),
-
-    #[error("ACPI bytes exceed EBDA area")]
-    AcpiTooLong,
-
-    #[error("cannot handle {0:#x?}")]
-    VmExit(String),
+    #[snafu(display("Hypervisor internal error"), context(false))]
+    HvError { source: Box<crate::hv::Error> },
+    #[snafu(display("Failed to create board"), context(false))]
+    CreateBoard { source: Box<crate::board::Error> },
+    #[snafu(display("Failed to create VCPU-{id} thread"))]
+    VcpuThread { id: u32, error: std::io::Error },
+    #[snafu(display("Failed to create a console"))]
+    CreateConsole { error: std::io::Error },
+    #[snafu(display("Failed to create fw-cfg device"))]
+    FwCfg { error: std::io::Error },
+    #[snafu(display("Failed to create a VirtIO device"), context(false))]
+    CreateVirtio { source: Box<crate::virtio::Error> },
+    #[snafu(display("VCPU-{id} error"))]
+    VcpuError {
+        id: u32,
+        source: Box<crate::board::Error>,
+    },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -92,7 +84,7 @@ impl<H> Machine<H>
 where
     H: Hypervisor + 'static,
 {
-    pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
+    pub fn new(hv: H, config: BoardConfig) -> Result<Self> {
         let vm_config = VmConfig {
             coco: config.coco.clone(),
         };
@@ -126,7 +118,8 @@ where
             let board = board.clone();
             let handle = thread::Builder::new()
                 .name(format!("vcpu_{}", vcpu_id))
-                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
+                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))
+                .context(error::VcpuThread { id: vcpu_id })?;
             event_rx.recv().unwrap();
             vcpus.push((handle, boot_tx));
         }
@@ -146,7 +139,7 @@ where
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
         let irq_sender = self.board.vm.create_irq_sender(4)?;
-        let com1 = Serial::new(0x3f8, irq_sender)?;
+        let com1 = Serial::new(0x3f8, irq_sender).context(error::CreateConsole)?;
         self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
         Ok(())
     }
@@ -154,7 +147,7 @@ where
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl011(&self) -> Result<(), Error> {
         let irq_line = self.board.vm.create_irq_sender(1)?;
-        let pl011_dev = Pl011::new(PL011_START, irq_line)?;
+        let pl011_dev = Pl011::new(PL011_START, irq_line).context(error::CreateConsole)?;
         self.board.mmio_devs.write().push((
             PL011_START,
             Arc::new(MemRegion::with_emulated(
@@ -190,8 +183,13 @@ where
         &mut self,
         params: impl Iterator<Item = FwCfgItemParam>,
     ) -> Result<Arc<Mutex<FwCfg>>, Error> {
-        let items = params.map(|p| p.build()).collect::<Result<Vec<_>, _>>()?;
-        let fw_cfg = Arc::new(Mutex::new(FwCfg::new(self.board.memory.ram_bus(), items)?));
+        let items = params
+            .map(|p| p.build())
+            .collect::<Result<Vec<_>, _>>()
+            .context(error::FwCfg)?;
+        let fw_cfg = Arc::new(Mutex::new(
+            FwCfg::new(self.board.memory.ram_bus(), items).context(error::FwCfg)?,
+        ));
         let mut io_devs = self.board.io_devs.write();
         io_devs.push((PORT_SELECTOR, fw_cfg.clone()));
         *self.board.fw_cfg.lock() = Some(fw_cfg.clone());
@@ -258,7 +256,7 @@ where
                     log::error!("cannot join vcpu {}: {:?}", id, e);
                     Ok(())
                 }
-                Ok(r) => r.map_err(Error::Board),
+                Ok(r) => r.context(error::Vcpu { id: id as u32 }),
             })
             .collect()
     }
