@@ -19,7 +19,7 @@ pub mod bindings;
 use std::fmt::Debug;
 use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::hv::kvm::kvm_error;
 use crate::hv::Result;
@@ -47,8 +47,8 @@ pub const SEV_PLATFORM_STATUS: u32 = 1;
 
 impl SevFd {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let f = File::open(&path).with_context(|_| kvm_error::OpenFile {
-            path: PathBuf::from(path.as_ref()),
+        let f = File::open(&path).context(kvm_error::OpenFile {
+            path: path.as_ref(),
         })?;
         let sev_fd = Self { fd: f.into() };
         Ok(sev_fd)
