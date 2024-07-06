@@ -12,27 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "arch/arch.rs"]
-pub mod arch;
-#[path = "board/board.rs"]
-pub mod board;
-#[path = "device/device.rs"]
-pub mod device;
-pub mod errors;
-#[path = "firmware/firmware.rs"]
-pub mod firmware;
-#[path = "hv/hv.rs"]
-pub mod hv;
-#[path = "loader/loader.rs"]
-pub mod loader;
-#[path = "mem/mem.rs"]
-pub mod mem;
-#[path = "net/net.rs"]
-pub mod net;
-#[path = "pci/pci.rs"]
-pub mod pci;
-#[path = "utils/utils.rs"]
-pub(crate) mod utils;
-#[path = "virtio/virtio.rs"]
-pub mod virtio;
-pub mod vm;
+use std::error::Error;
+use std::fmt;
+
+pub use macros::{trace_error, DebugTrace};
+
+pub trait DebugTrace: Error {
+    fn debug_trace(&self, f: &mut fmt::Formatter) -> Result<u32, fmt::Error>;
+}

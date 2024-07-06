@@ -15,7 +15,6 @@ snafu.workspace = true
 alioth = { version = "0.3.0", path = "../alioth" }
 serde.workspace = true
 serde-aco = { version = "0.3.0", path = "../serde-aco" }
-macros = { version = "0.3.0", path = "../macros", package = "alioth-macros" }
 
 [[bin]]
 path = "src/main.rs"
