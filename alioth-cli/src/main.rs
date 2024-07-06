@@ -219,15 +219,13 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         let mut dev = fw_cfg.lock();
         #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &args.kernel {
-            dev.add_kernel_data(File::open(kernel).with_context(|_| error::OpenFile {
-                path: kernel.to_owned(),
-            })?)
-            .context(error::FwCfg)?
+            dev.add_kernel_data(File::open(kernel).context(error::OpenFile { path: kernel })?)
+                .context(error::FwCfg)?
         }
         if let Some(initramfs) = &args.initramfs {
-            dev.add_initramfs_data(File::open(initramfs).with_context(|_| error::OpenFile {
-                path: initramfs.to_owned(),
-            })?)
+            dev.add_initramfs_data(
+                File::open(initramfs).context(error::OpenFile { path: initramfs })?,
+            )
             .context(error::FwCfg)?;
         }
         if let Some(cmdline) = &args.cmd_line {

@@ -133,7 +133,7 @@ impl Kvm {
             Some(dev_kvm) => dev_kvm.as_path(),
             None => Path::new("/dev/kvm"),
         };
-        let kvm_file = File::open(path).with_context(|_| kvm_error::OpenFile { path })?;
+        let kvm_file = File::open(path).context(kvm_error::OpenFile { path })?;
         let kvm_fd = OwnedFd::from(kvm_file);
         let version = unsafe { kvm_get_api_version(&kvm_fd) }.context(kvm_error::KvmApi)?;
         if version != KVM_API_VERSION {
