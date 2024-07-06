@@ -17,6 +17,7 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
+use alioth::errors::{trace_error, DebugTrace};
 #[cfg(target_os = "macos")]
 use alioth::hv::Hvf;
 #[cfg(target_os = "linux")]
@@ -33,7 +34,6 @@ use alioth::virtio::dev::vsock::VhostVsockParam;
 use alioth::vm::Machine;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
-use macros::trace_error;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 
@@ -146,7 +146,7 @@ struct RunArgs {
 }
 
 #[trace_error]
-#[derive(Snafu)]
+#[derive(Snafu, DebugTrace)]
 #[snafu(module, context(suffix(false)))]
 pub enum Error {
     #[snafu(display("Failed to parse {arg}"))]

@@ -25,7 +25,6 @@ use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use macros::trace_error;
 use serde::Deserialize;
 use snafu::Snafu;
 
@@ -36,6 +35,7 @@ use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
+use crate::errors::{trace_error, DebugTrace};
 
 #[cfg(target_os = "macos")]
 pub use hvf::Hvf;
@@ -43,7 +43,7 @@ pub use hvf::Hvf;
 pub use kvm::{Kvm, KvmConfig, KvmError};
 
 #[trace_error]
-#[derive(Snafu)]
+#[derive(Snafu, DebugTrace)]
 #[snafu(module, context(suffix(false)))]
 pub enum Error {
     #[snafu(display("Failed to map hva {hva:#x} to gpa {gpa:#x}, size {size:#x}"))]

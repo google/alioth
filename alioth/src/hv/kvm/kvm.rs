@@ -39,12 +39,12 @@ use std::ptr::null_mut;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
-use macros::trace_error;
 use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 
+use crate::errors::{trace_error, DebugTrace};
 use crate::ffi;
 #[cfg(target_arch = "x86_64")]
 use crate::hv::Cpuid;
@@ -62,7 +62,7 @@ use libc::SIGRTMIN;
 use vm::{KvmVm, VmInner};
 
 #[trace_error]
-#[derive(Snafu)]
+#[derive(DebugTrace, Snafu)]
 #[snafu(module, context(suffix(false)))]
 pub enum KvmError {
     #[snafu(display("Failed to update GSI routing table"))]

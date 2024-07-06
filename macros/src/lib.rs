@@ -26,3 +26,8 @@ pub fn derive_layout(input: TokenStream) -> TokenStream {
 pub fn trace_error(attr: TokenStream, item: TokenStream) -> TokenStream {
     errors::trace_error(attr, item)
 }
+
+#[proc_macro_derive(DebugTrace)]
+pub fn derive_debug_trace(input: TokenStream) -> TokenStream {
+    errors::derive_debug_trace(input)
+}
