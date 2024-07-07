@@ -245,7 +245,6 @@ where
         let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
         let pages_low = ArcMemPages::from_memfd(low_mem_size as usize, None, Some(c"ram-low"))?;
         let region_low = MemRegion {
-            size: low_mem_size,
             ranges: vec![MemRange::Mapped(pages_low.clone())],
             entries: vec![
                 MemRegionEntry {
