@@ -829,7 +829,7 @@ where
         if device_config.size() > 0 {
             bar0.ranges.push(MemRange::Emulated(device_config))
         }
-        let mut bars = PciBar::empty_6();
+        let mut bars = [const { PciBar::Empty }; 6];
         let mut bar_masks = [0; 6];
         let bar0_mask = !(bar0.size.next_power_of_two() - 1);
         bar_masks[0] = bar0_mask as u32;
