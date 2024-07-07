@@ -751,11 +751,11 @@ where
             .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
             .collect();
         let msix_table = Arc::new(MsixTableMmio { entries });
+        let bar0_size = 16 << 10;
         let mut bar0 = MemRegion {
-            size: 16 << 10,
             ranges: vec![],
             entries: vec![MemRegionEntry {
-                size: 16 << 10,
+                size: bar0_size,
                 type_: mem::MemRegionType::Hidden,
             }],
             callbacks: Mutex::new(vec![]),
@@ -831,13 +831,14 @@ where
         }
         let mut bars = [const { PciBar::Empty }; 6];
         let mut bar_masks = [0; 6];
-        let bar0_mask = !(bar0.size.next_power_of_two() - 1);
+        let bar0_mask = !(bar0_size - 1);
         bar_masks[0] = bar0_mask as u32;
         bars[0] = PciBar::Mem32(Arc::new(bar0));
         header.bars[0] = BAR_MEM32;
 
         if let Some(region) = &dev.shared_mem_regions {
-            let bar2_mask = !(region.size.next_power_of_two() - 1);
+            let region_size = region.size();
+            let bar2_mask = !(region_size.next_power_of_two() - 1);
             bar_masks[2] = bar2_mask as u32;
             let mut not_emulated = |r| !matches!(r, &MemRange::Emulated(_));
             let prefetchable = region.ranges.iter().all(&mut not_emulated);
@@ -846,7 +847,7 @@ where
                 bars[2] = PciBar::Mem64(region.clone());
                 header.bars[2] = BAR_MEM64 | BAR_PREFETCHABLE;
             } else {
-                assert!(region.size <= u32::MAX as u64);
+                assert!(region_size <= u32::MAX as u64);
                 bars[2] = PciBar::Mem32(region.clone());
                 header.bars[2] = BAR_MEM32;
             }

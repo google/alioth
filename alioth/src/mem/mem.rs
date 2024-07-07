@@ -48,10 +48,6 @@ pub enum Error {
     },
     #[snafu(display("{addr:#x} is not mapped"))]
     NotMapped { addr: u64 },
-    #[snafu(display(
-        "Sum of region entry sizes {sum:#x} does not match the region total size {size:#x}"
-    ))]
-    RegionEntryMismatch { sum: u64, size: u64 },
     #[snafu(display("Sum of backend range sizes {sum:#x} exceeds the region total size"))]
     BackendTooBig { sum: u64, size: u64 },
     #[snafu(display("address {addr:#x} is not {align}-byte aligned"))]
@@ -112,17 +108,19 @@ pub trait MemRegionCallback: Debug + Send + Sync + 'static {
 
 #[derive(Debug)]
 pub struct MemRegion {
-    pub size: u64,
     pub ranges: Vec<MemRange>,
     pub entries: Vec<MemRegionEntry>,
     pub callbacks: Mutex<Vec<Box<dyn MemRegionCallback>>>,
 }
 
 impl MemRegion {
+    pub fn size(&self) -> u64 {
+        self.entries.iter().fold(0, |accu, e| accu + e.size)
+    }
+
     pub fn with_mapped(pages: ArcMemPages, type_: MemRegionType) -> MemRegion {
         let size = pages.size();
         MemRegion {
-            size,
             ranges: vec![MemRange::Mapped(pages)],
             entries: vec![MemRegionEntry { type_, size }],
             callbacks: Mutex::new(vec![]),
@@ -132,7 +130,6 @@ impl MemRegion {
     pub fn with_emulated(range: MmioRange, type_: MemRegionType) -> MemRegion {
         let size = range.size();
         MemRegion {
-            size,
             ranges: vec![MemRange::Emulated(range)],
             entries: vec![MemRegionEntry { type_, size }],
             callbacks: Mutex::new(vec![]),
@@ -140,19 +137,12 @@ impl MemRegion {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let entries_size = self.entries.iter().fold(0, |accu, e| accu + e.size);
-        if entries_size != self.size {
-            return error::RegionEntryMismatch {
-                sum: entries_size,
-                size: self.size,
-            }
-            .fail();
-        }
+        let entries_size = self.size();
         let ranges_size = self.ranges.iter().fold(0, |accu, r| accu + r.size());
-        if ranges_size > self.size {
+        if ranges_size > entries_size {
             return error::BackendTooBig {
                 sum: ranges_size,
-                size: self.size,
+                size: entries_size,
             }
             .fail();
         }
@@ -162,7 +152,7 @@ impl MemRegion {
 
 impl SlotBackend for Arc<MemRegion> {
     fn size(&self) -> u64 {
-        self.size
+        MemRegion::size(self.as_ref())
     }
 }
 
