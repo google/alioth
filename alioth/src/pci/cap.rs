@@ -14,7 +14,6 @@
 
 use std::fmt::Debug;
 use std::mem::size_of;
-use std::sync::Arc;
 
 use bitfield::bitfield;
 use parking_lot::RwLock;
@@ -299,7 +298,7 @@ where
 
 #[derive(Debug)]
 pub struct MsixTableMmio<F> {
-    pub entries: Arc<Vec<RwLock<MsixTableMmioEntry<F>>>>,
+    pub entries: Vec<RwLock<MsixTableMmioEntry<F>>>,
 }
 
 impl<F> Mmio for MsixTableMmio<F>

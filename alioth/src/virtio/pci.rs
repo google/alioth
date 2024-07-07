@@ -61,7 +61,7 @@ where
     S: MsiSender,
 {
     msix_vector: VirtioPciMsixVector,
-    msix_entries: Arc<Vec<RwLock<MsixTableMmioEntry<S::IrqFd>>>>,
+    msix_table: Arc<MsixTableMmio<S::IrqFd>>,
     msi_sender: S,
 }
 
@@ -70,7 +70,7 @@ where
     S: MsiSender,
 {
     fn send(&self, vector: u16) {
-        let entries = &**self.msix_entries;
+        let entries = &self.msix_table.entries;
         let Some(entry) = entries.get(vector as usize) else {
             log::error!("invalid config vector: {:x}", vector);
             return;
@@ -90,7 +90,7 @@ where
     }
 
     fn get_irqfd(&self, vector: u16) -> Result<RawFd> {
-        let entries = &**self.msix_entries;
+        let entries = &self.msix_table.entries;
         let Some(entry) = entries.get(vector as usize) else {
             return error::InvalidMsixVector { vector }.fail();
         };
@@ -212,7 +212,7 @@ where
         for q_vector in self.irq_sender.msix_vector.queues.iter() {
             q_vector.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         }
-        for entry in self.irq_sender.msix_entries.iter() {
+        for entry in self.irq_sender.msix_table.entries.iter() {
             let mut entry = entry.write();
             *entry = MsixTableMmioEntry::Entry(MsixTableEntry::default());
         }
@@ -222,7 +222,7 @@ where
     }
 
     fn msix_change_allowed(&self, old: u16) -> bool {
-        let Some(entry) = self.irq_sender.msix_entries.get(old as usize) else {
+        let Some(entry) = self.irq_sender.msix_table.entries.get(old as usize) else {
             return true;
         };
         let entry = entry.read();
@@ -747,11 +747,10 @@ where
             length: device_config.size() as u32,
             ..Default::default()
         };
-        let msix_entries: Arc<Vec<RwLock<MsixTableMmioEntry<_>>>> = Arc::new(
-            (0..table_entries)
-                .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
-                .collect(),
-        );
+        let entries = (0..table_entries)
+            .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
+            .collect();
+        let msix_table = Arc::new(MsixTableMmio { entries });
         let mut bar0 = MemRegion {
             size: 16 << 10,
             ranges: vec![],
@@ -815,13 +814,11 @@ where
             queues: dev.queue_regs.clone(),
             irq_sender: Arc::new(PciIrqSender {
                 msix_vector,
-                msix_entries: msix_entries.clone(),
+                msix_table: msix_table.clone(),
                 msi_sender,
             }),
         });
-        bar0.ranges.push(MemRange::Emulated(Arc::new(MsixTableMmio {
-            entries: msix_entries,
-        })));
+        bar0.ranges.push(MemRange::Emulated(msix_table));
         bar0.ranges
             .push(MemRange::Span((12 << 10) - msix_table_size as u64));
         bar0.ranges.push(MemRange::Emulated(registers.clone()));
