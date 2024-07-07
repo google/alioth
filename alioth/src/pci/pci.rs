@@ -29,7 +29,7 @@ pub mod config;
 pub mod host_bridge;
 pub mod segment;
 
-use config::{HeaderData, PciConfig};
+use config::{HeaderData, PciConfig, BAR_MEM64};
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -64,27 +64,23 @@ pub trait Pci: Debug + Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub enum PciBar {
     Empty,
-    Mem32(Arc<MemRegion>),
-    Mem64(Arc<MemRegion>),
+    Mem(Arc<MemRegion>),
     Io(Arc<IoRegion>),
 }
 
 #[derive(Debug)]
 struct BarCallback {
     index: u8,
-    is_64: bool,
     header: Arc<RwLock<HeaderData>>,
 }
 
 impl MemRegionCallback for BarCallback {
     fn mapped(&self, addr: u64) -> mem::Result<()> {
-        self.header
-            .write()
-            .set_bar(self.index as usize, addr as u32);
-        if self.is_64 {
-            self.header
-                .write()
-                .set_bar(self.index as usize + 1, (addr >> 32) as u32);
+        let mut header = self.header.write();
+        let (old, _) = header.get_bar(self.index as usize);
+        header.set_bar(self.index as usize, addr as u32);
+        if old & BAR_MEM64 == BAR_MEM64 {
+            header.set_bar(self.index as usize + 1, (addr >> 32) as u32);
         }
         Ok(())
     }
@@ -104,19 +100,12 @@ impl PciDevice {
             let header = config.get_header().data.clone();
             match dev_bar {
                 PciBar::Empty => {}
-                PciBar::Mem32(region) => region.callbacks.lock().push(Box::new(BarCallback {
+                PciBar::Mem(region) => region.callbacks.lock().push(Box::new(BarCallback {
                     index: index as u8,
-                    is_64: false,
-                    header,
-                })),
-                PciBar::Mem64(region) => region.callbacks.lock().push(Box::new(BarCallback {
-                    index: index as u8,
-                    is_64: true,
                     header,
                 })),
                 PciBar::Io(region) => region.callbacks.lock().push(Box::new(BarCallback {
                     index: index as u8,
-                    is_64: false,
                     header,
                 })),
             }

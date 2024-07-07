@@ -137,12 +137,12 @@ impl ChangeLayout for UpdateCommandCallback {
         for (i, (pci_bar, bar)) in zip(&self.pci_bars, self.bars).enumerate() {
             match pci_bar {
                 PciBar::Empty => {}
-                PciBar::Mem32(region) | PciBar::Mem64(region) => {
+                PciBar::Mem(region) => {
                     if !self.changed.contains(Command::MEM) {
                         continue;
                     }
                     let mut addr = (bar & !BAR_MEM_MASK) as u64;
-                    if matches!(pci_bar, PciBar::Mem64(_)) {
+                    if bar & BAR_MEM64 == BAR_MEM64 {
                         addr |= (self.bars[i + 1] as u64) << 32;
                     }
                     if self.current.contains(Command::MEM) {
@@ -222,9 +222,9 @@ impl HeaderData {
         }
     }
 
-    pub fn get_bar(&self, index: usize) -> Option<(u32, u32)> {
+    pub fn get_bar(&self, index: usize) -> (u32, u32) {
         match &self.header {
-            ConfigHeader::Device(header) => Some((header.bars[index], self.bar_masks[index])),
+            ConfigHeader::Device(header) => (header.bars[index], self.bar_masks[index]),
         }
     }
 
@@ -294,15 +294,12 @@ impl HeaderData {
                                 dst: masked_val as u64,
                             }))
                         }
-                        PciBar::Mem32(_) if command.contains(Command::MEM) => {
-                            Some(Box::new(MoveBarCallback {
-                                bdf,
-                                src: old_val as u64,
-                                dst: masked_val as u64,
-                            }))
-                        }
-                        PciBar::Mem64(_) if command.contains(Command::MEM) => {
-                            let hi_32 = (header.bars[bar_index + 1] as u64) << 32;
+                        PciBar::Mem(_) if command.contains(Command::MEM) => {
+                            let hi_32 = if old_val & BAR_MEM64 == BAR_MEM64 {
+                                (header.bars[bar_index + 1] as u64) << 32
+                            } else {
+                                0
+                            };
                             Some(Box::new(MoveBarCallback {
                                 bdf,
                                 src: old_val as u64 | hi_32,
@@ -312,7 +309,7 @@ impl HeaderData {
                         PciBar::Empty
                             if command.contains(Command::MEM)
                                 && bar_index > 0
-                                && matches!(&pci_bars[bar_index - 1], PciBar::Mem64(_)) =>
+                                && header.bars[bar_index - 1] & BAR_MEM64 == BAR_MEM64 =>
                         {
                             let lo_32 = header.bars[bar_index - 1] as u64;
                             Some(Box::new(MoveBarCallback {

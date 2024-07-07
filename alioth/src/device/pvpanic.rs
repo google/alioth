@@ -75,7 +75,7 @@ impl PvPanic {
             ..Default::default()
         };
         let bar_masks = [!(BAR_SIZE as u32 - 1), 0xffff_ffff, 0, 0, 0, 0];
-        let bar0 = PciBar::Mem64(Arc::new(MemRegion::with_emulated(
+        let bar0 = PciBar::Mem(Arc::new(MemRegion::with_emulated(
             Arc::new(PvPanicBar::<BAR_SIZE>),
             mem::MemRegionType::Hidden,
         )));
