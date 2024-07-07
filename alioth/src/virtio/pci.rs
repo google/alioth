@@ -833,7 +833,7 @@ where
         let mut bar_masks = [0; 6];
         let bar0_mask = !(bar0_size - 1);
         bar_masks[0] = bar0_mask as u32;
-        bars[0] = PciBar::Mem32(Arc::new(bar0));
+        bars[0] = PciBar::Mem(Arc::new(bar0));
         header.bars[0] = BAR_MEM32;
 
         if let Some(region) = &dev.shared_mem_regions {
@@ -844,11 +844,11 @@ where
             let prefetchable = region.ranges.iter().all(&mut not_emulated);
             if prefetchable {
                 bar_masks[3] = (bar2_mask >> 32) as u32;
-                bars[2] = PciBar::Mem64(region.clone());
+                bars[2] = PciBar::Mem(region.clone());
                 header.bars[2] = BAR_MEM64 | BAR_PREFETCHABLE;
             } else {
                 assert!(region_size <= u32::MAX as u64);
-                bars[2] = PciBar::Mem32(region.clone());
+                bars[2] = PciBar::Mem(region.clone());
                 header.bars[2] = BAR_MEM32;
             }
         }

@@ -154,12 +154,10 @@ impl PciBus {
             while index < 6 {
                 let bar_index = index;
                 index += 1;
-                let Some((val, mask)) = header.get_bar(bar_index) else {
-                    continue;
-                };
+                let (val, mask) = header.get_bar(bar_index);
                 let mut mask = mask as u64;
                 if val & BAR_MEM64 == BAR_MEM64 {
-                    let (_, mask_hi) = header.get_bar(bar_index + 1).unwrap();
+                    let (_, mask_hi) = header.get_bar(bar_index + 1);
                     mask |= (mask_hi as u64) << 32;
                     index += 1;
                 }
