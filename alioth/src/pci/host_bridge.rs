@@ -43,8 +43,8 @@ impl HostBridge {
             },
             ..Default::default()
         };
-        let config =
-            EmulatedConfig::new_device(header, [0; 6], PciBar::empty_6(), PciCapList::new());
+        let bars = [const { PciBar::Empty }; 6];
+        let config = EmulatedConfig::new_device(header, [0; 6], bars, PciCapList::new());
         HostBridge {
             config: Arc::new(config),
         }

@@ -69,13 +69,6 @@ pub enum PciBar {
     Io(Arc<IoRegion>),
 }
 
-impl PciBar {
-    pub const fn empty_6() -> [PciBar; 6] {
-        const EMPTY: PciBar = PciBar::Empty;
-        [EMPTY; 6]
-    }
-}
-
 #[derive(Debug)]
 struct BarCallback {
     index: u8,

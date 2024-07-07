@@ -79,7 +79,7 @@ impl PvPanic {
             Arc::new(PvPanicBar::<BAR_SIZE>),
             mem::MemRegionType::Hidden,
         )));
-        let mut bars = PciBar::empty_6();
+        let mut bars = [const { PciBar::Empty }; 6];
         bars[0] = bar0;
         let config = EmulatedConfig::new_device(header, bar_masks, bars, PciCapList::new());
         PvPanic {
