@@ -21,6 +21,7 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use mio::event::Event;
 use mio::Registry;
+use serde::Deserialize;
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -123,8 +124,11 @@ pub struct BlockConfig {
 }
 impl_mmio_for_zerocopy!(BlockConfig);
 
+#[derive(Debug, Clone, Deserialize)]
 pub struct BlockParam {
     pub path: PathBuf,
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 impl DevParam for BlockParam {
@@ -150,7 +154,7 @@ impl Block {
         };
         let disk = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(!param.readonly)
             .open(&param.path)
             .context(access_disk)?;
         let len = disk.metadata().context(access_disk)?.len();
@@ -160,11 +164,15 @@ impl Block {
             ..Default::default()
         };
         let config = Arc::new(config);
+        let mut feature = BlockFeature::FLUSH;
+        if param.readonly {
+            feature |= BlockFeature::RO;
+        }
         Ok(Block {
             name,
             disk,
             config,
-            feature: BlockFeature::FLUSH,
+            feature,
         })
     }
 
@@ -212,11 +220,18 @@ impl Block {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let l = buf1.len();
-                let status = match disk.write_all_at(buf1, offset) {
-                    Ok(()) => Status::OK,
-                    Err(e) => {
-                        log::error!("{}: write {l} bytes to offset {offset:#x}: {e}", self.name);
-                        Status::IOERR
+                let status = if self.feature.contains(BlockFeature::RO) {
+                    Status::IOERR
+                } else {
+                    match disk.write_all_at(buf1, offset) {
+                        Ok(()) => Status::OK,
+                        Err(e) => {
+                            log::error!(
+                                "{}: write {l} bytes to offset {offset:#x}: {e}",
+                                self.name
+                            );
+                            Status::IOERR
+                        }
                     }
                 };
                 let Some(buf2) = desc.writable.first_mut() else {

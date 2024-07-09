@@ -251,7 +251,18 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
             .context(error::CreateDevice)?;
     }
     for (index, blk) in args.blk.into_iter().enumerate() {
-        let param = BlockParam { path: blk.into() };
+        let param = match serde_aco::from_arg(&blk) {
+            Ok(param) => param,
+            Err(serde_aco::Error::ExpectedMapEq) => {
+                eprintln!("Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details");
+                BlockParam {
+                    path: blk.into(),
+                    readonly: false,
+                }
+            }
+            Err(e) => return Err(e).context(error::ParseArg { arg: blk })?,
+        };
+
         vm.add_virtio_dev(format!("virtio-blk-{index}"), param)
             .context(error::CreateDevice)?;
     }
