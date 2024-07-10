@@ -75,6 +75,6 @@ references,
 - [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)
 - [xhyve](https://github.com/machyve/xhyve)
 
-The error handling practice ([#37](https://github.com/google/alioth/pull/37)) is
+The [error handling](docs/error-handling.md) practice is
 inspired by [GreptimeDB](https://github.com/GreptimeTeam/greptimedb)'s
 [`stack_trace_debug`](https://greptimedb.rs/common_macro/attr.stack_trace_debug.html).
