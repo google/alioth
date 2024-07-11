@@ -111,7 +111,7 @@ macro_rules! ioctl_write_ptr {
 
 #[macro_export]
 macro_rules! ioctl_write_buf {
-    ($name:ident, $type_:expr, $nr:expr, $ty:ident) => {
+    ($name:ident, $code:expr, $ty:ident) => {
         #[allow(clippy::missing_safety_doc)]
         pub unsafe fn $name<F: ::std::os::fd::AsRawFd, const N: usize>(
             fd: &F,
@@ -119,27 +119,37 @@ macro_rules! ioctl_write_buf {
         ) -> ::std::io::Result<libc::c_int> {
             $crate::ffi!(::libc::ioctl(
                 fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iow::<$ty<0>>($type_, $nr) as _,
-                val as *const $ty<N>,
+                $code as _,
+                val as *const $ty<N>
             ))
         }
+    };
+    ($name:ident, $type_:expr, $nr:expr, $ty:ident) => {
+        $crate::ioctl_write_buf!(
+            $name,
+            $crate::utils::ioctls::ioctl_iow::<$ty<0>>($type_, $nr),
+            $ty
+        );
     };
 }
 
 #[macro_export]
 macro_rules! ioctl_writeread {
-    ($name:ident, $type_:expr, $nr:expr, $ty:ty) => {
+    ($name:ident, $code:expr, $ty:ty) => {
         #[allow(clippy::missing_safety_doc)]
         pub unsafe fn $name<F: ::std::os::fd::AsRawFd>(
             fd: &F,
             val: &mut $ty,
         ) -> ::std::io::Result<libc::c_int> {
-            $crate::ffi!(::libc::ioctl(
-                fd.as_raw_fd(),
-                $crate::utils::ioctls::ioctl_iowr::<$ty>($type_, $nr) as _,
-                val as *mut $ty,
-            ))
+            $crate::ffi!(::libc::ioctl(fd.as_raw_fd(), $code as _, val as *mut $ty))
         }
+    };
+    ($name:ident, $type_:expr, $nr:expr, $ty:ty) => {
+        $crate::ioctl_writeread!(
+            $name,
+            $crate::utils::ioctls::ioctl_iowr::<$ty>($type_, $nr),
+            $ty
+        );
     };
     ($name:ident, $code:expr) => {
         #[allow(clippy::missing_safety_doc)]
