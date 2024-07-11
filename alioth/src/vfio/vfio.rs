@@ -13,3 +13,4 @@
 // limitations under the License.
 
 pub mod bindings;
+pub mod ioctls;
