@@ -56,6 +56,8 @@ pub enum Error {
     FwCfg { error: std::io::Error },
     #[snafu(display("Failed to create a VirtIO device"), context(false))]
     CreateVirtio { source: Box<crate::virtio::Error> },
+    #[snafu(display("Guest memory is not backed by sharable file descriptors"))]
+    MemNotSharedFd,
     #[snafu(display("VCPU-{id} error"))]
     VcpuError {
         id: u32,
@@ -205,6 +207,9 @@ where
         P: DevParam<Device = D>,
         D: Virtio,
     {
+        if param.needs_mem_shared_fd() && !self.board.config.mem.has_shared_fd() {
+            return error::MemNotSharedFd.fail();
+        }
         let name = Arc::new(name);
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let dev = param.build(name.clone())?;
