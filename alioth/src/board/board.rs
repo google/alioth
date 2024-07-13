@@ -17,11 +17,13 @@ mod aarch64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
+use std::ffi::CStr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use libc::{MAP_PRIVATE, MAP_SHARED};
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use snafu::{ResultExt, Snafu};
 
@@ -37,7 +39,8 @@ use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::xen;
 use crate::loader::{firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
-use crate::mem::{MemRegion, MemRegionType, Memory};
+use crate::mem::mapped::ArcMemPages;
+use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
 #[cfg(target_arch = "x86_64")]
 use crate::pci::bus::CONFIG_ADDRESS;
@@ -94,14 +97,14 @@ pub const STATE_REBOOT_PENDING: u8 = 3;
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
 pub struct BoardConfig {
-    pub mem_size: u64,
+    pub mem: MemConfig,
     pub num_cpu: u32,
     pub coco: Option<Coco>,
 }
 
 impl BoardConfig {
     pub fn pcie_mmio_64_start(&self) -> u64 {
-        (self.mem_size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
+        (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
     }
 }
 
@@ -335,5 +338,23 @@ where
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
         event_tx.send(id).unwrap();
         ret
+    }
+
+    fn create_ram_pages(
+        &self,
+        size: u64,
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] name: &CStr,
+    ) -> Result<ArcMemPages> {
+        let mmap_flag = if self.config.mem.shared {
+            Some(MAP_SHARED)
+        } else {
+            Some(MAP_PRIVATE)
+        };
+        let pages = match self.config.mem.backend {
+            #[cfg(target_os = "linux")]
+            MemBackend::Memfd => ArcMemPages::from_memfd(name, size as usize, None),
+            MemBackend::Anonymous => ArcMemPages::from_anonymous(size as usize, None, mmap_flag),
+        }?;
+        Ok(pages)
     }
 }

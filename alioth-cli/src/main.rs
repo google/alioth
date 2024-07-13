@@ -23,6 +23,7 @@ use alioth::hv::Hvf;
 #[cfg(target_os = "linux")]
 use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
+use alioth::mem::{MemBackend, MemConfig};
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 #[cfg(target_os = "linux")]
@@ -120,6 +121,9 @@ struct RunArgs {
     #[arg(long, default_value = "1G")]
     mem_size: String,
 
+    #[arg(short, long)]
+    memory: Option<String>,
+
     #[arg(long)]
     pvpanic: bool,
 
@@ -191,9 +195,27 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         None => None,
         Some(c) => Some(serde_aco::from_arg(&c).context(error::ParseArg { arg: c })?),
     };
+    let mem_config = if let Some(s) = args.memory {
+        serde_aco::from_arg(&s).context(error::ParseArg { arg: s })?
+    } else {
+        #[cfg(target_os = "linux")]
+        eprintln!(
+            "Please update the cmd line to --memory size={},backend=Memfd",
+            args.mem_size
+        );
+        let size =
+            serde_aco::from_arg(&args.mem_size).context(error::ParseArg { arg: args.mem_size })?;
+        MemConfig {
+            size,
+            #[cfg(target_os = "linux")]
+            backend: MemBackend::Memfd,
+            #[cfg(not(target_os = "linux"))]
+            backend: MemBackend::Anonymous,
+            ..Default::default()
+        }
+    };
     let board_config = BoardConfig {
-        mem_size: serde_aco::from_arg(&args.mem_size)
-            .context(error::ParseArg { arg: args.mem_size })?,
+        mem: mem_config,
         num_cpu: args.num_cpu,
         coco,
     };

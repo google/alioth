@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use serde::Deserialize;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
@@ -65,6 +66,28 @@ pub enum Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+fn default_memory_size() -> u64 {
+    1 << 30
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct MemConfig {
+    #[serde(default = "default_memory_size")]
+    pub size: u64,
+    #[serde(default)]
+    pub backend: MemBackend,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub enum MemBackend {
+    #[default]
+    Anonymous,
+    #[cfg(target_os = "linux")]
+    Memfd,
+}
 
 #[derive(Debug)]
 pub enum MemRange {
