@@ -412,4 +412,7 @@ where
 pub trait DevParam {
     type Device;
     fn build(self, name: Arc<String>) -> Result<Self::Device>;
+    fn needs_mem_shared_fd(&self) -> bool {
+        false
+    }
 }

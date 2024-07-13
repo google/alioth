@@ -92,6 +92,16 @@ pub enum MemBackend {
     Memfd,
 }
 
+impl MemConfig {
+    pub fn has_shared_fd(&self) -> bool {
+        match &self.backend {
+            #[cfg(target_os = "linux")]
+            MemBackend::Memfd => true,
+            MemBackend::Anonymous => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum MemRange {
     Mapped(ArcMemPages),

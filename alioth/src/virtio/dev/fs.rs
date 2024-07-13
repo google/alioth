@@ -168,6 +168,10 @@ impl DevParam for VuFsParam {
     fn build(self, name: Arc<String>) -> Result<Self::Device> {
         VuFs::new(self, name)
     }
+
+    fn needs_mem_shared_fd(&self) -> bool {
+        true
+    }
 }
 
 impl Virtio for VuFs {
