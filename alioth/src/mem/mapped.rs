@@ -27,12 +27,12 @@ use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-#[cfg(target_os = "linux")]
-use libc::MFD_CLOEXEC;
 use libc::{
     c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC,
     PROT_EXEC, PROT_READ, PROT_WRITE,
 };
+#[cfg(target_os = "linux")]
+use libc::{madvise, MADV_HUGEPAGE, MFD_CLOEXEC};
 use parking_lot::{RwLock, RwLockReadGuard};
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes};
@@ -94,6 +94,12 @@ impl ArcMemPages {
 
     pub fn sync(&self) -> Result<()> {
         ffi!(unsafe { msync(self.addr as *mut _, self.size, MS_ASYNC) })?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn madvise_hugepage(&self) -> Result<()> {
+        ffi!(unsafe { madvise(self.addr as *mut _, self.size, MADV_HUGEPAGE) })?;
         Ok(())
     }
 
