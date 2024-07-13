@@ -355,6 +355,10 @@ where
             MemBackend::Memfd => ArcMemPages::from_memfd(name, size as usize, None),
             MemBackend::Anonymous => ArcMemPages::from_anonymous(size as usize, None, mmap_flag),
         }?;
+        #[cfg(target_os = "linux")]
+        if self.config.mem.transparent_hugepage {
+            pages.madvise_hugepage()?;
+        }
         Ok(pages)
     }
 }

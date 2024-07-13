@@ -79,6 +79,9 @@ pub struct MemConfig {
     pub backend: MemBackend,
     #[serde(default)]
     pub shared: bool,
+    #[cfg(target_os = "linux")]
+    #[serde(default, alias = "thp")]
+    pub transparent_hugepage: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
