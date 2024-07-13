@@ -35,7 +35,8 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
         return error::SizeNotAligned { size }.fail();
     }
 
-    let mut rom = ArcMemPages::from_anonymous(size as usize, None).context(error::AddMemSlot)?;
+    let mut rom =
+        ArcMemPages::from_anonymous(size as usize, None, None).context(error::AddMemSlot)?;
     file.read_exact(rom.as_slice_mut())
         .context(access_firmware)?;
 

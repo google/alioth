@@ -115,8 +115,7 @@ impl ArcMemPages {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn from_memfd(size: usize, prot: Option<i32>, name: Option<&CStr>) -> Result<Self> {
-        let name = name.unwrap_or(c"anon");
+    pub fn from_memfd(name: &CStr, size: usize, prot: Option<i32>) -> Result<Self> {
         let fd = ffi!(unsafe { libc::memfd_create(name.as_ptr(), MFD_CLOEXEC) })?;
         let prot = prot.unwrap_or(PROT_WRITE | PROT_READ | PROT_EXEC);
         let addr = ffi!(
@@ -128,10 +127,11 @@ impl ArcMemPages {
         Ok(Self::from_raw(addr, size, Some(file)))
     }
 
-    pub fn from_anonymous(size: usize, prot: Option<i32>) -> Result<Self> {
+    pub fn from_anonymous(size: usize, prot: Option<i32>, flags: Option<i32>) -> Result<Self> {
         let prot = prot.unwrap_or(PROT_WRITE | PROT_READ | PROT_EXEC);
+        let flags = flags.unwrap_or(MAP_PRIVATE) | MAP_ANONYMOUS;
         let addr = ffi!(
-            unsafe { mmap(null_mut(), size, prot, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) },
+            unsafe { mmap(null_mut(), size, prot, flags, -1, 0) },
             MAP_FAILED
         )?;
         Ok(Self::from_raw(addr, size, None))
@@ -637,8 +637,8 @@ mod test {
     fn test_ram_bus_read() {
         let bus = RamBus::new(FakeVmMemory);
         let prot = PROT_READ | PROT_WRITE;
-        let mem1 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot)).unwrap();
-        let mem2 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot)).unwrap();
+        let mem1 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot), None).unwrap();
+        let mem2 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot), None).unwrap();
 
         if mem1.addr > mem2.addr {
             bus.add(0x0, mem1).unwrap();

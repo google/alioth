@@ -100,25 +100,19 @@ where
     }
 
     pub fn create_ram(&self) -> Result<()> {
-        let mem_size = self.config.mem_size;
+        let mem_size = self.config.mem.size;
         let memory = &self.memory;
 
         let low_mem_size = std::cmp::min(mem_size, RAM_32_SIZE);
-        #[cfg(target_os = "linux")]
-        let pages_low = ArcMemPages::from_memfd(low_mem_size as usize, None, Some(c"ram-low"))?;
-        #[cfg(not(target_os = "linux"))]
-        let pages_low = ArcMemPages::from_anonymous(low_mem_size as usize, None)?;
+        let pages_low = self.create_ram_pages(low_mem_size, c"ram-low")?;
         memory.add_region(
             RAM_32_START,
             Arc::new(MemRegion::with_mapped(pages_low, MemRegionType::Ram)),
         )?;
 
-        let high_mem_size = mem_size.saturating_sub(RAM_32_SIZE) as usize;
+        let high_mem_size = mem_size.saturating_sub(RAM_32_SIZE);
         if high_mem_size > 0 {
-            #[cfg(target_os = "linux")]
-            let pages_high = ArcMemPages::from_memfd(high_mem_size, None, Some(c"ram-high"))?;
-            #[cfg(not(target_os = "linux"))]
-            let pages_high = ArcMemPages::from_anonymous(high_mem_size, None)?;
+            let pages_high = self.create_ram_pages(high_mem_size, c"ram-high")?;
             memory.add_region(
                 MEM_64_START,
                 Arc::new(MemRegion::with_mapped(pages_high, MemRegionType::Ram)),

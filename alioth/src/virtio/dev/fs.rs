@@ -136,7 +136,7 @@ impl VuFs {
         let dax_region = if param.dax_window > 0 {
             vu_dev.setup_channel()?;
             let size = align_up!(param.dax_window, 4 << 10);
-            Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE))?)
+            Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?)
         } else {
             None
         };
