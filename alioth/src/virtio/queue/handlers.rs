@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{fence, Ordering};
 
 use crate::virtio::queue::{Descriptor, LockedQueue, QueueGuard, VirtQueue};
@@ -23,7 +23,7 @@ pub fn handle_desc(
     q_index: u16,
     queue: &impl VirtQueue,
     irq_sender: &impl IrqSender,
-    mut op: impl FnMut(&mut Descriptor) -> io::Result<usize>,
+    mut op: impl FnMut(&mut Descriptor) -> Result<Option<usize>>,
 ) -> Result<()> {
     let guard = queue.lock_ram_layout();
     let mut q = guard.queue()?;
@@ -35,13 +35,13 @@ pub fn handle_desc(
         while let Some(desc) = q.next_desc() {
             let mut desc = desc?;
             match op(&mut desc) {
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break 'out,
                 Err(e) => {
                     log::error!("{dev_name}: queue {q_index}: {e}");
                     q.enable_notification(true);
                     break 'out;
                 }
-                Ok(len) => {
+                Ok(None) => break 'out,
+                Ok(Some(len)) => {
                     q.push_used(desc, len);
                     if q.interrupt_enabled() {
                         fence(Ordering::SeqCst);
@@ -64,11 +64,12 @@ pub fn reader_to_queue(
     irq_sender: &impl IrqSender,
 ) -> Result<()> {
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
-        let len = reader.read_vectored(&mut desc.writable)?;
-        if len == 0 {
-            Err(ErrorKind::UnexpectedEof.into())
-        } else {
-            Ok(len)
+        let ret = reader.read_vectored(&mut desc.writable);
+        match ret {
+            Ok(0) => Err(std::io::Error::from(ErrorKind::UnexpectedEof))?,
+            Ok(len) => Ok(Some(len)),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e)?,
         }
     })
 }
@@ -81,10 +82,12 @@ pub fn queue_to_writer(
     irq_sender: &impl IrqSender,
 ) -> Result<()> {
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
-        if writer.write_vectored(&desc.readable)? == 0 {
-            Err(ErrorKind::WriteZero.into())
-        } else {
-            Ok(0)
+        let ret = writer.write_vectored(&desc.readable);
+        match ret {
+            Ok(0) => Err(std::io::Error::from(ErrorKind::WriteZero))?,
+            Ok(len) => Ok(Some(len)),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e)?,
         }
     })
 }
