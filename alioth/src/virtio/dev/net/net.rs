@@ -13,37 +13,34 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-use std::fs::{self, File};
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, IoSlice};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::unix::prelude::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use libc::{IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK};
+use libc::{IFF_MULTI_QUEUE, IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
-use crate::virtio::queue::handlers::{queue_to_writer, reader_to_queue};
-use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::{IrqSender, FEATURE_BUILT_IN};
+use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
+use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::{error, IrqSender, FEATURE_BUILT_IN};
+use crate::{c_enum, impl_mmio_for_zerocopy};
 
 pub mod tap;
 
 use tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
-
-const QUEUE_RX: u16 = 0;
-const QUEUE_TX: u16 = 1;
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
@@ -60,6 +57,43 @@ pub struct NetConfig {
 }
 
 impl_mmio_for_zerocopy!(NetConfig);
+
+c_enum! {
+    #[derive(FromBytes, FromZeroes)]
+    struct CtrlAck(u8);
+    {
+        OK = 0;
+        ERR = 1;
+    }
+}
+
+c_enum! {
+    #[derive(FromBytes, FromZeroes)]
+    struct CtrlClass(u8);
+    {
+        MQ = 4;
+    }
+}
+
+c_enum! {
+    struct CtrlMq(u8);
+    {
+        VQ_PARIS_SET = 0;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, FromBytes, FromZeroes)]
+struct CtrlMqParisSet {
+    virtq_pairs: u16,
+}
+
+#[repr(C)]
+#[derive(Debug, FromBytes, FromZeroes)]
+struct CtrlHdr {
+    class: CtrlClass,
+    command: u8,
+}
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,12 +136,11 @@ bitflags! {
 pub struct Net {
     name: Arc<String>,
     config: Arc<NetConfig>,
-    tap: File,
+    tap_sockets: Vec<File>,
     feature: NetFeature,
-}
-
-fn default_tap_device() -> PathBuf {
-    PathBuf::from("/dev/net/tun")
+    driver_feature: NetFeature,
+    dev_tap: Option<PathBuf>,
+    if_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -115,8 +148,7 @@ pub struct NetParam {
     pub mac: MacAddr,
     pub mtu: u16,
     pub queue_pairs: Option<NonZeroU16>,
-    #[serde(default = "default_tap_device")]
-    pub tap: PathBuf,
+    pub tap: Option<PathBuf>,
     #[serde(alias = "if")]
     pub if_name: Option<String>,
 }
@@ -129,14 +161,20 @@ impl DevParam for NetParam {
     }
 }
 
+fn new_socket(dev_tap: Option<&Path>) -> Result<File> {
+    let tap_dev = dev_tap.unwrap_or(Path::new("/dev/net/tun"));
+    let socket = OpenOptions::new()
+        .custom_flags(O_NONBLOCK)
+        .read(true)
+        .write(true)
+        .open(tap_dev)?;
+    Ok(socket)
+}
+
 impl Net {
     pub fn new(param: NetParam, name: Arc<String>) -> Result<Self> {
-        let mut file = fs::OpenOptions::new()
-            .custom_flags(O_NONBLOCK)
-            .read(true)
-            .write(true)
-            .open(param.tap)?;
-        let dev_feat = NetFeature::MAC
+        let mut socket = new_socket(param.tap.as_deref())?;
+        let mut dev_feat = NetFeature::MAC
             | NetFeature::MTU
             | NetFeature::CSUM
             | NetFeature::HOST_TSO4
@@ -144,20 +182,70 @@ impl Net {
             | NetFeature::HOST_ECN
             | NetFeature::HOST_UFO
             | NetFeature::HOST_USO
-            | detect_tap_offload(&file);
-        setup_tap(&mut file, param.if_name.as_deref())?;
+            | NetFeature::CTRL_VQ
+            | detect_tap_offload(&socket);
+        let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
+        if max_queue_pairs > 1 {
+            dev_feat |= NetFeature::MQ;
+        }
+        setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
         let net = Net {
             name,
             config: Arc::new(NetConfig {
                 mac: param.mac,
-                max_queue_pairs: param.queue_pairs.map(|p| p.into()).unwrap_or(1),
+                max_queue_pairs,
                 mtu: param.mtu,
                 ..Default::default()
             }),
-            tap: file,
+            tap_sockets: vec![socket],
             feature: dev_feat,
+            driver_feature: NetFeature::empty(),
+            dev_tap: param.tap,
+            if_name: param.if_name,
         };
         Ok(net)
+    }
+
+    fn handle_ctrl_queue(
+        &mut self,
+        desc: &mut Descriptor,
+        registry: &Registry,
+    ) -> Result<Option<usize>> {
+        let Some(header) = desc.readable.first().and_then(|b| CtrlHdr::ref_from(b)) else {
+            return error::InvalidBuffer.fail();
+        };
+        let Some(ack_byte) = desc.writable.first_mut().and_then(|v| v.first_mut()) else {
+            return error::InvalidBuffer.fail();
+        };
+        let ack = match header.class {
+            CtrlClass::MQ => match CtrlMq(header.command) {
+                CtrlMq::VQ_PARIS_SET => {
+                    let to_set = |b: &IoSlice| CtrlMqParisSet::read_from(b);
+                    let Some(data) = desc.readable.get(1).and_then(to_set) else {
+                        return error::InvalidBuffer.fail();
+                    };
+                    let pairs = data.virtq_pairs as usize;
+                    self.tap_sockets.truncate(pairs);
+                    for index in self.tap_sockets.len()..pairs {
+                        let mut socket = new_socket(self.dev_tap.as_deref())?;
+                        setup_socket(&mut socket, self.if_name.as_deref(), true)?;
+                        enable_tap_offload(&mut socket, self.driver_feature)?;
+                        registry.register(
+                            &mut SourceFd(&socket.as_raw_fd()),
+                            Token(index),
+                            Interest::READABLE | Interest::WRITABLE,
+                        )?;
+                        self.tap_sockets.push(socket);
+                    }
+                    log::info!("{}: using {pairs} pairs of queues", self.name);
+                    CtrlAck::OK
+                }
+                _ => CtrlAck::ERR,
+            },
+            _ => CtrlAck::ERR,
+        };
+        *ack_byte = ack.raw();
+        Ok(Some(1))
     }
 }
 
@@ -179,7 +267,8 @@ impl Virtio for Net {
     }
 
     fn reset(&mut self, registry: &Registry) {
-        let _ = registry.deregister(&mut SourceFd(&self.tap.as_raw_fd()));
+        self.tap_sockets.truncate(1);
+        let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
     }
 
     fn device_id() -> DeviceId {
@@ -198,11 +287,12 @@ impl Virtio for Net {
         _irq_sender: &impl IrqSender,
         _queues: &[Queue],
     ) -> Result<()> {
-        let feature = NetFeature::from_bits_retain(feature);
-        enable_tap_offload(&mut self.tap, feature)?;
+        self.driver_feature = NetFeature::from_bits_retain(feature);
+        let socket = &mut self.tap_sockets[0];
+        enable_tap_offload(socket, self.driver_feature)?;
         registry.register(
-            &mut SourceFd(&self.tap.as_raw_fd()),
-            TOKEN_TAP,
+            &mut SourceFd(&socket.as_raw_fd()),
+            Token(0),
             Interest::READABLE | Interest::WRITABLE,
         )?;
         Ok(())
@@ -215,19 +305,30 @@ impl Virtio for Net {
         irq_sender: &impl IrqSender,
         _registry: &Registry,
     ) -> Result<()> {
+        let token = event.token().0;
         if event.is_readable() {
-            let Some(queue) = queues.get(QUEUE_RX as usize) else {
-                log::error!("{}: cannot find rx queue", self.name);
+            let rx_queue_index = token << 1;
+            let Some(queue) = queues.get(rx_queue_index) else {
+                log::error!("{}: cannot find rx queue {rx_queue_index}", self.name);
                 return Ok(());
             };
-            reader_to_queue(&self.name, &self.tap, QUEUE_RX, queue, irq_sender)?;
+            let Some(socket) = self.tap_sockets.get(token) else {
+                log::error!("{}: cannot find tap queue {token}", self.name);
+                return Ok(());
+            };
+            reader_to_queue(&self.name, socket, rx_queue_index as u16, queue, irq_sender)?;
         }
         if event.is_writable() {
-            let Some(queue) = queues.get(QUEUE_TX as usize) else {
-                log::error!("{}: cannot find tx queue", self.name);
+            let tx_queue_index = (token << 1) + 1;
+            let Some(queue) = queues.get(tx_queue_index) else {
+                log::error!("{}: cannot find tx queue {tx_queue_index}", self.name);
                 return Ok(());
             };
-            queue_to_writer(&self.name, &self.tap, QUEUE_TX, queue, irq_sender)?;
+            let Some(socket) = self.tap_sockets.get(token) else {
+                log::error!("{}: cannot find tap queue {token}", self.name);
+                return Ok(());
+            };
+            queue_to_writer(&self.name, socket, tx_queue_index as u16, queue, irq_sender)?;
         }
         Ok(())
     }
@@ -237,35 +338,57 @@ impl Virtio for Net {
         index: u16,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        _registry: &Registry,
+        registry: &Registry,
     ) -> Result<()> {
         let Some(queue) = queues.get(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
         if index == self.config.max_queue_pairs * 2 {
-            unimplemented!()
-        } else if index & 1 == 0 {
-            reader_to_queue(&self.name, &self.tap, index, queue, irq_sender)
+            let name = self.name.clone();
+            return handle_desc(&name, index, queue, irq_sender, |desc| {
+                self.handle_ctrl_queue(desc, registry)
+            });
+        }
+        let Some(socket) = self.tap_sockets.get(index as usize >> 1) else {
+            log::error!("{}: invalid tap queue {}", self.name, index >> 1);
+            return Ok(());
+        };
+        if index & 1 == 0 {
+            reader_to_queue(&self.name, socket, index, queue, irq_sender)
         } else {
-            queue_to_writer(&self.name, &self.tap, index, queue, irq_sender)
+            queue_to_writer(&self.name, socket, index, queue, irq_sender)
         }
     }
 }
 
-pub const TOKEN_TAP: Token = Token(0);
-
 const VNET_HEADER_SIZE: i32 = 12;
 
-fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
+fn setup_socket(file: &mut File, if_name: Option<&str>, mq: bool) -> Result<()> {
     let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
+
     if let Some(name) = if_name {
         let name_len = std::cmp::min(tap_ifconfig.ifr_name.len() - 1, name.len());
         tap_ifconfig.ifr_name.as_bytes_mut()[0..name_len]
             .copy_from_slice(&name.as_bytes()[0..name_len]);
     }
-    tap_ifconfig.ifr_ifru.ifru_flags = (IFF_TAP | IFF_NO_PI | IFF_VNET_HDR) as i16;
-    unsafe { tun_set_iff(file, &tap_ifconfig) }?;
+
+    let mut flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    if mq {
+        flags |= IFF_MULTI_QUEUE;
+    }
+    tap_ifconfig.ifr_ifru.ifru_flags = flags as i16;
+
+    unsafe { tun_set_iff(file, &tap_ifconfig) }.or_else(|e| {
+        if e.kind() == ErrorKind::InvalidInput && !mq {
+            flags |= IFF_MULTI_QUEUE;
+            tap_ifconfig.ifr_ifru.ifru_flags = flags as i16;
+            unsafe { tun_set_iff(file, &tap_ifconfig) }
+        } else {
+            Err(e)
+        }
+    })?;
+
     unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
     Ok(())
 }
@@ -295,7 +418,7 @@ fn detect_tap_offload(tap: &impl AsRawFd) -> NetFeature {
     NetFeature::empty()
 }
 
-fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> io::Result<i32> {
+fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> Result<()> {
     let mut tap_feature = TunFeature::empty();
     if feature.contains(NetFeature::GUEST_CSUM) {
         tap_feature |= TunFeature::CSUM;
@@ -318,5 +441,6 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> io::Result<i32> {
     if feature.contains(NetFeature::GUEST_USO6) {
         tap_feature |= TunFeature::USO6;
     }
-    unsafe { tun_set_offload(tap, tap_feature.bits()) }
+    unsafe { tun_set_offload(tap, tap_feature.bits()) }?;
+    Ok(())
 }

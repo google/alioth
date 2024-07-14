@@ -125,6 +125,7 @@ macro_rules! c_enum {
         impl $EnumName {
             $($(#[$vattr])* pub const $VARIANT: $EnumName = $EnumName($value);)*
 
+            #[allow(dead_code)]
             pub const fn raw(self) -> $TyName {
                 self.0
             }
