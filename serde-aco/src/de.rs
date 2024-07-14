@@ -243,7 +243,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     fn deserialize_enum<V>(
         self,
         _name: &'static str,
-        variants: &'static [&'static str],
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
     where
@@ -251,13 +251,10 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     {
         if self.in_value {
             let id = self.get_string_until(&[',']);
-            let obj_str = if variants.contains(&id) {
-                id
+            let obj_str = if let Some(obj_str) = self.objects.and_then(|objects| objects.get(&id)) {
+                obj_str
             } else {
-                let Some(objects) = self.objects else {
-                    return Err(Error::IdNotFound);
-                };
-                objects.get(&id).ok_or(Error::IdNotFound)?
+                id
             };
             let mut sub_de = Deserializer {
                 input: obj_str,
@@ -571,10 +568,14 @@ mod test {
     fn test_enum() {
         #[derive(Debug, Deserialize, PartialEq, Eq)]
         enum TestEnum {
-            A { val: u32 },
+            A {
+                val: u32,
+            },
             B(u64),
             C(u8, u8),
             D,
+            #[serde(alias = "e")]
+            E,
         }
 
         #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -604,13 +605,20 @@ mod test {
                 e: TestEnum::D,
             }
         );
+        assert_eq!(
+            from_arg::<TestStruct>("num=3,e=e").unwrap(),
+            TestStruct {
+                num: 3,
+                e: TestEnum::E
+            }
+        );
         assert_matches!(
             from_arg::<TestStruct>("num=4,e=id_d"),
-            Err(Error::IdNotFound)
+            Err(Error::Message(_))
         );
         assert_matches!(
             from_args::<TestStruct>("num=4,e=id_d", &[].into()),
-            Err(Error::IdNotFound)
+            Err(Error::Message(_))
         );
         assert_eq!(from_arg::<TestEnum>("B,1").unwrap(), TestEnum::B(1));
         assert_eq!(from_arg::<TestEnum>("D").unwrap(), TestEnum::D);
