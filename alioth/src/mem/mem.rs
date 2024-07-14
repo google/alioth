@@ -87,8 +87,10 @@ pub struct MemConfig {
 #[derive(Debug, Deserialize, Default)]
 pub enum MemBackend {
     #[default]
+    #[serde(alias = "anon")]
     Anonymous,
     #[cfg(target_os = "linux")]
+    #[serde(alias = "memfd")]
     Memfd,
 }
 
