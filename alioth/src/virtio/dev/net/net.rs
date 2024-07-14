@@ -15,7 +15,6 @@
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::io;
-use std::iter::zip;
 use std::mem::MaybeUninit;
 use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
@@ -41,7 +40,7 @@ use crate::virtio::{IrqSender, FEATURE_BUILT_IN};
 
 pub mod tap;
 
-use tap::{tun_get_iff, tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
+use tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
 
 const QUEUE_RX: u16 = 0;
 const QUEUE_TX: u16 = 1;
@@ -259,17 +258,12 @@ pub const TOKEN_TAP: Token = Token(0);
 const VNET_HEADER_SIZE: i32 = 12;
 
 fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
-    let mut tap_ifconfig = match if_name {
-        None => unsafe { tun_get_iff(file) }?,
-        Some(name) => {
-            let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
-            for (s, d) in zip(name.as_bytes(), tap_ifconfig.ifr_name.as_mut()) {
-                *d = *s as _;
-            }
-            tap_ifconfig
-        }
-    };
-
+    let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
+    if let Some(name) = if_name {
+        let name_len = std::cmp::min(tap_ifconfig.ifr_name.len() - 1, name.len());
+        tap_ifconfig.ifr_name.as_bytes_mut()[0..name_len]
+            .copy_from_slice(&name.as_bytes()[0..name_len]);
+    }
     tap_ifconfig.ifr_ifru.ifru_flags = (IFF_TAP | IFF_NO_PI | IFF_VNET_HDR) as i16;
     unsafe { tun_set_iff(file, &tap_ifconfig) }?;
     unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
