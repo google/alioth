@@ -65,6 +65,8 @@ pub enum Error {
     InvalidQueueIndex { index: u16 },
     #[snafu(display("Invalid msix vector {vector}"))]
     InvalidMsixVector { vector: u16 },
+    #[snafu(display("Invalid virtq buffer"))]
+    InvalidBuffer,
     #[cfg(target_os = "linux")]
     #[snafu(display("vhost-user error"), context(false))]
     Vu { source: Box<vu::Error> },

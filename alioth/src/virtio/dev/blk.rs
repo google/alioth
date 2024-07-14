@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, ErrorKind};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -176,27 +175,19 @@ impl Block {
         })
     }
 
-    fn handle_req_queue(&self, desc: &mut Descriptor) -> io::Result<usize> {
+    fn handle_req_queue(&self, desc: &mut Descriptor) -> Result<Option<usize>> {
         let disk = &self.disk;
         let Some(buf0) = desc.readable.first() else {
-            return Err(ErrorKind::InvalidData.into());
+            return error::InvalidBuffer.fail();
         };
-        let request_clone;
-        let request = match Request::ref_from(buf0) {
-            Some(r) => r,
-            None => match FromBytes::read_from(buf0) {
-                Some(r) => {
-                    request_clone = r;
-                    &request_clone
-                }
-                None => return Err(ErrorKind::InvalidData.into()),
-            },
+        let Some(request) = Request::read_from(buf0) else {
+            return error::InvalidBuffer.fail();
         };
         let offset = request.sector * SECTOR_SIZE as u64;
         let w_len = match request.type_ {
             RequestType::IN => {
                 let Some(buf1) = desc.writable.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let l = buf1.len();
                 let status = match disk.read_exact_at(buf1, offset) {
@@ -207,17 +198,17 @@ impl Block {
                     }
                 };
                 let Some(buf2) = desc.writable.get_mut(1) else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let Some(status_byte) = buf2.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 *status_byte = status.into();
                 l + 1
             }
             RequestType::OUT => {
                 let Some(buf1) = desc.readable.get(1) else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let l = buf1.len();
                 let status = if self.feature.contains(BlockFeature::RO) {
@@ -235,10 +226,10 @@ impl Block {
                     }
                 };
                 let Some(buf2) = desc.writable.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let Some(status_byte) = buf2.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 *status_byte = status.into();
                 1
@@ -246,25 +237,25 @@ impl Block {
             RequestType::FLUSH => {
                 // TODO flush the file
                 let Some(w_buf) = desc.writable.last_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let Some(status_byte) = w_buf.get_mut(0) else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 *status_byte = Status::OK.into();
                 1
             }
             RequestType::GET_ID => {
                 let Some(buf1) = desc.writable.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let len = std::cmp::min(self.name.len(), buf1.len());
                 buf1[0..len].copy_from_slice(&self.name.as_bytes()[0..len]);
                 let Some(buf2) = desc.writable.get_mut(1) else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let Some(status_byte) = buf2.first_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 *status_byte = Status::OK.into();
                 1 + len
@@ -272,16 +263,16 @@ impl Block {
             _ => {
                 log::error!("unimplemented op: {:#x?}", request.type_);
                 let Some(w_buf) = desc.writable.last_mut() else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 let Some(w_byte) = w_buf.get_mut(0) else {
-                    return Err(ErrorKind::InvalidData.into());
+                    return error::InvalidBuffer.fail();
                 };
                 *w_byte = Status::UNSUPP.into();
                 1
             }
         };
-        Ok(w_len)
+        Ok(Some(w_len))
     }
 }
 
