@@ -200,7 +200,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     } else {
         #[cfg(target_os = "linux")]
         eprintln!(
-            "Please update the cmd line to --memory size={},backend=Memfd",
+            "Please update the cmd line to --memory size={},backend=memfd",
             args.mem_size
         );
         let size =
