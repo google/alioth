@@ -44,7 +44,7 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
   - `net` backed by a tap device,
   - `vsock` backed by host `/dev/vhost-vsock`,
   - `blk` backed by a raw-formatted image,
-  - `entropy` backed by host `/dev/uramdom`,
+  - `entropy` backed by host `/dev/urandom`,
   - `fs` backed by [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) with
     experimental Direct Access (DAX).
 - Other devices
@@ -75,6 +75,6 @@ references,
 - [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)
 - [xhyve](https://github.com/machyve/xhyve)
 
-The [error handling](docs/error-handling.md) practice is
-inspired by [GreptimeDB](https://github.com/GreptimeTeam/greptimedb)'s
+The [error handling](docs/error-handling.md) practice is inspired by
+[GreptimeDB](https://github.com/GreptimeTeam/greptimedb)'s
 [`stack_trace_debug`](https://greptimedb.rs/common_macro/attr.stack_trace_debug.html).

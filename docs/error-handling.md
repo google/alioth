@@ -1,9 +1,9 @@
 # Error handling in Alioth (WIP)
 
 Error handling in Alioth is done by a combination of the library
-[SNAFU](https://crates.io/crates/snafu) , the proc macro `trace_error` ,
-and the trait `DebugTrace` in [errors.rs](../alioth/src/errors.rs), which is
-inspired by GreptimeDB (see references).
+[SNAFU](https://crates.io/crates/snafu) , the proc macro `trace_error`, and the
+trait `DebugTrace` in [errors.rs](../alioth/src/errors.rs), which is inspired by
+GreptimeDB (see references).
 
 Errors are classified into 3 types,
 
@@ -66,16 +66,16 @@ The macro `trace_error` augments an error enum by
 - adding `#[snafu(source)]` to the field `error` or `source` of an external
   error variant,
 
-- adding a `from` conversion if an external error type is wrapped in a `Box`
-  and it is not a trait object.
+- adding a `from` conversion if an external error type is wrapped in a `Box` and
+  it is not a trait object.
 
 ## Trait `DebugTrace` and its derive macro
 
 `#[derive(DebugTrace)]` implements traits `DebugTrace` and `Debug` for an error
 enum. Basically, when an error value is `Debug`-printed,
 
-- the method `Debug::fmt()` `Display`-prints itself, which prints the
-  content in `#[snafu(display("..."))]` of the error variant,
+- the method `Debug::fmt()` `Display`-prints itself, which prints the content in
+  `#[snafu(display("..."))]` of the error variant,
 
 - if the error value wraps a traceable external error `source`, `Debug::fmt()`
   calls the method `debug_trace()` of `source`,
@@ -88,10 +88,10 @@ enum. Basically, when an error value is `Debug`-printed,
 - now `Display`-print the error value and return back to the outer
   `debug_trace()` call, continue until returning back from `Debug::fmt()`.
 
-Putting everything together, when an error value that implements `DebugTrace`
-is `Debug`-printed, we get a pseudo-stack-trace like the following,
+Putting everything together, when an error value that implements `DebugTrace` is
+`Debug`-printed, we get a pseudo-stack-trace like the following,
 
-```
+```text
 Error: Failed to create a device
 0: No such file or directory (os error 2)
 1: Cannot access file "/path/to/disk.img", at alioth/src/virtio/dev/blk.rs:159:14
@@ -102,8 +102,8 @@ Error: Failed to create a device
 ## References
 
 1. [Rust 错误处理在 GreptimeDB 的实践](https://mp.weixin.qq.com/s/PK38PtvAETD7pcHeqeDSTA)
-   (Rust error handling practice in GreptimeDB). Strongly recommended.
-   Google translation should be enough for non-Chinese speakers.
+   (Rust error handling practice in GreptimeDB). Strongly recommended. Google
+   translation should be enough for non-Chinese speakers.
 
 2. [`stack_trace_debug`](https://greptimedb.rs/common_macro/attr.stack_trace_debug.html)
    from GreptimeDB.
