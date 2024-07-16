@@ -197,8 +197,12 @@ where
     M: MsiSender,
 {
     fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
+        let is_start = matches!(event, WakeEvent::Start { .. });
         if let Err(e) = self.event_tx.send(event) {
             log::error!("{}: failed to send event: {e}", self.name);
+            return;
+        }
+        if is_start {
             return;
         }
         if let Err(e) = self.waker.wake() {
