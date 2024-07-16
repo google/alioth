@@ -318,26 +318,21 @@ where
         Ok(DevAction::Continue)
     }
 
-    fn wait_start(&mut self) -> Result<WakeEvent<S>> {
-        let mut events = Events::with_capacity(1);
-        loop {
-            self.poll
-                .poll(&mut events, None)
-                .context(error::PollEvents)?;
-            while let Ok(wake_event) = self.event_rx.try_recv() {
-                match &wake_event {
-                    WakeEvent::Start { .. } | WakeEvent::Shutdown | WakeEvent::Reset => {
-                        return Ok(wake_event)
-                    }
-                    WakeEvent::Notify { q_index } => {
-                        log::error!(
-                            "{}: driver notified queue {q_index} before device is ready",
-                            self.name
-                        )
-                    }
+    fn wait_start(&mut self) -> WakeEvent<S> {
+        for wake_event in self.event_rx.iter() {
+            match &wake_event {
+                WakeEvent::Start { .. } | WakeEvent::Shutdown | WakeEvent::Reset => {
+                    return wake_event
+                }
+                WakeEvent::Notify { q_index } => {
+                    log::error!(
+                        "{}: driver notified queue {q_index} before device is ready",
+                        self.name
+                    )
                 }
             }
         }
+        WakeEvent::Shutdown
     }
 
     fn handle_event(&mut self, event: &Event, irq_sender: &S) -> Result<DevAction> {
@@ -362,7 +357,7 @@ where
         let WakeEvent::Start {
             feature,
             irq_sender,
-        } = self.wait_start()?
+        } = self.wait_start()
         else {
             return Ok(DevAction::Shutdown);
         };
@@ -388,7 +383,6 @@ where
             VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(feature)
         );
-        self.handle_wake_events(&irq_sender)?;
         let mut events = Events::with_capacity(128);
         loop {
             self.poll
