@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod console;
+#[cfg(target_arch = "x86_64")]
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
 #[cfg(target_arch = "aarch64")]

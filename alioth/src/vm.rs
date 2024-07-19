@@ -23,6 +23,7 @@ use snafu::{ResultExt, Snafu};
 #[cfg(target_arch = "aarch64")]
 use crate::arch::layout::PL011_START;
 use crate::board::{ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+#[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl011::Pl011;
@@ -108,6 +109,7 @@ where
             #[cfg(target_arch = "aarch64")]
             mmio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
+            #[cfg(target_arch = "x86_64")]
             fw_cfg: Mutex::new(None),
         });
 
@@ -181,6 +183,7 @@ where
         self.add_pci_dev(None, pci_dev)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn add_fw_cfg(
         &mut self,
         params: impl Iterator<Item = FwCfgItemParam>,
