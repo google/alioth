@@ -27,10 +27,6 @@ use crate::pci::segment::PciSegment;
 use crate::pci::{Bdf, PciDevice, Result};
 use crate::{align_up, mem};
 
-pub const CONFIG_ADDRESS: u16 = 0xcf8;
-pub const CONFIG_DATA: u16 = 0xcfc;
-pub const CONFIG_DATA_MAX: u16 = 0xcff;
-
 bitfield! {
     #[derive(Copy, Clone, Default)]
     struct Address(u32);

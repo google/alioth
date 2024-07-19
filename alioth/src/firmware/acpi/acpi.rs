@@ -20,7 +20,9 @@ use zerocopy::{transmute, AsBytes, FromBytes};
 
 use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
-use crate::arch::layout::{APIC_START, IOAPIC_START};
+use crate::arch::layout::{
+    APIC_START, IOAPIC_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_SLEEP_STATUS,
+};
 use crate::unsafe_impl_zerocopy;
 use crate::utils::wrapping_sum;
 
@@ -90,7 +92,7 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: transmute!(0x604u64),
+            address: transmute!(PORT_ACPI_RESET as u64),
         },
         reset_value: 0x1,
         sleep_control: AcpiGenericAddress {
@@ -98,14 +100,14 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: transmute!(0x600u64),
+            address: transmute!(PORT_ACPI_SLEEP_CONTROL as u64),
         },
         sleep_status: AcpiGenericAddress {
             space_id: 1,
             bit_width: 8,
             bit_offset: 0,
             access_width: 1,
-            address: transmute!(0x601u64),
+            address: transmute!(PORT_ACPI_SLEEP_STATUS as u64),
         },
         flags: (1 << 20) | (1 << 10),
         minor_revision: FADT_MINOR_VERSION,
