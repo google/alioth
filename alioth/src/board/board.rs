@@ -27,6 +27,8 @@ use libc::{MAP_PRIVATE, MAP_SHARED};
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use snafu::{ResultExt, Snafu};
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::layout::PORT_PCI_ADDRESS;
 use crate::arch::layout::{
     MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_NON_PREFETCHABLE_END,
     PCIE_MMIO_32_NON_PREFETCHABLE_START, PCIE_MMIO_32_PREFETCHABLE_END,
@@ -43,8 +45,6 @@ use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
-#[cfg(target_arch = "x86_64")]
-use crate::pci::bus::CONFIG_ADDRESS;
 use crate::pci::Bdf;
 
 #[cfg(target_arch = "aarch64")]
@@ -170,7 +170,7 @@ where
     fn add_pci_devs(&self) -> Result<()> {
         #[cfg(target_arch = "x86_64")]
         self.memory
-            .add_io_dev(CONFIG_ADDRESS, self.pci_bus.io_bus.clone())?;
+            .add_io_dev(PORT_PCI_ADDRESS, self.pci_bus.io_bus.clone())?;
         self.memory.add_region(
             PCIE_CONFIG_START,
             Arc::new(MemRegion::with_emulated(

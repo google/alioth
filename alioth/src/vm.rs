@@ -22,9 +22,11 @@ use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "aarch64")]
 use crate::arch::layout::PL011_START;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
 use crate::board::{ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 #[cfg(target_arch = "x86_64")]
-use crate::device::fw_cfg::{FwCfg, FwCfgItemParam, PORT_SELECTOR};
+use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl011::Pl011;
 use crate::device::pvpanic::PvPanic;
@@ -143,8 +145,8 @@ where
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
         let irq_sender = self.board.vm.create_irq_sender(4)?;
-        let com1 = Serial::new(0x3f8, irq_sender).context(error::CreateConsole)?;
-        self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
+        let com1 = Serial::new(PORT_COM1, irq_sender).context(error::CreateConsole)?;
+        self.board.io_devs.write().push((PORT_COM1, Arc::new(com1)));
         Ok(())
     }
 
@@ -196,7 +198,7 @@ where
             FwCfg::new(self.board.memory.ram_bus(), items).context(error::FwCfg)?,
         ));
         let mut io_devs = self.board.io_devs.write();
-        io_devs.push((PORT_SELECTOR, fw_cfg.clone()));
+        io_devs.push((PORT_FW_CFG_SELECTOR, fw_cfg.clone()));
         *self.board.fw_cfg.lock() = Some(fw_cfg.clone());
         Ok(fw_cfg)
     }

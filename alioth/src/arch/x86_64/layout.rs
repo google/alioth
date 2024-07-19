@@ -57,3 +57,17 @@ pub const APIC_START: u64 = 0xfee0_0000;
 pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB
 
 pub const PAGE_SIZE: u64 = 0x1000; // 4KiB
+
+pub const PORT_COM1: u16 = 0x3f8;
+
+pub const PORT_FW_CFG_SELECTOR: u16 = 0x510;
+pub const PORT_FW_CFG_DATA: u16 = 0x511;
+pub const PORT_FW_CFG_DMA_HI: u16 = 0x514;
+pub const PORT_FW_CFG_DMA_LO: u16 = 0x518;
+
+pub const PORT_ACPI_SLEEP_CONTROL: u16 = 0x600;
+pub const PORT_ACPI_SLEEP_STATUS: u16 = 0x601;
+pub const PORT_ACPI_RESET: u16 = 0x604;
+
+pub const PORT_PCI_ADDRESS: u16 = 0xcf8;
+pub const PORT_PCI_DATA: u16 = 0xcfc;

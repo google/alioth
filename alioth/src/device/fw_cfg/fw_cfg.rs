@@ -34,6 +34,10 @@ use serde::{Deserialize, Deserializer};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[cfg(target_arch = "x86_64")]
+use crate::arch::layout::{
+    PORT_FW_CFG_DATA, PORT_FW_CFG_DMA_HI, PORT_FW_CFG_DMA_LO, PORT_FW_CFG_SELECTOR,
+};
+#[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::AcpiTable;
 #[cfg(target_arch = "x86_64")]
 use crate::loader::linux::bootparams::{
@@ -47,11 +51,6 @@ use crate::mem::{MemRegionEntry, MemRegionType};
 
 #[cfg(target_arch = "x86_64")]
 use acpi::create_acpi_loader;
-
-pub const PORT_SELECTOR: u16 = 0x510;
-pub const PORT_DATA: u16 = 0x511;
-pub const PORT_DMA_ADDRESS_HI: u16 = 0x514;
-pub const PORT_DMA_ADDRESS_LO: u16 = 0x518;
 
 pub const SELECTOR_WR: u16 = 1 << 14;
 
@@ -454,19 +453,19 @@ impl Mmio for Mutex<FwCfg> {
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         let mut fw_cfg = self.lock();
-        let port = offset as u16 + PORT_SELECTOR;
+        let port = offset as u16 + PORT_FW_CFG_SELECTOR;
         let ret = match (port, size) {
-            (PORT_SELECTOR, _) => {
+            (PORT_FW_CFG_SELECTOR, _) => {
                 log::error!("fw_cfg: selector registeris write-only.");
                 0
             }
-            (PORT_DATA, 1) => fw_cfg.read_data() as u64,
-            (PORT_DMA_ADDRESS_HI, 4) => {
+            (PORT_FW_CFG_DATA, 1) => fw_cfg.read_data() as u64,
+            (PORT_FW_CFG_DMA_HI, 4) => {
                 let addr = fw_cfg.dma_address;
                 let addr_hi = (addr >> 32) as u32;
                 addr_hi.to_be() as u64
             }
-            (PORT_DMA_ADDRESS_LO, 4) => {
+            (PORT_FW_CFG_DMA_LO, 4) => {
                 let addr = fw_cfg.dma_address;
                 let addr_lo = (addr & 0xffff_ffff) as u32;
                 addr_lo.to_be() as u64
@@ -481,18 +480,18 @@ impl Mmio for Mutex<FwCfg> {
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let mut fw_cfg = self.lock();
-        let port = offset as u16 + PORT_SELECTOR;
+        let port = offset as u16 + PORT_FW_CFG_SELECTOR;
         match (port, size) {
-            (PORT_SELECTOR, 2) => {
+            (PORT_FW_CFG_SELECTOR, 2) => {
                 fw_cfg.selector = val as u16;
                 fw_cfg.data_offset = 0;
             }
-            (PORT_DATA, 1) => fw_cfg.write_data(val as u8),
-            (PORT_DMA_ADDRESS_HI, 4) => {
+            (PORT_FW_CFG_DATA, 1) => fw_cfg.write_data(val as u8),
+            (PORT_FW_CFG_DMA_HI, 4) => {
                 fw_cfg.dma_address &= 0xffff_ffff;
                 fw_cfg.dma_address |= (u32::from_be(val as u32) as u64) << 32;
             }
-            (PORT_DMA_ADDRESS_LO, 4) => {
+            (PORT_FW_CFG_DMA_LO, 4) => {
                 fw_cfg.dma_address &= !0xffff_ffff;
                 fw_cfg.dma_address |= u32::from_be(val as u32) as u64;
                 fw_cfg.do_dma();
