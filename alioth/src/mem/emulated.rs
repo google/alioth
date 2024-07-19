@@ -27,6 +27,7 @@ pub trait ChangeLayout: Debug + Send + Sync + 'static {
 pub enum Action {
     None,
     Shutdown,
+    Reset,
     ChangeLayout { callback: Box<dyn ChangeLayout> },
 }
 

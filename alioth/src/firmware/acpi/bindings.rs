@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bitfield::bitfield;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 pub const SIG_RSDP: [u8; 8] = *b"RSD PTR ";
@@ -195,6 +196,21 @@ pub struct AcpiTableMcfg<const N: usize> {
     pub header: AcpiTableHeader,
     pub reserved: [u8; 8],
     pub allocations: [AcpiMcfgAllocation; N],
+}
+
+bitfield! {
+    /// Sleep Control Register
+    ///
+    /// [Spec Table 4.19](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/04_ACPI_Hardware_Specification/ACPI_Hardware_Specification.html#sleep-control-and-status-registers)
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct FadtSleepControlReg(u8);
+    impl Debug;
+    pub _reserved2, _:  7, 6;
+    pub slp_en, _: 5;
+    pub sle_typx, _: 4, 2;
+    pub ignore, _: 1;
+    pub _reserved1, _: 0;
 }
 
 #[cfg(test)]
