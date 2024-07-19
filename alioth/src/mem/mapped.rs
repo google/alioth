@@ -46,7 +46,7 @@ use crate::mem::{error, Error, Result};
 struct MemPages {
     addr: NonNull<c_void>,
     len: usize,
-    fd: Option<File>,
+    fd: Option<(File, u64)>,
 }
 
 unsafe impl Send for MemPages {}
@@ -88,8 +88,11 @@ impl ArcMemPages {
         self.size as u64
     }
 
-    pub fn fd(&self) -> Option<BorrowedFd> {
-        self._inner.fd.as_ref().map(|f| f.as_fd())
+    pub fn fd(&self) -> Option<(BorrowedFd, u64)> {
+        self._inner
+            .fd
+            .as_ref()
+            .map(|(f, offset)| (f.as_fd(), *offset))
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -103,7 +106,7 @@ impl ArcMemPages {
         Ok(())
     }
 
-    fn from_raw(addr: *mut c_void, len: usize, fd: Option<File>) -> Self {
+    fn from_raw(addr: *mut c_void, len: usize, fd: Option<(File, u64)>) -> Self {
         let addr = NonNull::new(addr).expect("address from mmap() should not be null");
         ArcMemPages {
             addr: addr.as_ptr() as usize,
@@ -117,7 +120,7 @@ impl ArcMemPages {
             unsafe { mmap(null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), offset) },
             MAP_FAILED
         )?;
-        Ok(Self::from_raw(addr, len, Some(file)))
+        Ok(Self::from_raw(addr, len, Some((file, offset as u64))))
     }
 
     #[cfg(target_os = "linux")]
@@ -130,7 +133,7 @@ impl ArcMemPages {
         )?;
         let file = unsafe { File::from_raw_fd(fd) };
         file.set_len(size as _)?;
-        Ok(Self::from_raw(addr, size, Some(file)))
+        Ok(Self::from_raw(addr, size, Some((file, 0))))
     }
 
     pub fn from_anonymous(size: usize, prot: Option<i32>, flags: Option<i32>) -> Result<Self> {
