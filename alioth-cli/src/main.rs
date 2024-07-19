@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "x86_64")]
 use std::ffi::CString;
+#[cfg(target_arch = "x86_64")]
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -127,6 +129,7 @@ struct RunArgs {
     #[arg(long)]
     pvpanic: bool,
 
+    #[cfg(target_arch = "x86_64")]
     #[arg(long = "fw-cfg")]
     fw_cfgs: Vec<String>,
 
@@ -229,6 +232,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         vm.add_pvpanic().context(error::CreateDevice)?;
     }
 
+    #[cfg(target_arch = "x86_64")]
     if args.firmware.is_some() || !args.fw_cfgs.is_empty() {
         let params = args
             .fw_cfgs

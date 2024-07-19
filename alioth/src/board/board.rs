@@ -32,6 +32,7 @@ use crate::arch::layout::{
     PCIE_MMIO_32_NON_PREFETCHABLE_START, PCIE_MMIO_32_PREFETCHABLE_END,
     PCIE_MMIO_32_PREFETCHABLE_START, RAM_32_SIZE,
 };
+#[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{trace_error, DebugTrace};
 use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
@@ -127,6 +128,7 @@ where
     #[cfg(target_arch = "aarch64")]
     pub mmio_devs: RwLock<Vec<(u64, Arc<MemRegion>)>>,
     pub pci_bus: PciBus,
+    #[cfg(target_arch = "x86_64")]
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
 }
 
