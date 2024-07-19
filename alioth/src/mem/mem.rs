@@ -369,6 +369,7 @@ impl Memory {
         match action {
             Action::None => Ok(VmEntry::None),
             Action::Shutdown => Ok(VmEntry::Shutdown),
+            Action::Reset => Ok(VmEntry::Reboot),
             Action::ChangeLayout { callback } => {
                 callback.change(self)?;
                 Ok(VmEntry::None)
@@ -387,16 +388,6 @@ impl Memory {
     }
 
     pub fn handle_io(&self, port: u16, write: Option<u32>, size: u8) -> Result<VmEntry> {
-        if port == 0x600 || port == 0x601 {
-            log::warn!("port = {:#x}, val = {:#x?}, size = {}", port, write, size);
-            if write == Some(0x34) {
-                return Ok(VmEntry::Shutdown);
-            }
-        }
-        // TODO: add an IO device
-        if port == 0x604 && write == Some(0x1) {
-            return Ok(VmEntry::Reboot);
-        }
         if let Some(val) = write {
             let action = self.io_bus.write(port as u64, size, val as u64)?;
             self.handle_action(action)

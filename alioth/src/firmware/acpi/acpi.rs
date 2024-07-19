@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod bindings;
+pub mod reg;
 
 use std::mem::{offset_of, size_of};
 
@@ -33,6 +34,7 @@ use bindings::{
     MADT_LOCAL_X2APIC, MADT_REVISION, MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG,
     SIG_RSDP, SIG_XSDT, XSDT_REVISION,
 };
+use reg::FADT_RESET_VAL;
 
 unsafe_impl_zerocopy!(AcpiTableMcfg<1>, FromBytes, FromZeroes, AsBytes);
 unsafe_impl_zerocopy!(AcpiTableXsdt<3>, FromBytes, FromZeroes, AsBytes);
@@ -94,7 +96,7 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             access_width: 1,
             address: transmute!(PORT_ACPI_RESET as u64),
         },
-        reset_value: 0x1,
+        reset_value: FADT_RESET_VAL,
         sleep_control: AcpiGenericAddress {
             space_id: 1,
             bit_width: 8,

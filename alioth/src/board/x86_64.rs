@@ -24,13 +24,17 @@ use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::cpuid::Cpuid;
-use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
+use crate::arch::layout::{
+    BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL,
+    RAM_32_SIZE,
+};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
 use crate::board::{error, Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt,
 };
+use crate::firmware::acpi::reg::{FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
     create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt, AcpiTable,
 };
@@ -392,8 +396,11 @@ where
 
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
         let mut acpi_table = self.create_acpi();
+        let memory = &self.memory;
+        memory.add_io_dev(PORT_ACPI_RESET, Arc::new(FadtReset))?;
+        memory.add_io_dev(PORT_ACPI_SLEEP_CONTROL, Arc::new(FadtSleepControl))?;
         if self.config.coco.is_none() {
-            let ram = self.memory.ram_bus();
+            let ram = memory.ram_bus();
             acpi_table.relocate(EBDA_START + size_of::<AcpiTableRsdp>() as u64);
             ram.write_range(
                 EBDA_START,
@@ -409,7 +416,7 @@ where
         if let Some(fw_cfg) = &*self.fw_cfg.lock() {
             let mut dev = fw_cfg.lock();
             dev.add_acpi(acpi_table).context(error::Firmware)?;
-            let mem_regions = self.memory.mem_region_entries();
+            let mem_regions = memory.mem_region_entries();
             dev.add_e820(&mem_regions).context(error::Firmware)?;
         }
         Ok(())
