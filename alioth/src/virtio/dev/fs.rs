@@ -200,7 +200,7 @@ impl Virtio for VuFs {
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         let mem = memory.lock_layout();
         for (gpa, slot) in mem.iter() {
-            let Some(fd) = slot.pages.fd() else {
+            let Some((fd, offset)) = slot.pages.fd() else {
                 continue;
             };
             let region = MemorySingleRegion {
@@ -209,7 +209,7 @@ impl Virtio for VuFs {
                     gpa: gpa as _,
                     size: slot.pages.size() as _,
                     hva: slot.pages.addr() as _,
-                    mmap_offset: 0,
+                    mmap_offset: offset,
                 },
             };
             self.vu_dev.add_mem_region(&region, fd.as_raw_fd()).unwrap();
