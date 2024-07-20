@@ -146,18 +146,18 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         self.deserialize_str(visitor)
     }
 
-    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_seq(visitor)
     }
 
-    fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -508,6 +508,7 @@ mod test {
 
     use assert_matches::assert_matches;
     use serde::Deserialize;
+    use serde_bytes::{ByteArray, ByteBuf};
 
     use crate::{from_arg, from_args, Error};
 
@@ -583,6 +584,30 @@ mod test {
             .unwrap(),
             HashMap::from([(',', 'a'), ('b', '='), ('=', ',')])
         );
+    }
+
+    #[test]
+    fn test_bytes() {
+        assert!(from_arg::<ByteArray<6>>("0xea,0xd7,0xa8,0xe8,0xc6,0x2f").is_ok());
+        assert_eq!(
+            from_arg::<ByteBuf>("0xea,0xd7,0xa8,0xe8,0xc6,0x2f").unwrap(),
+            vec![0xea, 0xd7, 0xa8, 0xe8, 0xc6, 0x2f]
+        );
+
+        #[derive(Debug, Deserialize, Eq, PartialEq)]
+        struct MacAddr {
+            addr: ByteArray<6>,
+        }
+        assert_eq!(
+            from_args::<MacAddr>(
+                "addr=id_addr",
+                &HashMap::from([("id_addr", "0xea,0xd7,0xa8,0xe8,0xc6,0x2f")])
+            )
+            .unwrap(),
+            MacAddr {
+                addr: ByteArray::new([0xea, 0xd7, 0xa8, 0xe8, 0xc6, 0x2f])
+            }
+        )
     }
 
     #[test]

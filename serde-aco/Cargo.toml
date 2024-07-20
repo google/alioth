@@ -12,3 +12,4 @@ serde.workspace = true
 
 [dev-dependencies]
 assert_matches = "1"
+serde_bytes = "0.11"
