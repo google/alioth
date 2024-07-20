@@ -211,21 +211,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        if !self.top_level {
-            let id = self.consume_input();
-            let Some(objects) = self.objects else {
-                return Err(Error::IdNotFound);
-            };
-            let obj_str = objects.get(&id).ok_or(Error::IdNotFound)?;
-            let mut sub_de = Deserializer {
-                input: obj_str,
-                ..*self
-            };
-            visitor.visit_map(CommaSeparated::new(&mut sub_de))
-        } else {
-            self.top_level = false;
-            visitor.visit_map(CommaSeparated::new(self))
-        }
+        self.deserialize_nested(|de| visitor.visit_map(CommaSeparated::new(de)))
     }
 
     fn deserialize_struct<V>(
@@ -249,22 +235,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        if !self.top_level {
-            let id = self.consume_input();
-            let obj_str = if let Some(obj_str) = self.objects.and_then(|objects| objects.get(&id)) {
-                obj_str
-            } else {
-                id
-            };
-            let mut sub_de = Deserializer {
-                input: obj_str,
-                ..*self
-            };
-            visitor.visit_enum(Enum::new(&mut sub_de))
-        } else {
-            self.top_level = false;
-            visitor.visit_enum(Enum::new(self))
-        }
+        self.deserialize_nested(|de| visitor.visit_enum(Enum::new(de)))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
@@ -298,6 +269,25 @@ impl<'s, 'o> Deserializer<'s, 'o> {
             top_level: true,
         }
     }
+    fn deserialize_nested<F, V>(&mut self, f: F) -> Result<V>
+    where
+        F: FnOnce(&mut Self) -> Result<V>,
+    {
+        let mut sub_de;
+        let de = if !self.top_level {
+            let id = self.consume_input();
+            let sub_input = self.deref_id(id);
+            sub_de = Deserializer {
+                input: sub_input,
+                ..*self
+            };
+            &mut sub_de
+        } else {
+            self.top_level = false;
+            self
+        };
+        f(de)
+    }
 
     fn consume_input_until(&mut self, end: char) -> Option<&'s str> {
         let Some(len) = self.input.find(end) else {
@@ -314,6 +304,15 @@ impl<'s, 'o> Deserializer<'s, 'o> {
             self.input = "";
             s
         })
+    }
+
+    fn deref_id(&self, id: &'s str) -> &'s str {
+        if id.starts_with("id_") {
+            if let Some(s) = self.objects.and_then(|objects| objects.get(id)) {
+                return s;
+            }
+        }
+        id
     }
 
     fn parse_unsigned<T>(&mut self) -> Result<T>
@@ -494,8 +493,8 @@ mod test {
 
         assert_eq!(
             from_args::<Param>(
-                "byte=0b10,word=0o7k,dw=0x8m,long=10t,enable_1=on,enable_2=off,sub=id1,addr=1g",
-                &[("id1", "b=1,w=2,s=s1,enable=on")].into()
+                "byte=0b10,word=0o7k,dw=0x8m,long=10t,enable_1=on,enable_2=off,sub=id_1,addr=1g",
+                &[("id_1", "b=1,w=2,s=s1,enable=on")].into()
             )
             .unwrap(),
             Param {
@@ -579,10 +578,17 @@ mod test {
         }
 
         assert_eq!(
-            from_args::<TestStruct>("num=3,e=id", &[("id", "A,val=1")].into()).unwrap(),
+            from_args::<TestStruct>("num=3,e=id_a", &[("id_a", "A,val=1")].into()).unwrap(),
             TestStruct {
                 num: 3,
                 e: TestEnum::A { val: 1 }
+            }
+        );
+        assert_eq!(
+            from_arg::<TestStruct>("num=4,e=A").unwrap(),
+            TestStruct {
+                num: 4,
+                e: TestEnum::A { val: 0 },
             }
         );
         assert_eq!(
