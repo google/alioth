@@ -26,6 +26,7 @@ pub enum Error {
     ExpectedBool,
     Overflow,
     Eof,
+    UnknownType,
 }
 
 impl std::error::Error for Error {}

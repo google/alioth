@@ -33,7 +33,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        Err(Error::UnknownType)
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
