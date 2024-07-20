@@ -120,11 +120,11 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         visitor.visit_f64(s.parse().map_err(|_| Error::ExpectedFloat)?)
     }
 
-    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_str(visitor)
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
@@ -567,6 +567,22 @@ mod test {
         assert_matches!(from_arg::<f32>("0.125").unwrap(), 0.125);
 
         assert_matches!(from_arg::<f64>("-0.5").unwrap(), -0.5);
+    }
+
+    #[test]
+    fn test_char() {
+        assert_eq!(from_arg::<char>("=").unwrap(), '=');
+        assert_eq!(from_arg::<char>("a").unwrap(), 'a');
+        assert_matches!(from_arg::<char>("an"), Err(Error::Message(_)));
+
+        assert_eq!(
+            from_args::<HashMap<char, char>>(
+                "id_1=a,b=id_2,id_2=id_1",
+                &HashMap::from([("id_1", ","), ("id_2", "="),])
+            )
+            .unwrap(),
+            HashMap::from([(',', 'a'), ('b', '='), ('=', ',')])
+        );
     }
 
     #[test]
