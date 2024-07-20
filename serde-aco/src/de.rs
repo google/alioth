@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, VariantAccess, Visitor};
+use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -186,30 +186,30 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_nested(|de| visitor.visit_seq(CommaSeparated::new(de)))
     }
 
-    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value>
+    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
         _len: usize,
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value>
@@ -295,9 +295,7 @@ impl<'s, 'o> Deserializer<'s, 'o> {
     }
 
     fn consume_input_until(&mut self, end: char) -> Option<&'s str> {
-        let Some(len) = self.input.find(end) else {
-            return None;
-        };
+        let len = self.input.find(end)?;
         let s = &self.input[..len];
         self.input = &self.input[len + end.len_utf8()..];
         Some(s)
@@ -384,6 +382,19 @@ impl<'a, 's, 'o> CommaSeparated<'a, 's, 'o> {
     }
 }
 
+impl<'a, 's, 'o> SeqAccess<'s> for CommaSeparated<'a, 's, 'o> {
+    type Error = Error;
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    where
+        T: DeserializeSeed<'s>,
+    {
+        if self.de.input.is_empty() {
+            return Ok(None);
+        }
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+}
+
 impl<'a, 's, 'o> MapAccess<'s> for CommaSeparated<'a, 's, 'o> {
     type Error = Error;
 
@@ -457,7 +468,7 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
     where
         V: Visitor<'s>,
     {
-        de::Deserializer::deserialize_seq(self.de, visitor)
+        visitor.visit_seq(CommaSeparated::new(self.de))
     }
 
     fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value>
@@ -491,6 +502,72 @@ mod test {
             .unwrap(),
             HashMap::from([("cmd".to_owned(), "console=ttyS0".to_owned())])
         )
+    }
+
+    #[test]
+    fn test_seq() {
+        assert_eq!(from_arg::<Vec<u32>>("").unwrap(), vec![]);
+
+        assert_eq!(from_arg::<Vec<u32>>("1").unwrap(), vec![1]);
+
+        assert_eq!(from_arg::<Vec<u32>>("1,2,3,4").unwrap(), vec![1, 2, 3, 4]);
+
+        assert_eq!(from_arg::<(u16, bool)>("12,true").unwrap(), (12, true));
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct Node {
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            start: u64,
+            size: u64,
+        }
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct Numa {
+            nodes: Vec<Node>,
+        }
+
+        assert_eq!(
+            from_args::<Numa>(
+                "nodes=id_nodes",
+                &HashMap::from([
+                    ("id_nodes", "id_node1,id_node2"),
+                    ("id_node1", "name=a,start=0,size=2g"),
+                    ("id_node2", "name=b,start=4g,size=2g"),
+                ])
+            )
+            .unwrap(),
+            Numa {
+                nodes: vec![
+                    Node {
+                        name: "a".to_owned(),
+                        start: 0,
+                        size: 2 << 30
+                    },
+                    Node {
+                        name: "b".to_owned(),
+                        start: 4 << 30,
+                        size: 2 << 30
+                    }
+                ]
+            }
+        );
+
+        assert_eq!(
+            from_arg::<Numa>("nodes=size=2g,").unwrap(),
+            Numa {
+                nodes: vec![Node {
+                    name: "".to_owned(),
+                    start: 0,
+                    size: 2 << 30
+                }]
+            }
+        );
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct Info(bool, u32);
+
+        assert_eq!(from_arg::<Info>("true,32").unwrap(), Info(true, 32));
     }
 
     #[test]
@@ -655,6 +732,7 @@ mod test {
             #[serde(alias = "e")]
             E,
             F(SubStruct),
+            G(u16, String, bool),
         }
 
         #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -718,6 +796,10 @@ mod test {
         assert_eq!(
             from_arg::<TestEnum>("F,a=1,b=on").unwrap(),
             TestEnum::F(SubStruct { a: 1, b: true })
+        );
+        assert_eq!(
+            from_arg::<TestEnum>("G,1,a,true").unwrap(),
+            TestEnum::G(1, "a".to_owned(), true)
         );
     }
 }
