@@ -21,6 +21,7 @@ pub enum Error {
     Message(String),
     ExpectedMapEq,
     ExpectedInteger,
+    ExpectedFloat,
     ExpectedBool,
     Overflow,
     UnknownType,
