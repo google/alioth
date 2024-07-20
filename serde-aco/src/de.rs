@@ -40,7 +40,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        let s = self.get_string_until(&[',']);
+        let s = self.consume_input();
         match s {
             "on" | "true" => visitor.visit_bool(true),
             "off" | "false" => visitor.visit_bool(false),
@@ -129,7 +129,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        visitor.visit_borrowed_str(self.get_string_until(&[',']))
+        visitor.visit_borrowed_str(self.consume_input())
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -212,7 +212,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         V: Visitor<'s>,
     {
         if !self.top_level {
-            let id = self.get_string_until(&[',']);
+            let id = self.consume_input();
             let Some(objects) = self.objects else {
                 return Err(Error::IdNotFound);
             };
@@ -250,7 +250,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         V: Visitor<'s>,
     {
         if !self.top_level {
-            let id = self.get_string_until(&[',']);
+            let id = self.consume_input();
             let obj_str = if let Some(obj_str) = self.objects.and_then(|objects| objects.get(&id)) {
                 obj_str
             } else {
@@ -271,7 +271,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        visitor.visit_borrowed_str(self.get_string_until(&['=', ',']))
+        visitor.visit_borrowed_str(self.consume_input())
     }
 
     fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value>
@@ -299,26 +299,28 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         }
     }
 
-    fn get_string_until(&mut self, ends: &[char]) -> &'s str {
-        match self.input.find(ends) {
-            Some(len) => {
-                let s = &self.input[..len];
-                self.input = &self.input[len..];
-                s
-            }
-            None => {
-                let s = self.input;
-                self.input = "";
-                s
-            }
-        }
+    fn consume_input_until(&mut self, end: char) -> Option<&'s str> {
+        let Some(len) = self.input.find(end) else {
+            return None;
+        };
+        let s = &self.input[..len];
+        self.input = &self.input[len + end.len_utf8()..];
+        Some(s)
+    }
+
+    fn consume_input(&mut self) -> &'s str {
+        self.consume_input_until(',').unwrap_or_else(|| {
+            let s = self.input;
+            self.input = "";
+            s
+        })
     }
 
     fn parse_unsigned<T>(&mut self) -> Result<T>
     where
         T: TryFrom<u64>,
     {
-        let s = self.get_string_until(&[',']);
+        let s = self.consume_input();
         let (num, shift) = if let Some((num, "")) = s.split_once(['k', 'K']) {
             (num, 10)
         } else if let Some((num, "")) = s.split_once(['m', 'M']) {
@@ -365,24 +367,11 @@ where
 
 struct CommaSeparated<'a, 's: 'a, 'o: 'a> {
     de: &'a mut Deserializer<'s, 'o>,
-    first: bool,
 }
 
 impl<'a, 's, 'o> CommaSeparated<'a, 's, 'o> {
     fn new(de: &'a mut Deserializer<'s, 'o>) -> Self {
-        CommaSeparated { de, first: true }
-    }
-}
-
-impl<'s, 'o> Deserializer<'s, 'o> {
-    fn peek_char(&mut self) -> Option<char> {
-        self.input.chars().next()
-    }
-
-    fn next_char(&mut self) -> Result<char> {
-        let ch = self.peek_char().ok_or(Error::Eof)?;
-        self.input = &self.input[ch.len_utf8()..];
-        Ok(ch)
+        CommaSeparated { de }
     }
 }
 
@@ -393,23 +382,26 @@ impl<'a, 's, 'o> MapAccess<'s> for CommaSeparated<'a, 's, 'o> {
     where
         K: DeserializeSeed<'s>,
     {
-        if self.de.peek_char().is_none() {
+        if self.de.input.is_empty() {
             return Ok(None);
         }
-        if !self.first && self.de.next_char()? != ',' {
-            return Err(Error::ExpectedMapComma);
+        let Some(key) = self.de.consume_input_until('=') else {
+            return Err(Error::ExpectedMapEq);
+        };
+        if key.contains(',') {
+            return Err(Error::ExpectedMapEq);
         }
-        self.first = false;
-        seed.deserialize(&mut *self.de).map(Some)
+        let mut sub_de = Deserializer {
+            input: key,
+            ..*self.de
+        };
+        seed.deserialize(&mut sub_de).map(Some)
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
     where
         V: DeserializeSeed<'s>,
     {
-        let Ok('=') = self.de.next_char() else {
-            return Err(Error::ExpectedMapEq);
-        };
         seed.deserialize(&mut *self.de)
     }
 }
@@ -448,34 +440,22 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
     where
         T: DeserializeSeed<'s>,
     {
-        if self.de.next_char()? == ',' {
-            self.de.top_level = true;
-            seed.deserialize(self.de)
-        } else {
-            Err(Error::ExpectedMapComma)
-        }
+        self.de.top_level = true;
+        seed.deserialize(self.de)
     }
 
     fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        if self.de.next_char()? == ',' {
-            de::Deserializer::deserialize_seq(self.de, visitor)
-        } else {
-            Err(Error::ExpectedMapComma)
-        }
+        de::Deserializer::deserialize_seq(self.de, visitor)
     }
 
     fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        if self.de.next_char()? == ',' {
-            visitor.visit_map(CommaSeparated::new(self.de))
-        } else {
-            Err(Error::ExpectedMapComma)
-        }
+        visitor.visit_map(CommaSeparated::new(self.de))
     }
 }
 
@@ -534,7 +514,15 @@ mod test {
                 },
                 addr: Addr(1 << 30)
             }
-        )
+        );
+        assert_matches!(
+            from_arg::<SubParam>("b=1,w=2,enable,s=s1"),
+            Err(Error::ExpectedMapEq)
+        );
+        assert_matches!(
+            from_arg::<SubParam>("b=1,w=2,s=s1,enable"),
+            Err(Error::ExpectedMapEq)
+        );
     }
 
     #[test]
@@ -573,6 +561,7 @@ mod test {
         #[derive(Debug, Deserialize, PartialEq, Eq)]
         enum TestEnum {
             A {
+                #[serde(default)]
                 val: u32,
             },
             B(u64),
@@ -594,6 +583,13 @@ mod test {
             TestStruct {
                 num: 3,
                 e: TestEnum::A { val: 1 }
+            }
+        );
+        assert_eq!(
+            from_args::<TestStruct>("num=4,e=id_a", &[("id_a", "A")].into()).unwrap(),
+            TestStruct {
+                num: 4,
+                e: TestEnum::A { val: 0 },
             }
         );
         assert_eq!(
