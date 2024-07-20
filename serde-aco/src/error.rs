@@ -23,6 +23,7 @@ pub enum Error {
     ExpectedInteger,
     ExpectedFloat,
     ExpectedBool,
+    ExpectedUnit,
     Overflow,
     UnknownType,
 }

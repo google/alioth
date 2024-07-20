@@ -174,18 +174,23 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         }
     }
 
-    fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        let s = self.consume_input();
+        if s.is_empty() {
+            visitor.visit_unit()
+        } else {
+            Err(Error::ExpectedUnit)
+        }
     }
 
-    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value>
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        self.deserialize_unit(visitor)
     }
 
     fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
@@ -505,6 +510,7 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::marker::PhantomData;
 
     use assert_matches::assert_matches;
     use serde::Deserialize;
@@ -543,6 +549,22 @@ mod test {
             from_arg::<Vec<Option<u32>>>(",2").unwrap(),
             vec![None, Some(2)]
         );
+    }
+
+    #[test]
+    fn test_unit() {
+        assert!(from_arg::<()>("").is_ok());
+        assert_matches!(from_arg::<()>("unit"), Err(Error::ExpectedUnit));
+
+        assert!(from_arg::<PhantomData<u8>>("").is_ok());
+        assert_matches!(from_arg::<PhantomData<u8>>("12"), Err(Error::ExpectedUnit));
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct Param {
+            p: PhantomData<u8>,
+        }
+        assert_eq!(from_arg::<Param>("p=").unwrap(), Param { p: PhantomData });
+        assert_matches!(from_arg::<Param>("p=1,"), Err(Error::ExpectedUnit));
     }
 
     #[test]
