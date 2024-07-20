@@ -24,6 +24,8 @@ pub enum Error {
     ExpectedFloat,
     ExpectedBool,
     ExpectedUnit,
+    Trailing(String),
+    Ignored(String),
     Overflow,
     UnknownType,
 }
