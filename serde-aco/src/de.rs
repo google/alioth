@@ -129,8 +129,12 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        let id = self.consume_input();
-        visitor.visit_borrowed_str(self.deref_id(id))
+        if self.top_level {
+            visitor.visit_borrowed_str(self.consume_all())
+        } else {
+            let id = self.consume_input();
+            visitor.visit_borrowed_str(self.deref_id(id))
+        }
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -299,12 +303,17 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         Some(s)
     }
 
+    fn consume_all(&mut self) -> &'s str {
+        let s = self.input;
+        self.input = "";
+        s
+    }
+
     fn consume_input(&mut self) -> &'s str {
-        self.consume_input_until(',').unwrap_or_else(|| {
-            let s = self.input;
-            self.input = "";
-            s
-        })
+        match self.consume_input_until(',') {
+            Some(s) => s,
+            None => self.consume_all(),
+        }
     }
 
     fn deref_id(&self, id: &'s str) -> &'s str {
@@ -470,6 +479,10 @@ mod test {
 
     #[test]
     fn test_string() {
+        assert_eq!(
+            from_arg::<String>("test,s=1,c").unwrap(),
+            "test,s=1,c".to_owned()
+        );
         assert_eq!(
             from_args::<HashMap<String, String>>(
                 "cmd=id_1",
