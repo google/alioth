@@ -48,32 +48,32 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         }
     }
 
-    fn deserialize_i8<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        visitor.visit_i8(self.parse_signed()?)
     }
 
-    fn deserialize_i16<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        visitor.visit_i16(self.parse_signed()?)
     }
 
-    fn deserialize_i32<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        visitor.visit_i32(self.parse_signed()?)
     }
 
-    fn deserialize_i64<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        visitor.visit_i64(self.parse_signed()?)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
@@ -104,18 +104,20 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         visitor.visit_u64(self.parse_unsigned()?)
     }
 
-    fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        let s = self.consume_input();
+        visitor.visit_f32(s.parse().map_err(|_| Error::ExpectedFloat)?)
     }
 
-    fn deserialize_f64<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        let s = self.consume_input();
+        visitor.visit_f64(s.parse().map_err(|_| Error::ExpectedFloat)?)
     }
 
     fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value>
@@ -361,6 +363,20 @@ impl<'s, 'o> Deserializer<'s, 'o> {
 
         T::try_from(shifted_n).map_err(|_| Error::Overflow)
     }
+
+    fn parse_signed<T>(&mut self) -> Result<T>
+    where
+        T: TryFrom<i64>,
+    {
+        let i = if self.input.starts_with('-') {
+            let s = self.consume_input();
+            s.parse().map_err(|_| Error::ExpectedInteger)
+        } else {
+            let n = self.parse_unsigned::<u64>()?;
+            i64::try_from(n).map_err(|_| Error::Overflow)
+        }?;
+        T::try_from(i).map_err(|_| Error::Overflow)
+    }
 }
 
 pub fn from_args<'s, 'o, T>(s: &'s str, objects: &'o HashMap<&'s str, &'s str>) -> Result<T>
@@ -526,6 +542,31 @@ mod test {
             from_arg::<Vec<Option<u32>>>(",2").unwrap(),
             vec![None, Some(2)]
         );
+    }
+
+    #[test]
+    fn test_numbers() {
+        assert_eq!(from_arg::<i8>("0").unwrap(), 0);
+        assert_eq!(from_arg::<i8>("1").unwrap(), 1);
+        assert_eq!(from_arg::<i8>("127").unwrap(), 127);
+        assert_matches!(from_arg::<i8>("128"), Err(Error::Overflow));
+        assert_eq!(from_arg::<i8>("-1").unwrap(), -1);
+        assert_eq!(from_arg::<i8>("-128").unwrap(), -128);
+        assert_matches!(from_arg::<i8>("-129"), Err(Error::Overflow));
+
+        assert_eq!(from_arg::<i16>("1k").unwrap(), 1 << 10);
+
+        assert_eq!(from_arg::<i32>("1g").unwrap(), 1 << 30);
+        assert_matches!(from_arg::<i32>("2g"), Err(Error::Overflow));
+        assert_matches!(from_arg::<i32>("0xffffffff"), Err(Error::Overflow));
+
+        assert_eq!(from_arg::<i64>("0xffffffff").unwrap(), 0xffffffff);
+
+        assert_matches!(from_arg::<i64>("gg"), Err(Error::ExpectedInteger));
+
+        assert_matches!(from_arg::<f32>("0.125").unwrap(), 0.125);
+
+        assert_matches!(from_arg::<f64>("-0.5").unwrap(), -0.5);
     }
 
     #[test]
