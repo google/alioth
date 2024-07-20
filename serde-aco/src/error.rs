@@ -20,7 +20,6 @@ use serde::{de, ser};
 pub enum Error {
     Message(String),
     ExpectedMapEq,
-    IdNotFound,
     ExpectedInteger,
     ExpectedBool,
     Overflow,
