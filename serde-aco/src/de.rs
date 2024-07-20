@@ -162,7 +162,14 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        visitor.visit_some(self)
+        let id = self.consume_input();
+        if id.is_empty() {
+            visitor.visit_none()
+        } else {
+            let s = self.deref_id(id);
+            let mut sub_de = Deserializer { input: s, ..*self };
+            visitor.visit_some(&mut sub_de)
+        }
     }
 
     fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value>
@@ -487,6 +494,39 @@ mod test {
     use serde::Deserialize;
 
     use crate::{from_arg, from_args, Error};
+
+    #[test]
+    fn test_option() {
+        assert_eq!(from_arg::<Option<u32>>("").unwrap(), None);
+        assert_eq!(from_arg::<Option<u32>>("12").unwrap(), Some(12));
+
+        assert_eq!(from_arg::<Option<&'static str>>("").unwrap(), None);
+        assert_eq!(
+            from_args::<Option<&'static str>>("id_1", &HashMap::from([("id_1", "")])).unwrap(),
+            Some("")
+        );
+        assert_eq!(from_arg::<Option<&'static str>>("12").unwrap(), Some("12"));
+        assert_eq!(
+            from_arg::<Option<&'static str>>("id_1").unwrap(),
+            Some("id_1")
+        );
+
+        assert_eq!(from_arg::<Vec<Option<u32>>>("").unwrap(), vec![]);
+        assert_eq!(from_arg::<Vec<Option<u32>>>(",").unwrap(), vec![None]);
+        assert_eq!(from_arg::<Vec<Option<u32>>>("1,").unwrap(), vec![Some(1)]);
+        assert_eq!(
+            from_arg::<Vec<Option<u32>>>("1,2,").unwrap(),
+            vec![Some(1), Some(2)]
+        );
+        assert_eq!(
+            from_arg::<Vec<Option<u32>>>("1,2,,").unwrap(),
+            vec![Some(1), Some(2), None]
+        );
+        assert_eq!(
+            from_arg::<Vec<Option<u32>>>(",2").unwrap(),
+            vec![None, Some(2)]
+        );
+    }
 
     #[test]
     fn test_string() {
