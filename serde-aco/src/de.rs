@@ -494,6 +494,64 @@ mod test {
     }
 
     #[test]
+    fn test_map() {
+        #[derive(Debug, Deserialize, PartialEq, Eq, Hash)]
+        struct MapKey {
+            name: String,
+            id: u32,
+        }
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct MapVal {
+            addr: String,
+            info: HashMap<String, String>,
+        }
+
+        assert_eq!(
+            from_args::<HashMap<MapKey, MapVal>>(
+                "id_key1=id_val1,id_key2=id_val2",
+                &HashMap::from([
+                    ("id_key1", "name=gic,id=1"),
+                    ("id_key2", "name=pci,id=2"),
+                    ("id_val1", "addr=0xff,info=id_info1"),
+                    ("id_info1", "compatible=id_gic,msi-controller=,#msi-cells=1"),
+                    ("id_gic", "arm,gic-v3-its"),
+                    ("id_val2", "addr=0xcc,info=compatible=pci-host-ecam-generic"),
+                ])
+            )
+            .unwrap(),
+            HashMap::from([
+                (
+                    MapKey {
+                        name: "gic".to_owned(),
+                        id: 1
+                    },
+                    MapVal {
+                        addr: "0xff".to_owned(),
+                        info: HashMap::from([
+                            ("compatible".to_owned(), "arm,gic-v3-its".to_owned()),
+                            ("msi-controller".to_owned(), "".to_owned()),
+                            ("#msi-cells".to_owned(), "1".to_owned())
+                        ])
+                    }
+                ),
+                (
+                    MapKey {
+                        name: "pci".to_owned(),
+                        id: 2
+                    },
+                    MapVal {
+                        addr: "0xcc".to_owned(),
+                        info: HashMap::from([(
+                            "compatible".to_owned(),
+                            "pci-host-ecam-generic".to_owned()
+                        )])
+                    }
+                )
+            ])
+        );
+    }
+
+    #[test]
     fn test_nested_struct() {
         #[derive(Debug, Deserialize, PartialEq, Eq)]
         struct Param {
