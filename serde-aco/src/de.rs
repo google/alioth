@@ -24,6 +24,7 @@ pub struct Deserializer<'s, 'o> {
     input: &'s str,
     objects: Option<&'o HashMap<&'s str, &'s str>>,
     top_level: bool,
+    key: &'s str,
 }
 
 impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
@@ -268,7 +269,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        unimplemented!()
+        Err(Error::Ignored(self.key.to_owned()))
     }
 }
 
@@ -278,6 +279,7 @@ impl<'s, 'o> Deserializer<'s, 'o> {
             input,
             objects: Some(objects),
             top_level: true,
+            key: "",
         }
     }
 
@@ -286,8 +288,18 @@ impl<'s, 'o> Deserializer<'s, 'o> {
             input,
             objects: None,
             top_level: true,
+            key: "",
         }
     }
+
+    fn end(&self) -> Result<()> {
+        if self.input.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Trailing(self.input.to_owned()))
+        }
+    }
+
     fn deserialize_nested<F, V>(&mut self, f: F) -> Result<V>
     where
         F: FnOnce(&mut Self) -> Result<V>,
@@ -305,7 +317,9 @@ impl<'s, 'o> Deserializer<'s, 'o> {
             self.top_level = false;
             self
         };
-        f(de)
+        let val = f(de)?;
+        de.end()?;
+        Ok(val)
     }
 
     fn consume_input_until(&mut self, end: char) -> Option<&'s str> {
@@ -389,7 +403,9 @@ where
     T: Deserialize<'s>,
 {
     let mut deserializer = Deserializer::from_args(s, objects);
-    T::deserialize(&mut deserializer)
+    let value = T::deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
 }
 
 pub fn from_arg<'s, T>(s: &'s str) -> Result<T>
@@ -397,7 +413,9 @@ where
     T: Deserialize<'s>,
 {
     let mut deserializer = Deserializer::from_arg(s);
-    T::deserialize(&mut deserializer)
+    let value = T::deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
 }
 
 struct CommaSeparated<'a, 's: 'a, 'o: 'a> {
@@ -439,8 +457,10 @@ impl<'a, 's, 'o> MapAccess<'s> for CommaSeparated<'a, 's, 'o> {
         if key.contains(',') {
             return Err(Error::ExpectedMapEq);
         }
+        self.de.key = key;
         let mut sub_de = Deserializer {
             input: key,
+            key: "",
             ..*self.de
         };
         seed.deserialize(&mut sub_de).map(Some)
@@ -611,6 +631,10 @@ mod test {
     #[test]
     fn test_bytes() {
         assert!(from_arg::<ByteArray<6>>("0xea,0xd7,0xa8,0xe8,0xc6,0x2f").is_ok());
+        assert_matches!(
+            from_arg::<ByteArray<5>>("0xea,0xd7,0xa8,0xe8,0xc6,0x2f"),
+            Err(Error::Trailing(t)) if t == "0x2f"
+        );
         assert_eq!(
             from_arg::<ByteBuf>("0xea,0xd7,0xa8,0xe8,0xc6,0x2f").unwrap(),
             vec![0xea, 0xd7, 0xa8, 0xe8, 0xc6, 0x2f]
@@ -657,6 +681,23 @@ mod test {
         assert_eq!(from_arg::<Vec<u32>>("1,2,3,4").unwrap(), vec![1, 2, 3, 4]);
 
         assert_eq!(from_arg::<(u16, bool)>("12,true").unwrap(), (12, true));
+        assert_matches!(
+            from_arg::<(u16, bool)>("12,true,false"),
+            Err(Error::Trailing(t)) if t == "false"
+        );
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct TestStruct {
+            a: (u16, bool),
+        }
+        assert_eq!(
+            from_args::<TestStruct>("a=id_a", &HashMap::from([("id_a", "12,true")])).unwrap(),
+            TestStruct { a: (12, true) }
+        );
+        assert_matches!(
+            from_args::<TestStruct>("a=id_a", &HashMap::from([("id_a", "12,true,true")])),
+            Err(Error::Trailing(t)) if t == "true"
+        );
 
         #[derive(Debug, Deserialize, PartialEq, Eq)]
         struct Node {
@@ -726,6 +767,17 @@ mod test {
             addr: String,
             info: HashMap<String, String>,
         }
+
+        assert_matches!(
+            from_arg::<MapKey>("name=a,id=1,addr=b"),
+            Err(Error::Ignored(k)) if k == "addr"
+        );
+        assert_matches!(
+            from_arg::<MapKey>("name=a,addr=b,id=1"),
+            Err(Error::Ignored(k)) if k == "addr"
+        );
+        assert_matches!(from_arg::<MapKey>("name=a,ids=b"), Err(Error::Ignored(k)) if k == "ids");
+        assert_matches!(from_arg::<MapKey>("name=a,ids=b,id=1"), Err(Error::Ignored(k)) if k == "ids");
 
         assert_eq!(
             from_args::<HashMap<MapKey, MapVal>>(
@@ -833,6 +885,12 @@ mod test {
 
     #[test]
     fn test_bool() {
+        assert_matches!(from_arg::<bool>("on"), Ok(true));
+        assert_matches!(from_arg::<bool>("off"), Ok(false));
+        assert_matches!(from_arg::<bool>("true"), Ok(true));
+        assert_matches!(from_arg::<bool>("false"), Ok(false));
+        assert_matches!(from_arg::<bool>("on,off"), Err(Error::Trailing(t)) if t == "off");
+
         #[derive(Debug, Deserialize, PartialEq, Eq)]
         struct BoolStruct {
             val: bool,
@@ -854,6 +912,11 @@ mod test {
             BoolStruct { val: false }
         );
         assert_matches!(from_arg::<BoolStruct>("val=a"), Err(Error::ExpectedBool));
+
+        assert_matches!(
+            from_arg::<BoolStruct>("val=on,key=off"),
+            Err(Error::Ignored(k)) if k == "key"
+        );
     }
 
     #[test]
@@ -944,6 +1007,17 @@ mod test {
         assert_eq!(
             from_arg::<TestEnum>("G,1,a,true").unwrap(),
             TestEnum::G(1, "a".to_owned(), true)
+        );
+        assert_matches!(
+            from_arg::<TestEnum>("G,1,a,true,false"),
+            Err(Error::Trailing(t)) if t == "false"
+        );
+        assert_matches!(
+            from_args::<TestStruct>(
+                "num=4,e=id_e",
+                &HashMap::from([("id_e", "G,1,a,true,false")])
+            ),
+            Err(Error::Trailing(t)) if t == "false"
         );
     }
 }
