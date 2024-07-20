@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 pub struct Deserializer<'s, 'o> {
     input: &'s str,
     objects: Option<&'o HashMap<&'s str, &'s str>>,
-    in_value: bool,
+    top_level: bool,
 }
 
 impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
@@ -211,7 +211,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        if self.in_value {
+        if !self.top_level {
             let id = self.get_string_until(&[',']);
             let Some(objects) = self.objects else {
                 return Err(Error::IdNotFound);
@@ -219,11 +219,11 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
             let obj_str = objects.get(&id).ok_or(Error::IdNotFound)?;
             let mut sub_de = Deserializer {
                 input: obj_str,
-                objects: self.objects,
-                in_value: false,
+                ..*self
             };
             visitor.visit_map(CommaSeparated::new(&mut sub_de))
         } else {
+            self.top_level = false;
             visitor.visit_map(CommaSeparated::new(self))
         }
     }
@@ -249,7 +249,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        if self.in_value {
+        if !self.top_level {
             let id = self.get_string_until(&[',']);
             let obj_str = if let Some(obj_str) = self.objects.and_then(|objects| objects.get(&id)) {
                 obj_str
@@ -258,11 +258,11 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
             };
             let mut sub_de = Deserializer {
                 input: obj_str,
-                objects: self.objects,
-                in_value: false,
+                ..*self
             };
             visitor.visit_enum(Enum::new(&mut sub_de))
         } else {
+            self.top_level = false;
             visitor.visit_enum(Enum::new(self))
         }
     }
@@ -287,7 +287,7 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         Deserializer {
             input,
             objects: Some(objects),
-            in_value: false,
+            top_level: true,
         }
     }
 
@@ -295,7 +295,7 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         Deserializer {
             input,
             objects: None,
-            in_value: false,
+            top_level: true,
         }
     }
 
@@ -410,10 +410,7 @@ impl<'a, 's, 'o> MapAccess<'s> for CommaSeparated<'a, 's, 'o> {
         let Ok('=') = self.de.next_char() else {
             return Err(Error::ExpectedMapEq);
         };
-        self.de.in_value = true;
-        let r = seed.deserialize(&mut *self.de);
-        self.de.in_value = false;
-        r
+        seed.deserialize(&mut *self.de)
     }
 }
 
@@ -452,6 +449,7 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
         T: DeserializeSeed<'s>,
     {
         if self.de.next_char()? == ',' {
+            self.de.top_level = true;
             seed.deserialize(self.de)
         } else {
             Err(Error::ExpectedMapComma)
@@ -474,7 +472,7 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
         V: Visitor<'s>,
     {
         if self.de.next_char()? == ',' {
-            de::Deserializer::deserialize_map(self.de, visitor)
+            visitor.visit_map(CommaSeparated::new(self.de))
         } else {
             Err(Error::ExpectedMapComma)
         }
@@ -567,6 +565,12 @@ mod test {
     #[test]
     fn test_enum() {
         #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct SubStruct {
+            a: u32,
+            b: bool,
+        }
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
         enum TestEnum {
             A {
                 val: u32,
@@ -576,6 +580,7 @@ mod test {
             D,
             #[serde(alias = "e")]
             E,
+            F(SubStruct),
         }
 
         #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -622,5 +627,9 @@ mod test {
         );
         assert_eq!(from_arg::<TestEnum>("B,1").unwrap(), TestEnum::B(1));
         assert_eq!(from_arg::<TestEnum>("D").unwrap(), TestEnum::D);
+        assert_eq!(
+            from_arg::<TestEnum>("F,a=1,b=on").unwrap(),
+            TestEnum::F(SubStruct { a: 1, b: true })
+        );
     }
 }
