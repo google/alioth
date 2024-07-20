@@ -129,7 +129,8 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
     where
         V: Visitor<'s>,
     {
-        visitor.visit_borrowed_str(self.consume_input())
+        let id = self.consume_input();
+        visitor.visit_borrowed_str(self.deref_id(id))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -460,10 +461,24 @@ impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use assert_matches::assert_matches;
     use serde::Deserialize;
 
     use crate::{from_arg, from_args, Error};
+
+    #[test]
+    fn test_string() {
+        assert_eq!(
+            from_args::<HashMap<String, String>>(
+                "cmd=id_1",
+                &HashMap::from([("id_1", "console=ttyS0")])
+            )
+            .unwrap(),
+            HashMap::from([("cmd".to_owned(), "console=ttyS0".to_owned())])
+        )
+    }
 
     #[test]
     fn test_nested_struct() {
