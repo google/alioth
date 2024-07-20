@@ -19,13 +19,11 @@ use serde::{de, ser};
 #[derive(Debug)]
 pub enum Error {
     Message(String),
-    ExpectedMapComma,
     ExpectedMapEq,
     IdNotFound,
     ExpectedInteger,
     ExpectedBool,
     Overflow,
-    Eof,
     UnknownType,
 }
 
