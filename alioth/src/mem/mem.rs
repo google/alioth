@@ -66,6 +66,10 @@ pub enum Error {
     Mmio {
         source: Box<dyn DebugTrace + Send + Sync + 'static>,
     },
+    #[snafu(display("Failed to change memory layout"))]
+    ChangeLayout {
+        source: Box<dyn DebugTrace + Send + Sync + 'static>,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -228,14 +232,20 @@ impl SlotBackend for Arc<IoRegion> {
     }
 }
 
+pub trait LayoutChanged: Debug + Send + Sync + 'static {
+    fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
+    fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
+}
+
 #[derive(Debug)]
 pub struct Memory {
     ram_bus: Arc<RamBus>,
     mmio_bus: MmioBus,
-    pub(crate) regions: Mutex<Addressable<Arc<MemRegion>>>,
+    regions: Mutex<Addressable<Arc<MemRegion>>>,
     vm_memory: Box<dyn VmMemory>,
     io_bus: MmioBus,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
+    callbacks: Mutex<Vec<Box<dyn LayoutChanged>>>,
 }
 
 impl Memory {
@@ -247,7 +257,27 @@ impl Memory {
             vm_memory: Box::new(vm_memory),
             io_bus: MmioBus::new(),
             io_regions: Mutex::new(Addressable::new()),
+            callbacks: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn register_callback(&self, callback: Box<dyn LayoutChanged>) -> Result<()> {
+        let regions = self.regions.lock();
+        for (addr, region) in regions.iter() {
+            let mut offset = 0;
+            for range in &region.ranges {
+                let gpa = addr + offset;
+                match range {
+                    MemRange::Ram(r) => callback.ram_added(gpa, r)?,
+                    MemRange::Span(_) | MemRange::Emulated(_) | MemRange::DevMem(_) => {}
+                }
+                offset += range.size();
+            }
+        }
+        let mut callbacks = self.callbacks.lock();
+        callbacks.push(callback);
+
+        Ok(())
     }
 
     pub fn reset(&self) -> Result<()> {
@@ -268,7 +298,7 @@ impl Memory {
             log_dirty: false,
         };
         self.vm_memory
-            .mem_map(gpa, user_mem.size() as u64, user_mem.addr(), mem_options)?;
+            .mem_map(gpa, user_mem.size(), user_mem.addr(), mem_options)?;
         Ok(())
     }
 
@@ -282,12 +312,16 @@ impl Memory {
         let mut regions = self.regions.lock();
         regions.add(addr, region.clone())?;
         let mut offset = 0;
+        let callbacks = self.callbacks.lock();
         for range in &region.ranges {
             let gpa = addr + offset;
             match range {
                 MemRange::Emulated(r) => self.mmio_bus.add(gpa, r.clone())?,
                 MemRange::Ram(r) => {
                     self.map_to_vm(gpa, r)?;
+                    for callback in callbacks.iter() {
+                        callback.ram_added(gpa, r)?;
+                    }
                     self.ram_bus.add(gpa, r.clone())?;
                 }
                 MemRange::DevMem(r) => self.map_to_vm(gpa, r)?,
@@ -295,8 +329,9 @@ impl Memory {
             }
             offset += range.size();
         }
-        let callbacks = region.callbacks.lock();
-        for callback in callbacks.iter() {
+
+        let region_callbacks = region.callbacks.lock();
+        for callback in region_callbacks.iter() {
             callback.mapped(addr)?;
         }
         Ok(())
@@ -304,6 +339,7 @@ impl Memory {
 
     fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
         let mut offset = 0;
+        let callbacks = self.callbacks.lock();
         for range in &region.ranges {
             let gpa = addr + offset;
             match range {
@@ -311,16 +347,19 @@ impl Memory {
                     self.mmio_bus.remove(gpa)?;
                 }
                 MemRange::Ram(r) => {
-                    self.unmap_from_vm(gpa, r)?;
                     self.ram_bus.remove(gpa)?;
+                    for callback in callbacks.iter() {
+                        callback.ram_removed(gpa, r)?;
+                    }
+                    self.unmap_from_vm(gpa, r)?;
                 }
                 MemRange::DevMem(r) => self.unmap_from_vm(gpa, r)?,
                 MemRange::Span(_) => {}
             };
             offset += range.size();
         }
-        let callbacks = region.callbacks.lock();
-        for callback in callbacks.iter() {
+        let region_callbacks = region.callbacks.lock();
+        for callback in region_callbacks.iter() {
             callback.unmapped()?;
         }
         Ok(())

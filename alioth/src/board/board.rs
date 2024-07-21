@@ -43,8 +43,6 @@ use crate::loader::xen;
 use crate::loader::{firmware, linux, ExecType, InitState, Payload};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
-#[cfg(target_os = "linux")]
-use crate::mem::MemRange;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
 use crate::pci::Bdf;
@@ -90,9 +88,6 @@ pub enum Error {
     VmExit { msg: String },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
-    #[cfg(target_os = "linux")]
-    #[snafu(display("Failed to setup iova mapping"))]
-    IovaMapping { error: Box<crate::vfio::Error> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -203,30 +198,6 @@ where
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    fn map_ram_to_ioas(&self) -> Result<()> {
-        let Some(ioas) = &*self.default_ioas.read() else {
-            return Ok(());
-        };
-        let regions = self.memory.regions.lock();
-        for (start, region) in regions.iter() {
-            let mut gpa = start;
-            for range in region.ranges.iter() {
-                if let MemRange::Ram(pages) = range {
-                    ioas.map(pages.addr(), gpa, pages.size())
-                        .context(error::IovaMapping)?;
-                    log::debug!(
-                        "mapped: hva {:#018x} -> iova: {gpa:#018x}, size = {:#x}",
-                        pages.addr(),
-                        pages.size(),
-                    );
-                }
-                gpa += range.size();
-            }
-        }
-        Ok(())
-    }
-
     fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
@@ -296,8 +267,6 @@ where
                     self.memory.add_region(*addr, dev.clone())?;
                 }
                 self.add_pci_devs()?;
-                #[cfg(target_os = "linux")]
-                self.map_ram_to_ioas()?;
                 let init_state = self.load_payload()?;
                 self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
@@ -341,10 +310,6 @@ where
                 for (bdf, dev) in devices.iter() {
                     dev.dev.reset().context(error::ResetPci { bdf: *bdf })?;
                     dev.dev.config().reset();
-                }
-                #[cfg(target_os = "linux")]
-                if let Some(ioas) = &*self.default_ioas.read() {
-                    ioas.reset().context(error::IovaMapping)?;
                 }
                 self.memory.reset()?;
             }
