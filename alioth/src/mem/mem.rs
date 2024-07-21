@@ -21,7 +21,7 @@ use serde::Deserialize;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
-use crate::hv::{VmEntry, VmMemory};
+use crate::hv::{MemMapOption, VmEntry, VmMemory};
 
 pub mod addressable;
 pub mod emulated;
@@ -233,6 +233,7 @@ pub struct Memory {
     ram_bus: Arc<RamBus>,
     mmio_bus: MmioBus,
     pub(crate) regions: Mutex<Addressable<Arc<MemRegion>>>,
+    vm_memory: Box<dyn VmMemory>,
     io_bus: MmioBus,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
 }
@@ -240,9 +241,10 @@ pub struct Memory {
 impl Memory {
     pub fn new(vm_memory: impl VmMemory) -> Self {
         Memory {
-            ram_bus: Arc::new(RamBus::new(vm_memory)),
+            ram_bus: Arc::new(RamBus::new()),
             mmio_bus: MmioBus::new(),
             regions: Mutex::new(Addressable::new()),
+            vm_memory: Box::new(vm_memory),
             io_bus: MmioBus::new(),
             io_regions: Mutex::new(Addressable::new()),
         }
@@ -250,12 +252,29 @@ impl Memory {
 
     pub fn reset(&self) -> Result<()> {
         self.clear()?;
-        self.ram_bus.vm_memory.reset()?;
+        self.vm_memory.reset()?;
         Ok(())
     }
 
     pub fn ram_bus(&self) -> Arc<RamBus> {
         self.ram_bus.clone()
+    }
+
+    fn map_to_vm(&self, gpa: u64, user_mem: &ArcMemPages) -> Result<(), Error> {
+        let mem_options = MemMapOption {
+            read: true,
+            write: true,
+            exec: true,
+            log_dirty: false,
+        };
+        self.vm_memory
+            .mem_map(gpa, user_mem.size() as u64, user_mem.addr(), mem_options)?;
+        Ok(())
+    }
+
+    fn unmap_from_vm(&self, gpa: u64, user_mem: &ArcMemPages) -> Result<(), Error> {
+        self.vm_memory.unmap(gpa, user_mem.size())?;
+        Ok(())
     }
 
     pub fn add_region(&self, addr: u64, region: Arc<MemRegion>) -> Result<()> {
@@ -264,11 +283,14 @@ impl Memory {
         regions.add(addr, region.clone())?;
         let mut offset = 0;
         for range in &region.ranges {
+            let gpa = addr + offset;
             match range {
-                MemRange::Emulated(r) => self.mmio_bus.add(addr + offset, r.clone())?,
-                MemRange::Ram(r) | MemRange::DevMem(r) => {
-                    self.ram_bus.add(addr + offset, r.clone())?
+                MemRange::Emulated(r) => self.mmio_bus.add(gpa, r.clone())?,
+                MemRange::Ram(r) => {
+                    self.map_to_vm(gpa, r)?;
+                    self.ram_bus.add(gpa, r.clone())?;
                 }
+                MemRange::DevMem(r) => self.map_to_vm(gpa, r)?,
                 MemRange::Span(_) => {}
             }
             offset += range.size();
@@ -283,13 +305,16 @@ impl Memory {
     fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
         let mut offset = 0;
         for range in &region.ranges {
+            let gpa = addr + offset;
             match range {
                 MemRange::Emulated(_) => {
-                    self.mmio_bus.remove(addr + offset)?;
+                    self.mmio_bus.remove(gpa)?;
                 }
-                MemRange::Ram(_) | MemRange::DevMem(_) => {
-                    self.ram_bus.remove(addr + offset)?;
+                MemRange::Ram(r) => {
+                    self.unmap_from_vm(gpa, r)?;
+                    self.ram_bus.remove(gpa)?;
                 }
+                MemRange::DevMem(r) => self.unmap_from_vm(gpa, r)?,
                 MemRange::Span(_) => {}
             };
             offset += range.size();
@@ -368,6 +393,50 @@ impl Memory {
         let io_region = io_regions.remove(port as u64)?;
         self.unmap_io_region(port, &io_region)?;
         Ok(io_region)
+    }
+
+    pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
+        self.vm_memory.register_encrypted_range(pages.as_slice())?;
+        Ok(())
+    }
+
+    pub fn deregister_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
+        self.vm_memory
+            .deregister_encrypted_range(pages.as_slice())?;
+        Ok(())
+    }
+
+    pub fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
+        let vm_memory = &self.vm_memory;
+        let regions = self.regions.lock();
+        let end = gpa + size;
+        let mut start = gpa;
+        'out: while let Some((mut addr, region)) = regions.search_next(start) {
+            let next_start = addr + region.size();
+            for range in &region.ranges {
+                let (MemRange::DevMem(r) | MemRange::Ram(r)) = range else {
+                    addr += range.size();
+                    continue;
+                };
+                let range_end = addr + r.size();
+                if range_end <= start {
+                    addr = range_end;
+                    continue;
+                }
+                let gpa_start = std::cmp::max(addr, start);
+                let gpa_end = std::cmp::min(end, range_end);
+                if gpa_start >= gpa_end {
+                    break 'out;
+                }
+                vm_memory.mark_private_memory(gpa_start, gpa_end - gpa_start, private)?;
+                start = gpa_end;
+            }
+            if next_start >= end {
+                break;
+            }
+            start = next_start;
+        }
+        Ok(())
     }
 }
 

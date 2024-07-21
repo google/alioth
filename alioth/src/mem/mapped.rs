@@ -37,7 +37,6 @@ use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::ffi;
-use crate::hv::{MemMapOption, VmMemory};
 use crate::mem::addressable::{Addressable, SlotBackend};
 use crate::mem::{error, Error, Result};
 
@@ -214,7 +213,6 @@ impl ArcMemPages {
 #[derive(Debug)]
 pub struct RamBus {
     inner: RwLock<Addressable<ArcMemPages>>,
-    pub(super) vm_memory: Box<dyn VmMemory>,
 }
 
 pub struct RamLayoutGuard<'a> {
@@ -412,11 +410,9 @@ impl Addressable<ArcMemPages> {
     }
 }
 
-impl Drop for RamBus {
-    fn drop(&mut self) {
-        if let Err(e) = self.clear() {
-            log::info!("dropping RamBus: {:x?}", e)
-        }
+impl Default for RamBus {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -427,50 +423,21 @@ impl RamBus {
         }
     }
 
-    pub fn new<M: VmMemory>(vm_memory: M) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: RwLock::new(Addressable::default()),
-            vm_memory: Box::new(vm_memory),
         }
-    }
-
-    fn map_to_vm(&self, user_mem: &ArcMemPages, addr: u64) -> Result<(), Error> {
-        let mem_options = MemMapOption {
-            read: true,
-            write: true,
-            exec: true,
-            log_dirty: false,
-        };
-        self.vm_memory
-            .mem_map(addr, user_mem.size as u64, user_mem.addr, mem_options)?;
-        Ok(())
-    }
-
-    fn unmap_from_vm(&self, user_mem: &ArcMemPages, addr: u64) -> Result<(), Error> {
-        self.vm_memory.unmap(addr, user_mem.size())?;
-        Ok(())
     }
 
     pub(crate) fn add(&self, gpa: u64, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
-        let slot = inner.add(gpa, user_mem)?;
-        self.map_to_vm(slot, gpa)?;
-        Ok(())
-    }
-
-    fn clear(&self) -> Result<()> {
-        let mut innter = self.inner.write();
-        for (gpa, user_mem) in innter.drain(..) {
-            self.unmap_from_vm(&user_mem, gpa)?;
-        }
+        inner.add(gpa, user_mem)?;
         Ok(())
     }
 
     pub(super) fn remove(&self, gpa: u64) -> Result<ArcMemPages, Error> {
         let mut inner = self.inner.write();
-        let mem = inner.remove(gpa)?;
-        self.unmap_from_vm(&mem, gpa)?;
-        Ok(mem)
+        inner.remove(gpa)
     }
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
@@ -532,37 +499,6 @@ impl RamBus {
         }
         Ok(callback(&mut iov))
     }
-
-    pub fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
-        let inner = self.inner.read();
-        let mut start = gpa;
-        let end = gpa + size;
-        while let Some((addr, slot)) = inner.search_next(start) {
-            let gpa_start = std::cmp::max(addr, start);
-            let gpa_end = std::cmp::min(end, addr + slot.size());
-            if gpa_start >= gpa_end {
-                break;
-            }
-            self.vm_memory
-                .mark_private_memory(gpa_start, gpa_end - gpa_start, private)?;
-            start = gpa_end;
-            if start >= end {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
-        self.vm_memory.register_encrypted_range(pages.as_slice())?;
-        Ok(())
-    }
-
-    pub fn deregister_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
-        self.vm_memory
-            .deregister_encrypted_range(pages.as_slice())?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -573,8 +509,6 @@ mod test {
 
     use libc::{PROT_READ, PROT_WRITE};
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
-
-    use crate::hv::test::FakeVmMemory;
 
     use super::{ArcMemPages, RamBus};
 
@@ -588,7 +522,7 @@ mod test {
 
     #[test]
     fn test_ram_bus_read() {
-        let bus = RamBus::new(FakeVmMemory);
+        let bus = RamBus::new();
         let prot = PROT_READ | PROT_WRITE;
         let mem1 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot), None).unwrap();
         let mem2 = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot), None).unwrap();
