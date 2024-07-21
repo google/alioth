@@ -47,6 +47,8 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
   - `entropy` backed by host `/dev/urandom`,
   - `fs` backed by [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) with
     experimental Direct Access (DAX).
+- PCI device passthrough based on
+  [VFIO/IOMMUFD](https://docs.kernel.org/driver-api/vfio.html#iommufd-and-vfio-iommu-type1).
 - Other devices
   - serial console: 16450 on `x86_64`, pl011 on `aarch64`,
   - [fw_cfg](https://www.qemu.org/docs/master/specs/fw_cfg.html) (QEMU Firmware
