@@ -19,14 +19,17 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::sync::Arc;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
 use snafu::{ResultExt, Snafu};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::errors::{trace_error, DebugTrace};
-use crate::ffi;
+use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
+use crate::mem::mapped::ArcMemPages;
+use crate::mem::LayoutChanged;
+use crate::{ffi, mem};
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -490,6 +493,61 @@ impl VuDev {
             IoSlice::new(payload.as_bytes()),
         ];
         Write::write_vectored(&mut (&*channel), &bufs)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct UpdateVuMem {
+    pub dev: Arc<VuDev>,
+}
+
+impl LayoutChanged for UpdateVuMem {
+    fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        let Some((fd, offset)) = pages.fd() else {
+            return Ok(());
+        };
+        let region = MemorySingleRegion {
+            _padding: 0,
+            region: MemoryRegion {
+                gpa: gpa as _,
+                size: pages.size() as _,
+                hva: pages.addr() as _,
+                mmap_offset: offset,
+            },
+        };
+        let ret = self.dev.add_mem_region(&region, fd.as_raw_fd());
+        ret.map_err(boxed_debug_trace)
+            .context(mem::error::ChangeLayout)?;
+        log::trace!(
+            "vu-{}: added memory region {:x?}",
+            self.dev.conn.as_raw_fd(),
+            region.region
+        );
+        Ok(())
+    }
+
+    fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        let Some((_, offset)) = pages.fd() else {
+            return Ok(());
+        };
+        let region = MemorySingleRegion {
+            _padding: 0,
+            region: MemoryRegion {
+                gpa: gpa as _,
+                size: pages.size() as _,
+                hva: pages.addr() as _,
+                mmap_offset: offset,
+            },
+        };
+        let ret = self.dev.remove_mem_region(&region);
+        ret.map_err(boxed_debug_trace)
+            .context(mem::error::ChangeLayout)?;
+        log::trace!(
+            "vu-{}: removed memory region {:x?}",
+            self.dev.conn.as_raw_fd(),
+            region.region
+        );
         Ok(())
     }
 }

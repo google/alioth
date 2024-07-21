@@ -239,6 +239,12 @@ where
         let name = Arc::new(name);
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let dev = param.build(name.clone())?;
+        if let Some(callback) = dev.mem_update_callback() {
+            self.board.memory.register_update_callback(callback)?;
+        }
+        if let Some(callback) = dev.mem_change_callback() {
+            self.board.memory.register_change_callback(callback)?;
+        }
         let registry = self.board.vm.create_ioeventfd_registry()?;
         let virtio_dev = VirtioDevice::new(
             name.clone(),
@@ -312,7 +318,7 @@ impl Machine<Kvm> {
             let ioas = Arc::new(Ioas::alloc_on(iommu.clone())?);
             default_ioas.replace(ioas.clone());
             let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
-            self.board.memory.register_callback(update)?;
+            self.board.memory.register_change_callback(update)?;
             ioas
         };
         drop(default_ioas);
