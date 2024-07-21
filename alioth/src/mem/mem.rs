@@ -106,7 +106,8 @@ impl MemConfig {
 
 #[derive(Debug)]
 pub enum MemRange {
-    Mapped(ArcMemPages),
+    Ram(ArcMemPages),
+    DevMem(ArcMemPages),
     Emulated(MmioRange),
     Span(u64),
 }
@@ -114,7 +115,7 @@ pub enum MemRange {
 impl MemRange {
     pub fn size(&self) -> u64 {
         match self {
-            MemRange::Mapped(pages) => pages.size(),
+            MemRange::Ram(pages) | MemRange::DevMem(pages) => pages.size(),
             MemRange::Emulated(range) => range.size(),
             MemRange::Span(size) => *size,
         }
@@ -156,10 +157,19 @@ impl MemRegion {
         self.entries.iter().fold(0, |accu, e| accu + e.size)
     }
 
-    pub fn with_mapped(pages: ArcMemPages, type_: MemRegionType) -> MemRegion {
+    pub fn with_ram(pages: ArcMemPages, type_: MemRegionType) -> MemRegion {
         let size = pages.size();
         MemRegion {
-            ranges: vec![MemRange::Mapped(pages)],
+            ranges: vec![MemRange::Ram(pages)],
+            entries: vec![MemRegionEntry { type_, size }],
+            callbacks: Mutex::new(vec![]),
+        }
+    }
+
+    pub fn with_dev_mem(pages: ArcMemPages, type_: MemRegionType) -> MemRegion {
+        let size = pages.size();
+        MemRegion {
+            ranges: vec![MemRange::DevMem(pages)],
             entries: vec![MemRegionEntry { type_, size }],
             callbacks: Mutex::new(vec![]),
         }
@@ -253,7 +263,9 @@ impl Memory {
         for range in &region.ranges {
             match range {
                 MemRange::Emulated(r) => self.mmio_bus.add(addr + offset, r.clone())?,
-                MemRange::Mapped(r) => self.ram_bus.add(addr + offset, r.clone())?,
+                MemRange::Ram(r) | MemRange::DevMem(r) => {
+                    self.ram_bus.add(addr + offset, r.clone())?
+                }
                 MemRange::Span(_) => {}
             }
             offset += range.size();
@@ -272,7 +284,7 @@ impl Memory {
                 MemRange::Emulated(_) => {
                     self.mmio_bus.remove(addr + offset)?;
                 }
-                MemRange::Mapped(_) => {
+                MemRange::Ram(_) | MemRange::DevMem(_) => {
                     self.ram_bus.remove(addr + offset)?;
                 }
                 MemRange::Span(_) => {}

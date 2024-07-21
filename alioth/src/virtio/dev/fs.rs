@@ -423,7 +423,7 @@ impl Virtio for VuFs {
 
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         let dax_region = self.dax_region.as_ref()?;
-        Some(Arc::new(MemRegion::with_mapped(
+        Some(Arc::new(MemRegion::with_dev_mem(
             dax_region.clone(),
             MemRegionType::Hidden,
         )))

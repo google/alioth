@@ -41,7 +41,10 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
         .context(access_firmware)?;
 
     let gpa = MEM_64_START - size;
-    let region = Arc::new(MemRegion::with_mapped(rom.clone(), MemRegionType::Reserved));
+    let region = Arc::new(MemRegion::with_dev_mem(
+        rom.clone(),
+        MemRegionType::Reserved,
+    ));
     memory.add_region(gpa, region).context(error::AddMemSlot)?;
     let boot_cs = SegRegVal {
         selector: 0xf000,

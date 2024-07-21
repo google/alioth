@@ -249,7 +249,7 @@ where
         let low_mem_size = std::cmp::min(config.mem.size, RAM_32_SIZE);
         let pages_low = self.create_ram_pages(low_mem_size, c"ram-low")?;
         let region_low = MemRegion {
-            ranges: vec![MemRange::Mapped(pages_low.clone())],
+            ranges: vec![MemRange::Ram(pages_low.clone())],
             entries: vec![
                 MemRegionEntry {
                     size: BIOS_DATA_END,
@@ -280,7 +280,7 @@ where
         if config.mem.size > RAM_32_SIZE {
             let mem_hi_size = config.mem.size - RAM_32_SIZE;
             let mem_hi = self.create_ram_pages(mem_hi_size, c"ram-high")?;
-            let region_hi = MemRegion::with_mapped(mem_hi.clone(), MemRegionType::Ram);
+            let region_hi = MemRegion::with_ram(mem_hi.clone(), MemRegionType::Ram);
             memory.add_region(MEM_64_START, Arc::new(region_hi))?;
             if let Some(coco) = &self.config.coco {
                 ram_bus.register_encrypted_pages(&mem_hi)?;

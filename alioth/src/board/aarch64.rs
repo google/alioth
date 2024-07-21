@@ -107,7 +107,7 @@ where
         let pages_low = self.create_ram_pages(low_mem_size, c"ram-low")?;
         memory.add_region(
             RAM_32_START,
-            Arc::new(MemRegion::with_mapped(pages_low, MemRegionType::Ram)),
+            Arc::new(MemRegion::with_ram(pages_low, MemRegionType::Ram)),
         )?;
 
         let high_mem_size = mem_size.saturating_sub(RAM_32_SIZE);
@@ -115,7 +115,7 @@ where
             let pages_high = self.create_ram_pages(high_mem_size, c"ram-high")?;
             memory.add_region(
                 MEM_64_START,
-                Arc::new(MemRegion::with_mapped(pages_high, MemRegionType::Ram)),
+                Arc::new(MemRegion::with_ram(pages_high, MemRegionType::Ram)),
             )?;
         }
 
