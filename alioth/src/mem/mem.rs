@@ -63,6 +63,10 @@ pub enum Error {
     Write { error: std::io::Error },
     #[snafu(display("Failed to read data from source"))]
     Read { error: std::io::Error },
+    #[snafu(display("Failed to do MMIO"))]
+    Mmio {
+        source: Box<dyn DebugTrace + Send + Sync + 'static>,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

@@ -16,6 +16,7 @@ use std::fmt::Debug;
 use std::mem::size_of;
 
 use bitfield::bitfield;
+use macros::Layout;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -35,7 +36,7 @@ pub enum PciCapId {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes, Layout)]
 pub struct PciCapHdr {
     pub id: u8,
     pub next: u8,
@@ -86,7 +87,7 @@ impl MsixCapOffset {
     }
 }
 
-#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes, Layout)]
 #[repr(C)]
 pub struct MsixCap {
     pub header: PciCapHdr,

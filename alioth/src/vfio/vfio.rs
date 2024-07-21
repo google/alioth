@@ -16,9 +16,11 @@ pub mod bindings;
 pub mod cdev;
 pub mod ioctls;
 pub mod iommu;
+pub mod pci;
 
 use std::path::PathBuf;
 
+use serde::Deserialize;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
@@ -27,6 +29,10 @@ use crate::errors::{trace_error, DebugTrace};
 #[derive(Snafu, DebugTrace)]
 #[snafu(module, context(suffix(false)))]
 pub enum Error {
+    #[snafu(display("Hypervisor internal error"), context(false))]
+    HvError { source: Box<crate::hv::Error> },
+    #[snafu(display("Failed to access guest memory"), context(false))]
+    Memory { source: Box<crate::mem::Error> },
     #[snafu(display("Error from OS"), context(false))]
     System { error: std::io::Error },
     #[snafu(display("Cannot access device {path:?}"))]
@@ -34,6 +40,13 @@ pub enum Error {
         path: PathBuf,
         error: std::io::Error,
     },
+    #[snafu(display("Not supported PCI header type {ty:#x}"))]
+    NotSupportedHeader { ty: u8 },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(Debug, Deserialize)]
+pub struct VfioParam {
+    pub cdev: PathBuf,
+}
