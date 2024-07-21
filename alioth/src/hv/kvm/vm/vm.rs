@@ -416,7 +416,7 @@ impl IrqFd for KvmIrqFd {
         entry.masked
     }
 
-    fn set_masked(&self, val: bool) -> Result<()> {
+    fn set_masked(&self, val: bool) -> Result<bool> {
         let mut table = self.vm.msi_table.write();
         let Some(entry) = table.get_mut(&self.gsi) else {
             unreachable!(
@@ -426,20 +426,18 @@ impl IrqFd for KvmIrqFd {
             );
         };
         if entry.masked == val {
-            return Ok(());
+            return Ok(false);
         }
-        let old_val = entry.masked;
         entry.masked = val;
-        if old_val && !val {
+        if !val {
             if entry.dirty {
                 self.vm.update_routing_table(&table)?;
             }
-            self.assign_irqfd()
-        } else if !old_val && val {
-            self.deassign_irqfd()
+            self.assign_irqfd()?;
         } else {
-            Ok(())
+            self.deassign_irqfd()?;
         }
+        Ok(true)
     }
 }
 

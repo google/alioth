@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use std::mem::size_of;
 
 use bitfield::bitfield;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockWriteGuard};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IrqFd;
@@ -264,12 +264,12 @@ macro_rules! impl_msix_table_mmio_entry_method {
                 MsixTableMmioEntry::IrqFd(f) => f.$get(),
             }
         }
-        fn $set(&mut self, val: u32) -> mem::Result<Action> {
+        fn $set(&mut self, val: u32) -> mem::Result<()> {
             match self {
                 MsixTableMmioEntry::Entry(e) => e.$field = val,
                 MsixTableMmioEntry::IrqFd(f) => f.$set(val)?,
             }
-            Ok(Action::None)
+            Ok(())
         }
     };
 }
@@ -281,12 +281,18 @@ where
     impl_msix_table_mmio_entry_method!(addr_lo, get_addr_lo, set_addr_lo);
     impl_msix_table_mmio_entry_method!(addr_hi, get_addr_hi, set_addr_hi);
     impl_msix_table_mmio_entry_method!(data, get_data, set_data);
-    fn set_masked(&mut self, val: bool) -> mem::Result<Action> {
+    fn set_masked(&mut self, val: bool) -> mem::Result<bool> {
         match self {
-            MsixTableMmioEntry::Entry(e) => e.control.set_masked(val),
-            MsixTableMmioEntry::IrqFd(f) => f.set_masked(val)?,
+            MsixTableMmioEntry::Entry(e) => {
+                let masked = e.control.masked();
+                e.control.set_masked(val);
+                Ok(masked != val)
+            }
+            MsixTableMmioEntry::IrqFd(f) => {
+                let changed = f.set_masked(val)?;
+                Ok(changed)
+            }
         }
-        Ok(Action::None)
     }
     pub fn get_masked(&self) -> bool {
         match self {
@@ -299,6 +305,49 @@ where
 #[derive(Debug)]
 pub struct MsixTableMmio<F> {
     pub entries: Vec<RwLock<MsixTableMmioEntry<F>>>,
+}
+
+impl<F> MsixTableMmio<F>
+where
+    F: IrqFd,
+{
+    /// Write `val` to `offset`.
+    ///
+    /// Returns an MSI entry if its `masked` bit gets flipped.
+    pub fn write_val(
+        &self,
+        offset: u64,
+        size: u8,
+        val: u64,
+    ) -> mem::Result<Option<RwLockWriteGuard<MsixTableMmioEntry<F>>>> {
+        if size != 4 || offset & 0b11 != 0 {
+            log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
+            return Ok(None);
+        }
+        let val = val as u32;
+        let index = offset as usize / size_of::<MsixTableEntry>();
+        let Some(entry) = self.entries.get(index) else {
+            log::error!(
+                "MSI-X table size: {}, accessing index {index}",
+                self.entries.len()
+            );
+            return Ok(None);
+        };
+        let mut entry = entry.write();
+        let mut state_changed = false;
+        match offset as usize % size_of::<MsixTableEntry>() {
+            0 => entry.set_addr_lo(val)?,
+            4 => entry.set_addr_hi(val)?,
+            8 => entry.set_data(val)?,
+            12 => state_changed = entry.set_masked(MsixVectorCtrl(val).masked())?,
+            _ => unreachable!(),
+        };
+        if state_changed {
+            Ok(Some(entry))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<F> Mmio for MsixTableMmio<F>
@@ -334,27 +383,7 @@ where
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        if size != 4 || offset & 0b11 != 0 {
-            log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
-            return Ok(Action::None);
-        }
-        let val = val as u32;
-        let index = offset as usize / size_of::<MsixTableEntry>();
-        let Some(entry) = self.entries.get(index) else {
-            log::error!(
-                "MSI-X table size: {}, accessing index {index}",
-                self.entries.len()
-            );
-            return Ok(Action::None);
-        };
-        let mut entry = entry.write();
-        match offset as usize % size_of::<MsixTableEntry>() {
-            0 => entry.set_addr_lo(val)?,
-            4 => entry.set_addr_hi(val)?,
-            8 => entry.set_data(val)?,
-            12 => entry.set_masked(MsixVectorCtrl(val).masked())?,
-            _ => unreachable!(),
-        };
+        self.write_val(offset, size, val)?;
         Ok(Action::None)
     }
 }

@@ -118,7 +118,7 @@ impl IrqFd for HvfIrqFd {
     fn set_data(&self, _val: u32) -> Result<()> {
         unimplemented!()
     }
-    fn set_masked(&self, _val: bool) -> Result<()> {
+    fn set_masked(&self, _val: bool) -> Result<bool> {
         unimplemented!()
     }
 }
