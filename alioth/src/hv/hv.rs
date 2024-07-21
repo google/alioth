@@ -218,7 +218,7 @@ pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
     fn get_addr_hi(&self) -> u32;
     fn set_data(&self, val: u32) -> Result<()>;
     fn get_data(&self) -> u32;
-    fn set_masked(&self, val: bool) -> Result<()>;
+    fn set_masked(&self, val: bool) -> Result<bool>;
     fn get_masked(&self) -> bool;
 }
 
