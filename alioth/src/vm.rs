@@ -33,6 +33,8 @@ use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
 use crate::errors::{trace_error, DebugTrace};
+#[cfg(target_os = "linux")]
+use crate::hv::Kvm;
 use crate::hv::{Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::Payload;
 use crate::mem::Memory;
@@ -40,6 +42,12 @@ use crate::mem::Memory;
 use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
+#[cfg(target_os = "linux")]
+use crate::vfio::iommu::{Ioas, Iommu};
+#[cfg(target_os = "linux")]
+use crate::vfio::pci::VfioPciDev;
+#[cfg(target_os = "linux")]
+use crate::vfio::VfioParam;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 
@@ -61,6 +69,9 @@ pub enum Error {
     CreateVirtio { source: Box<crate::virtio::Error> },
     #[snafu(display("Guest memory is not backed by sharable file descriptors"))]
     MemNotSharedFd,
+    #[cfg(target_os = "linux")]
+    #[snafu(display("Failed to create a VFIO device"), context(false))]
+    CreateVfio { source: Box<crate::vfio::Error> },
     #[snafu(display("VCPU-{id} error"))]
     VcpuError {
         id: u32,
@@ -75,6 +86,8 @@ where
     H: Hypervisor,
 {
     board: Arc<Board<H::Vm>>,
+    #[cfg(target_os = "linux")]
+    iommu: Option<Arc<Iommu>>,
     event_rx: Receiver<u32>,
     _event_tx: Sender<u32>,
 }
@@ -139,6 +152,8 @@ where
             board,
             event_rx,
             _event_tx: event_tx,
+            #[cfg(target_os = "linux")]
+            iommu: None,
         };
 
         Ok(machine)
@@ -271,5 +286,40 @@ where
                 Ok(r) => r.context(error::Vcpu { id: id as u32 }),
             })
             .collect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Machine<Kvm> {
+    pub fn add_vfio_dev(&mut self, name: String, param: VfioParam) -> Result<(), Error> {
+        let name = Arc::new(name);
+        let iommu = if let Some(iommu) = &self.iommu {
+            iommu.clone()
+        } else {
+            let iommu = Arc::new(Iommu::new("/dev/iommu")?);
+            self.iommu.replace(iommu.clone());
+            iommu
+        };
+
+        let mut default_ioas = self.board.default_ioas.write();
+        let ioas = if let Some(ioas) = &*default_ioas {
+            ioas.clone()
+        } else {
+            let ioas = Arc::new(Ioas::alloc_on(iommu.clone())?);
+            default_ioas.replace(ioas.clone());
+            ioas
+        };
+        drop(default_ioas);
+
+        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
+        let msi_sender = self.board.vm.create_msi_sender(
+            #[cfg(target_arch = "aarch64")]
+            u32::from(bdf.0),
+        )?;
+
+        let dev = Arc::new(VfioPciDev::new(name.clone(), &param, ioas, msi_sender)?);
+        let pci_dev = PciDevice::new(name, dev);
+        self.add_pci_dev(Some(bdf), pci_dev)?;
+        Ok(())
     }
 }
