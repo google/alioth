@@ -14,3 +14,25 @@
 
 pub mod bindings;
 pub mod ioctls;
+pub mod iommu;
+
+use std::path::PathBuf;
+
+use snafu::Snafu;
+
+use crate::errors::{trace_error, DebugTrace};
+
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, context(suffix(false)))]
+pub enum Error {
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
+    #[snafu(display("Cannot access device {path:?}"))]
+    AccessDevice {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
