@@ -137,7 +137,8 @@ where
         let range_ref = ram.get_slice::<u8>(desc.base as u64, desc.len as u64)?;
         let range_bytes =
             unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
-        ram_bus.mark_private_memory(desc.base as _, desc.len as _, true)?;
+        self.memory
+            .mark_private_memory(desc.base as _, desc.len as _, true)?;
         let mut ret = self
             .vm
             .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
@@ -161,8 +162,7 @@ where
         let Some(coco) = &self.config.coco else {
             return Ok(());
         };
-        let ram_bus = self.memory.ram_bus();
-        ram_bus.register_encrypted_pages(fw)?;
+        self.memory.register_encrypted_pages(fw)?;
         self.parse_sev_es_ap(coco, fw);
         match coco {
             Coco::AmdSev { .. } => {
@@ -180,7 +180,8 @@ where
                     self.update_snp_desc(offset, fw_range)?;
                 }
                 let fw_gpa = MEM_64_START - fw_range.len() as u64;
-                ram_bus.mark_private_memory(fw_gpa, fw_range.len() as _, true)?;
+                self.memory
+                    .mark_private_memory(fw_gpa, fw_range.len() as _, true)?;
                 self.vm
                     .snp_launch_update(fw_range, fw_gpa, SnpPageType::Normal)
                     .unwrap();
@@ -244,7 +245,6 @@ where
     pub fn create_ram(&self) -> Result<()> {
         let config = &self.config;
         let memory = &self.memory;
-        let ram_bus = memory.ram_bus();
 
         let low_mem_size = std::cmp::min(config.mem.size, RAM_32_SIZE);
         let pages_low = self.create_ram_pages(low_mem_size, c"ram-low")?;
@@ -272,9 +272,9 @@ where
         };
         memory.add_region(0, Arc::new(region_low))?;
         if let Some(coco) = &self.config.coco {
-            ram_bus.register_encrypted_pages(&pages_low)?;
+            memory.register_encrypted_pages(&pages_low)?;
             if let Coco::AmdSnp { .. } = coco {
-                ram_bus.mark_private_memory(0, low_mem_size as _, true)?;
+                memory.mark_private_memory(0, low_mem_size as _, true)?;
             }
         }
         if config.mem.size > RAM_32_SIZE {
@@ -283,9 +283,9 @@ where
             let region_hi = MemRegion::with_ram(mem_hi.clone(), MemRegionType::Ram);
             memory.add_region(MEM_64_START, Arc::new(region_hi))?;
             if let Some(coco) = &self.config.coco {
-                ram_bus.register_encrypted_pages(&mem_hi)?;
+                memory.register_encrypted_pages(&mem_hi)?;
                 if let Coco::AmdSnp { .. } = coco {
-                    ram_bus.mark_private_memory(MEM_64_START as _, mem_hi_size as _, true)?;
+                    memory.mark_private_memory(MEM_64_START as _, mem_hi_size as _, true)?;
                 }
             }
         }

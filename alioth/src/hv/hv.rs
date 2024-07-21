@@ -18,8 +18,6 @@ mod hvf;
 #[cfg(target_os = "linux")]
 #[path = "kvm/kvm.rs"]
 mod kvm;
-#[cfg(test)]
-pub(crate) mod test;
 use std::fmt::Debug;
 use std::os::fd::AsFd;
 use std::sync::Arc;

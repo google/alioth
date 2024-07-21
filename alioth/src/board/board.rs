@@ -250,9 +250,7 @@ where
                     }
                 }
                 VmExit::ConvertMemory { gpa, size, private } => {
-                    self.memory
-                        .ram_bus()
-                        .mark_private_memory(gpa, size, private)?;
+                    self.memory.mark_private_memory(gpa, size, private)?;
                     VmEntry::None
                 }
                 VmExit::Unknown(msg) => break error::VmExit { msg }.fail(),
