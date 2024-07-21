@@ -20,3 +20,15 @@ pub use macros::{trace_error, DebugTrace};
 pub trait DebugTrace: Error {
     fn debug_trace(&self, f: &mut fmt::Formatter) -> Result<u32, fmt::Error>;
 }
+
+impl Error for Box<dyn DebugTrace + Send + Sync + 'static> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Error::source(Box::as_ref(self))
+    }
+}
+
+pub fn boxed_debug_trace<E: DebugTrace + Send + Sync + 'static>(
+    e: E,
+) -> Box<dyn DebugTrace + Send + Sync + 'static> {
+    Box::new(e)
+}
