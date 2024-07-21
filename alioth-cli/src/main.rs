@@ -26,6 +26,8 @@ use alioth::hv::Hvf;
 use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::mem::{MemBackend, MemConfig};
+#[cfg(target_os = "linux")]
+use alioth::vfio::VfioParam;
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 #[cfg(target_os = "linux")]
@@ -150,6 +152,10 @@ struct RunArgs {
 
     #[arg(long)]
     vsock: Option<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    vfio: Vec<String>,
 }
 
 #[trace_error]
@@ -309,6 +315,12 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
                 .add_virtio_dev("vhost-vsock".to_owned(), p)
                 .context(error::CreateDevice)?,
         };
+    }
+    #[cfg(target_os = "linux")]
+    for (index, vfio) in args.vfio.into_iter().enumerate() {
+        let param: VfioParam = serde_aco::from_arg(&vfio).context(error::ParseArg { arg: vfio })?;
+        vm.add_vfio_dev(format!("vfio-{index}"), param)
+            .context(error::CreateDevice)?;
     }
 
     let payload = if let Some(fw) = args.firmware {
