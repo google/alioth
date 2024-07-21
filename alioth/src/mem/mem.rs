@@ -233,7 +233,7 @@ impl SlotBackend for Arc<IoRegion> {
 pub struct Memory {
     ram_bus: Arc<RamBus>,
     mmio_bus: MmioBus,
-    regions: Mutex<Addressable<Arc<MemRegion>>>,
+    pub(crate) regions: Mutex<Addressable<Arc<MemRegion>>>,
     io_bus: MmioBus,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
 }
