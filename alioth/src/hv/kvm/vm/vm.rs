@@ -308,13 +308,17 @@ pub struct KvmIrqFd {
 impl Drop for KvmIrqFd {
     fn drop(&mut self) {
         let mut table = self.vm.msi_table.write();
-        if table.remove(&self.gsi).is_none() {
+        let Some(entry) = table.remove(&self.gsi) else {
             log::error!(
                 "vm-{}: cannot find gsi {:#x} in the gsi table",
                 self.gsi,
                 self.vm.as_raw_fd()
             );
+            return;
         };
+        if entry.masked {
+            return;
+        }
         if let Err(e) = self.deassign_irqfd() {
             log::error!(
                 "vm-{}: removing irqfd {:#x}: {e}",
