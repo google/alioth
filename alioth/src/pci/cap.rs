@@ -348,6 +348,13 @@ where
             Ok(None)
         }
     }
+
+    pub fn reset(&self) {
+        for entry in self.entries.iter() {
+            let mut entry = entry.write();
+            *entry = MsixTableMmioEntry::Entry(MsixTableEntry::default());
+        }
+    }
 }
 
 impl<F> Mmio for MsixTableMmio<F>
