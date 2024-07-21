@@ -128,8 +128,8 @@ impl Virtio for VhostVsock {
         for (index, (gpa, user_mem)) in mem.iter().enumerate() {
             table.num += 1;
             table.regions[index].gpa = gpa;
-            table.regions[index].hva = user_mem.pages.addr() as u64;
-            table.regions[index].size = user_mem.pages.size();
+            table.regions[index].hva = user_mem.addr() as u64;
+            table.regions[index].size = user_mem.size();
         }
         self.vhost_dev.set_mem_table(&table)?;
         for (index, (queue, error_fd)) in

@@ -242,7 +242,7 @@ mod test {
             ..Default::default()
         };
         memory
-            .mem_map(0, 0, 0x4000, user_mem as usize, mmap_option)
+            .mem_map(0, 0x4000, user_mem as usize, mmap_option)
             .unwrap();
 
         const CODE: [u8; 20] = [
