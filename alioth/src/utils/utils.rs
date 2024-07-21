@@ -28,6 +28,15 @@ macro_rules! align_up {
 }
 
 #[macro_export]
+macro_rules! align_down {
+    ($num:expr, $align:expr) => {{
+        debug_assert_eq!(($align as u64).count_ones(), 1);
+        let mask = $align - 1;
+        $num & !mask
+    }};
+}
+
+#[macro_export]
 macro_rules! assign_bits {
     ($dst:expr, $src:expr, $mask:expr) => {
         $dst = ($dst & !$mask) | ($src & $mask)

@@ -48,10 +48,14 @@ impl Display for Bdf {
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
-#[snafu(module, context(suffix(false)))]
+#[snafu(module, visibility(pub(crate)), context(suffix(false)))]
 pub enum Error {
     #[snafu(display("Failed to access guest memory"), context(false))]
     Memory { source: Box<crate::mem::Error> },
+    #[snafu(display("Failed to reset device"))]
+    Reset {
+        source: Box<dyn DebugTrace + Send + Sync + 'static>,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

@@ -124,6 +124,14 @@ pub enum ConfigHeader {
     Device(DeviceHeader),
 }
 
+impl ConfigHeader {
+    pub fn bars(&self) -> [u32; 6] {
+        match self {
+            ConfigHeader::Device(header) => header.bars,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct UpdateCommandCallback {
     pci_bars: [PciBar; 6],
