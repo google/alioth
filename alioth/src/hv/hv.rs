@@ -171,18 +171,11 @@ pub trait MsiSender: Debug + Send + Sync + 'static {
 }
 
 pub trait VmMemory: Debug + Send + Sync + 'static {
-    fn mem_map(
-        &self,
-        slot: u32,
-        gpa: u64,
-        size: u64,
-        hva: usize,
-        option: MemMapOption,
-    ) -> Result<(), Error>;
+    fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<(), Error>;
 
-    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<(), Error>;
+    fn unmap(&self, gpa: u64, size: u64) -> Result<(), Error>;
 
-    fn max_mem_slots(&self) -> Result<u32, Error>;
+    fn reset(&self) -> Result<()>;
 
     fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
         unimplemented!()

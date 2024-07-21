@@ -18,6 +18,7 @@ mod aarch64;
 mod x86_64;
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -145,20 +146,43 @@ pub struct KvmVm {
     pub(super) memory_created: bool,
 }
 
+type MemSlots = (u32, HashMap<(u64, u64), u32>);
+
 #[derive(Debug)]
 pub struct KvmMemory {
-    pub(super) vm: Arc<VmInner>,
+    slots: Mutex<MemSlots>,
+    vm: Arc<VmInner>,
+}
+
+impl KvmMemory {
+    pub(super) fn new(vm: Arc<VmInner>) -> Self {
+        KvmMemory {
+            slots: Mutex::new((0, HashMap::new())),
+            vm,
+        }
+    }
+
+    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<()> {
+        let flags = KvmMemFlag::empty();
+        let region = KvmUserspaceMemoryRegion {
+            slot,
+            guest_phys_addr: gpa,
+            memory_size: 0,
+            userspace_addr: 0,
+            flags,
+        };
+        unsafe { kvm_set_user_memory_region(&self.vm, &region) }
+            .context(error::GuestUnmap { gpa, size })?;
+        log::trace!(
+            "vm-{}: slot-{slot}: unmapped: {gpa:#018x}, size={size:#x}",
+            self.vm.as_raw_fd()
+        );
+        Ok(())
+    }
 }
 
 impl VmMemory for KvmMemory {
-    fn mem_map(
-        &self,
-        slot: u32,
-        gpa: u64,
-        size: u64,
-        hva: usize,
-        option: MemMapOption,
-    ) -> Result<(), Error> {
+    fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<(), Error> {
         let mut flags = KvmMemFlag::empty();
         if !option.read || !option.exec {
             return kvm_error::MmapOption { option }.fail()?;
@@ -169,10 +193,11 @@ impl VmMemory for KvmMemory {
         if option.log_dirty {
             flags |= KvmMemFlag::LOG_DIRTY_PAGES;
         }
+        let (slot_id, slots) = &mut *self.slots.lock();
         if let Some(memfd) = &self.vm.memfd {
             flags |= KvmMemFlag::GUEST_MEMFD;
             let region = KvmUserspaceMemoryRegion2 {
-                slot,
+                slot: *slot_id,
                 guest_phys_addr: gpa as _,
                 memory_size: size as _,
                 userspace_addr: hva as _,
@@ -184,7 +209,7 @@ impl VmMemory for KvmMemory {
             unsafe { kvm_set_user_memory_region2(&self.vm, &region) }
         } else {
             let region = KvmUserspaceMemoryRegion {
-                slot,
+                slot: *slot_id,
                 guest_phys_addr: gpa as _,
                 memory_size: size as _,
                 userspace_addr: hva as _,
@@ -193,27 +218,21 @@ impl VmMemory for KvmMemory {
             unsafe { kvm_set_user_memory_region(&self.vm, &region) }
         }
         .context(error::GuestMap { hva, gpa, size })?;
+        slots.insert((gpa, size), *slot_id);
+        log::trace!(
+            "vm-{}: slot-{slot_id}: mapped: {gpa:#018x} -> {hva:#018x}, size = {size:#x}",
+            self.vm.as_raw_fd()
+        );
+        *slot_id += 1;
         Ok(())
     }
 
-    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<(), Error> {
-        let flags = KvmMemFlag::empty();
-        let region = KvmUserspaceMemoryRegion {
-            slot,
-            guest_phys_addr: gpa,
-            memory_size: 0,
-            userspace_addr: 0,
-            flags,
+    fn unmap(&self, gpa: u64, size: u64) -> Result<(), Error> {
+        let (_, slots) = &mut *self.slots.lock();
+        let Some(slot) = slots.remove(&(gpa, size)) else {
+            return Err(ErrorKind::NotFound.into()).context(error::GuestUnmap { gpa, size });
         };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }
-            .context(error::GuestUnmap { gpa, size })?;
-        Ok(())
-    }
-
-    fn max_mem_slots(&self) -> Result<u32, Error> {
-        self.vm
-            .check_extension(KvmCap::NR_MEMSLOTS)
-            .map(|r| r as u32)
+        self.unmap(slot, gpa, size)
     }
 
     fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
@@ -248,6 +267,15 @@ impl VmMemory for KvmMemory {
             flags: 0,
         };
         unsafe { kvm_set_memory_attributes(&self.vm, &attr) }.context(error::EncryptedRegion)?;
+        Ok(())
+    }
+
+    fn reset(&self) -> Result<()> {
+        let (slot_id, slots) = &mut *self.slots.lock();
+        for ((gpa, size), slot) in slots.drain() {
+            self.unmap(slot, gpa, size)?;
+        }
+        *slot_id = 0;
         Ok(())
     }
 }
@@ -603,9 +631,7 @@ impl Vm for KvmVm {
         if self.memory_created {
             error::MemoryCreated.fail()
         } else {
-            let kvm_memory = KvmMemory {
-                vm: self.vm.clone(),
-            };
+            let kvm_memory = KvmMemory::new(self.vm.clone());
             self.memory_created = true;
             Ok(kvm_memory)
         }
@@ -747,7 +773,7 @@ mod test {
         let vm_config = VmConfig { coco: None };
         let mut vm = kvm.create_vm(&vm_config).unwrap();
         let vm_memory = vm.create_vm_memory().unwrap();
-        assert_matches!(vm_memory.max_mem_slots(), Ok(1..));
+
         let prot = PROT_WRITE | PROT_READ | PROT_EXEC;
         let flag = MAP_ANONYMOUS | MAP_PRIVATE;
         let user_mem = ffi!(
@@ -762,7 +788,7 @@ mod test {
             log_dirty: true,
         };
         assert_matches!(
-            vm_memory.mem_map(0, 0x0, 0x1000, user_mem as usize, option_no_write),
+            vm_memory.mem_map(0x0, 0x1000, user_mem as usize, option_no_write),
             Err(Error::KvmErr { .. })
         );
         let option_no_exec = MemMapOption {
@@ -772,7 +798,7 @@ mod test {
             log_dirty: true,
         };
         assert_matches!(
-            vm_memory.mem_map(0, 0x0, 0x1000, user_mem as usize, option_no_exec),
+            vm_memory.mem_map(0x0, 0x1000, user_mem as usize, option_no_exec),
             Err(Error::KvmErr { .. })
         );
         let option = MemMapOption {
@@ -782,8 +808,7 @@ mod test {
             log_dirty: true,
         };
         vm_memory
-            .mem_map(0, 0x0, 0x1000, user_mem as usize, option)
+            .mem_map(0x0, 0x1000, user_mem as usize, option)
             .unwrap();
-        vm_memory.mem_map(0, 0x0, 0, 0, option).unwrap();
     }
 }

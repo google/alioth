@@ -12,29 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{error, MemMapOption, Result};
+use super::{MemMapOption, Result};
 
 #[derive(Debug)]
 pub struct FakeVmMemory;
 
 impl crate::hv::VmMemory for FakeVmMemory {
-    fn mem_map(
-        &self,
-        _slot: u32,
-        _gpa: u64,
-        _size: u64,
-        _hva: usize,
-        _option: MemMapOption,
-    ) -> Result<()> {
+    fn mem_map(&self, _gpa: u64, _size: u64, _hva: usize, _option: MemMapOption) -> Result<()> {
         Ok(())
     }
 
-    fn unmap(&self, _slot: u32, _gpa: u64, _size: u64) -> Result<()> {
+    fn unmap(&self, _gpa: u64, _size: u64) -> Result<()> {
         Ok(())
     }
 
-    fn max_mem_slots(&self) -> Result<u32> {
-        error::Capability { cap: "MaxMemSlots" }.fail()
+    fn reset(&self) -> Result<()> {
+        Ok(())
     }
 
     fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {

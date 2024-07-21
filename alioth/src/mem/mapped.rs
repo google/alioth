@@ -24,7 +24,6 @@ use std::ops::Deref;
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::ptr::{null_mut, NonNull};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use libc::{
@@ -213,39 +212,25 @@ impl ArcMemPages {
 }
 
 #[derive(Debug)]
-pub struct MappedSlot {
-    pub pages: ArcMemPages,
-    slot_id: u32,
-}
-
-impl SlotBackend for MappedSlot {
-    fn size(&self) -> u64 {
-        self.pages.size as u64
-    }
-}
-
-#[derive(Debug)]
 pub struct RamBus {
-    inner: RwLock<Addressable<MappedSlot>>,
-    vm_memory: Box<dyn VmMemory>,
-    pub(super) next_slot_id: AtomicU32,
-    max_mem_slots: u32,
+    inner: RwLock<Addressable<ArcMemPages>>,
+    pub(super) vm_memory: Box<dyn VmMemory>,
 }
 
 pub struct RamLayoutGuard<'a> {
-    inner: RwLockReadGuard<'a, Addressable<MappedSlot>>,
+    inner: RwLockReadGuard<'a, Addressable<ArcMemPages>>,
 }
 
 impl Deref for RamLayoutGuard<'_> {
-    type Target = Addressable<MappedSlot>;
+    type Target = Addressable<ArcMemPages>;
 
-    fn deref(&self) -> &Addressable<MappedSlot> {
+    fn deref(&self) -> &Addressable<ArcMemPages> {
         &self.inner
     }
 }
 
 struct Iter<'a> {
-    inner: &'a Addressable<MappedSlot>,
+    inner: &'a Addressable<ArcMemPages>,
     gpa: u64,
     remain: u64,
 }
@@ -266,7 +251,7 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 struct IterMut<'a> {
-    inner: &'a Addressable<MappedSlot>,
+    inner: &'a Addressable<ArcMemPages>,
     gpa: u64,
     remain: u64,
 }
@@ -286,7 +271,7 @@ impl<'a> Iterator for IterMut<'a> {
     }
 }
 
-impl Addressable<MappedSlot> {
+impl Addressable<ArcMemPages> {
     fn slice_iter(&self, gpa: u64, len: u64) -> Iter {
         Iter {
             inner: self,
@@ -307,18 +292,14 @@ impl Addressable<MappedSlot> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return error::NotMapped { addr: gpa }.fail();
         };
-        user_mem
-            .pages
-            .get_partial_slice((gpa - start) as usize, len as usize)
+        user_mem.get_partial_slice((gpa - start) as usize, len as usize)
     }
 
     fn get_partial_slice_mut(&self, gpa: u64, len: u64) -> Result<&mut [u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return error::NotMapped { addr: gpa }.fail();
         };
-        user_mem
-            .pages
-            .get_partial_slice_mut((gpa - start) as usize, len as usize)
+        user_mem.get_partial_slice_mut((gpa - start) as usize, len as usize)
     }
 
     pub fn get_slice<T>(&self, gpa: u64, len: u64) -> Result<&[UnsafeCell<T>], Error> {
@@ -447,69 +428,32 @@ impl RamBus {
     }
 
     pub fn new<M: VmMemory>(vm_memory: M) -> Self {
-        let max_mem_slots = match vm_memory.max_mem_slots() {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!(
-                    "quering hypervisor for maximum supported memory slots, got error {e:?}"
-                );
-                log::error!(
-                    "assuming the maximum assuported memory slots is {:#x}",
-                    u16::MAX
-                );
-                u16::MAX as u32
-            }
-        };
         Self {
             inner: RwLock::new(Addressable::default()),
             vm_memory: Box::new(vm_memory),
-            next_slot_id: AtomicU32::new(0),
-            max_mem_slots,
         }
     }
 
-    fn map_to_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
+    fn map_to_vm(&self, user_mem: &ArcMemPages, addr: u64) -> Result<(), Error> {
         let mem_options = MemMapOption {
             read: true,
             write: true,
             exec: true,
             log_dirty: false,
         };
-        self.vm_memory.mem_map(
-            user_mem.slot_id,
-            addr,
-            user_mem.pages.size as u64,
-            user_mem.pages.addr,
-            mem_options,
-        )?;
-        log::trace!(
-            "user memory {} mapped: {:#018x} -> {addr:#018x}, size = {:#x}",
-            user_mem.slot_id,
-            user_mem.pages.addr,
-            user_mem.pages.size
-        );
+        self.vm_memory
+            .mem_map(addr, user_mem.size as u64, user_mem.addr, mem_options)?;
         Ok(())
     }
 
-    fn unmap_from_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
-        self.vm_memory
-            .unmap(user_mem.slot_id, addr, user_mem.size())?;
-        log::trace!(
-            "user memory {} unmapped: {:#018x} -> {addr:#018x}, size = {:#x}",
-            user_mem.slot_id,
-            user_mem.pages.addr,
-            user_mem.pages.size
-        );
+    fn unmap_from_vm(&self, user_mem: &ArcMemPages, addr: u64) -> Result<(), Error> {
+        self.vm_memory.unmap(addr, user_mem.size())?;
         Ok(())
     }
 
     pub(crate) fn add(&self, gpa: u64, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
-        let slot = MappedSlot {
-            slot_id: self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots,
-            pages: user_mem,
-        };
-        let slot = inner.add(gpa, slot)?;
+        let slot = inner.add(gpa, user_mem)?;
         self.map_to_vm(slot, gpa)?;
         Ok(())
     }
@@ -526,7 +470,7 @@ impl RamBus {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
-        Ok(mem.pages)
+        Ok(mem)
     }
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>

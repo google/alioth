@@ -444,7 +444,6 @@ pub struct KvmMsi {
 c_enum! {
     pub struct KvmCap(u32);
     {
-        NR_MEMSLOTS = 10;
         IRQFD = 32;
         SIGNAL_MSI = 77;
         ARM_PSCI_0_2 = 102;

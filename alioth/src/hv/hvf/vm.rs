@@ -37,17 +37,7 @@ impl VmMemory for HvfMemory {
     fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
         unimplemented!()
     }
-    fn max_mem_slots(&self) -> Result<u32> {
-        error::Capability { cap: "MaxMemSlots" }.fail()
-    }
-    fn mem_map(
-        &self,
-        _slot: u32,
-        gpa: u64,
-        size: u64,
-        hva: usize,
-        option: MemMapOption,
-    ) -> Result<()> {
+    fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<()> {
         if option.log_dirty {
             return error::Capability { cap: "log dirty" }.fail();
         }
@@ -70,13 +60,17 @@ impl VmMemory for HvfMemory {
         unimplemented!()
     }
 
-    fn unmap(&self, _slot: u32, gpa: u64, size: u64) -> Result<()> {
+    fn unmap(&self, gpa: u64, size: u64) -> Result<()> {
         let ret = unsafe { hv_vm_unmap(gpa, size as usize) };
         check_ret(ret).context(error::GuestUnmap { gpa, size })?;
         Ok(())
     }
 
     fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
+        unimplemented!()
+    }
+
+    fn reset(&self) -> Result<()> {
         unimplemented!()
     }
 }

@@ -14,7 +14,6 @@
 
 use std::any::type_name;
 use std::fmt::Debug;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -251,7 +250,7 @@ impl Memory {
 
     pub fn reset(&self) -> Result<()> {
         self.clear()?;
-        self.ram_bus.next_slot_id.store(0, Ordering::Relaxed);
+        self.ram_bus.vm_memory.reset()?;
         Ok(())
     }
 
