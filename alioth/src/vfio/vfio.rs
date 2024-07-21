@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod bindings;
+pub mod cdev;
 pub mod ioctls;
 pub mod iommu;
 
