@@ -271,9 +271,9 @@ impl Drop for KvmIrqSender {
         };
         if let Err(e) = unsafe { kvm_irqfd(&self.vm, &request) } {
             log::error!(
-                "vm-{}: removing irqfd {}: {e}",
+                "vm-{}: removing irqfd {:#x}: {e}",
+                self.vm.as_raw_fd(),
                 self.event_fd.as_raw_fd(),
-                self.vm.as_raw_fd()
             )
         }
     }
@@ -309,13 +309,17 @@ impl Drop for KvmIrqFd {
     fn drop(&mut self) {
         let mut table = self.vm.msi_table.write();
         if table.remove(&self.gsi).is_none() {
-            log::error!("cannot find gsi {} in the gsi table", self.gsi);
+            log::error!(
+                "vm-{}: cannot find gsi {:#x} in the gsi table",
+                self.gsi,
+                self.vm.as_raw_fd()
+            );
         };
         if let Err(e) = self.deassign_irqfd() {
             log::error!(
-                "removing irqfd {} from vm {}: {e}",
+                "vm-{}: removing irqfd {:#x}: {e}",
+                self.vm.as_raw_fd(),
                 self.event_fd.as_raw_fd(),
-                self.vm.as_raw_fd()
             )
         }
     }
@@ -336,7 +340,8 @@ impl KvmIrqFd {
         };
         unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
         log::debug!(
-            "irqfd assigned gsi {:#x} -> eventfd {:#x}",
+            "vm-{}: assigned: gsi {:#x} -> irqfd {:#x}",
+            self.vm.as_raw_fd(),
             self.gsi,
             self.event_fd.as_raw_fd()
         );
@@ -352,7 +357,8 @@ impl KvmIrqFd {
         };
         unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
         log::debug!(
-            "irqfd de-assigned gsi {:#x} -> eventfd {:#x}",
+            "vm-{}: de-assigned: gsi {:#x} -> irqfd {:#x}",
+            self.vm.as_raw_fd(),
             self.gsi,
             self.event_fd.as_raw_fd()
         );
@@ -397,7 +403,11 @@ impl IrqFd for KvmIrqFd {
     fn get_masked(&self) -> bool {
         let table = self.vm.msi_table.read();
         let Some(entry) = table.get(&self.gsi) else {
-            unreachable!("cannot find gsi {}", self.gsi);
+            unreachable!(
+                "vm-{}: cannot find gsi {:#x}",
+                self.vm.as_raw_fd(),
+                self.gsi
+            );
         };
         entry.masked
     }
@@ -405,7 +415,11 @@ impl IrqFd for KvmIrqFd {
     fn set_masked(&self, val: bool) -> Result<()> {
         let mut table = self.vm.msi_table.write();
         let Some(entry) = table.get_mut(&self.gsi) else {
-            unreachable!("cannot find gsi {}", self.gsi);
+            unreachable!(
+                "vm-{}: cannot find gsi {:#x}",
+                self.vm.as_raw_fd(),
+                self.gsi
+            );
         };
         if entry.masked == val {
             return Ok(());
@@ -480,7 +494,11 @@ impl MsiSender for KvmMsiSender {
         let Some(gsi) = allocated_gsi else {
             return kvm_error::AllocateGsi.fail()?;
         };
-        log::debug!("gsi {gsi} assigned to irqfd {}", event_fd.as_raw_fd());
+        log::debug!(
+            "vm-{}: allocated: gsi {gsi:#x} -> irqfd {:#x}",
+            self.vm.as_raw_fd(),
+            event_fd.as_raw_fd()
+        );
         let entry = KvmIrqFd {
             vm: self.vm.clone(),
             event_fd,
