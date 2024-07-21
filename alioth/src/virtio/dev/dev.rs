@@ -29,7 +29,7 @@ use snafu::ResultExt;
 use crate::hv::{IoeventFd, IoeventFdRegistry};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::RamBus;
-use crate::mem::MemRegion;
+use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
@@ -84,6 +84,12 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         E: IoeventFd,
     {
         Ok(false)
+    }
+    fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
+        None
+    }
+    fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
+        None
     }
 }
 

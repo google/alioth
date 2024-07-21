@@ -16,13 +16,19 @@ pub mod bindings;
 pub mod ioctls;
 
 use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use snafu::{ResultExt, Snafu};
 
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
+use crate::mem::mapped::RamBus;
+use crate::mem::{self, LayoutUpdated};
 
-use bindings::{MemoryMultipleRegion, VhostFeature, VirtqAddr, VirtqFile, VirtqState};
+use bindings::{
+    MemoryMultipleRegion, MemoryRegion, VhostFeature, VirtqAddr, VirtqFile, VirtqState,
+};
 use ioctls::{
     vhost_get_backend_features, vhost_get_features, vhost_set_backend_features, vhost_set_features,
     vhost_set_mem_table, vhost_set_owner, vhost_set_virtq_addr, vhost_set_virtq_base,
@@ -128,6 +134,37 @@ impl VhostDev {
     }
     pub fn vsock_set_running(&self, val: bool) -> Result<()> {
         unsafe { vhost_vsock_set_running(&self.fd, &(val as _)) }?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct UpdateVsockMem {
+    pub dev: Arc<VhostDev>,
+}
+
+impl LayoutUpdated for UpdateVsockMem {
+    fn ram_updated(&self, ram: &RamBus) -> mem::Result<()> {
+        let mut table = MemoryMultipleRegion {
+            num: 0,
+            _padding: 0,
+            regions: [MemoryRegion::default(); 64],
+        };
+        let mem = ram.lock_layout();
+        for (index, (gpa, user_mem)) in mem.iter().enumerate() {
+            table.num += 1;
+            table.regions[index].gpa = gpa;
+            table.regions[index].hva = user_mem.addr() as u64;
+            table.regions[index].size = user_mem.size();
+        }
+        let ret = self.dev.set_mem_table(&table);
+        ret.map_err(boxed_debug_trace)
+            .context(mem::error::ChangeLayout)?;
+        log::trace!(
+            "vhost-{}: updated mem table to {:x?}",
+            self.dev.fd.as_raw_fd(),
+            &table.regions[..table.num as usize]
+        );
         Ok(())
     }
 }

@@ -25,13 +25,12 @@ use serde::Deserialize;
 
 use crate::ffi;
 use crate::mem::mapped::RamBus;
+use crate::mem::LayoutUpdated;
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::VirtQueue;
-use crate::virtio::vhost::bindings::{
-    MemoryMultipleRegion, MemoryRegion, VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND,
-};
-use crate::virtio::vhost::{error, VhostDev};
+use crate::virtio::vhost::bindings::{VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND};
+use crate::virtio::vhost::{error, UpdateVsockMem, VhostDev};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,7 +49,7 @@ impl DevParam for VhostVsockParam {
 #[derive(Debug)]
 pub struct VhostVsock {
     name: Arc<String>,
-    vhost_dev: VhostDev,
+    vhost_dev: Arc<VhostDev>,
     config: VsockConfig,
     features: u64,
     error_fds: [Option<OwnedFd>; 2],
@@ -79,7 +78,7 @@ impl VhostVsock {
         }
         Ok(VhostVsock {
             name,
-            vhost_dev,
+            vhost_dev: Arc::new(vhost_dev),
             config: VsockConfig {
                 guest_cid: param.cid,
                 ..Default::default()
@@ -119,19 +118,7 @@ impl Virtio for VhostVsock {
         queues: &[crate::virtio::queue::Queue],
     ) -> Result<()> {
         self.vhost_dev.set_features(&feature)?;
-        let mut table = MemoryMultipleRegion {
-            num: 0,
-            _padding: 0,
-            regions: [MemoryRegion::default(); 8],
-        };
         let mem = memory.lock_layout();
-        for (index, (gpa, user_mem)) in mem.iter().enumerate() {
-            table.num += 1;
-            table.regions[index].gpa = gpa;
-            table.regions[index].hva = user_mem.addr() as u64;
-            table.regions[index].size = user_mem.size();
-        }
-        self.vhost_dev.set_mem_table(&table)?;
         for (index, (queue, error_fd)) in
             zip(queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
         {
@@ -236,6 +223,12 @@ impl Virtio for VhostVsock {
             }
             _ => Ok(false),
         }
+    }
+
+    fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
+        Some(Box::new(UpdateVsockMem {
+            dev: self.vhost_dev.clone(),
+        }))
     }
 }
 

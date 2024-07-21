@@ -33,12 +33,11 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
-use crate::mem::{MemRegion, MemRegionType};
+use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
-    error as vu_error, DeviceConfig, Error, MemoryRegion, MemorySingleRegion, VirtqAddr,
-    VirtqState, VuDev, VuFeature,
+    error as vu_error, DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature,
 };
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
@@ -75,11 +74,10 @@ const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 #[derive(Debug)]
 pub struct VuFs {
     name: Arc<String>,
-    vu_dev: VuDev,
+    vu_dev: Arc<VuDev>,
     config: Arc<FsConfig>,
     feature: u64,
     num_queues: u16,
-    regions: Vec<MemoryRegion>,
     dax_region: Option<ArcMemPages>,
     error_fds: Vec<OwnedFd>,
 }
@@ -144,10 +142,9 @@ impl VuFs {
         Ok(VuFs {
             num_queues,
             name,
-            vu_dev,
+            vu_dev: Arc::new(vu_dev),
             config: Arc::new(config),
             feature: dev_feat & !VirtioFeature::VHOST_PROTOCOL.bits(),
-            regions: Vec::new(),
             error_fds: Vec::new(),
             dax_region,
         })
@@ -199,23 +196,6 @@ impl Virtio for VuFs {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         let mem = memory.lock_layout();
-        for (gpa, user_mem) in mem.iter() {
-            let Some((fd, offset)) = user_mem.fd() else {
-                continue;
-            };
-            let region = MemorySingleRegion {
-                _padding: 0,
-                region: MemoryRegion {
-                    gpa: gpa as _,
-                    size: user_mem.size() as _,
-                    hva: user_mem.addr() as _,
-                    mmap_offset: offset,
-                },
-            };
-            self.vu_dev.add_mem_region(&region, fd.as_raw_fd()).unwrap();
-            log::info!("region: {region:x?}");
-            self.regions.push(region.region);
-        }
         for (index, queue) in queues.iter().enumerate() {
             let irq_fd = irq_sender.queue_irqfd(index as _)?;
             self.vu_dev.set_virtq_call(&(index as u64), irq_fd).unwrap();
@@ -398,14 +378,6 @@ impl Virtio for VuFs {
                 .deregister(&mut SourceFd(&channel.as_raw_fd()))
                 .unwrap();
         }
-        while let Some(region) = self.regions.pop() {
-            self.vu_dev
-                .remove_mem_region(&MemorySingleRegion {
-                    _padding: 0,
-                    region,
-                })
-                .unwrap()
-        }
     }
 
     fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
@@ -427,5 +399,11 @@ impl Virtio for VuFs {
             dax_region.clone(),
             MemRegionType::Hidden,
         )))
+    }
+
+    fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
+        Some(Box::new(UpdateVuMem {
+            dev: self.vu_dev.clone(),
+        }))
     }
 }

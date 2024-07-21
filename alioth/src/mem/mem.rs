@@ -237,6 +237,16 @@ pub trait LayoutChanged: Debug + Send + Sync + 'static {
     fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
 }
 
+pub trait LayoutUpdated: Debug + Send + Sync + 'static {
+    fn ram_updated(&self, ram: &RamBus) -> Result<()>;
+}
+
+#[derive(Debug, Default)]
+struct LayoutCallbacks {
+    changed: Vec<Box<dyn LayoutChanged>>,
+    updated: Vec<Box<dyn LayoutUpdated>>,
+}
+
 #[derive(Debug)]
 pub struct Memory {
     ram_bus: Arc<RamBus>,
@@ -245,7 +255,7 @@ pub struct Memory {
     vm_memory: Box<dyn VmMemory>,
     io_bus: MmioBus,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
-    callbacks: Mutex<Vec<Box<dyn LayoutChanged>>>,
+    callbacks: Mutex<LayoutCallbacks>,
 }
 
 impl Memory {
@@ -257,11 +267,11 @@ impl Memory {
             vm_memory: Box::new(vm_memory),
             io_bus: MmioBus::new(),
             io_regions: Mutex::new(Addressable::new()),
-            callbacks: Mutex::new(Vec::new()),
+            callbacks: Mutex::new(LayoutCallbacks::default()),
         }
     }
 
-    pub fn register_callback(&self, callback: Box<dyn LayoutChanged>) -> Result<()> {
+    pub fn register_change_callback(&self, callback: Box<dyn LayoutChanged>) -> Result<()> {
         let regions = self.regions.lock();
         for (addr, region) in regions.iter() {
             let mut offset = 0;
@@ -275,8 +285,15 @@ impl Memory {
             }
         }
         let mut callbacks = self.callbacks.lock();
-        callbacks.push(callback);
+        callbacks.changed.push(callback);
+        Ok(())
+    }
 
+    pub fn register_update_callback(&self, callback: Box<dyn LayoutUpdated>) -> Result<()> {
+        let _regions = self.regions.lock();
+        callback.ram_updated(&self.ram_bus)?;
+        let mut callbacks = self.callbacks.lock();
+        callbacks.updated.push(callback);
         Ok(())
     }
 
@@ -313,23 +330,29 @@ impl Memory {
         regions.add(addr, region.clone())?;
         let mut offset = 0;
         let callbacks = self.callbacks.lock();
+        let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
             match range {
                 MemRange::Emulated(r) => self.mmio_bus.add(gpa, r.clone())?,
                 MemRange::Ram(r) => {
                     self.map_to_vm(gpa, r)?;
-                    for callback in callbacks.iter() {
+                    for callback in &callbacks.changed {
                         callback.ram_added(gpa, r)?;
                     }
                     self.ram_bus.add(gpa, r.clone())?;
+                    ram_updated = true;
                 }
                 MemRange::DevMem(r) => self.map_to_vm(gpa, r)?,
                 MemRange::Span(_) => {}
             }
             offset += range.size();
         }
-
+        if ram_updated {
+            for update_callback in &callbacks.updated {
+                update_callback.ram_updated(&self.ram_bus)?;
+            }
+        }
         let region_callbacks = region.callbacks.lock();
         for callback in region_callbacks.iter() {
             callback.mapped(addr)?;
@@ -340,6 +363,7 @@ impl Memory {
     fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
         let mut offset = 0;
         let callbacks = self.callbacks.lock();
+        let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
             match range {
@@ -348,15 +372,21 @@ impl Memory {
                 }
                 MemRange::Ram(r) => {
                     self.ram_bus.remove(gpa)?;
-                    for callback in callbacks.iter() {
+                    for callback in &callbacks.changed {
                         callback.ram_removed(gpa, r)?;
                     }
                     self.unmap_from_vm(gpa, r)?;
+                    ram_updated = true;
                 }
                 MemRange::DevMem(r) => self.unmap_from_vm(gpa, r)?,
                 MemRange::Span(_) => {}
             };
             offset += range.size();
+        }
+        if ram_updated {
+            for callback in &callbacks.updated {
+                callback.ram_updated(&self.ram_bus)?;
+            }
         }
         let region_callbacks = region.callbacks.lock();
         for callback in region_callbacks.iter() {
