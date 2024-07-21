@@ -43,6 +43,8 @@ use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 #[cfg(target_os = "linux")]
+use crate::vfio::iommu::UpdateIommuIoas;
+#[cfg(target_os = "linux")]
 use crate::vfio::iommu::{Ioas, Iommu};
 #[cfg(target_os = "linux")]
 use crate::vfio::pci::VfioPciDev;
@@ -77,6 +79,8 @@ pub enum Error {
         id: u32,
         source: Box<crate::board::Error>,
     },
+    #[snafu(display("Failed to configure guest memory"), context(false))]
+    Memory { source: Box<crate::mem::Error> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -307,6 +311,8 @@ impl Machine<Kvm> {
         } else {
             let ioas = Arc::new(Ioas::alloc_on(iommu.clone())?);
             default_ioas.replace(ioas.clone());
+            let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
+            self.board.memory.register_callback(update)?;
             ioas
         };
         drop(default_ioas);

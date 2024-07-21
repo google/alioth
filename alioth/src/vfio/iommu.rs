@@ -15,11 +15,15 @@
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
 use std::ops::Deref;
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 
 use snafu::ResultExt;
 
+use crate::errors::boxed_debug_trace;
+use crate::mem::mapped::ArcMemPages;
+use crate::mem::{self, LayoutChanged};
 use crate::vfio::bindings::{
     IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap,
 };
@@ -101,6 +105,11 @@ where
             ..Default::default()
         };
         unsafe { iommu_ioas_map(&self.iommu.fd, &ioas_map) }?;
+        log::debug!(
+            "ioas-{}-{}: mapped: {iova:#018x} -> {user_va:#018x}, size = {len:#x}",
+            self.iommu.fd.as_raw_fd(),
+            self.id
+        );
         Ok(())
     }
 
@@ -112,10 +121,36 @@ where
             length: len,
         };
         unsafe { iommu_ioas_unmap(&self.iommu.fd, &ioas_unmap) }?;
+        log::debug!(
+            "ioas-{}-{}: unmapped: {iova:#018x}, size = {len:#x}",
+            self.iommu.fd.as_raw_fd(),
+            self.id,
+        );
         Ok(())
     }
 
     pub fn reset(&self) -> Result<()> {
         self.unmap(0, u64::MAX)
+    }
+}
+
+#[derive(Debug)]
+pub struct UpdateIommuIoas {
+    pub ioas: Arc<Ioas>,
+}
+
+impl LayoutChanged for UpdateIommuIoas {
+    fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        let ret = self.ioas.map(pages.addr(), gpa, pages.size());
+        ret.map_err(boxed_debug_trace)
+            .context(mem::error::ChangeLayout)?;
+        Ok(())
+    }
+
+    fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        let ret = self.ioas.unmap(gpa, pages.size());
+        ret.map_err(boxed_debug_trace)
+            .context(mem::error::ChangeLayout)?;
+        Ok(())
     }
 }
