@@ -113,6 +113,8 @@ where
             pci_bus: PciBus::new(),
             #[cfg(target_arch = "x86_64")]
             fw_cfg: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            default_ioas: RwLock::new(None),
         });
 
         let (event_tx, event_rx) = mpsc::channel();
