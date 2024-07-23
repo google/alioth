@@ -6,3 +6,7 @@ updates:
       interval: daily
     commit-message:
       prefix: "ci"
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: daily
