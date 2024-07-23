@@ -26,8 +26,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-      - name: Install toolchain
-        run: rustup target add ${{ matrix.target.name }}
       - name: Get stable rust version
         id: rust-version
         run: echo RUST_VERSION=$(cargo +stable --version | cut -d ' ' -f 2) >> "$GITHUB_OUTPUT"
@@ -41,6 +39,8 @@ jobs:
             ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
             target/
           key: ${{ matrix.target.name }}-cargo-${{ steps.rust-version.outputs.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Add target
+        run: rustup target add ${{ matrix.target.name }}
       - name: Build
         run: cargo build --verbose --target ${{ matrix.target.name }}
         if: matrix.target.name != 'aarch64-unknown-linux-gnu'
