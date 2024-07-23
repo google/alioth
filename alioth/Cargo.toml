@@ -16,7 +16,6 @@ bitflags = "2.4.0"
 bitfield = "0.15.0"
 log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
-rand = "0.8.5"
 libc = "0.2.150"
 parking_lot.workspace = true
 macros = { version = "0.3.0", path = "../macros", package = "alioth-macros" }
