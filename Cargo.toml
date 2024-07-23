@@ -10,7 +10,7 @@ repository = "https://github.com/google/alioth"
 [workspace.dependencies]
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 serde = { version = "1.0", features = ["derive"] }
-snafu = "0.8.3"
+snafu = "0.8.4"
 
 [profile.release]
 lto = true
