@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "alioth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alioth-macros",
  "assert_matches",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "alioth-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alioth",
  "clap",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "alioth-macros"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "quote",
  "syn",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "serde-aco"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "assert_matches",
  "serde",
