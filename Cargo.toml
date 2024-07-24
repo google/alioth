@@ -6,11 +6,17 @@ resolver = "2"
 authors = ["Changyuan Lyu <changyuan.lv@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/google/alioth"
+version = "0.3.0"
+edition = "2021"
 
 [workspace.dependencies]
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 serde = { version = "1.0", features = ["derive"] }
 snafu = "0.8.4"
+macros = { version = "0.3.0", path = "macros", package = "alioth-macros" }
+alioth = { version = "0.3.0", path = "alioth" }
+serde-aco = { version = "0.3.0", path = "serde-aco" }
+assert_matches = "1"
 
 [profile.release]
 lto = true
