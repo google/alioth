@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 #[cfg(target_arch = "x86_64")]
 use std::ffi::CString;
 #[cfg(target_arch = "x86_64")]
@@ -156,6 +157,9 @@ struct RunArgs {
     #[cfg(target_os = "linux")]
     #[arg(long)]
     vfio: Vec<String>,
+
+    #[arg(short, long("object"))]
+    objects: Vec<String>,
 }
 
 #[trace_error]
@@ -186,11 +190,31 @@ pub enum Error {
     BootVm { source: alioth::vm::Error },
     #[snafu(display("VM did not shutdown peacefully"))]
     WaitVm { source: alioth::vm::Error },
+    #[snafu(display("Invalid object key {key:?}, must start with `id_`"))]
+    InvalidKey { key: String },
+    #[snafu(display("Key {key:?} showed up more than once"))]
+    DuplicateKey { key: String },
 }
 
 fn main_run(args: RunArgs) -> Result<(), Error> {
+    let mut objects = HashMap::new();
+    for obj_s in &args.objects {
+        let (key, val) = obj_s.split_once(',').unwrap_or((obj_s, ""));
+        if !key.starts_with("id_") {
+            return error::InvalidKey {
+                key: key.to_owned(),
+            }
+            .fail();
+        }
+        if objects.insert(key, val).is_some() {
+            return error::DuplicateKey {
+                key: key.to_owned(),
+            }
+            .fail();
+        }
+    }
     let hv_config = if let Some(hv_cfg_opt) = args.hypervisor {
-        serde_aco::from_arg(&hv_cfg_opt).context(error::ParseArg { arg: hv_cfg_opt })?
+        serde_aco::from_args(&hv_cfg_opt, &objects).context(error::ParseArg { arg: hv_cfg_opt })?
     } else {
         Hypervisor::default()
     };
@@ -202,18 +226,18 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     };
     let coco = match args.coco {
         None => None,
-        Some(c) => Some(serde_aco::from_arg(&c).context(error::ParseArg { arg: c })?),
+        Some(c) => Some(serde_aco::from_args(&c, &objects).context(error::ParseArg { arg: c })?),
     };
     let mem_config = if let Some(s) = args.memory {
-        serde_aco::from_arg(&s).context(error::ParseArg { arg: s })?
+        serde_aco::from_args(&s, &objects).context(error::ParseArg { arg: s })?
     } else {
         #[cfg(target_os = "linux")]
         eprintln!(
             "Please update the cmd line to --memory size={},backend=memfd",
             args.mem_size
         );
-        let size =
-            serde_aco::from_arg(&args.mem_size).context(error::ParseArg { arg: args.mem_size })?;
+        let size = serde_aco::from_args(&args.mem_size, &objects)
+            .context(error::ParseArg { arg: args.mem_size })?;
         MemConfig {
             size,
             #[cfg(target_os = "linux")]
@@ -243,7 +267,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         let params = args
             .fw_cfgs
             .into_iter()
-            .map(|s| serde_aco::from_arg(&s).context(error::ParseArg { arg: s }))
+            .map(|s| serde_aco::from_args(&s, &objects).context(error::ParseArg { arg: s }))
             .collect::<Result<Vec<_>, _>>()?;
         let fw_cfg = vm
             .add_fw_cfg(params.into_iter())
@@ -278,12 +302,12 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     #[cfg(target_os = "linux")]
     for (index, net_opt) in args.net.into_iter().enumerate() {
         let net_param: NetParam =
-            serde_aco::from_arg(&net_opt).context(error::ParseArg { arg: net_opt })?;
+            serde_aco::from_args(&net_opt, &objects).context(error::ParseArg { arg: net_opt })?;
         vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)
             .context(error::CreateDevice)?;
     }
     for (index, blk) in args.blk.into_iter().enumerate() {
-        let param = match serde_aco::from_arg(&blk) {
+        let param = match serde_aco::from_args(&blk, &objects) {
             Ok(param) => param,
             Err(serde_aco::Error::ExpectedMapEq) => {
                 eprintln!("Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details");
@@ -300,7 +324,8 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     }
     #[cfg(target_os = "linux")]
     for (index, fs) in args.fs.into_iter().enumerate() {
-        let param: FsParam = serde_aco::from_arg(&fs).context(error::ParseArg { arg: fs })?;
+        let param: FsParam =
+            serde_aco::from_args(&fs, &objects).context(error::ParseArg { arg: fs })?;
         match param {
             FsParam::Vu(p) => vm
                 .add_virtio_dev(format!("vu-fs-{index}"), p)
@@ -309,7 +334,8 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     }
     #[cfg(target_os = "linux")]
     if let Some(vsock) = args.vsock {
-        let param = serde_aco::from_arg(&vsock).context(error::ParseArg { arg: vsock })?;
+        let param =
+            serde_aco::from_args(&vsock, &objects).context(error::ParseArg { arg: vsock })?;
         match param {
             VsockParam::Vhost(p) => vm
                 .add_virtio_dev("vhost-vsock".to_owned(), p)
@@ -318,7 +344,8 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     }
     #[cfg(target_os = "linux")]
     for (index, vfio) in args.vfio.into_iter().enumerate() {
-        let param: VfioParam = serde_aco::from_arg(&vfio).context(error::ParseArg { arg: vfio })?;
+        let param: VfioParam =
+            serde_aco::from_args(&vfio, &objects).context(error::ParseArg { arg: vfio })?;
         vm.add_vfio_dev(format!("vfio-{index}"), param)
             .context(error::CreateDevice)?;
     }
