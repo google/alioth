@@ -2,7 +2,7 @@
 name = "alioth-cli"
 version.workspace = true
 edition.workspace = true
-description = "a KVM-based toy virtual machine monitor"
+description = "Experimental KVM-based type-2 hypervisor/VMM"
 repository.workspace = true
 authors.workspace = true
 license.workspace = true
