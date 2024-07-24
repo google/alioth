@@ -1,7 +1,7 @@
 [package]
 name = "alioth-cli"
-version = "0.3.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "a KVM-based toy virtual machine monitor"
 repository.workspace = true
 authors.workspace = true
@@ -12,9 +12,9 @@ log = "0.4"
 flexi_logger = "0.28"
 clap = { version = "4", features = ["derive"] }
 snafu.workspace = true
-alioth = { version = "0.3.0", path = "../alioth" }
+alioth.workspace = true
 serde.workspace = true
-serde-aco = { version = "0.3.0", path = "../serde-aco" }
+serde-aco.workspace = true
 
 [[bin]]
 path = "src/main.rs"

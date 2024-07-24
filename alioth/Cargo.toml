@@ -1,7 +1,7 @@
 [package]
 name = "alioth"
-version = "0.3.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "A library for virtualization"
 repository.workspace = true
 authors.workspace = true
@@ -18,9 +18,9 @@ log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 libc = "0.2.150"
 parking_lot.workspace = true
-macros = { version = "0.3.0", path = "../macros", package = "alioth-macros" }
+macros.workspace = true
 serde.workspace = true
 snafu.workspace = true
 
 [dev-dependencies]
-assert_matches = "1"
+assert_matches.workspace = true
