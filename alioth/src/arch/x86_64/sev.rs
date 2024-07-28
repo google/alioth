@@ -25,8 +25,8 @@ bitfield! {
     pub no_send, set_no_send: 3;
     pub domain, set_domain: 4;
     pub sev, set_sev: 5;
-    pub api_major, set_api_major: 16,23;
-    pub api_minor, set_api_minor: 24,31;
+    pub api_major, set_api_major: 23,16;
+    pub api_minor, set_api_minor: 31,24;
 }
 
 bitfield! {
@@ -36,8 +36,8 @@ bitfield! {
     #[derive(Copy, Clone, Serialize, Deserialize)]
     pub struct SnpPolicy(u64);
     impl Debug;
-    pub api_minor, set_api_minor: 0,7;
-    pub api_major, set_api_major: 8,15;
+    pub api_minor, set_api_minor: 7,0;
+    pub api_major, set_api_major: 15,8;
     pub smt, set_smt: 16;
     pub reserved_1, set_reserved_1: 17;
     pub migrate_ma, set_migrate_ma: 18;
