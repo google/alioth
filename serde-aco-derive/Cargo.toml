@@ -1,11 +1,10 @@
 [package]
-name = "alioth-macros"
-version.workspace = true
-edition.workspace = true
-description = "Proc macros for Alioth"
-repository.workspace = true
+name = "serde-aco-derive"
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+version.workspace = true
+edition.workspace = true
 
 [lib]
 proc-macro = true
@@ -13,3 +12,4 @@ proc-macro = true
 [dependencies]
 syn.workspace = true
 quote.workspace = true
+proc-macro2.workspace = true

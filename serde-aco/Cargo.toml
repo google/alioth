@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde-aco-derive.workspace = true
 
 [dev-dependencies]
 assert_matches.workspace = true

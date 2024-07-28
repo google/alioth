@@ -460,7 +460,17 @@ version = "0.4.0"
 dependencies = [
  "assert_matches",
  "serde",
+ "serde-aco-derive",
  "serde_bytes",
+]
+
+[[package]]
+name = "serde-aco-derive"
+version = "0.4.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
