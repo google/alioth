@@ -28,6 +28,7 @@ use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
+use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::mapped::RamBus;
@@ -143,12 +144,23 @@ pub struct Net {
     if_name: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Help)]
 pub struct NetParam {
+    /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
+    /// Maximum transmission unit.
     pub mtu: u16,
+    /// Number of pairs of transmit/receive queues. [default: 1]
+    #[serde(alias = "qp")]
     pub queue_pairs: Option<NonZeroU16>,
+    /// Path to the character device file of a tap interface.
+    ///
+    /// Required for MacVTap and IPVTap, e.g. /dev/tapX.
+    /// Optional for TUN/TAP. [default: /dev/net/tun]
     pub tap: Option<PathBuf>,
+    /// Name of a tap interface, e.g. tapX.
+    ///
+    /// Required for TUN/TAP. Optional for MacVTap and IPVTap.
     #[serde(alias = "if")]
     pub if_name: Option<String>,
 }

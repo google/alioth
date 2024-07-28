@@ -42,6 +42,7 @@ use std::sync::Arc;
 use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
 use serde::Deserialize;
+use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
 
 use crate::errors::{trace_error, DebugTrace};
@@ -116,12 +117,12 @@ pub struct Kvm {
     config: KvmConfig,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone, Help)]
 pub struct KvmConfig {
-    #[serde(default)]
+    /// Path to the KVM device. [default: /dev/kvm]
     pub dev_kvm: Option<PathBuf>,
+    /// Path to the AMD SEV device. [default: /dev/sev]
     #[cfg(target_arch = "x86_64")]
-    #[serde(default)]
     pub dev_sev: Option<PathBuf>,
 }
 

@@ -14,9 +14,13 @@
 
 use bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use serde_aco::Help;
 
 bitfield! {
-    #[derive(Copy, Clone, Serialize, Deserialize)]
+    /// AMD SEV guest policy
+    ///
+    /// From Secure Encrypted Virtualization API Version 0.24, Revision 3.24, Ch.2, Table 2.
+    #[derive(Copy, Clone, Serialize, Deserialize, Help)]
     pub struct SevPolicy(u32);
     impl Debug;
     pub no_debug, set_no_debug: 0;
@@ -32,8 +36,8 @@ bitfield! {
 bitfield! {
     /// AMD SEV-SNP guest policy
     ///
-    /// From SEV SNP Firmware ABI Specification, Revision 1.55, Sec.4.3.
-    #[derive(Copy, Clone, Serialize, Deserialize)]
+    /// From SEV SNP Firmware ABI Specification, Revision 1.55, Sec.4.3, Table 9.
+    #[derive(Copy, Clone, Serialize, Deserialize, Help)]
     pub struct SnpPolicy(u64);
     impl Debug;
     pub api_minor, set_api_minor: 7,0;

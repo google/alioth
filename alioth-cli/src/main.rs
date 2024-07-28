@@ -20,7 +20,10 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use alioth::board::BoardConfig;
+#[cfg(target_arch = "x86_64")]
+use alioth::device::fw_cfg::FwCfgItemParam;
 use alioth::errors::{trace_error, DebugTrace};
+use alioth::hv::Coco;
 #[cfg(target_os = "macos")]
 use alioth::hv::Hvf;
 #[cfg(target_os = "linux")]
@@ -41,6 +44,7 @@ use alioth::vm::Machine;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
 use serde::Deserialize;
+use serde_aco::{help_text, Help};
 use snafu::{ResultExt, Snafu};
 
 #[derive(Parser, Debug)]
@@ -67,13 +71,16 @@ enum Command {
     Run(RunArgs),
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Help)]
 #[cfg_attr(target_os = "macos", derive(Default))]
 enum Hypervisor {
+    /// KVM backed by the Linux kernel.
     #[cfg(target_os = "linux")]
     #[serde(alias = "kvm")]
     Kvm(KvmConfig),
+    /// macOS Hypervisor Framework.
     #[cfg(target_os = "macos")]
+    #[serde(alias = "hvf")]
     #[default]
     Hvf,
 }
@@ -86,22 +93,26 @@ impl Default for Hypervisor {
 }
 
 #[cfg(target_os = "linux")]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Help)]
 enum FsParam {
     #[serde(alias = "vu")]
+    /// VirtIO device backed by a vhost-user process, e.g. virtiofsd.
     Vu(VuFsParam),
 }
 
 #[cfg(target_os = "linux")]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Help)]
 enum VsockParam {
+    /// Vsock device backed by host kernel vhost-vsock module.
     #[serde(alias = "vhost")]
     Vhost(VhostVsockParam),
 }
 
 #[derive(Args, Debug, Clone)]
 struct RunArgs {
-    #[arg(long)]
+    #[arg(long, help(
+        help_text::<Hypervisor>("Specify the Hypervisor to run on.")
+    ), value_name = "HV")]
     hypervisor: Option<String>,
 
     #[arg(short, long)]
@@ -126,36 +137,55 @@ struct RunArgs {
     #[arg(long, default_value = "1G")]
     mem_size: String,
 
-    #[arg(short, long)]
+    #[arg(short, long, help(
+        help_text::<MemConfig>("Specify the memory of the guest.")
+    ))]
     memory: Option<String>,
 
     #[arg(long)]
     pvpanic: bool,
 
     #[cfg(target_arch = "x86_64")]
-    #[arg(long = "fw-cfg")]
+    #[arg(long = "fw-cfg", help(
+        help_text::<FwCfgItemParam>("Add an extra item to the fw_cfg device.")
+    ), value_name = "ITEM")]
     fw_cfgs: Vec<String>,
 
     #[arg(long)]
     entropy: bool,
 
-    #[arg(long)]
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(
+        help_text::<NetParam>("Add a VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.")
+    ))]
     net: Vec<String>,
 
-    #[arg(long)]
+    #[arg(long, help(
+        help_text::<BlockParam>("Add a VirtIO block device.")
+    ))]
     blk: Vec<String>,
 
-    #[arg(long)]
+    #[arg(long, help(
+        help_text::<Coco>("Enable confidential compute supported by host platform.")
+    ))]
     coco: Option<String>,
 
-    #[arg(long)]
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(
+        help_text::<FsParam>("Add a VirtIO filesystem device.")
+    ))]
     fs: Vec<String>,
 
-    #[arg(long)]
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(
+        help_text::<VsockParam>("Add a VirtIO vsock device.")
+    ))]
     vsock: Option<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long)]
+    #[arg(long, help(
+        help_text::<VfioParam>("Assign a host PCI device to the guest.")
+    ))]
     vfio: Vec<String>,
 
     #[arg(short, long("object"))]

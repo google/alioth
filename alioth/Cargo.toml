@@ -20,6 +20,7 @@ libc = "0.2.150"
 parking_lot.workspace = true
 macros.workspace = true
 serde.workspace = true
+serde-aco.workspace = true
 snafu.workspace = true
 
 [dev-dependencies]

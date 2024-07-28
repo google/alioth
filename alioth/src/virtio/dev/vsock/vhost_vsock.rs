@@ -22,6 +22,7 @@ use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
+use serde_aco::Help;
 
 use crate::ffi;
 use crate::mem::mapped::RamBus;
@@ -33,9 +34,11 @@ use crate::virtio::vhost::bindings::{VirtqAddr, VirtqFile, VirtqState, VHOST_FIL
 use crate::virtio::vhost::{error, UpdateVsockMem, VhostDev};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Help)]
 pub struct VhostVsockParam {
+    /// Vsock context id.
     pub cid: u32,
+    /// Path to the host device file. [default: /dev/vhost-vsock]
     pub dev: Option<PathBuf>,
 }
 

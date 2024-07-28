@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use serde::Deserialize;
+use serde_aco::Help;
 use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
@@ -234,14 +235,24 @@ pub trait Its: Debug + Send + Sync + 'static {
     fn init(&self) -> Result<()>;
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Help)]
 pub enum Coco {
+    /// Enable AMD SEV or SEV-ES.
     #[cfg(target_arch = "x86_64")]
     #[serde(alias = "sev")]
-    AmdSev { policy: SevPolicy },
+    AmdSev {
+        /// SEV policy, 0x1 for SEV, 0x5 for SEV-ES.
+        /// SEV API Ver 0.24, Rev 3.24, Ch.2, Table 2.
+        policy: SevPolicy,
+    },
+    /// Enable AMD SEV-SNP.
     #[cfg(target_arch = "x86_64")]
     #[serde(alias = "snp", alias = "sev-snp")]
-    AmdSnp { policy: SnpPolicy },
+    AmdSnp {
+        /// SEV-SNP policy, e.g. 0x30000.
+        /// SNP Firmware ABI Spec, Rev 1.55, Sec.4.3, Table 9.
+        policy: SnpPolicy,
+    },
 }
 
 #[derive(Debug)]

@@ -29,6 +29,7 @@ use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
+use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IoeventFd;
@@ -151,10 +152,14 @@ impl VuFs {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Help)]
 pub struct VuFsParam {
+    /// Path to the vhost-user UNIX domain socket.
     pub socket: PathBuf,
+    /// Mount tag seen by the guest.
     pub tag: Option<String>,
+    /// Size of memory region for DAX in bytes.
+    /// 0 means no DAX. [default: 0]
     #[serde(default)]
     pub dax_window: usize,
 }

@@ -24,6 +24,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "serde",
+ "serde-aco",
  "snafu",
  "zerocopy",
 ]
