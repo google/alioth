@@ -166,10 +166,10 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         V: Visitor<'s>,
     {
         let id = self.consume_input();
-        if id.is_empty() {
+        let s = self.deref_id(id);
+        if id.starts_with("id_") && s.is_empty() {
             visitor.visit_none()
         } else {
-            let s = self.deref_id(id);
             let mut sub_de = Deserializer { input: s, ..*self };
             visitor.visit_some(&mut sub_de)
         }
@@ -540,13 +540,13 @@ mod test {
 
     #[test]
     fn test_option() {
-        assert_eq!(from_arg::<Option<u32>>("").unwrap(), None);
+        assert_matches!(from_arg::<Option<u32>>(""), Err(Error::ExpectedInteger));
         assert_eq!(from_arg::<Option<u32>>("12").unwrap(), Some(12));
 
-        assert_eq!(from_arg::<Option<&'static str>>("").unwrap(), None);
+        assert_eq!(from_arg::<Option<&'static str>>("").unwrap(), Some(""));
         assert_eq!(
             from_args::<Option<&'static str>>("id_1", &HashMap::from([("id_1", "")])).unwrap(),
-            Some("")
+            None
         );
         assert_eq!(from_arg::<Option<&'static str>>("12").unwrap(), Some("12"));
         assert_eq!(
@@ -554,19 +554,23 @@ mod test {
             Some("id_1")
         );
 
+        let map_none = HashMap::from([("id_none", "")]);
         assert_eq!(from_arg::<Vec<Option<u32>>>("").unwrap(), vec![]);
-        assert_eq!(from_arg::<Vec<Option<u32>>>(",").unwrap(), vec![None]);
+        assert_eq!(
+            from_args::<Vec<Option<u32>>>("id_none,", &map_none).unwrap(),
+            vec![None]
+        );
         assert_eq!(from_arg::<Vec<Option<u32>>>("1,").unwrap(), vec![Some(1)]);
         assert_eq!(
             from_arg::<Vec<Option<u32>>>("1,2,").unwrap(),
             vec![Some(1), Some(2)]
         );
         assert_eq!(
-            from_arg::<Vec<Option<u32>>>("1,2,,").unwrap(),
+            from_args::<Vec<Option<u32>>>("1,2,id_none,", &map_none).unwrap(),
             vec![Some(1), Some(2), None]
         );
         assert_eq!(
-            from_arg::<Vec<Option<u32>>>(",2").unwrap(),
+            from_args::<Vec<Option<u32>>>("id_none,2", &map_none).unwrap(),
             vec![None, Some(2)]
         );
     }
