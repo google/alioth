@@ -65,7 +65,7 @@ struct Cli {
     pub log_dir: Option<PathBuf>,
 
     #[command(subcommand)]
-    pub cmd: Option<Command>,
+    pub cmd: Command,
 }
 
 #[derive(Subcommand, Debug)]
@@ -470,11 +470,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
     );
-    let Some(cmd) = cli.cmd else {
-        return Ok(());
-    };
 
-    match cmd {
+    match cli.cmd {
         Command::Run(args) => main_run(args)?,
     }
     Ok(())
