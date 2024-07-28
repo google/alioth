@@ -50,16 +50,18 @@ use snafu::{ResultExt, Snafu};
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Cli {
-    #[arg(short, long)]
+    #[arg(short, long, value_name = "SPEC")]
     /// Loglevel specification, see
-    /// https://docs.rs/flexi_logger/0.25.5/flexi_logger/struct.LogSpecification.html.
+    /// https://docs.rs/flexi_logger/latest/flexi_logger/struct.LogSpecification.html.
     /// If not set, environment variable $RUST_LOG is used.
     pub log_spec: Option<String>,
 
+    /// Log to file instead of STDERR.
     #[arg(long)]
     pub log_to_file: bool,
 
-    #[arg(long)]
+    /// Path to a directory where the log file is stored.
+    #[arg(long, value_name = "PATH")]
     pub log_dir: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -68,6 +70,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Create and boot a virtual machine.
     Run(RunArgs),
 }
 
@@ -124,31 +127,39 @@ vhost-user process listening on socket `/path/to/socket=1`, these
     -o id_fs,socket=/path/to/socket=1"#;
 
 #[derive(Args, Debug, Clone)]
+#[command(arg_required_else_help = true)]
 struct RunArgs {
     #[arg(long, help(
         help_text::<Hypervisor>("Specify the Hypervisor to run on.")
     ), value_name = "HV")]
     hypervisor: Option<String>,
 
-    #[arg(short, long)]
+    /// Path to a Linux kernel image.
+    #[arg(short, long, value_name = "PATH")]
     kernel: Option<PathBuf>,
 
+    /// Path to an ELF kernel with PVH note.
     #[cfg(target_arch = "x86_64")]
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
     pvh: Option<PathBuf>,
 
-    #[arg(long, short)]
+    /// Path to a firmware image.
+    #[arg(long, short, value_name = "PATH")]
     firmware: Option<PathBuf>,
 
-    #[arg(short, long)]
+    /// Command line to pass to the kernel, e.g. `console=ttyS0`.
+    #[arg(short, long, value_name = "ARGS")]
     cmd_line: Option<String>,
 
-    #[arg(short, long)]
+    /// Path to an initramfs image.
+    #[arg(short, long, value_name = "PATH")]
     initramfs: Option<PathBuf>,
 
+    /// Number of VCPUs assigned to the guest.
     #[arg(long, default_value_t = 1)]
     num_cpu: u32,
 
+    /// DEPRECATED: Use --memory instead.
     #[arg(long, default_value = "1G")]
     mem_size: String,
 
@@ -157,6 +168,7 @@ struct RunArgs {
     ))]
     memory: Option<String>,
 
+    /// Add a pvpanic device.
     #[arg(long)]
     pvpanic: bool,
 
@@ -166,6 +178,7 @@ struct RunArgs {
     ), value_name = "ITEM")]
     fw_cfgs: Vec<String>,
 
+    /// Add a VirtIO entropy device.
     #[arg(long)]
     entropy: bool,
 
