@@ -14,11 +14,18 @@
 
 use serde::de::{self, Visitor};
 use serde::Deserialize;
+use serde_aco::{Help, TypedHelp};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[derive(Debug, Default, FromBytes, FromZeroes, AsBytes, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct MacAddr([u8; 6]);
+
+impl Help for MacAddr {
+    fn help() -> TypedHelp {
+        TypedHelp::Custom { desc: "mac-addr" }
+    }
+}
 
 struct MacAddrVisitor;
 

@@ -21,6 +21,7 @@ use bitflags::bitflags;
 use mio::event::Event;
 use mio::Registry;
 use serde::Deserialize;
+use serde_aco::Help;
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -123,9 +124,11 @@ pub struct BlockConfig {
 }
 impl_mmio_for_zerocopy!(BlockConfig);
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Help)]
 pub struct BlockParam {
+    /// Path to a raw-formatted disk image.
     pub path: PathBuf,
+    /// Set the device as readonly. [default: false]
     #[serde(default)]
     pub readonly: bool,
 }

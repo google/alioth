@@ -31,6 +31,7 @@ use macros::Layout;
 use parking_lot::Mutex;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[cfg(target_arch = "x86_64")]
@@ -505,15 +506,22 @@ impl Mmio for Mutex<FwCfg> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Deserialize, Debug, Help)]
 pub enum FwCfgContentParam {
+    /// Path to a file with binary contents.
+    #[serde(alias = "file")]
     File(PathBuf),
+    /// A UTF-8 encoded string.
+    #[serde(alias = "string")]
     String(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Help)]
 pub struct FwCfgItemParam {
+    /// Selector key of an item.
     pub name: String,
+    /// Item content.
+    #[serde_aco(flatten)]
     pub content: FwCfgContentParam,
 }
 

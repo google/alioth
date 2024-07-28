@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Deserialize;
+use serde_aco::Help;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
@@ -78,24 +79,31 @@ fn default_memory_size() -> u64 {
     1 << 30
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Help)]
 pub struct MemConfig {
+    /// Total guest memory size in bytes. [default: 1G]
     #[serde(default = "default_memory_size")]
     pub size: u64,
+    /// Host backend [default: anon]
     #[serde(default)]
     pub backend: MemBackend,
+    /// mmap() guest memory with MAP_SHARED or MAP_PRIVATE.
+    /// [default: false]
     #[serde(default)]
     pub shared: bool,
+    /// Enable transparent hugepage. [default: false]
     #[cfg(target_os = "linux")]
     #[serde(default, alias = "thp")]
     pub transparent_hugepage: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Help)]
 pub enum MemBackend {
+    /// Anonymous memory by MAP_ANONYMOUS.
     #[default]
     #[serde(alias = "anon")]
     Anonymous,
+    /// Anonymous file by memfd_create(). Always uses MAP_SHARED.
     #[cfg(target_os = "linux")]
     #[serde(alias = "memfd")]
     Memfd,

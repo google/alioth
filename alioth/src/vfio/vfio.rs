@@ -21,6 +21,7 @@ pub mod pci;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde_aco::Help;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
@@ -46,7 +47,8 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Help)]
 pub struct VfioParam {
+    /// Path to a VFIO cdev, e.g. /dev/vfio/devices/vfio0.
     pub cdev: PathBuf,
 }
