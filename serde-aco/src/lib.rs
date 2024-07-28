@@ -18,4 +18,4 @@ mod help;
 
 pub use de::{from_arg, from_args, Deserializer};
 pub use error::{Error, Result};
-pub use help::{FieldHelp, Help, TypedHelp};
+pub use help::{help_text, FieldHelp, Help, TypedHelp};
