@@ -108,6 +108,21 @@ enum VsockParam {
     Vhost(VhostVsockParam),
 }
 
+const DOC_OBJECTS: &str = r#"Supply additional data to other command line flags.
+* <id>,<value>
+
+Any value that comes after an equal sign(=) and contains a comma(,)
+or equal sign can be supplied using this flag. `<id>` must start
+with `id_` and `<id>` cannot contain any comma or equal sign.
+
+Example: assuming we are going a add a virtio-blk device backed by
+`/path/to/disk,2024.img` and a virtio-fs device backed by a
+vhost-user process listening on socket `/path/to/socket=1`, these
+2 devices can be expressed in the command line as follows:
+    --blk path=id_blk --fs vu,socket=id_fs,tag=shared-dir \
+    -o id_blk,/path/to/disk,2024.img \
+    -o id_fs,socket=/path/to/socket=1"#;
+
 #[derive(Args, Debug, Clone)]
 struct RunArgs {
     #[arg(long, help(
@@ -188,7 +203,7 @@ struct RunArgs {
     ))]
     vfio: Vec<String>,
 
-    #[arg(short, long("object"))]
+    #[arg(short, long("object"), help = DOC_OBJECTS, value_name = "OBJECT")]
     objects: Vec<String>,
 }
 
