@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod de;
-mod error;
 mod help;
 
-pub use de::{from_arg, from_args, Deserializer};
-pub use error::{Error, Result};
-pub use help::{FieldHelp, Help, TypedHelp};
+use proc_macro::TokenStream;
+
+#[proc_macro_derive(Help, attributes(serde_aco))]
+pub fn derive_help(input: TokenStream) -> TokenStream {
+    help::derive_help(input)
+}

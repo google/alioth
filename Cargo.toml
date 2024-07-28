@@ -1,5 +1,5 @@
 [workspace]
-members = ["alioth", "alioth-cli", "macros", "serde-aco"]
+members = ["alioth", "alioth-cli", "macros", "serde-aco", "serde-aco-derive"]
 resolver = "2"
 
 [workspace.package]
@@ -16,7 +16,11 @@ snafu = "0.8.4"
 macros = { version = "0.4.0", path = "macros", package = "alioth-macros" }
 alioth = { version = "0.4.0", path = "alioth" }
 serde-aco = { version = "0.4.0", path = "serde-aco" }
+serde-aco-derive = { version = "0.4.0", path = "serde-aco-derive" }
 assert_matches = "1"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+quote = { version = "1" }
 
 [profile.release]
 lto = true
