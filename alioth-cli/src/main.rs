@@ -124,7 +124,7 @@ vhost-user process listening on socket `/path/to/socket=1`, these
 2 devices can be expressed in the command line as follows:
     --blk path=id_blk --fs vu,socket=id_fs,tag=shared-dir \
     -o id_blk,/path/to/disk,2024.img \
-    -o id_fs,socket=/path/to/socket=1"#;
+    -o id_fs,/path/to/socket=1"#;
 
 #[derive(Args, Debug, Clone)]
 #[command(arg_required_else_help = true)]
