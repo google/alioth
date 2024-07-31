@@ -24,6 +24,7 @@ pub const IA32_FS_BASE: u32 = 0xc000_0100;
 pub const IA32_GS_BASE: u32 = 0xc000_0101;
 pub const IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
 pub const IA32_TSC_AUX: u32 = 0xc000_0103;
+pub const IA32_MISC_ENABLE: u32 = 0x0000_01a0;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,5 +37,13 @@ bitflags! {
         const LMA = 1 << 10;
         /// Execute disable bit enable
         const NXE = 1 << 11;
+    }
+}
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct MiscEnable: u64 {
+        /// Enable Fast-Strings
+        const FAST_STRINGS = 1 << 0;
     }
 }

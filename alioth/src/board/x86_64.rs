@@ -28,6 +28,7 @@ use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL,
     RAM_32_SIZE,
 };
+use crate::arch::msr::{MiscEnable, IA32_MISC_ENABLE};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
 use crate::board::{error, Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
@@ -235,6 +236,7 @@ where
             }
         }
         vcpu.set_cpuids(cpuids)?;
+        vcpu.set_msrs(&[(IA32_MISC_ENABLE, MiscEnable::FAST_STRINGS.bits())])?;
         Ok(())
     }
 
