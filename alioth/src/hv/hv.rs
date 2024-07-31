@@ -74,6 +74,9 @@ pub enum Error {
     VcpuReg { error: std::io::Error },
     #[snafu(display("Failed to configure the guest CPUID"))]
     GuestCpuid { error: std::io::Error },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("Failed to configure guest MSRs"))]
+    GuestMsr { error: std::io::Error },
     #[snafu(display("Failed to configure an encrypted region"))]
     EncryptedRegion { error: std::io::Error },
     #[snafu(display("Cannot create multiple VM memories"))]
@@ -146,6 +149,9 @@ pub trait Vcpu {
 
     #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;
 }
