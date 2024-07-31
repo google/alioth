@@ -36,7 +36,7 @@ use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
 use crate::hv::kvm::vm::VmInner;
 use crate::hv::kvm::{kvm_error, KvmError};
-use crate::hv::{error, Error, Vcpu, VmEntry, VmExit};
+use crate::hv::{error, Error, Result, Vcpu, VmEntry, VmExit};
 
 pub(super) struct KvmRunBlock {
     addr: usize,
@@ -174,6 +174,11 @@ impl Vcpu for KvmVcpu {
     #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
         self.kvm_set_cpuids(cpuids)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()> {
+        self.kvm_set_msrs(msrs)
     }
 
     fn dump(&self) -> Result<(), Error> {

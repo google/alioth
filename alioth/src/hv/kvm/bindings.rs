@@ -70,6 +70,27 @@ pub struct KvmCpuid2<const N: usize> {
     pub entries: [KvmCpuidEntry2; N],
 }
 
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmMsrEntry {
+    pub index: u32,
+    pub _reserved: u32,
+    pub data: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct KvmMsrs<const N: usize> {
+    pub nmsrs: u32,
+    pub _pad: u32,
+    pub entries: [KvmMsrEntry; N],
+}
+
+#[cfg(target_arch = "x86_64")]
+pub const MAX_IO_MSRS: usize = 256;
+
 bitflags! {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct KvmMemFlag: u32 {

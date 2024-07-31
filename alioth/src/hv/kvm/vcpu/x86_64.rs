@@ -17,11 +17,12 @@ use snafu::ResultExt;
 use crate::arch::cpuid::Cpuid;
 use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs, KVM_MAX_CPUID_ENTRIES,
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs, KVM_MAX_CPUID_ENTRIES,
+    MAX_IO_MSRS,
 };
 use crate::hv::kvm::ioctls::{
-    kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_regs, kvm_set_sregs,
-    kvm_set_sregs2,
+    kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs,
+    kvm_set_sregs, kvm_set_sregs2,
 };
 use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
@@ -298,6 +299,20 @@ impl KvmVcpu {
             }
         }
         unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }.context(error::GuestCpuid)?;
+        Ok(())
+    }
+
+    pub fn kvm_set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()> {
+        let mut kvm_msrs = KvmMsrs {
+            nmsrs: msrs.len() as u32,
+            _pad: 0,
+            entries: [KvmMsrEntry::default(); MAX_IO_MSRS],
+        };
+        for (i, (index, data)) in msrs.iter().enumerate() {
+            kvm_msrs.entries[i].index = *index;
+            kvm_msrs.entries[i].data = *data;
+        }
+        unsafe { kvm_set_msrs(&self.fd, &kvm_msrs) }.context(error::GuestMsr)?;
         Ok(())
     }
 }

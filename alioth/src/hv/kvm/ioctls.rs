@@ -20,7 +20,7 @@ use crate::hv::kvm::bindings::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmRegs, KvmSregs, KvmSregs2,
+    KvmCpuid2, KvmCreateGuestMemfd, KvmEnableCap, KvmMsrs, KvmRegs, KvmSregs, KvmSregs2,
 };
 #[cfg(target_arch = "aarch64")]
 use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDeviceAttr, KvmVcpuInit};
@@ -74,6 +74,8 @@ ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
 ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
 #[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
+#[cfg(target_arch = "x86_64")]
+ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
