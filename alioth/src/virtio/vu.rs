@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
+use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -216,16 +217,17 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug)]
 pub struct VuDev {
-    conn: UnixStream,
+    conn: Mutex<UnixStream>,
     channel: Option<UnixStream>,
 }
 
 impl VuDev {
     pub fn new<P: AsRef<Path>>(sock: P) -> Result<Self> {
+        let conn = UnixStream::connect(&sock).context(error::AccessSocket {
+            path: sock.as_ref(),
+        })?;
         Ok(VuDev {
-            conn: UnixStream::connect(&sock).context(error::AccessSocket {
-                path: sock.as_ref(),
-            })?,
+            conn: Mutex::new(conn),
             channel: None,
         })
     }
@@ -295,7 +297,9 @@ impl VuDev {
                 unsafe { std::slice::from_raw_parts_mut(libc::CMSG_DATA(cmsg_ptr), fd_size) };
             data.copy_from_slice(fds.as_bytes());
         }
-        ffi!(unsafe { libc::sendmsg(self.conn.as_raw_fd(), &uds_msg, 0) })?;
+
+        let mut conn = self.conn.lock();
+        ffi!(unsafe { libc::sendmsg(conn.as_raw_fd(), &uds_msg, 0) })?;
 
         let mut resp = Message::new_zeroed();
         let mut payload = R::new_zeroed();
@@ -311,7 +315,7 @@ impl VuDev {
                 IoSliceMut::new(payload.as_bytes_mut()),
             ]
         };
-        let read_size = (&self.conn).read_vectored(&mut bufs)?;
+        let read_size = conn.read_vectored(&mut bufs)?;
         let expect_size = size_of::<Message>() + bufs[1].len();
         if read_size != expect_size {
             return error::MsgSize {
@@ -521,7 +525,7 @@ impl LayoutChanged for UpdateVuMem {
             .context(mem::error::ChangeLayout)?;
         log::trace!(
             "vu-{}: added memory region {:x?}",
-            self.dev.conn.as_raw_fd(),
+            self.dev.conn.lock().as_raw_fd(),
             region.region
         );
         Ok(())
@@ -545,7 +549,7 @@ impl LayoutChanged for UpdateVuMem {
             .context(mem::error::ChangeLayout)?;
         log::trace!(
             "vu-{}: removed memory region {:x?}",
-            self.dev.conn.as_raw_fd(),
+            self.dev.conn.lock().as_raw_fd(),
             region.region
         );
         Ok(())
