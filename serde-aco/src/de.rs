@@ -136,7 +136,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
             visitor.visit_borrowed_str(self.consume_all())
         } else {
             let id = self.consume_input();
-            visitor.visit_borrowed_str(self.deref_id(id))
+            visitor.visit_borrowed_str(self.deref_id(id)?)
         }
     }
 
@@ -166,7 +166,7 @@ impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
         V: Visitor<'s>,
     {
         let id = self.consume_input();
-        let s = self.deref_id(id);
+        let s = self.deref_id(id)?;
         if id.starts_with("id_") && s.is_empty() {
             visitor.visit_none()
         } else {
@@ -307,7 +307,7 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         let mut sub_de;
         let de = if !self.top_level {
             let id = self.consume_input();
-            let sub_input = self.deref_id(id);
+            let sub_input = self.deref_id(id)?;
             sub_de = Deserializer {
                 input: sub_input,
                 ..*self
@@ -342,13 +342,16 @@ impl<'s, 'o> Deserializer<'s, 'o> {
         }
     }
 
-    fn deref_id(&self, id: &'s str) -> &'s str {
+    fn deref_id(&self, id: &'s str) -> Result<&'s str> {
         if id.starts_with("id_") {
             if let Some(s) = self.objects.and_then(|objects| objects.get(id)) {
-                return s;
+                Ok(s)
+            } else {
+                Err(Error::IdNotFound(id.to_owned()))
             }
+        } else {
+            Ok(id)
         }
-        id
     }
 
     fn parse_unsigned<T>(&mut self) -> Result<T>
@@ -549,9 +552,13 @@ mod test {
             None
         );
         assert_eq!(from_arg::<Option<&'static str>>("12").unwrap(), Some("12"));
+        assert_matches!(
+            from_arg::<Option<&'static str>>("id_1"),
+            Err(Error::IdNotFound(id)) if id == "id_1"
+        );
         assert_eq!(
-            from_arg::<Option<&'static str>>("id_1").unwrap(),
-            Some("id_1")
+            from_args::<Option<&'static str>>("id_1", &HashMap::from([("id_1", "id_2")])).unwrap(),
+            Some("id_2")
         );
 
         let map_none = HashMap::from([("id_none", "")]);
@@ -996,11 +1003,11 @@ mod test {
         );
         assert_matches!(
             from_arg::<TestStruct>("num=4,e=id_d"),
-            Err(Error::Message(_))
+            Err(Error::IdNotFound(id)) if id == "id_d"
         );
         assert_matches!(
             from_args::<TestStruct>("num=4,e=id_d", &[].into()),
-            Err(Error::Message(_))
+            Err(Error::IdNotFound(id)) if id == "id_d"
         );
         assert_eq!(from_arg::<TestEnum>("B,1").unwrap(), TestEnum::B(1));
         assert_eq!(from_arg::<TestEnum>("D").unwrap(), TestEnum::D);

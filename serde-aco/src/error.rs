@@ -26,6 +26,7 @@ pub enum Error {
     ExpectedUnit,
     Trailing(String),
     Ignored(String),
+    IdNotFound(String),
     Overflow,
     UnknownType,
 }
