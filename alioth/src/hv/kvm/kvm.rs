@@ -30,6 +30,8 @@ mod vm;
 mod vmentry;
 mod vmexit;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
@@ -45,10 +47,10 @@ use serde::Deserialize;
 use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::cpuid::CpuidIn;
 use crate::errors::{trace_error, DebugTrace};
 use crate::ffi;
-#[cfg(target_arch = "x86_64")]
-use crate::hv::Cpuid;
 use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
 
 #[cfg(target_arch = "aarch64")]
@@ -188,28 +190,34 @@ impl Hypervisor for Kvm {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>> {
+    fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
         let mut kvm_cpuid2 = KvmCpuid2 {
             nent: KVM_MAX_CPUID_ENTRIES as u32,
             padding: 0,
             entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
         };
         unsafe { kvm_get_supported_cpuid(&self.fd, &mut kvm_cpuid2) }.context(error::GuestCpuid)?;
-        let cpuids = kvm_cpuid2.entries[0..kvm_cpuid2.nent as usize]
-            .iter()
-            .map(|e| Cpuid {
+        let map_f = |e: &KvmCpuidEntry2| {
+            let in_ = CpuidIn {
                 func: e.function,
                 index: if e.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX) {
                     Some(e.index)
                 } else {
                     None
                 },
+            };
+            let out = CpuidResult {
                 eax: e.eax,
                 ebx: e.ebx,
                 ecx: e.ecx,
                 edx: e.edx,
-            })
-            .collect::<Vec<_>>();
+            };
+            (in_, out)
+        };
+        let cpuids = kvm_cpuid2.entries[0..kvm_cpuid2.nent as usize]
+            .iter()
+            .map(map_f)
+            .collect();
         Ok(cpuids)
     }
 }

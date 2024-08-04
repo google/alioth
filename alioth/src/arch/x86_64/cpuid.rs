@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[derive(Debug, Default, Clone)]
-pub struct Cpuid {
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+pub struct CpuidIn {
     pub func: u32,
     pub index: Option<u32>,
-    pub eax: u32,
-    pub ebx: u32,
-    pub ecx: u32,
-    pub edx: u32,
 }

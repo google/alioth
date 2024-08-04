@@ -123,11 +123,11 @@ mod test {
         let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let mut kvm_cpuid_exist = false;
         let supported_cpuids = kvm.get_supported_cpuids().unwrap();
-        for cpuid in &supported_cpuids {
-            if cpuid.func == 0x4000_0000
-                && cpuid.ebx.to_le_bytes() == *b"KVMK"
-                && cpuid.ecx.to_le_bytes() == *b"VMKV"
-                && cpuid.edx.to_le_bytes() == *b"M\0\0\0"
+        for (in_, out) in &supported_cpuids {
+            if in_.func == 0x4000_0000
+                && out.ebx.to_le_bytes() == *b"KVMK"
+                && out.ecx.to_le_bytes() == *b"VMKV"
+                && out.edx.to_le_bytes() == *b"M\0\0\0"
             {
                 kvm_cpuid_exist = true;
             }

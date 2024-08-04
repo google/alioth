@@ -17,6 +17,10 @@ mod aarch64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::CpuidResult;
+#[cfg(target_arch = "x86_64")]
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::{OwnedFd, RawFd};
@@ -27,7 +31,7 @@ use libc::{mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::cpuid::Cpuid;
+use crate::arch::cpuid::CpuidIn;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
@@ -172,8 +176,8 @@ impl Vcpu for KvmVcpu {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
-        self.kvm_set_cpuids(cpuids)
+    fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {
+        self.kvm_set_cpuids(&cpuids)
     }
 
     #[cfg(target_arch = "x86_64")]
