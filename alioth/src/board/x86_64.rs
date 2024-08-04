@@ -81,10 +81,10 @@ impl<V: Vm> ArchBoard<V> {
             }
         }
         let highest = unsafe { __cpuid(0x8000_0000) }.eax;
-        for func in [0x8000_0005, 0x8000_0006] {
-            if func > highest {
-                break;
-            }
+        // 0x8000_0002 to 0x8000_0004: processor name
+        // 0x8000_0005: L1 cache/LTB
+        // 0x8000_0006: L2 cache/TLB and L3 cache
+        for func in 0x8000_0002..=std::cmp::min(highest, 0x8000_0006) {
             let host_cpuid = unsafe { __cpuid(func) };
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
