@@ -232,7 +232,7 @@ where
             if in_.func == 0x1 {
                 out.ebx &= 0x00ff_ffff;
                 out.ebx |= id << 24;
-            } else if in_.func == 0xb {
+            } else if in_.func == 0xb || in_.func == 0x1f {
                 out.edx = id;
             }
         }
