@@ -80,6 +80,14 @@ impl<V: Vm> ArchBoard<V> {
                 }
             }
         }
+        let highest = unsafe { __cpuid(0x8000_0000) }.eax;
+        for func in [0x8000_0005, 0x8000_0006] {
+            if func > highest {
+                break;
+            }
+            let host_cpuid = unsafe { __cpuid(func) };
+            cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
+        }
         Ok(Self {
             cpuids,
             sev_ap_eip: AtomicU32::new(0),
