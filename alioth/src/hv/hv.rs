@@ -18,6 +18,11 @@ mod hvf;
 #[cfg(target_os = "linux")]
 #[path = "kvm/kvm.rs"]
 mod kvm;
+
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::CpuidResult;
+#[cfg(target_arch = "x86_64")]
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::os::fd::AsFd;
 use std::sync::Arc;
@@ -28,7 +33,7 @@ use serde_aco::Help;
 use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::cpuid::Cpuid;
+use crate::arch::cpuid::CpuidIn;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
@@ -148,7 +153,7 @@ pub trait Vcpu {
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
+    fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
     fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()>;
@@ -333,7 +338,7 @@ pub trait Hypervisor {
     fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error>;
+    fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

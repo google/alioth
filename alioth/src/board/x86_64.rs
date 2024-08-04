@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::arch::x86_64::__cpuid;
+use std::arch::x86_64::{CpuidResult, __cpuid};
+use std::collections::HashMap;
 use std::iter::zip;
 use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
@@ -23,7 +24,7 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::arch::cpuid::Cpuid;
+use crate::arch::cpuid::CpuidIn;
 use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL,
     RAM_32_SIZE,
@@ -46,7 +47,7 @@ use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
 
 pub struct ArchBoard<V> {
-    cpuids: Vec<Cpuid>,
+    cpuids: HashMap<CpuidIn, CpuidResult>,
     sev_ap_eip: AtomicU32,
     _phantom: PhantomData<V>,
 }
@@ -57,25 +58,25 @@ impl<V: Vm> ArchBoard<V> {
         H: Hypervisor<Vm = V>,
     {
         let mut cpuids = hv.get_supported_cpuids()?;
-        for cpuid in &mut cpuids {
-            if cpuid.func == 0x1 {
-                cpuid.ecx |= (1 << 24) | (1 << 31);
-            } else if cpuid.func == 0x8000_001f {
+        for (in_, out) in &mut cpuids {
+            if in_.func == 0x1 {
+                out.ecx |= (1 << 24) | (1 << 31);
+            } else if in_.func == 0x8000_001f {
                 // AMD Volume 3, section E.4.17.
                 if matches!(
                     &config.coco,
                     Some(Coco::AmdSev { .. } | Coco::AmdSnp { .. })
                 ) {
-                    let host_ebx = unsafe { __cpuid(cpuid.func) }.ebx;
+                    let host_ebx = unsafe { __cpuid(in_.func) }.ebx;
                     // set PhysAddrReduction to 1
-                    cpuid.ebx = (1 << 6) | (host_ebx & 0x3f);
-                    cpuid.ecx = 0;
-                    cpuid.edx = 0;
+                    out.ebx = (1 << 6) | (host_ebx & 0x3f);
+                    out.ecx = 0;
+                    out.edx = 0;
                 }
                 if let Some(Coco::AmdSev { policy }) = &config.coco {
-                    cpuid.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
+                    out.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
                 } else if let Some(Coco::AmdSnp { .. }) = &config.coco {
-                    cpuid.eax = 0x2 | 0x8 | 0x10;
+                    out.eax = 0x2 | 0x8 | 0x10;
                 }
             }
         }
@@ -92,13 +93,13 @@ where
     V: Vm,
 {
     fn fill_snp_cpuid(&self, entries: &mut [SnpCpuidFunc]) {
-        for (src, dst) in zip(self.arch.cpuids.iter(), entries.iter_mut()) {
-            dst.eax_in = src.func;
-            dst.ecx_in = src.index.unwrap_or(0);
-            dst.eax = src.eax;
-            dst.ebx = src.ebx;
-            dst.ecx = src.ecx;
-            dst.edx = src.edx;
+        for ((in_, out), dst) in zip(self.arch.cpuids.iter(), entries.iter_mut()) {
+            dst.eax_in = in_.func;
+            dst.ecx_in = in_.index.unwrap_or(0);
+            dst.eax = out.eax;
+            dst.ebx = out.ebx;
+            dst.ecx = out.ecx;
+            dst.edx = out.edx;
             if dst.eax_in == 0xd && (dst.ecx_in == 0x0 || dst.ecx_in == 0x1) {
                 dst.ebx = 0x240;
                 dst.xcr0_in = 1;
@@ -227,12 +228,12 @@ where
 
     pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
-        for cpuid in &mut cpuids {
-            if cpuid.func == 0x1 {
-                cpuid.ebx &= 0x00ff_ffff;
-                cpuid.ebx |= id << 24;
-            } else if cpuid.func == 0xb {
-                cpuid.edx = id;
+        for (in_, out) in &mut cpuids {
+            if in_.func == 0x1 {
+                out.ebx &= 0x00ff_ffff;
+                out.ebx |= id << 24;
+            } else if in_.func == 0xb {
+                out.edx = id;
             }
         }
         vcpu.set_cpuids(cpuids)?;

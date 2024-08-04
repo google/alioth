@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::arch::x86_64::CpuidResult;
+use std::collections::HashMap;
+use std::iter::zip;
+
 use snafu::ResultExt;
 
-use crate::arch::cpuid::Cpuid;
+use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::bindings::{
     KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs, KVM_MAX_CPUID_ENTRIES,
@@ -276,7 +280,7 @@ impl KvmVcpu {
         Ok(val)
     }
 
-    pub fn kvm_set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
+    pub fn kvm_set_cpuids(&mut self, cpuids: &HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {
         if cpuids.len() > KVM_MAX_CPUID_ENTRIES {
             return kvm_error::CpuidTableTooLong.fail()?;
         }
@@ -285,13 +289,13 @@ impl KvmVcpu {
             padding: 0,
             entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
         };
-        for (cpuid, entry) in std::iter::zip(cpuids, kvm_cpuid2.entries.iter_mut()) {
-            entry.eax = cpuid.eax;
-            entry.ebx = cpuid.ebx;
-            entry.ecx = cpuid.ecx;
-            entry.edx = cpuid.edx;
-            entry.function = cpuid.func;
-            if let Some(index) = cpuid.index {
+        for ((in_, out), entry) in zip(cpuids, &mut kvm_cpuid2.entries) {
+            entry.eax = out.eax;
+            entry.ebx = out.ebx;
+            entry.ecx = out.ecx;
+            entry.edx = out.edx;
+            entry.function = in_.func;
+            if let Some(index) = in_.index {
                 entry.index = index;
                 entry.flags = KvmCpuid2Flag::SIGNIFCANT_INDEX;
             } else {
