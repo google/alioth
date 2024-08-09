@@ -130,6 +130,13 @@ enum Queues {
     Split(Vec<SplitQueue>),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerState {
+    Pending,
+    Running,
+    Shutdown,
+}
+
 #[derive(Debug)]
 struct DeviceWorker<D, S>
 where
@@ -142,6 +149,7 @@ where
     event_rx: Receiver<WakeEvent<S>>,
     queue_regs: Arc<Vec<Queue>>,
     queues: Queues,
+    state: WorkerState,
 }
 
 #[derive(Debug)]
@@ -237,6 +245,7 @@ where
             memory,
             queue_regs: queue_regs.clone(),
             queues: Queues::Split(Vec::new()),
+            state: WorkerState::Pending,
         };
         let handle = std::thread::Builder::new()
             .name(name.as_ref().to_owned())
@@ -282,13 +291,6 @@ where
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum DevAction {
-    Shutdown,
-    Reset,
-    Continue,
-}
-
 impl<D, S> DeviceWorker<D, S>
 where
     D: Virtio,
@@ -301,28 +303,39 @@ where
         }
     }
 
-    fn handle_wake_events(&mut self, irq_sender: &S) -> Result<DevAction> {
+    fn handle_wake_events(&mut self, irq_sender: &S) -> Result<()> {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 WakeEvent::Notify { q_index } => self.notify_queue(q_index, irq_sender)?,
-                WakeEvent::Shutdown => return Ok(DevAction::Shutdown),
+                WakeEvent::Shutdown => {
+                    self.state = WorkerState::Shutdown;
+                    break;
+                }
                 WakeEvent::Start { .. } => {
                     log::error!("{}: device has already started", self.name)
                 }
                 WakeEvent::Reset => {
-                    log::info!("{}: device requested reset", self.name);
-                    return Ok(DevAction::Reset);
+                    log::info!("{}: guest requested reset", self.name);
+                    self.state = WorkerState::Pending;
+                    break;
                 }
             }
         }
-        Ok(DevAction::Continue)
+        Ok(())
     }
 
-    fn wait_start(&mut self) -> WakeEvent<S> {
+    fn wait_start(&mut self) -> Option<(u64, Arc<S>)> {
         for wake_event in self.event_rx.iter() {
-            match &wake_event {
+            match wake_event {
                 WakeEvent::Reset => {}
-                WakeEvent::Start { .. } | WakeEvent::Shutdown => return wake_event,
+                WakeEvent::Start {
+                    feature,
+                    irq_sender,
+                } => {
+                    self.state = WorkerState::Running;
+                    return Some((feature, irq_sender));
+                }
+                WakeEvent::Shutdown => break,
                 WakeEvent::Notify { q_index } => {
                     log::error!(
                         "{}: driver notified queue {q_index} before device is ready",
@@ -331,34 +344,29 @@ where
                 }
             }
         }
-        WakeEvent::Shutdown
+        self.state = WorkerState::Shutdown;
+        None
     }
 
-    fn handle_event(&mut self, event: &Event, irq_sender: &S) -> Result<DevAction> {
+    fn handle_event(&mut self, event: &Event, irq_sender: &S) -> Result<()> {
         let token = VirtioToken(event.token().0 as u64);
         if token.is_queue() {
             if token.data() == TOKEN_WORKER_EVENT {
                 self.handle_wake_events(irq_sender)
             } else {
-                self.notify_queue(token.data() as u16, irq_sender)?;
-                Ok(DevAction::Continue)
+                self.notify_queue(token.data() as u16, irq_sender)
             }
         } else {
             let registry = self.poll.registry();
             match &self.queues {
-                Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, registry)?,
-            };
-            Ok(DevAction::Continue)
+                Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, registry),
+            }
         }
     }
 
-    fn loop_until_reset(&mut self) -> Result<DevAction> {
-        let WakeEvent::Start {
-            feature,
-            irq_sender,
-        } = self.wait_start()
-        else {
-            return Ok(DevAction::Shutdown);
+    fn loop_until_reset(&mut self) -> Result<()> {
+        let Some((feature, irq_sender)) = self.wait_start() else {
+            return Ok(());
         };
         let memory = &self.memory;
         self.dev.activate(
@@ -383,26 +391,24 @@ where
             D::Feature::from_bits_truncate(feature)
         );
         let mut events = Events::with_capacity(128);
-        loop {
+        'out: loop {
             self.poll
                 .poll(&mut events, None)
                 .context(error::PollEvents)?;
             for event in events.iter() {
-                let ret = self.handle_event(event, &irq_sender)?;
-                if ret != DevAction::Continue {
-                    self.dev.reset(self.poll.registry());
-                    log::info!("{}: reset done", self.name);
-                    return Ok(ret);
+                self.handle_event(event, &irq_sender)?;
+                if self.state != WorkerState::Running {
+                    break 'out;
                 }
             }
         }
+        self.dev.reset(self.poll.registry());
+        Ok(())
     }
 
     fn do_work(&mut self) -> Result<()> {
-        loop {
-            if self.loop_until_reset()? == DevAction::Shutdown {
-                break;
-            }
+        while self.state != WorkerState::Shutdown {
+            self.loop_until_reset()?;
         }
         Ok(())
     }
