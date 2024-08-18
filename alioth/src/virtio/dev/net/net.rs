@@ -359,20 +359,21 @@ impl VirtioMio for Net {
         event: &Event,
         queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
-        _registry: &Registry,
+        registry: &Registry,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
     {
         let token = event.token().0;
+        let Some(socket) = self.tap_sockets.get(token) else {
+            log::error!("{}: cannot find tap queue {token}", self.name);
+            return Ok(());
+        };
+        registry.deregister(&mut SourceFd(&socket.as_raw_fd()))?;
         if event.is_readable() {
             let rx_queue_index = token << 1;
             let Some(Some(queue)) = queues.get_mut(rx_queue_index) else {
                 log::error!("{}: cannot find rx queue {rx_queue_index}", self.name);
-                return Ok(());
-            };
-            let Some(socket) = self.tap_sockets.get(token) else {
-                log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
             reader_to_queue(&self.name, socket, rx_queue_index as u16, queue, irq_sender)?;
@@ -383,12 +384,13 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tx queue {tx_queue_index}", self.name);
                 return Ok(());
             };
-            let Some(socket) = self.tap_sockets.get(token) else {
-                log::error!("{}: cannot find tap queue {token}", self.name);
-                return Ok(());
-            };
             queue_to_writer(&self.name, socket, tx_queue_index as u16, queue, irq_sender)?;
         }
+        registry.register(
+            &mut SourceFd(&socket.as_raw_fd()),
+            Token(token),
+            Interest::READABLE | Interest::WRITABLE,
+        )?;
         Ok(())
     }
 
