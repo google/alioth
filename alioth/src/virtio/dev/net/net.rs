@@ -186,6 +186,8 @@ fn new_socket(dev_tap: Option<&Path>) -> Result<File> {
 impl Net {
     pub fn new(param: NetParam, name: Arc<String>) -> Result<Self> {
         let mut socket = new_socket(param.tap.as_deref())?;
+        let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
+        setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
         let mut dev_feat = NetFeature::MAC
             | NetFeature::MTU
             | NetFeature::CSUM
@@ -196,11 +198,9 @@ impl Net {
             | NetFeature::HOST_USO
             | NetFeature::CTRL_VQ
             | detect_tap_offload(&socket);
-        let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
         if max_queue_pairs > 1 {
             dev_feat |= NetFeature::MQ;
         }
-        setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
         let net = Net {
             name,
             config: Arc::new(NetConfig {
