@@ -321,9 +321,8 @@ where
     fn wait_start(&mut self) -> WakeEvent<S> {
         for wake_event in self.event_rx.iter() {
             match &wake_event {
-                WakeEvent::Start { .. } | WakeEvent::Shutdown | WakeEvent::Reset => {
-                    return wake_event
-                }
+                WakeEvent::Reset => {}
+                WakeEvent::Start { .. } | WakeEvent::Shutdown => return wake_event,
                 WakeEvent::Notify { q_index } => {
                     log::error!(
                         "{}: driver notified queue {q_index} before device is ready",
