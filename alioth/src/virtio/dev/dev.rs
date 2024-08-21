@@ -390,6 +390,8 @@ where
             for event in events.iter() {
                 let ret = self.handle_event(event, &irq_sender)?;
                 if ret != DevAction::Continue {
+                    self.dev.reset(self.poll.registry());
+                    log::info!("{}: reset done", self.name);
                     return Ok(ret);
                 }
             }
@@ -401,8 +403,6 @@ where
             if self.loop_until_reset()? == DevAction::Shutdown {
                 break;
             }
-            self.dev.reset(self.poll.registry());
-            log::info!("{}: reset done", self.name)
         }
         Ok(())
     }
