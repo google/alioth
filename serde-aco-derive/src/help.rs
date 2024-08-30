@@ -21,8 +21,8 @@ use quote::quote;
 use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Fields,
-    FieldsNamed, FieldsUnnamed, Ident, Lit, Meta, MetaNameValue, Token,
+    parse_macro_input, Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Field,
+    Fields, FieldsNamed, FieldsUnnamed, Ident, Lit, Meta, MetaNameValue, Token,
 };
 
 fn get_doc_from_attrs(attrs: &[Attribute]) -> String {
@@ -126,64 +126,39 @@ fn is_flattened(attrs: &[Attribute]) -> bool {
 }
 
 fn derive_named_struct_help(name: &Ident, fields: &FieldsNamed) -> TokenStream2 {
-    let mut field_doc = vec![];
-    let mut flatten_fields = vec![];
-    for field in fields.named.iter() {
-        let ident = field.ident.as_ref().unwrap();
-        let aliases = get_serde_aliases_from_attrs(ident, &field.attrs);
-        let ident = &aliases[0];
+    let field_help_fn = |field: &Field| {
+        let aliases;
+        let ident = if is_flattened(&field.attrs) {
+            ""
+        } else {
+            aliases = get_serde_aliases_from_attrs(field.ident.as_ref().unwrap(), &field.attrs);
+            &aliases[0]
+        };
         let ty = &field.ty;
         let doc = get_doc_from_attrs(&field.attrs);
-        let field_help = quote! {
+        quote! {
             FieldHelp {
                 ident: #ident,
                 doc: #doc,
-                ty: <#ty as Help>::help(),
-            }
-        };
-        if is_flattened(&field.attrs) {
-            flatten_fields.push(field_help);
-        } else {
-            field_doc.push(field_help);
-        }
-    }
-    if flatten_fields.is_empty() {
-        quote! {
-            TypedHelp::Struct{
-                name: stringify!(#name),
-                fields: vec![#(#field_doc,)*],
+                ty: <#ty as Help>::HELP,
             }
         }
-    } else {
-        quote! {{
-            let mut fields = vec![#(#field_doc,)*];
-            let mut flatted_fields = vec![#(#flatten_fields,)*];
-            for mut field in flatted_fields {
-                match field.ty {
-                    TypedHelp::Enum { variants, .. } => field.ty = TypedHelp::FlattenedEnum { variants },
-                    TypedHelp::Option(mut o) => match *o {
-                        TypedHelp::Enum { variants, .. } => {
-                            *o = TypedHelp::FlattenedEnum { variants };
-                            field.ty = TypedHelp::Option(o);
-                        }
-                        _ => unreachable!(),
-                    },
-                    _ => unreachable!(),
-                };
-                fields.push(field);
-            }
-            TypedHelp::Struct{
-                name: stringify!(#name),
-                fields,
-            }
-        }}
+    };
+
+    let field_docs: Vec<_> = fields.named.iter().map(field_help_fn).collect();
+
+    quote! {
+        TypedHelp::Struct{
+            name: stringify!(#name),
+            fields: &[#(#field_docs,)*],
+        }
     }
 }
 
 fn derive_unnamed_struct_help(fields: &FieldsUnnamed) -> TokenStream2 {
     if let Some(first) = fields.unnamed.first() {
         let ty = &first.ty;
-        quote! { <#ty as Help>::help() }
+        quote! { <#ty as Help>::HELP }
     } else if fields.unnamed.is_empty() {
         quote! { TypedHelp::Unit }
     } else {
@@ -221,7 +196,7 @@ fn derive_enum_help(name: &Ident, data: &DataEnum) -> TokenStream2 {
     quote! {
         TypedHelp::Enum {
             name: stringify!(#name),
-            variants: vec![#(#variants,)*],
+            variants: &[#(#variants,)*],
         }
     }
 }
@@ -238,9 +213,7 @@ pub fn derive_help(input: TokenStream) -> TokenStream {
         const _:() = {
             use ::serde_aco::{Help, TypedHelp, FieldHelp};
             impl Help for #ty_name {
-                fn help() -> TypedHelp {
-                    #body
-                }
+                const HELP: TypedHelp = #body;
             }
         };
     })

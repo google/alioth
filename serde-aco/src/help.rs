@@ -30,14 +30,11 @@ pub struct FieldHelp {
 pub enum TypedHelp {
     Struct {
         name: &'static str,
-        fields: Vec<FieldHelp>,
+        fields: &'static [FieldHelp],
     },
     Enum {
         name: &'static str,
-        variants: Vec<FieldHelp>,
-    },
-    FlattenedEnum {
-        variants: Vec<FieldHelp>,
+        variants: &'static [FieldHelp],
     },
     String,
     Int,
@@ -47,24 +44,20 @@ pub enum TypedHelp {
     Custom {
         desc: &'static str,
     },
-    Option(Box<TypedHelp>),
+    Option(&'static TypedHelp),
 }
 
 pub trait Help {
-    fn help() -> TypedHelp;
+    const HELP: TypedHelp;
 }
 
 macro_rules! impl_help_for_num_types {
     ($help_type:ident, $($ty:ty),+) => {
         $(impl Help for $ty {
-            fn help() -> TypedHelp {
-                TypedHelp::$help_type
-            }
+            const HELP: TypedHelp = TypedHelp::$help_type;
         })+
         $(impl Help for NonZero<$ty> {
-            fn help() -> TypedHelp {
-                TypedHelp::$help_type
-            }
+            const HELP: TypedHelp = TypedHelp::$help_type;
         })+
     };
 }
@@ -72,9 +65,7 @@ macro_rules! impl_help_for_num_types {
 macro_rules! impl_help_for_types {
     ($help_type:ident, $($ty:ty),+) => {
         $(impl Help for $ty {
-            fn help() -> TypedHelp {
-                TypedHelp::$help_type
-            }
+            const HELP: TypedHelp = TypedHelp::$help_type;
         })+
     };
 }
@@ -88,9 +79,7 @@ impl<T> Help for Option<T>
 where
     T: Help,
 {
-    fn help() -> TypedHelp {
-        TypedHelp::Option(Box::new(T::help()))
-    }
+    const HELP: TypedHelp = TypedHelp::Option(&T::HELP);
 }
 
 #[derive(Debug, Default)]
@@ -110,7 +99,6 @@ fn value_type(v: &TypedHelp) -> &'static str {
         TypedHelp::Struct { name, .. } => name,
         TypedHelp::Enum { name, .. } => name,
         TypedHelp::Option(o) => value_type(o),
-        TypedHelp::FlattenedEnum { .. } => unreachable!(),
     }
 }
 
@@ -125,7 +113,7 @@ fn add_extra_help<'a>(extra: &mut ExtraHelp<'a>, v: &'a TypedHelp) {
     };
     if extra.types.insert(name) {
         extra.helps.push(v);
-        for f in fields {
+        for f in fields.iter() {
             add_extra_help(extra, &f.ty);
         }
     }
@@ -152,12 +140,30 @@ fn next_line(s: &mut String, indent: usize) {
 }
 
 fn one_key_val<'a>(s: &mut String, extra: &mut Option<&mut ExtraHelp<'a>>, f: &'a FieldHelp) {
-    s.push_str(f.ident);
-    s.push_str("=<");
-    s.push_str(value_type(&f.ty));
-    s.push('>');
-    if let Some(extra) = extra {
-        add_extra_help(extra, &f.ty)
+    if f.ident.is_empty() {
+        let fields = match f.ty {
+            TypedHelp::Enum { variants, .. } => variants,
+            _ => unreachable!(),
+        };
+        s.push('(');
+        let mut need_separator = false;
+        for field in fields {
+            if need_separator {
+                s.push('|');
+            } else {
+                need_separator = true;
+            }
+            one_key_val(s, extra, field)
+        }
+        s.push(')');
+    } else {
+        s.push_str(f.ident);
+        s.push_str("=<");
+        s.push_str(value_type(&f.ty));
+        s.push('>');
+        if let Some(extra) = extra {
+            add_extra_help(extra, &f.ty)
+        }
     }
 }
 
@@ -173,72 +179,62 @@ fn key_val_pairs<'a>(
         add_comma = true;
     }
     for f in fields.iter() {
-        let ty = if let TypedHelp::Option(b) = &f.ty {
-            b.as_ref()
-        } else {
-            &f.ty
-        };
         if add_comma {
             s.push(',');
         } else {
             add_comma = true;
         }
-        if let TypedHelp::FlattenedEnum { variants } = ty {
-            s.push('(');
-            let mut need_separator = false;
-            for v in variants.iter() {
-                if need_separator {
-                    s.push('|');
-                } else {
-                    need_separator = true;
-                }
-                one_key_val(s, extra, v);
-            }
-            s.push(')');
+        one_key_val(s, extra, f);
+    }
+}
+
+fn value_helps(s: &mut String, indent: usize, width: usize, fields: &[FieldHelp]) {
+    for f in fields.iter() {
+        if f.ident.is_empty() {
+            let fields = match f.ty {
+                TypedHelp::Enum { variants, .. } => variants,
+                _ => unreachable!(),
+            };
+            value_helps(s, indent, width, fields)
+        } else if f.doc.is_empty() {
+            continue;
         } else {
-            one_key_val(s, extra, f);
+            next_line(s, indent);
+            let mut first_line = true;
+            for line in f.doc.lines() {
+                if first_line {
+                    s.push_str(&format!("- {:width$}\t{}", f.ident, line, width = width));
+                    first_line = false;
+                } else {
+                    next_line(s, indent + width + 2);
+                    s.push('\t');
+                    s.push_str(line);
+                }
+            }
         }
     }
 }
 
-fn value_helps(s: &mut String, indent: usize, width: usize, f: &FieldHelp) {
-    next_line(s, indent);
-    let mut first_line = true;
-    for line in f.doc.lines() {
-        if first_line {
-            s.push_str(&format!("- {:width$}\t{}", f.ident, line, width = width));
-            first_line = false;
-        } else {
-            next_line(s, indent + width + 2);
-            s.push('\t');
-            s.push_str(line);
+fn fields_ident_len_max(fields: &[FieldHelp]) -> Option<usize> {
+    let ident_len = |field: &FieldHelp| {
+        if !field.ident.is_empty() {
+            return Some(field.ident.len());
         }
-    }
+        match field.ty {
+            TypedHelp::Enum { variants, .. } => fields_ident_len_max(variants),
+            TypedHelp::Struct { fields, .. } => fields_ident_len_max(fields),
+            _ => unreachable!(),
+        }
+    };
+
+    fields.iter().flat_map(ident_len).max()
 }
 
 fn field_helps(s: &mut String, indent: usize, fields: &[FieldHelp]) {
-    let field_len = |f: &FieldHelp| {
-        if let TypedHelp::FlattenedEnum { variants } = &f.ty {
-            variants.iter().map(|v| v.ident.len()).max().unwrap_or(0)
-        } else {
-            f.ident.len()
-        }
-    };
-    let Some(width) = fields.iter().map(field_len).max() else {
+    let Some(width) = fields_ident_len_max(fields) else {
         return;
     };
-    for f in fields.iter() {
-        if f.doc.is_empty() {
-            continue;
-        }
-        if let TypedHelp::FlattenedEnum { variants } = &f.ty {
-            for v in variants {
-                value_helps(s, indent, width, v);
-            }
-        } else {
-            value_helps(s, indent, width, f);
-        }
-    }
+    value_helps(s, indent, width, fields)
 }
 
 fn struct_help<'a>(
@@ -322,7 +318,7 @@ fn enum_help<'a>(
 }
 
 pub fn help_text<T: Help>(doc: &str) -> String {
-    let help = T::help();
+    let help = T::HELP;
     let mut s = String::new();
     let mut extra = ExtraHelp::default();
     match &help {
