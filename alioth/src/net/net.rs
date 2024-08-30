@@ -22,9 +22,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 pub struct MacAddr([u8; 6]);
 
 impl Help for MacAddr {
-    fn help() -> TypedHelp {
-        TypedHelp::Custom { desc: "mac-addr" }
-    }
+    const HELP: TypedHelp = TypedHelp::Custom { desc: "mac-addr" };
 }
 
 struct MacAddrVisitor;
