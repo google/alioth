@@ -15,54 +15,58 @@
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{fence, Ordering};
 
-use crate::virtio::queue::{Descriptor, LockedQueue, QueueGuard, VirtQueue};
+use crate::virtio::queue::{Descriptor, VirtQueue};
 use crate::virtio::{IrqSender, Result};
 
-pub fn handle_desc(
+pub fn handle_desc<'m, Q>(
     dev_name: &str,
     q_index: u16,
-    queue: &impl VirtQueue,
+    queue: &mut Q,
     irq_sender: &impl IrqSender,
     mut op: impl FnMut(&mut Descriptor) -> Result<Option<usize>>,
-) -> Result<()> {
-    let guard = queue.lock_ram_layout();
-    let mut q = guard.queue()?;
+) -> Result<()>
+where
+    Q: VirtQueue<'m>,
+{
     'out: loop {
-        if !q.has_next_desc() {
+        if !queue.has_next_desc() {
             break;
         }
-        q.enable_notification(false);
-        while let Some(desc) = q.next_desc() {
+        queue.enable_notification(false);
+        while let Some(desc) = queue.next_desc() {
             let mut desc = desc?;
             match op(&mut desc) {
                 Err(e) => {
                     log::error!("{dev_name}: queue {q_index}: {e}");
-                    q.enable_notification(true);
+                    queue.enable_notification(true);
                     break 'out;
                 }
                 Ok(None) => break 'out,
                 Ok(Some(len)) => {
-                    q.push_used(desc, len);
-                    if q.interrupt_enabled() {
+                    queue.push_used(desc, len);
+                    if queue.interrupt_enabled() {
                         fence(Ordering::SeqCst);
                         irq_sender.queue_irq(q_index)
                     }
                 }
             }
         }
-        q.enable_notification(true);
+        queue.enable_notification(true);
         fence(Ordering::SeqCst);
     }
     Ok(())
 }
 
-pub fn reader_to_queue(
+pub fn reader_to_queue<'m, Q>(
     dev_name: &str,
     mut reader: impl Read,
     q_index: u16,
-    queue: &impl VirtQueue,
+    queue: &mut Q,
     irq_sender: &impl IrqSender,
-) -> Result<()> {
+) -> Result<()>
+where
+    Q: VirtQueue<'m>,
+{
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
         let ret = reader.read_vectored(&mut desc.writable);
         match ret {
@@ -74,13 +78,16 @@ pub fn reader_to_queue(
     })
 }
 
-pub fn queue_to_writer(
+pub fn queue_to_writer<'m, Q>(
     dev_name: &str,
     mut writer: impl Write,
     q_index: u16,
-    queue: &impl VirtQueue,
+    queue: &mut Q,
     irq_sender: &impl IrqSender,
-) -> Result<()> {
+) -> Result<()>
+where
+    Q: VirtQueue<'m>,
+{
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
         let ret = writer.write_vectored(&desc.readable);
         match ret {

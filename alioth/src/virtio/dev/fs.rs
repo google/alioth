@@ -33,7 +33,7 @@ use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::mapped::{ArcMemPages, Ram};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::{Queue, VirtQueue};
@@ -194,13 +194,12 @@ impl Virtio for VuFs {
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &RamBus,
+        memory: &Ram,
         irq_sender: &impl IrqSender,
         queues: &[Queue],
     ) -> Result<()> {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
-        let mem = memory.lock_layout();
         for (index, queue) in queues.iter().enumerate() {
             let irq_fd = irq_sender.queue_irqfd(index as _)?;
             self.vu_dev.set_virtq_call(&(index as u64), irq_fd).unwrap();
@@ -234,9 +233,9 @@ impl Virtio for VuFs {
             let virtq_addr = VirtqAddr {
                 index: index as _,
                 flags: 0,
-                desc_hva: mem.translate(queue.desc.load(Ordering::Acquire) as _)? as _,
-                used_hva: mem.translate(queue.device.load(Ordering::Acquire) as _)? as _,
-                avail_hva: mem.translate(queue.driver.load(Ordering::Acquire) as _)? as _,
+                desc_hva: memory.translate(queue.desc.load(Ordering::Acquire) as _)? as _,
+                used_hva: memory.translate(queue.device.load(Ordering::Acquire) as _)? as _,
+                avail_hva: memory.translate(queue.driver.load(Ordering::Acquire) as _)? as _,
                 log_guest_addr: 0,
             };
             self.vu_dev.set_virtq_addr(&virtq_addr).unwrap();
@@ -262,13 +261,16 @@ impl Virtio for VuFs {
         Ok(())
     }
 
-    fn handle_event(
+    fn handle_event<'m, Q>(
         &mut self,
         event: &Event,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         let q_index = event.token().0;
         if q_index < queues.len() {
             return vu_error::QueueErr {
@@ -350,13 +352,16 @@ impl Virtio for VuFs {
         Ok(())
     }
 
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        _queues: &[impl VirtQueue],
+        _queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         unreachable!(
             "{}: queue {index} notification should go to vhost-user backend",
             self.name

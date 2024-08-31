@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::Ram;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
 use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
@@ -295,7 +295,7 @@ impl Virtio for Net {
         &mut self,
         registry: &Registry,
         feature: u64,
-        _memory: &RamBus,
+        _memory: &Ram,
         _irq_sender: &impl IrqSender,
         _queues: &[Queue],
     ) -> Result<()> {
@@ -310,17 +310,20 @@ impl Virtio for Net {
         Ok(())
     }
 
-    fn handle_event(
+    fn handle_event<'m, Q>(
         &mut self,
         event: &Event,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         let token = event.token().0;
         if event.is_readable() {
             let rx_queue_index = token << 1;
-            let Some(queue) = queues.get(rx_queue_index) else {
+            let Some(Some(queue)) = queues.get_mut(rx_queue_index) else {
                 log::error!("{}: cannot find rx queue {rx_queue_index}", self.name);
                 return Ok(());
             };
@@ -332,7 +335,7 @@ impl Virtio for Net {
         }
         if event.is_writable() {
             let tx_queue_index = (token << 1) + 1;
-            let Some(queue) = queues.get(tx_queue_index) else {
+            let Some(Some(queue)) = queues.get_mut(tx_queue_index) else {
                 log::error!("{}: cannot find tx queue {tx_queue_index}", self.name);
                 return Ok(());
             };
@@ -345,14 +348,17 @@ impl Virtio for Net {
         Ok(())
     }
 
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         registry: &Registry,
-    ) -> Result<()> {
-        let Some(queue) = queues.get(index as usize) else {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
+        let Some(Some(queue)) = queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };

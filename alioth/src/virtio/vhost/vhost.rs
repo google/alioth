@@ -23,7 +23,7 @@ use std::sync::Arc;
 use snafu::{ResultExt, Snafu};
 
 use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::Ram;
 use crate::mem::{self, LayoutUpdated};
 
 use bindings::{
@@ -144,14 +144,13 @@ pub struct UpdateVsockMem {
 }
 
 impl LayoutUpdated for UpdateVsockMem {
-    fn ram_updated(&self, ram: &RamBus) -> mem::Result<()> {
+    fn ram_updated(&self, ram: &Ram) -> mem::Result<()> {
         let mut table = MemoryMultipleRegion {
             num: 0,
             _padding: 0,
             regions: [MemoryRegion::default(); 64],
         };
-        let mem = ram.lock_layout();
-        for (index, (gpa, user_mem)) in mem.iter().enumerate() {
+        for (index, (gpa, user_mem)) in ram.iter().enumerate() {
             table.num += 1;
             table.regions[index].gpa = gpa;
             table.regions[index].hva = user_mem.addr() as u64;

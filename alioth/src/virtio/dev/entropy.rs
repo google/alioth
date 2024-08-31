@@ -25,7 +25,7 @@ use snafu::ResultExt;
 
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::Ram;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
@@ -82,27 +82,33 @@ impl Virtio for Entropy {
         1
     }
 
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
-        let Some(queue) = queues.get(index as usize) else {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
+        let Some(Some(queue)) = queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
         reader_to_queue(&self.name, &mut self.source, index, queue, irq_sender)
     }
 
-    fn handle_event(
+    fn handle_event<'m, Q>(
         &mut self,
         _event: &Event,
-        _queues: &[impl VirtQueue],
+        _queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         Ok(())
     }
 
@@ -124,7 +130,7 @@ impl Virtio for Entropy {
         &mut self,
         _registry: &Registry,
         _feature: u64,
-        _memory: &RamBus,
+        _memory: &Ram,
         _irq_sender: &impl IrqSender,
         _queues: &[Queue],
     ) -> Result<()> {

@@ -38,21 +38,11 @@ pub struct Descriptor<'m> {
     pub writable: Vec<IoSliceMut<'m>>,
 }
 
-pub trait LockedQueue<'g> {
-    fn next_desc(&self) -> Option<Result<Descriptor<'g>>>;
+pub trait VirtQueue<'m> {
+    fn size(&self) -> u16;
+    fn next_desc(&self) -> Option<Result<Descriptor<'m>>>;
     fn has_next_desc(&self) -> bool;
     fn push_used(&mut self, desc: Descriptor, len: usize) -> u16;
     fn enable_notification(&self, enabled: bool);
     fn interrupt_enabled(&self) -> bool;
-}
-
-pub trait QueueGuard {
-    fn queue(&self) -> Result<impl LockedQueue>;
-}
-
-pub trait VirtQueue {
-    fn size(&self) -> u16;
-    fn lock_ram_layout(&self) -> impl QueueGuard;
-    fn enable_notification(&self, val: bool) -> Result<()>;
-    fn interrupt_enabled(&self) -> Result<bool>;
 }
