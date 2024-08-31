@@ -30,7 +30,7 @@ pub mod mapped;
 
 use addressable::{Addressable, SlotBackend};
 use emulated::{Action, MmioBus, MmioRange};
-use mapped::{ArcMemPages, RamBus};
+use mapped::{ArcMemPages, Ram, RamBus};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -246,7 +246,7 @@ pub trait LayoutChanged: Debug + Send + Sync + 'static {
 }
 
 pub trait LayoutUpdated: Debug + Send + Sync + 'static {
-    fn ram_updated(&self, ram: &RamBus) -> Result<()>;
+    fn ram_updated(&self, ram: &Ram) -> Result<()>;
 }
 
 #[derive(Debug, Default)]
@@ -299,7 +299,8 @@ impl Memory {
 
     pub fn register_update_callback(&self, callback: Box<dyn LayoutUpdated>) -> Result<()> {
         let _regions = self.regions.lock();
-        callback.ram_updated(&self.ram_bus)?;
+        let ram = self.ram_bus.lock_layout();
+        callback.ram_updated(&ram)?;
         let mut callbacks = self.callbacks.lock();
         callbacks.updated.push(callback);
         Ok(())
@@ -357,8 +358,9 @@ impl Memory {
             offset += range.size();
         }
         if ram_updated {
+            let ram = self.ram_bus.lock_layout();
             for update_callback in &callbacks.updated {
-                update_callback.ram_updated(&self.ram_bus)?;
+                update_callback.ram_updated(&ram)?;
             }
         }
         let region_callbacks = region.callbacks.lock();
@@ -392,8 +394,9 @@ impl Memory {
             offset += range.size();
         }
         if ram_updated {
+            let ram = self.ram_bus.lock_layout();
             for callback in &callbacks.updated {
-                callback.ram_updated(&self.ram_bus)?;
+                callback.ram_updated(&ram)?;
             }
         }
         let region_callbacks = region.callbacks.lock();

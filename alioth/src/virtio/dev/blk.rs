@@ -25,7 +25,7 @@ use serde_aco::Help;
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::Ram;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
@@ -305,31 +305,37 @@ impl Virtio for Block {
         &mut self,
         _registry: &Registry,
         _feature: u64,
-        _memory: &RamBus,
+        _memory: &Ram,
         _irq_sender: &impl IrqSender,
         _queues: &[Queue],
     ) -> Result<()> {
         Ok(())
     }
 
-    fn handle_event(
+    fn handle_event<'m, Q>(
         &mut self,
         _event: &Event,
-        _queues: &[impl VirtQueue],
+        _queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         Ok(())
     }
 
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
-        let Some(queue) = queues.get(index as usize) else {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
+        let Some(Some(queue)) = queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };

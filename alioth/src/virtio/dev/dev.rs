@@ -28,7 +28,7 @@ use snafu::ResultExt;
 
 use crate::hv::{IoeventFd, IoeventFdRegistry};
 use crate::mem::emulated::Mmio;
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
@@ -58,24 +58,28 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &RamBus,
+        memory: &Ram,
         irq_sender: &impl IrqSender,
         queues: &[Queue],
     ) -> Result<()>;
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         registry: &Registry,
-    ) -> Result<()>;
-    fn handle_event(
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>;
+    fn handle_event<'m, Q>(
         &mut self,
         event: &Event,
-        queues: &[impl VirtQueue],
+        queues: &mut [Option<Q>],
         irq_sender: &impl IrqSender,
         registry: &Registry,
-    ) -> Result<()>;
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
     }
@@ -126,8 +130,8 @@ where
 }
 
 #[derive(Debug)]
-enum Queues {
-    Split(Vec<SplitQueue>),
+enum Queues<'m> {
+    Split(Vec<Option<SplitQueue<'m>>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -148,7 +152,6 @@ where
     memory: Arc<RamBus>,
     event_rx: Receiver<WakeEvent<S>>,
     queue_regs: Arc<Vec<Queue>>,
-    queues: Queues,
     state: WorkerState,
 }
 
@@ -244,7 +247,6 @@ where
             event_rx,
             memory,
             queue_regs: queue_regs.clone(),
-            queues: Queues::Split(Vec::new()),
             state: WorkerState::Pending,
         };
         let handle = std::thread::Builder::new()
@@ -296,17 +298,17 @@ where
     D: Virtio,
     S: IrqSender,
 {
-    fn notify_queue(&mut self, q_index: u16, irq_sender: &S) -> Result<()> {
+    fn notify_queue(&mut self, queues: &mut Queues, q_index: u16, irq_sender: &S) -> Result<()> {
         let registry = self.poll.registry();
-        match &self.queues {
+        match queues {
             Queues::Split(qs) => self.dev.handle_queue(q_index, qs, irq_sender, registry),
         }
     }
 
-    fn handle_wake_events(&mut self, irq_sender: &S) -> Result<()> {
+    fn handle_wake_events(&mut self, queues: &mut Queues, irq_sender: &S) -> Result<()> {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                WakeEvent::Notify { q_index } => self.notify_queue(q_index, irq_sender)?,
+                WakeEvent::Notify { q_index } => self.notify_queue(queues, q_index, irq_sender)?,
                 WakeEvent::Shutdown => {
                     self.state = WorkerState::Shutdown;
                     break;
@@ -348,17 +350,17 @@ where
         None
     }
 
-    fn handle_event(&mut self, event: &Event, irq_sender: &S) -> Result<()> {
+    fn handle_event(&mut self, queues: &mut Queues, event: &Event, irq_sender: &S) -> Result<()> {
         let token = VirtioToken(event.token().0 as u64);
         if token.is_queue() {
             if token.data() == TOKEN_WORKER_EVENT {
-                self.handle_wake_events(irq_sender)
+                self.handle_wake_events(queues, irq_sender)
             } else {
-                self.notify_queue(token.data() as u16, irq_sender)
+                self.notify_queue(queues, token.data() as u16, irq_sender)
             }
         } else {
             let registry = self.poll.registry();
-            match &self.queues {
+            match queues {
                 Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, registry),
             }
         }
@@ -368,21 +370,22 @@ where
         let Some((feature, irq_sender)) = self.wait_start() else {
             return Ok(());
         };
-        let memory = &self.memory;
+        let memory = self.memory.clone();
+        let ram = memory.lock_layout();
         self.dev.activate(
             self.poll.registry(),
             feature & !VirtioFeature::ACCESS_PLATFORM.bits(),
-            memory,
+            &ram,
             irq_sender.as_ref(),
             &self.queue_regs,
         )?;
-        self.queues =
+        let mut queues =
             if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
                 todo!()
             } else {
-                let new_queue = |reg| SplitQueue::new(reg, memory.clone(), feature);
-                let split_queues = self.queue_regs.iter().map(new_queue).collect();
-                Queues::Split(split_queues)
+                let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
+                let split_queues: Result<_> = self.queue_regs.iter().map(new_queue).collect();
+                Queues::Split(split_queues?)
             };
         log::debug!(
             "{}: activated with {:x?} {:x?}",
@@ -396,7 +399,7 @@ where
                 .poll(&mut events, None)
                 .context(error::PollEvents)?;
             for event in events.iter() {
-                self.handle_event(event, &irq_sender)?;
+                self.handle_event(&mut queues, event, &irq_sender)?;
                 if self.state != WorkerState::Running {
                     break 'out;
                 }

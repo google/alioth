@@ -19,13 +19,14 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
+use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use serde_aco::Help;
 
 use crate::ffi;
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::Ram;
 use crate::mem::LayoutUpdated;
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio};
@@ -116,12 +117,11 @@ impl Virtio for VhostVsock {
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &RamBus,
+        memory: &Ram,
         irq_sender: &impl crate::virtio::IrqSender,
         queues: &[crate::virtio::queue::Queue],
     ) -> Result<()> {
         self.vhost_dev.set_features(&feature)?;
-        let mem = memory.lock_layout();
         for (index, (queue, error_fd)) in
             zip(queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
         {
@@ -151,9 +151,9 @@ impl Virtio for VhostVsock {
             let virtq_addr = VirtqAddr {
                 index,
                 flags: 0,
-                desc_hva: mem.translate(queue.desc.load(Ordering::Acquire))? as _,
-                used_hva: mem.translate(queue.device.load(Ordering::Acquire))? as _,
-                avail_hva: mem.translate(queue.driver.load(Ordering::Acquire))? as _,
+                desc_hva: memory.translate(queue.desc.load(Ordering::Acquire))? as _,
+                used_hva: memory.translate(queue.device.load(Ordering::Acquire))? as _,
+                avail_hva: memory.translate(queue.driver.load(Ordering::Acquire))? as _,
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
@@ -181,13 +181,16 @@ impl Virtio for VhostVsock {
         }
     }
 
-    fn handle_event(
+    fn handle_event<'m, Q>(
         &mut self,
-        event: &mio::event::Event,
-        _queues: &[impl VirtQueue],
+        event: &Event,
+        _queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         let q_index = event.token();
         error::VhostQueueErr {
             dev: "vsock",
@@ -197,13 +200,16 @@ impl Virtio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue(
+    fn handle_queue<'m, Q>(
         &mut self,
         index: u16,
-        _queues: &[impl VirtQueue],
+        _queues: &mut [Option<Q>],
         _irq_sender: &impl IrqSender,
         _registry: &Registry,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
         match index {
             0 | 1 => unreachable!("{}: queue 0 and 1 are offloaded to kernel", self.name),
             2 => log::info!("{}: event queue buffer available", self.name),
