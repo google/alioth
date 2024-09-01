@@ -262,6 +262,8 @@ impl Net {
 }
 
 impl Virtio for Net {
+    const DEVICE_ID: DeviceId = DeviceId::Net;
+
     type Config = NetConfig;
     type Feature = NetFeature;
 
@@ -281,10 +283,6 @@ impl Virtio for Net {
     fn reset(&mut self, registry: &Registry) {
         self.tap_sockets.truncate(1);
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
-    }
-
-    fn device_id() -> DeviceId {
-        DeviceId::Net
     }
 
     fn feature(&self) -> u64 {

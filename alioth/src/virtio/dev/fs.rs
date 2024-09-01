@@ -177,15 +177,14 @@ impl DevParam for VuFsParam {
 }
 
 impl Virtio for VuFs {
+    const DEVICE_ID: DeviceId = DeviceId::FileSystem;
     type Config = FsConfig;
     type Feature = FsFeature;
 
     fn config(&self) -> Arc<Self::Config> {
         self.config.clone()
     }
-    fn device_id() -> DeviceId {
-        DeviceId::FileSystem
-    }
+
     fn feature(&self) -> u64 {
         self.feature
     }

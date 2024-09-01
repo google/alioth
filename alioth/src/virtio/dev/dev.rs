@@ -46,12 +46,12 @@ pub mod net;
 pub mod vsock;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
+    const DEVICE_ID: DeviceId;
     type Config: Mmio;
     type Feature: Flags<Bits = u64> + Debug;
 
     fn num_queues(&self) -> u16;
     fn reset(&mut self, registry: &Registry);
-    fn device_id() -> DeviceId;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u64;
     fn activate(
