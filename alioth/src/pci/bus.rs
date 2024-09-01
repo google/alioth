@@ -97,10 +97,7 @@ pub struct PciBus {
 impl PciBus {
     pub fn new() -> Self {
         let devices = if cfg!(target_arch = "x86_64") {
-            let bridge = PciDevice::new(
-                Arc::new("host_bridge".to_owned()),
-                Arc::new(HostBridge::new()),
-            );
+            let bridge = PciDevice::new("host_bridge", Arc::new(HostBridge::new()));
             HashMap::from([(Bdf(0), bridge)])
         } else {
             HashMap::new()
@@ -122,7 +119,7 @@ impl PciBus {
         }
     }
 
-    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<String>) -> Option<Bdf> {
+    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<str>) -> Option<Bdf> {
         self.segment.reserve(bdf, name)
     }
 

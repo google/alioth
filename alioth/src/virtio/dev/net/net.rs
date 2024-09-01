@@ -135,7 +135,7 @@ bitflags! {
 
 #[derive(Debug)]
 pub struct Net {
-    name: Arc<String>,
+    name: Arc<str>,
     config: Arc<NetConfig>,
     tap_sockets: Vec<File>,
     feature: NetFeature,
@@ -168,7 +168,7 @@ pub struct NetParam {
 impl DevParam for NetParam {
     type Device = Net;
 
-    fn build(self, name: Arc<String>) -> Result<Net> {
+    fn build(self, name: impl Into<Arc<str>>) -> Result<Net> {
         Net::new(self, name)
     }
 }
@@ -184,7 +184,7 @@ fn new_socket(dev_tap: Option<&Path>) -> Result<File> {
 }
 
 impl Net {
-    pub fn new(param: NetParam, name: Arc<String>) -> Result<Self> {
+    pub fn new(param: NetParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let mut socket = new_socket(param.tap.as_deref())?;
         let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
         setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
@@ -202,7 +202,7 @@ impl Net {
             dev_feat |= NetFeature::MQ;
         }
         let net = Net {
-            name,
+            name: name.into(),
             config: Arc::new(NetConfig {
                 mac: param.mac,
                 max_queue_pairs,

@@ -146,7 +146,7 @@ struct DeviceWorker<D, S>
 where
     S: IrqSender,
 {
-    name: Arc<String>,
+    name: Arc<str>,
     dev: D,
     poll: Poll,
     memory: Arc<RamBus>,
@@ -162,7 +162,7 @@ where
     S: IrqSender,
     E: IoeventFd,
 {
-    pub name: Arc<String>,
+    pub name: Arc<str>,
     pub device_config: Arc<D::Config>,
     pub reg: Arc<Register>,
     pub queue_regs: Arc<Vec<Queue>>,
@@ -192,7 +192,7 @@ where
     }
 
     pub fn new<R>(
-        name: Arc<String>,
+        name: impl Into<Arc<str>>,
         dev: D,
         memory: Arc<RamBus>,
         registry: &R,
@@ -201,6 +201,7 @@ where
     where
         R: IoeventFdRegistry<IoeventFd = E>,
     {
+        let name = name.into();
         let poll = Poll::new().context(error::CreatePoll)?;
         let device_config = dev.config();
         let mut dev_feat = dev.feature();
@@ -250,7 +251,7 @@ where
             state: WorkerState::Pending,
         };
         let handle = std::thread::Builder::new()
-            .name(name.as_ref().to_owned())
+            .name(name.to_string())
             .spawn(move || {
                 let r = device_worker.do_work();
                 if let Err(e) = r {
@@ -419,7 +420,7 @@ where
 
 pub trait DevParam {
     type Device;
-    fn build(self, name: Arc<String>) -> Result<Self::Device>;
+    fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device>;
     fn needs_mem_shared_fd(&self) -> bool {
         false
     }

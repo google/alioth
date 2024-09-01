@@ -71,7 +71,7 @@ pub trait UartRecv: Send + 'static {
 }
 
 struct ConsoleWorker<U: UartRecv> {
-    name: Arc<String>,
+    name: Arc<str>,
     uart: U,
     poll: Poll,
 }
@@ -139,7 +139,7 @@ impl<U: UartRecv> ConsoleWorker<U> {
 
 #[derive(Debug)]
 pub struct Console {
-    pub name: Arc<String>,
+    pub name: Arc<str>,
     worker_thread: Option<JoinHandle<()>>,
     exit_waker: Waker,
 }
@@ -148,7 +148,8 @@ const TOKEN_SHUTDOWN: Token = Token(1);
 const TOKEN_STDIN: Token = Token(0);
 
 impl Console {
-    pub fn new(name: Arc<String>, uart: impl UartRecv) -> Result<Self> {
+    pub fn new(name: impl Into<Arc<str>>, uart: impl UartRecv) -> Result<Self> {
+        let name = name.into();
         let poll = Poll::new()?;
         let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
         let mut worker = ConsoleWorker {

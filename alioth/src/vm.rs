@@ -202,7 +202,7 @@ where
 
     pub fn add_pvpanic(&mut self) -> Result<(), Error> {
         let dev = PvPanic::new();
-        let pci_dev = PciDevice::new("pvpanic".to_owned().into(), Arc::new(dev));
+        let pci_dev = PciDevice::new("pvpanic", Arc::new(dev));
         self.add_pci_dev(None, pci_dev)
     }
 
@@ -226,7 +226,7 @@ where
 
     pub fn add_virtio_dev<D, P>(
         &mut self,
-        name: String,
+        name: impl Into<Arc<str>>,
         param: P,
     ) -> Result<Arc<VirtioPciDev<D, H>>, Error>
     where
@@ -236,7 +236,7 @@ where
         if param.needs_mem_shared_fd() && !self.board.config.mem.has_shared_fd() {
             return error::MemNotSharedFd.fail();
         }
-        let name = Arc::new(name);
+        let name = name.into();
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let dev = param.build(name.clone())?;
         if let Some(callback) = dev.mem_update_callback() {
@@ -301,8 +301,12 @@ where
 
 #[cfg(target_os = "linux")]
 impl Machine<Kvm> {
-    pub fn add_vfio_dev(&mut self, name: String, param: VfioParam) -> Result<(), Error> {
-        let name = Arc::new(name);
+    pub fn add_vfio_dev(
+        &mut self,
+        name: impl Into<Arc<str>>,
+        param: VfioParam,
+    ) -> Result<(), Error> {
+        let name = name.into();
         let iommu = if let Some(iommu) = &self.iommu {
             iommu.clone()
         } else {

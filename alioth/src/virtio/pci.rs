@@ -184,7 +184,7 @@ pub struct VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
 {
-    name: Arc<String>,
+    name: Arc<str>,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
     irq_sender: Arc<PciIrqSender<M>>,
