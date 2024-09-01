@@ -59,7 +59,7 @@ impl PciSegment {
         }
     }
 
-    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<String>) -> Option<Bdf> {
+    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<str>) -> Option<Bdf> {
         let mut empty_dev = PciDevice {
             name: name.clone(),
             dev: Arc::new(EmptyDevice),

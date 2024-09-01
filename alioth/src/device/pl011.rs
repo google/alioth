@@ -143,7 +143,7 @@ struct Pl011Reg {
 ///  https://developer.arm.com/documentation/ddi0183/g
 #[derive(Debug)]
 pub struct Pl011<I> {
-    name: Arc<String>,
+    name: Arc<str>,
     irq_line: Arc<I>,
     reg: Arc<Mutex<Pl011Reg>>,
     console: Console,
@@ -156,7 +156,7 @@ where
     pub fn new(base_addr: u64, irq_line: I) -> io::Result<Self> {
         let irq_line = Arc::new(irq_line);
         let reg = Arc::new(Mutex::new(Pl011Reg::default()));
-        let name = Arc::new(format!("pl011@{base_addr:#x}"));
+        let name: Arc<str> = Arc::from(format!("pl011@{base_addr:#x}"));
         let pl011_recv = Pl011Recv {
             irq_line: irq_line.clone(),
             reg: reg.clone(),

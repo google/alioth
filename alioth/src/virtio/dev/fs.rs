@@ -74,7 +74,7 @@ const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 
 #[derive(Debug)]
 pub struct VuFs {
-    name: Arc<String>,
+    name: Arc<str>,
     vu_dev: Arc<VuDev>,
     config: Arc<FsConfig>,
     feature: u64,
@@ -84,7 +84,8 @@ pub struct VuFs {
 }
 
 impl VuFs {
-    pub fn new(param: VuFsParam, name: Arc<String>) -> Result<Self> {
+    pub fn new(param: VuFsParam, name: impl Into<Arc<str>>) -> Result<Self> {
+        let name = name.into();
         let mut vu_dev = VuDev::new(param.socket)?;
         let dev_feat = vu_dev.get_features()?;
         let virtio_feat = VirtioFeature::from_bits_retain(dev_feat);
@@ -167,7 +168,7 @@ pub struct VuFsParam {
 impl DevParam for VuFsParam {
     type Device = VuFs;
 
-    fn build(self, name: Arc<String>) -> Result<Self::Device> {
+    fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
         VuFs::new(self, name)
     }
 

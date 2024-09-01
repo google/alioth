@@ -183,7 +183,7 @@ struct SerialReg {
 
 #[derive(Debug)]
 pub struct Serial<I> {
-    name: Arc<String>,
+    name: Arc<str>,
     irq_sender: Arc<I>,
     reg: Arc<Mutex<SerialReg>>,
     console: Console,
@@ -283,7 +283,7 @@ where
 }
 
 struct SerialRecv<I: IrqSender> {
-    pub name: Arc<String>,
+    pub name: Arc<str>,
     pub irq_sender: Arc<I>,
     pub reg: Arc<Mutex<SerialReg>>,
 }
@@ -312,7 +312,7 @@ where
     pub fn new(base_port: u16, irq_sender: I) -> io::Result<Self> {
         let irq_sender = Arc::new(irq_sender);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
-        let name = Arc::new(format!("serial_{:#x}", base_port));
+        let name: Arc<str> = Arc::from(format!("serial_{:#x}", base_port));
         let uart_recv = SerialRecv {
             irq_sender: irq_sender.clone(),
             name: name.clone(),

@@ -210,7 +210,7 @@ impl SlotBackend for MaskedCap {
 
 #[derive(Debug)]
 struct VfioCdev {
-    name: Arc<String>,
+    name: Arc<str>,
     dev: Cdev,
 }
 
@@ -397,14 +397,17 @@ where
     M: MsiSender,
 {
     pub fn new(
-        name: Arc<String>,
+        name: impl Into<Arc<str>>,
         param: &VfioParam,
         ioas: Arc<Ioas>,
         msi_sender: M,
     ) -> Result<VfioPciDev<M>> {
         let mut dev = Cdev::new(&param.cdev)?;
         dev.attach_iommu_ioas(ioas)?;
-        let cdev = Arc::new(VfioCdev { dev, name });
+        let cdev = Arc::new(VfioCdev {
+            dev,
+            name: name.into(),
+        });
 
         let region_config = cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?;
 

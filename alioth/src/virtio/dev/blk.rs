@@ -136,21 +136,21 @@ pub struct BlockParam {
 impl DevParam for BlockParam {
     type Device = Block;
 
-    fn build(self, name: Arc<String>) -> Result<Block> {
+    fn build(self, name: impl Into<Arc<str>>) -> Result<Block> {
         Block::new(self, name)
     }
 }
 
 #[derive(Debug)]
 pub struct Block {
-    name: Arc<String>,
+    name: Arc<str>,
     config: Arc<BlockConfig>,
     disk: File,
     feature: BlockFeature,
 }
 
 impl Block {
-    pub fn new(param: BlockParam, name: Arc<String>) -> Result<Self> {
+    pub fn new(param: BlockParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let access_disk = error::AccessFile {
             path: param.path.as_path(),
         };
@@ -171,7 +171,7 @@ impl Block {
             feature |= BlockFeature::RO;
         }
         Ok(Block {
-            name,
+            name: name.into(),
             disk,
             config,
             feature,

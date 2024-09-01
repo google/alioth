@@ -92,12 +92,12 @@ impl MemRegionCallback for BarCallback {
 
 #[derive(Debug)]
 pub struct PciDevice {
-    pub name: Arc<String>,
+    pub name: Arc<str>,
     pub dev: Arc<dyn Pci>,
 }
 
 impl PciDevice {
-    pub fn new(name: Arc<String>, dev: Arc<dyn Pci>) -> PciDevice {
+    pub fn new(name: impl Into<Arc<str>>, dev: Arc<dyn Pci>) -> PciDevice {
         let config = dev.config();
         let dev_bars = &config.get_header().bars;
         for (index, dev_bar) in dev_bars.iter().enumerate() {
@@ -114,6 +114,9 @@ impl PciDevice {
                 })),
             }
         }
-        PciDevice { name, dev }
+        PciDevice {
+            name: name.into(),
+            dev,
+        }
     }
 }

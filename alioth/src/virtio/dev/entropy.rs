@@ -55,19 +55,19 @@ bitflags! {
 
 #[derive(Debug)]
 pub struct Entropy {
-    name: Arc<String>,
+    name: Arc<str>,
     source: File,
     config: Arc<EntropyConfig>,
 }
 
 impl Entropy {
-    pub fn new(name: Arc<String>) -> Result<Self> {
+    pub fn new(name: impl Into<Arc<str>>) -> Result<Self> {
         let mut options = OpenOptions::new();
         options.custom_flags(O_NONBLOCK).read(true);
         let path = "/dev/urandom";
         let file = options.open(path).context(error::AccessFile { path })?;
         Ok(Entropy {
-            name,
+            name: name.into(),
             source: file,
             config: Arc::new(EntropyConfig),
         })
@@ -140,7 +140,7 @@ pub struct EntropyParam;
 
 impl DevParam for EntropyParam {
     type Device = Entropy;
-    fn build(self, name: Arc<String>) -> Result<Self::Device> {
+    fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
         Entropy::new(name)
     }
 }

@@ -354,7 +354,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     };
 
     if args.entropy {
-        vm.add_virtio_dev("virtio-entropy".to_owned(), EntropyParam)
+        vm.add_virtio_dev("virtio-entropy", EntropyParam)
             .context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]
@@ -396,7 +396,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
             serde_aco::from_args(&vsock, &objects).context(error::ParseArg { arg: vsock })?;
         match param {
             VsockParam::Vhost(p) => vm
-                .add_virtio_dev("vhost-vsock".to_owned(), p)
+                .add_virtio_dev("vhost-vsock", p)
                 .context(error::CreateDevice)?,
         };
     }
