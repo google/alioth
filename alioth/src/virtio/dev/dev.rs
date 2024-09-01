@@ -151,7 +151,7 @@ where
     poll: Poll,
     memory: Arc<RamBus>,
     event_rx: Receiver<WakeEvent<S>>,
-    queue_regs: Arc<Vec<Queue>>,
+    queue_regs: Arc<[Queue]>,
     state: WorkerState,
 }
 
@@ -165,8 +165,8 @@ where
     pub name: Arc<str>,
     pub device_config: Arc<D::Config>,
     pub reg: Arc<Register>,
-    pub queue_regs: Arc<Vec<Queue>>,
-    pub ioeventfds: Arc<Vec<E>>,
+    pub queue_regs: Arc<[Queue]>,
+    pub ioeventfds: Arc<[E]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
     pub event_tx: Sender<WakeEvent<S>>,
@@ -219,12 +219,10 @@ where
             size: AtomicU16::new(QUEUE_SIZE_MAX),
             ..Default::default()
         });
-        let queue_regs = Arc::new(queue_regs.collect::<Vec<_>>());
-        let ioeventfds = Arc::new(
-            (0..num_queues)
-                .map(|_| registry.create())
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let queue_regs = queue_regs.collect::<Arc<_>>();
+        let ioeventfds = (0..num_queues)
+            .map(|_| registry.create())
+            .collect::<Result<Arc<_>, _>>()?;
         for (index, fd) in ioeventfds.iter().enumerate() {
             if !dev.offload_ioeventfd(index as u16, fd)? {
                 poll.registry()

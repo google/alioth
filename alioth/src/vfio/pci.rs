@@ -116,7 +116,7 @@ where
             table: msix_table.clone(),
             table_range: table_range.clone(),
             msi_sender: msi_sender.clone(),
-            pba: Arc::new(vec![]),
+            pba: Arc::new([]),
             pba_range: pba_range.clone(),
             cdev: cdev.clone(),
             cdev_offset: region_info.offset,
@@ -137,7 +137,7 @@ where
             table: msix_table,
             table_range,
             msi_sender,
-            pba: Arc::new(vec![]),
+            pba: Arc::new([]),
             pba_range,
             cdev: cdev.clone(),
             cdev_offset: region_info.offset,
@@ -559,7 +559,7 @@ where
     msi_sender: Arc<M>,
     table_range: Range<usize>,
     #[allow(dead_code)]
-    pba: Arc<Vec<AtomicU64>>, // TODO
+    pba: Arc<[AtomicU64]>, // TODO
     pba_range: Range<usize>,
     cdev: Arc<VfioCdev>,
     cdev_offset: u64,

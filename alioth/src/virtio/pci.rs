@@ -186,7 +186,7 @@ where
 {
     name: Arc<str>,
     reg: Arc<Register>,
-    queues: Arc<Vec<Queue>>,
+    queues: Arc<[Queue]>,
     irq_sender: Arc<PciIrqSender<M>>,
     event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
     waker: Arc<Waker>,
@@ -526,7 +526,7 @@ where
     R: IoeventFdRegistry,
 {
     registry: R,
-    ioeventfds: Arc<Vec<R::IoeventFd>>,
+    ioeventfds: Arc<[R::IoeventFd]>,
 }
 
 impl<R> MemRegionCallback for IoeventFdCallback<R>
