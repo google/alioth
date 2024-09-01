@@ -280,14 +280,12 @@ impl Block {
 }
 
 impl Virtio for Block {
+    const DEVICE_ID: DeviceId = DeviceId::Block;
+
     type Config = BlockConfig;
     type Feature = BlockFeature;
 
     fn reset(&mut self, _registry: &Registry) {}
-
-    fn device_id() -> DeviceId {
-        DeviceId::Block
-    }
 
     fn num_queues(&self) -> u16 {
         self.config.num_queues

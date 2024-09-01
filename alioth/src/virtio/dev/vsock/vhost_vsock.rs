@@ -94,12 +94,10 @@ impl VhostVsock {
 }
 
 impl Virtio for VhostVsock {
+    const DEVICE_ID: DeviceId = DeviceId::Socket;
+
     type Config = VsockConfig;
     type Feature = VsockFeature;
-
-    fn device_id() -> DeviceId {
-        DeviceId::Socket
-    }
 
     fn num_queues(&self) -> u16 {
         3

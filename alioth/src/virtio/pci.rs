@@ -655,18 +655,18 @@ where
     where
         R: IoeventFdRegistry<IoeventFd = E>,
     {
-        let (class, subclass) = get_class(D::device_id());
+        let (class, subclass) = get_class(D::DEVICE_ID);
         let mut header = DeviceHeader {
             common: CommonHeader {
                 vendor: VIRTIO_VENDOR_ID,
-                device: VIRTIO_DEVICE_ID_BASE + D::device_id() as u16,
+                device: VIRTIO_DEVICE_ID_BASE + D::DEVICE_ID as u16,
                 revision: 0x1,
                 header_type: HeaderType::Device as u8,
                 class,
                 subclass,
                 ..Default::default()
             },
-            subsystem: VIRTIO_DEVICE_ID_BASE + D::device_id() as u16,
+            subsystem: VIRTIO_DEVICE_ID_BASE + D::DEVICE_ID as u16,
             ..Default::default()
         };
         let device_config = dev.device_config.clone();

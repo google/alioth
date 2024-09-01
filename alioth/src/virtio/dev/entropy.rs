@@ -75,6 +75,8 @@ impl Entropy {
 }
 
 impl Virtio for Entropy {
+    const DEVICE_ID: DeviceId = DeviceId::Entropy;
+
     type Config = EntropyConfig;
     type Feature = EntropyFeature;
 
@@ -113,10 +115,6 @@ impl Virtio for Entropy {
     }
 
     fn reset(&mut self, _registry: &Registry) {}
-
-    fn device_id() -> DeviceId {
-        DeviceId::Entropy
-    }
 
     fn config(&self) -> Arc<EntropyConfig> {
         self.config.clone()
