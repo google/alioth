@@ -255,6 +255,22 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
         self.used_index != self.avail_index()
     }
 
+    fn avail_index(&self) -> u16 {
+        self.avail_index()
+    }
+
+    fn get_descriptor(&self, index: u16) -> Result<Descriptor<'m>> {
+        let desc_id = self.read_avail(index);
+        let (readable, writable) = self.get_desc_iov(desc_id)?;
+        let readable = self.ram.translate_iov(&readable)?;
+        let writable = self.ram.translate_iov_mut(&writable)?;
+        Ok(Descriptor {
+            id: desc_id,
+            readable,
+            writable,
+        })
+    }
+
     fn push_used(&mut self, desc: Descriptor, len: usize) -> u16 {
         let used_index = self.used_index;
         let used_elem = UsedElem {
