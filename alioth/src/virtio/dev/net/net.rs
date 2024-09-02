@@ -267,6 +267,10 @@ impl Virtio for Net {
     type Config = NetConfig;
     type Feature = NetFeature;
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn num_queues(&self) -> u16 {
         let data_queues = self.config.max_queue_pairs << 1;
         if self.feature.contains(NetFeature::CTRL_VQ) {

@@ -100,6 +100,10 @@ impl Virtio for VhostVsock {
     type Config = VsockConfig;
     type Feature = VsockFeature;
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn num_queues(&self) -> u16 {
         3
     }

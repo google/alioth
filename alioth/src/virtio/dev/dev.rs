@@ -50,6 +50,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
     type Feature: Flags<Bits = u64> + Debug;
 
+    fn name(&self) -> &str;
     fn num_queues(&self) -> u16;
     fn reset(&mut self, registry: &Registry);
     fn config(&self) -> Arc<Self::Config>;
@@ -146,7 +147,6 @@ struct DeviceWorker<D, S>
 where
     S: IrqSender,
 {
-    name: Arc<str>,
     dev: D,
     poll: Poll,
     memory: Arc<RamBus>,
@@ -240,7 +240,6 @@ where
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
         let mut device_worker = DeviceWorker {
-            name: name.clone(),
             dev,
             poll,
             event_rx,
@@ -253,9 +252,9 @@ where
             .spawn(move || {
                 let r = device_worker.do_work();
                 if let Err(e) = r {
-                    log::error!("worker {}: {e}", device_worker.name)
+                    log::error!("worker {}: {e}", device_worker.dev.name())
                 } else {
-                    log::debug!("worker {}: done", device_worker.name)
+                    log::debug!("worker {}: done", device_worker.dev.name())
                 }
             })
             .context(error::WorkerThread)?;
@@ -313,10 +312,10 @@ where
                     break;
                 }
                 WakeEvent::Start { .. } => {
-                    log::error!("{}: device has already started", self.name)
+                    log::error!("{}: device has already started", self.dev.name())
                 }
                 WakeEvent::Reset => {
-                    log::info!("{}: guest requested reset", self.name);
+                    log::info!("{}: guest requested reset", self.dev.name());
                     self.state = WorkerState::Pending;
                     break;
                 }
@@ -340,7 +339,7 @@ where
                 WakeEvent::Notify { q_index } => {
                     log::error!(
                         "{}: driver notified queue {q_index} before device is ready",
-                        self.name
+                        self.dev.name()
                     )
                 }
             }
@@ -388,7 +387,7 @@ where
             };
         log::debug!(
             "{}: activated with {:x?} {:x?}",
-            self.name,
+            self.dev.name(),
             VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(feature)
         );
