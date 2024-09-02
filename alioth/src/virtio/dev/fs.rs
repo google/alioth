@@ -18,7 +18,9 @@ use std::mem::size_of_val;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use libc::{
@@ -33,13 +35,15 @@ use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{ArcMemPages, Ram};
+use crate::mem::mapped::{ArcMemPages, Ram, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
-use crate::virtio::dev::{DevParam, Virtio};
+use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
     error as vu_error, DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature,
 };
+use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::Waker;
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
@@ -194,6 +198,53 @@ impl Virtio for VuFs {
         self.feature
     }
 
+    fn num_queues(&self) -> u16 {
+        self.num_queues
+    }
+
+    fn spawn_worker<S, E>(
+        self,
+        event_rx: Receiver<WakeEvent<S>>,
+        memory: Arc<RamBus>,
+        queue_regs: Arc<[Queue]>,
+        fds: Arc<[(E, bool)]>,
+    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    where
+        S: IrqSender,
+        E: IoeventFd,
+    {
+        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+    }
+
+    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
+    where
+        E: IoeventFd,
+    {
+        if q_index < self.num_queues {
+            self.vu_dev
+                .set_virtq_kick(&(q_index as u64), fd.as_fd().as_raw_fd())?;
+            Ok(true)
+        } else {
+            error::InvalidQueueIndex { index: q_index }.fail()
+        }
+    }
+
+    fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
+        let dax_region = self.dax_region.as_ref()?;
+        Some(Arc::new(MemRegion::with_dev_mem(
+            dax_region.clone(),
+            MemRegionType::Hidden,
+        )))
+    }
+
+    fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
+        Some(Box::new(UpdateVuMem {
+            dev: self.vu_dev.clone(),
+        }))
+    }
+}
+
+impl VirtioMio for VuFs {
     fn activate(
         &mut self,
         registry: &Registry,
@@ -372,10 +423,6 @@ impl Virtio for VuFs {
         )
     }
 
-    fn num_queues(&self) -> u16 {
-        self.num_queues
-    }
-
     fn reset(&mut self, registry: &Registry) {
         for q_index in 0..self.num_queues {
             let disable = VirtqState {
@@ -392,32 +439,5 @@ impl Virtio for VuFs {
                 .deregister(&mut SourceFd(&channel.as_raw_fd()))
                 .unwrap();
         }
-    }
-
-    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
-    where
-        E: IoeventFd,
-    {
-        if q_index < self.num_queues {
-            self.vu_dev
-                .set_virtq_kick(&(q_index as u64), fd.as_fd().as_raw_fd())?;
-            Ok(true)
-        } else {
-            error::InvalidQueueIndex { index: q_index }.fail()
-        }
-    }
-
-    fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
-        let dax_region = self.dax_region.as_ref()?;
-        Some(Arc::new(MemRegion::with_dev_mem(
-            dax_region.clone(),
-            MemRegionType::Hidden,
-        )))
-    }
-
-    fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
-        Some(Box::new(UpdateVuMem {
-            dev: self.vu_dev.clone(),
-        }))
     }
 }

@@ -31,6 +31,8 @@ pub mod queue;
 pub mod vhost;
 #[cfg(target_os = "linux")]
 pub mod vu;
+#[path = "worker/worker.rs"]
+pub mod worker;
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

@@ -16,7 +16,9 @@ use std::iter::zip;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
 use mio::event::Event;
@@ -26,13 +28,16 @@ use serde::Deserialize;
 use serde_aco::Help;
 
 use crate::ffi;
-use crate::mem::mapped::Ram;
+use crate::hv::IoeventFd;
+use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::LayoutUpdated;
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
-use crate::virtio::dev::{DevParam, DeviceId, Virtio};
-use crate::virtio::queue::VirtQueue;
+use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
+use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vhost::bindings::{VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND};
 use crate::virtio::vhost::{error, UpdateVsockMem, VhostDev};
+use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
 #[derive(Debug, Clone, Deserialize, Help)]
@@ -116,6 +121,44 @@ impl Virtio for VhostVsock {
         self.features
     }
 
+    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
+    where
+        E: crate::hv::IoeventFd,
+    {
+        match q_index {
+            0 | 1 => {
+                self.vhost_dev.set_virtq_kick(&VirtqFile {
+                    index: q_index as _,
+                    fd: fd.as_fd().as_raw_fd(),
+                })?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
+        Some(Box::new(UpdateVsockMem {
+            dev: self.vhost_dev.clone(),
+        }))
+    }
+
+    fn spawn_worker<S, E>(
+        self,
+        event_rx: Receiver<WakeEvent<S>>,
+        memory: Arc<RamBus>,
+        queue_regs: Arc<[Queue]>,
+        fds: Arc<[(E, bool)]>,
+    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    where
+        S: IrqSender,
+        E: IoeventFd,
+    {
+        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+    }
+}
+
+impl VirtioMio for VhostVsock {
     fn activate(
         &mut self,
         registry: &Registry,
@@ -219,28 +262,6 @@ impl Virtio for VhostVsock {
             _ => unreachable!(),
         }
         Ok(())
-    }
-
-    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
-    where
-        E: crate::hv::IoeventFd,
-    {
-        match q_index {
-            0 | 1 => {
-                self.vhost_dev.set_virtq_kick(&VirtqFile {
-                    index: q_index as _,
-                    fd: fd.as_fd().as_raw_fd(),
-                })?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
-        Some(Box::new(UpdateVsockMem {
-            dev: self.vhost_dev.clone(),
-        }))
     }
 }
 

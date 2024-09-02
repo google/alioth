@@ -20,7 +20,9 @@ use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use libc::{IFF_MULTI_QUEUE, IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK};
@@ -31,11 +33,14 @@ use serde::Deserialize;
 use serde_aco::Help;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::mapped::Ram;
+use crate::hv::IoeventFd;
+use crate::mem::mapped::{Ram, RamBus};
 use crate::net::MacAddr;
-use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
+use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::Waker;
 use crate::virtio::{error, IrqSender, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
@@ -284,13 +289,29 @@ impl Virtio for Net {
         self.config.clone()
     }
 
+    fn feature(&self) -> u64 {
+        self.feature.bits() | FEATURE_BUILT_IN
+    }
+
+    fn spawn_worker<S, E>(
+        self,
+        event_rx: Receiver<WakeEvent<S>>,
+        memory: Arc<RamBus>,
+        queue_regs: Arc<[Queue]>,
+        fds: Arc<[(E, bool)]>,
+    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    where
+        S: IrqSender,
+        E: IoeventFd,
+    {
+        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+    }
+}
+
+impl VirtioMio for Net {
     fn reset(&mut self, registry: &Registry) {
         self.tap_sockets.truncate(1);
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
-    }
-
-    fn feature(&self) -> u64 {
-        self.feature.bits() | FEATURE_BUILT_IN
     }
 
     fn activate(
