@@ -239,7 +239,7 @@ where
             Waker::new(poll.registry(), Token(token as usize)).context(error::CreateWaker)?;
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
-        let mut device_worker = DeviceWorker {
+        let device_worker = DeviceWorker {
             dev,
             poll,
             event_rx,
@@ -249,14 +249,7 @@ where
         };
         let handle = std::thread::Builder::new()
             .name(name.to_string())
-            .spawn(move || {
-                let r = device_worker.do_work();
-                if let Err(e) = r {
-                    log::error!("worker {}: {e}", device_worker.dev.name())
-                } else {
-                    log::debug!("worker {}: done", device_worker.dev.name())
-                }
-            })
+            .spawn(move || device_worker.do_work())
             .context(error::WorkerThread)?;
         log::debug!(
             "{name}: created with {:x?} {:x?}",
@@ -407,11 +400,14 @@ where
         Ok(())
     }
 
-    fn do_work(&mut self) -> Result<()> {
+    fn do_work(mut self) {
         while self.state != WorkerState::Shutdown {
-            self.loop_until_reset()?;
+            if let Err(e) = self.loop_until_reset() {
+                log::error!("worker {}: {e:?}", self.dev.name());
+                return;
+            }
         }
-        Ok(())
+        log::debug!("worker {}: done", self.dev.name())
     }
 }
 
