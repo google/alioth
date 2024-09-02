@@ -182,6 +182,10 @@ impl Virtio for VuFs {
     type Config = FsConfig;
     type Feature = FsFeature;
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn config(&self) -> Arc<Self::Config> {
         self.config.clone()
     }

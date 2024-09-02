@@ -80,6 +80,10 @@ impl Virtio for Entropy {
     type Config = EntropyConfig;
     type Feature = EntropyFeature;
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn num_queues(&self) -> u16 {
         1
     }

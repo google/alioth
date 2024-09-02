@@ -287,6 +287,10 @@ impl Virtio for Block {
 
     fn reset(&mut self, _registry: &Registry) {}
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn num_queues(&self) -> u16 {
         self.config.num_queues
     }
