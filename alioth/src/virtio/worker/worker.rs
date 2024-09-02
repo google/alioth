@@ -21,11 +21,26 @@ use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::io::{ErrorKind, Read, Write};
 
+use serde::Deserialize;
+use serde_aco::Help;
+
 #[cfg(target_os = "linux")]
 use crate::ffi;
 #[cfg(target_os = "linux")]
 use crate::virtio::error;
 use crate::virtio::Result;
+
+#[derive(Debug, Default, Deserialize, Help)]
+pub enum WorkerApi {
+    /// I/O event queue backed by epoll/kqeueu.
+    #[default]
+    #[serde(alias = "mio")]
+    Mio,
+    /// Linux io_uring.
+    #[cfg(target_os = "linux")]
+    #[serde(alias = "iouring", alias = "io_uring")]
+    IoUring,
+}
 
 #[derive(Debug)]
 pub struct Waker(
