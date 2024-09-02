@@ -15,7 +15,9 @@
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use libc::O_NONBLOCK;
@@ -23,12 +25,15 @@ use mio::event::Event;
 use mio::Registry;
 use snafu::ResultExt;
 
+use crate::hv::IoeventFd;
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::Ram;
-use crate::virtio::dev::{DevParam, DeviceId, Virtio};
+use crate::mem::mapped::{Ram, RamBus};
+use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
+use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::Waker;
 use crate::virtio::{error, IrqSender, Result, FEATURE_BUILT_IN};
 
 #[derive(Debug, Clone)]
@@ -84,8 +89,43 @@ impl Virtio for Entropy {
         &self.name
     }
 
+    fn spawn_worker<S, E>(
+        self,
+        event_rx: Receiver<WakeEvent<S>>,
+        memory: Arc<RamBus>,
+        queue_regs: Arc<[Queue]>,
+        fds: Arc<[(E, bool)]>,
+    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    where
+        S: IrqSender,
+        E: IoeventFd,
+    {
+        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+    }
+
     fn num_queues(&self) -> u16 {
         1
+    }
+
+    fn config(&self) -> Arc<EntropyConfig> {
+        self.config.clone()
+    }
+
+    fn feature(&self) -> u64 {
+        FEATURE_BUILT_IN
+    }
+}
+
+impl VirtioMio for Entropy {
+    fn activate(
+        &mut self,
+        _registry: &Registry,
+        _feature: u64,
+        _memory: &Ram,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
+        Ok(())
     }
 
     fn handle_queue<'m, Q>(
@@ -119,25 +159,6 @@ impl Virtio for Entropy {
     }
 
     fn reset(&mut self, _registry: &Registry) {}
-
-    fn config(&self) -> Arc<EntropyConfig> {
-        self.config.clone()
-    }
-
-    fn feature(&self) -> u64 {
-        FEATURE_BUILT_IN
-    }
-
-    fn activate(
-        &mut self,
-        _registry: &Registry,
-        _feature: u64,
-        _memory: &Ram,
-        _irq_sender: &impl IrqSender,
-        _queues: &[Queue],
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 pub struct EntropyParam;

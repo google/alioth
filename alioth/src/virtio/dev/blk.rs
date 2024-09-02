@@ -15,7 +15,9 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use mio::event::Event;
@@ -25,10 +27,13 @@ use serde_aco::Help;
 use snafu::ResultExt;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::mapped::Ram;
-use crate::virtio::dev::{DevParam, Virtio};
+use crate::hv::IoeventFd;
+use crate::mem::mapped::{Ram, RamBus};
+use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::Waker;
 use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
@@ -285,8 +290,6 @@ impl Virtio for Block {
     type Config = BlockConfig;
     type Feature = BlockFeature;
 
-    fn reset(&mut self, _registry: &Registry) {}
-
     fn name(&self) -> &str {
         &self.name
     }
@@ -302,6 +305,24 @@ impl Virtio for Block {
     fn feature(&self) -> u64 {
         self.feature.bits() | FEATURE_BUILT_IN
     }
+
+    fn spawn_worker<S, E>(
+        self,
+        event_rx: Receiver<WakeEvent<S>>,
+        memory: Arc<RamBus>,
+        queue_regs: Arc<[Queue]>,
+        fds: Arc<[(E, bool)]>,
+    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    where
+        S: IrqSender,
+        E: IoeventFd,
+    {
+        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+    }
+}
+
+impl VirtioMio for Block {
+    fn reset(&mut self, _registry: &Registry) {}
 
     fn activate(
         &mut self,
