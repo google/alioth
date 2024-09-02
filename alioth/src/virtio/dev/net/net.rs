@@ -25,6 +25,9 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
+use io_uring::cqueue::Entry as Cqe;
+use io_uring::opcode;
+use io_uring::types::Fd;
 use libc::{IFF_MULTI_QUEUE, IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK};
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -39,8 +42,9 @@ use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{Mio, VirtioMio};
-use crate::virtio::worker::Waker;
+use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{error, IrqSender, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
@@ -147,6 +151,7 @@ pub struct Net {
     driver_feature: NetFeature,
     dev_tap: Option<PathBuf>,
     if_name: Option<String>,
+    api: WorkerApi,
 }
 
 #[derive(Deserialize, Help)]
@@ -168,6 +173,9 @@ pub struct NetParam {
     /// Required for TUN/TAP. Optional for MacVTap and IPVTap.
     #[serde(alias = "if")]
     pub if_name: Option<String>,
+    /// System API for asynchronous IO.
+    #[serde(default)]
+    pub api: WorkerApi,
 }
 
 impl DevParam for NetParam {
@@ -178,19 +186,23 @@ impl DevParam for NetParam {
     }
 }
 
-fn new_socket(dev_tap: Option<&Path>) -> Result<File> {
+fn new_socket(dev_tap: Option<&Path>, blocking: bool) -> Result<File> {
     let tap_dev = dev_tap.unwrap_or(Path::new("/dev/net/tun"));
-    let socket = OpenOptions::new()
-        .custom_flags(O_NONBLOCK)
-        .read(true)
-        .write(true)
-        .open(tap_dev)?;
+    let mut opt = OpenOptions::new();
+    opt.read(true).write(true);
+    if !blocking {
+        opt.custom_flags(O_NONBLOCK);
+    }
+    let socket = opt.open(tap_dev)?;
     Ok(socket)
 }
 
 impl Net {
     pub fn new(param: NetParam, name: impl Into<Arc<str>>) -> Result<Self> {
-        let mut socket = new_socket(param.tap.as_deref())?;
+        let mut socket = new_socket(
+            param.tap.as_deref(),
+            matches!(param.api, WorkerApi::IoUring),
+        )?;
         let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
         setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
         let mut dev_feat = NetFeature::MAC
@@ -219,6 +231,7 @@ impl Net {
             driver_feature: NetFeature::empty(),
             dev_tap: param.tap,
             if_name: param.if_name,
+            api: param.api,
         };
         Ok(net)
     }
@@ -226,8 +239,8 @@ impl Net {
     fn handle_ctrl_queue(
         &mut self,
         desc: &mut Descriptor,
-        registry: &Registry,
-    ) -> Result<Option<usize>> {
+        registry: Option<&Registry>,
+    ) -> Result<usize> {
         let Some(header) = desc.readable.first().and_then(|b| CtrlHdr::ref_from(b)) else {
             return error::InvalidBuffer.fail();
         };
@@ -244,14 +257,19 @@ impl Net {
                     let pairs = data.virtq_pairs as usize;
                     self.tap_sockets.truncate(pairs);
                     for index in self.tap_sockets.len()..pairs {
-                        let mut socket = new_socket(self.dev_tap.as_deref())?;
+                        let mut socket = new_socket(
+                            self.dev_tap.as_deref(),
+                            matches!(self.api, WorkerApi::IoUring),
+                        )?;
                         setup_socket(&mut socket, self.if_name.as_deref(), true)?;
                         enable_tap_offload(&mut socket, self.driver_feature)?;
-                        registry.register(
-                            &mut SourceFd(&socket.as_raw_fd()),
-                            Token(index),
-                            Interest::READABLE | Interest::WRITABLE,
-                        )?;
+                        if let Some(r) = registry {
+                            r.register(
+                                &mut SourceFd(&socket.as_raw_fd()),
+                                Token(index),
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
+                        }
                         self.tap_sockets.push(socket);
                     }
                     log::info!("{}: using {pairs} pairs of queues", self.name);
@@ -262,7 +280,7 @@ impl Net {
             _ => CtrlAck::ERR,
         };
         *ack_byte = ack.raw();
-        Ok(Some(1))
+        Ok(1)
     }
 }
 
@@ -304,7 +322,10 @@ impl Virtio for Net {
         S: IrqSender,
         E: IoeventFd,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+        match self.api {
+            WorkerApi::Mio => Mio::spawn_worker(self, event_rx, memory, queue_regs, fds),
+            WorkerApi::IoUring => IoUring::spawn_worker(self, event_rx, memory, queue_regs, fds),
+        }
     }
 }
 
@@ -388,7 +409,8 @@ impl VirtioMio for Net {
         if index == self.config.max_queue_pairs * 2 {
             let name = self.name.clone();
             return handle_desc(&name, index, queue, irq_sender, |desc| {
-                self.handle_ctrl_queue(desc, registry)
+                let len = self.handle_ctrl_queue(desc, Some(registry))?;
+                Ok(Some(len))
             });
         }
         let Some(socket) = self.tap_sockets.get(index as usize >> 1) else {
@@ -399,6 +421,68 @@ impl VirtioMio for Net {
             reader_to_queue(&self.name, socket, index, queue, irq_sender)
         } else {
             queue_to_writer(&self.name, socket, index, queue, irq_sender)
+        }
+    }
+}
+
+impl VirtioIoUring for Net {
+    fn activate(
+        &mut self,
+        feature: u64,
+        _memory: &Ram,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
+        self.driver_feature = NetFeature::from_bits_retain(feature);
+        let socket = &mut self.tap_sockets[0];
+        enable_tap_offload(socket, self.driver_feature)?;
+        Ok(())
+    }
+
+    fn handle_buffer(
+        &mut self,
+        q_index: u16,
+        buffer: &mut Descriptor,
+        _irq_sender: &impl IrqSender,
+    ) -> Result<BufferAction> {
+        if q_index == self.config.max_queue_pairs * 2 {
+            let len = self.handle_ctrl_queue(buffer, None)?;
+            return Ok(BufferAction::Written(len));
+        }
+        let Some(socket) = self.tap_sockets.get(q_index as usize >> 1) else {
+            log::error!("{}: invalid tap queue {}", self.name, q_index >> 1);
+            return Ok(BufferAction::Written(0));
+        };
+        let entry = if q_index & 1 == 0 {
+            let writable = &buffer.writable;
+            opcode::Readv::new(
+                Fd(socket.as_raw_fd()),
+                writable.as_ptr() as *const _,
+                writable.len() as _,
+            )
+            .build()
+        } else {
+            let readable = &buffer.readable;
+            opcode::Writev::new(
+                Fd(socket.as_raw_fd()),
+                readable.as_ptr() as *const _,
+                readable.len() as _,
+            )
+            .build()
+        };
+        Ok(BufferAction::Sqe(entry))
+    }
+
+    fn complete_buffer(
+        &mut self,
+        q_index: u16,
+        _buffer: &mut Descriptor,
+        cqe: &Cqe,
+    ) -> Result<usize> {
+        if q_index & 1 == 0 {
+            Ok(cqe.result() as usize)
+        } else {
+            Ok(0)
         }
     }
 }
