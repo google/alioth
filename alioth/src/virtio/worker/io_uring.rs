@@ -157,7 +157,7 @@ where
         q.enable_notification(false);
         while q.avail_index() != queue_submit.index {
             if queue_submit.count >= QUEUE_RESERVE_SIZE && data.shared_count == 0 {
-                log::warn!("{}: queue-{index}: no more free entries", dev.name());
+                log::debug!("{}: queue-{index}: no more free entries", dev.name());
                 break 'out;
             }
             let mut buffer = q.get_descriptor(queue_submit.index)?;
