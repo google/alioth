@@ -97,11 +97,6 @@ where
     Reset,
 }
 
-#[derive(Debug)]
-pub enum Queues<'m> {
-    Split(Vec<Option<SplitQueue<'m>>>),
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerState {
     Pending,
@@ -264,10 +259,10 @@ pub trait Backend<D: Virtio>: Send + 'static {
         data: &mut Self::Data<'m>,
     ) -> Result<()>;
     fn reset(&self, dev: &mut D) -> Result<()>;
-    fn event_loop<S: IrqSender>(
+    fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         context: &mut Context<D, S>,
-        queues: &mut Queues,
+        queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()>;
 }
@@ -289,20 +284,18 @@ where
     D: Virtio,
     S: IrqSender,
 {
-    fn handle_wake_events<'m, B: Backend<D>>(
+    fn handle_wake_events<'m, B: Backend<D>, Q: VirtQueue<'m>>(
         &mut self,
-        queues: &mut Queues<'m>,
+        queues: &mut [Option<Q>],
         irq_sender: &S,
         backend: &mut B,
         data: &mut B::Data<'m>,
     ) -> Result<()> {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                WakeEvent::Notify { q_index } => match queues {
-                    Queues::Split(qs) => {
-                        backend.handle_queue(&mut self.dev, q_index, qs, irq_sender, data)
-                    }
-                }?,
+                WakeEvent::Notify { q_index } => {
+                    backend.handle_queue(&mut self.dev, q_index, queues, irq_sender, data)?
+                }
                 WakeEvent::Shutdown => {
                     self.state = WorkerState::Shutdown;
                     break;
@@ -347,9 +340,9 @@ where
         None
     }
 
-    pub fn handle_event<'m, B>(
+    pub fn handle_event<'m, B, Q: VirtQueue<'m>>(
         &mut self,
-        queues: &mut Queues<'m>,
+        queues: &mut [Option<Q>],
         event: &B::Event,
         irq_sender: &S,
         backend: &mut B,
@@ -359,10 +352,9 @@ where
         B: Backend<D>,
     {
         if event.token() == TOKEN_WARKER {
-            return self.handle_wake_events(queues, irq_sender, backend, data);
-        }
-        match queues {
-            Queues::Split(qs) => backend.handle_event(&mut self.dev, event, qs, irq_sender, data),
+            self.handle_wake_events(queues, irq_sender, backend, data)
+        } else {
+            backend.handle_event(&mut self.dev, event, queues, irq_sender, data)
         }
     }
 }
@@ -413,23 +405,21 @@ where
             irq_sender.as_ref(),
             &self.context.queue_regs,
         )?;
-        let mut queues = if VirtioFeature::from_bits_retain(feature)
-            .contains(VirtioFeature::RING_PACKED)
-        {
-            todo!()
-        } else {
-            let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
-            let split_queues: Result<_> = self.context.queue_regs.iter().map(new_queue).collect();
-            Queues::Split(split_queues?)
-        };
         log::debug!(
             "{}: activated with {:x?} {:x?}",
             self.context.dev.name(),
             VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(feature)
         );
-        self.backend
-            .event_loop(&mut self.context, &mut queues, &irq_sender)?;
+        if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+            todo!()
+        } else {
+            let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
+            let queues: Result<Box<_>> = self.context.queue_regs.iter().map(new_queue).collect();
+            let mut queues = queues?;
+            self.backend
+                .event_loop(&mut self.context, &mut queues, &irq_sender)?;
+        };
         self.backend.reset(&mut self.context.dev)?;
         Ok(())
     }

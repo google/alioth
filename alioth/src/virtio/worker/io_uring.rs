@@ -25,9 +25,7 @@ use io_uring::{opcode, types};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
-use crate::virtio::dev::{
-    Backend, BackendEvent, Context, Queues, Virtio, WakeEvent, Worker, WorkerState,
-};
+use crate::virtio::dev::{Backend, BackendEvent, Context, Virtio, WakeEvent, Worker, WorkerState};
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result};
@@ -292,10 +290,10 @@ where
         Ok(())
     }
 
-    fn event_loop<S: IrqSender>(
+    fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         context: &mut Context<D, S>,
-        queues: &mut Queues,
+        queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()> {
         let mut data = RingData {
