@@ -109,7 +109,7 @@ where
             queue_ioeventfds: fds,
             waker: Arc::new(waker),
             waker_token: 0,
-            queue_submits: vec![QueueSubmit::default(); queue_regs.len()],
+            queue_submits: vec![],
         };
         Worker::spawn(dev, ring, event_rx, memory, queue_regs)
     }
@@ -311,6 +311,8 @@ where
             queue_count += 1;
         }
         data.shared_count = RING_SIZE - 1 - queue_count * (QUEUE_RESERVE_SIZE + 1);
+
+        self.queue_submits = vec![QueueSubmit::default(); queues.len()];
 
         'out: loop {
             data.ring.submit_and_wait(1)?;
