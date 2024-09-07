@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::mpsc::Receiver;
@@ -63,7 +62,6 @@ const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = 1 << 62 | 1 << 61;
 
 pub struct IoUring<E> {
-    efd_buffer: UnsafeCell<u64>,
     queue_ioeventfds: Arc<[(E, bool)]>,
     queue_submits: Vec<QueueSubmit>,
     waker: Arc<Waker>,
@@ -77,16 +75,16 @@ where
     fn submit_queue_ioeventfd(&self, index: u16, fd: &E, data: &mut RingData) -> Result<()> {
         let token = index as u64 | TOKEN_QUEUE;
         let fd = types::Fd(fd.as_fd().as_raw_fd());
-        let read = opcode::Read::new(fd, self.efd_buffer.get() as *mut u8, 8);
-        let entry = read.build().user_data(token);
+        let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _);
+        let entry = poll.build().user_data(token);
         unsafe { data.ring.submission().push(&entry) }.unwrap();
         Ok(())
     }
 
     fn submit_waker(&mut self, data: &mut RingData) -> Result<()> {
         let fd = types::Fd(self.waker.0.as_raw_fd());
-        let read = opcode::Read::new(fd, self.efd_buffer.get() as *mut u8, 8);
-        let entry = read.build().user_data(self.waker_token);
+        let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _).multi(true);
+        let entry = poll.build().user_data(self.waker_token);
         unsafe { data.ring.submission().push(&entry) }.unwrap();
         Ok(())
     }
@@ -105,7 +103,6 @@ where
     {
         let waker = Waker::new_eventfd()?;
         let ring = IoUring {
-            efd_buffer: UnsafeCell::new(0),
             queue_ioeventfds: fds,
             waker: Arc::new(waker),
             waker_token: 0,
@@ -199,10 +196,6 @@ where
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
         self.waker_token = token;
         Ok(self.waker.clone())
-    }
-
-    fn reregister_waker(&mut self, data: &mut RingData<'_>) -> Result<()> {
-        self.submit_waker(data)
     }
 
     fn activate_dev(
