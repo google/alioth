@@ -233,7 +233,6 @@ pub trait Backend<D: Virtio>: Send + 'static {
     type Data<'m>;
 
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>>;
-    fn reregister_waker(&mut self, data: &mut Self::Data<'_>) -> Result<()>;
     fn activate_dev(
         &mut self,
         dev: &mut D,
@@ -309,9 +308,6 @@ where
                     break;
                 }
             }
-        }
-        if self.state == WorkerState::Running {
-            backend.reregister_waker(data)?;
         }
         Ok(())
     }
