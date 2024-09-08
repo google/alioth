@@ -236,16 +236,7 @@ where
             }
             queue_submit.count -= 1;
 
-            let written_len = match event.result() {
-                0.. => dev.complete_buffer(index, &mut buffer, event)?,
-                err_code => {
-                    log::error!(
-                        "{}: buffer {buffer_key:#010x} error code: {err_code:#x}",
-                        dev.name(),
-                    );
-                    0
-                }
-            };
+            let written_len = dev.complete_buffer(index, &mut buffer, event)?;
             queue.push_used(buffer, written_len);
             if queue.interrupt_enabled() {
                 irq_sender.queue_irq(index);
