@@ -63,7 +63,7 @@ const TOKEN_DESCRIPTOR: u64 = 1 << 62 | 1 << 61;
 
 pub struct IoUring<E> {
     queue_ioeventfds: Arc<[(E, bool)]>,
-    queue_submits: Vec<QueueSubmit>,
+    queue_submits: Box<[QueueSubmit]>,
     waker: Arc<Waker>,
     waker_token: u64,
 }
@@ -106,7 +106,7 @@ where
             queue_ioeventfds: fds,
             waker: Arc::new(waker),
             waker_token: 0,
-            queue_submits: vec![],
+            queue_submits: Box::new([]),
         };
         Worker::spawn(dev, ring, event_rx, memory, queue_regs)
     }
@@ -305,7 +305,7 @@ where
         }
         data.shared_count = RING_SIZE - 1 - queue_count * (QUEUE_RESERVE_SIZE + 1);
 
-        self.queue_submits = vec![QueueSubmit::default(); queues.len()];
+        self.queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
 
         'out: loop {
             data.ring.submit_and_wait(1)?;
