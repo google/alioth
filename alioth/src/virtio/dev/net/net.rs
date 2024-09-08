@@ -479,8 +479,14 @@ impl VirtioIoUring for Net {
         _buffer: &mut Descriptor,
         cqe: &Cqe,
     ) -> Result<usize> {
+        let ret = cqe.result();
+        if ret < 0 {
+            let err = std::io::Error::from_raw_os_error(-ret);
+            log::error!("{}: failed to send/receive packet: {err}", self.name,);
+            return Ok(0);
+        }
         if q_index & 1 == 0 {
-            Ok(cqe.result() as usize)
+            Ok(ret as usize)
         } else {
             Ok(0)
         }
