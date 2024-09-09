@@ -371,7 +371,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
                 eprintln!("Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details");
                 BlockParam {
                     path: blk.into(),
-                    readonly: false,
+                    ..Default::default()
                 }
             }
             Err(e) => return Err(e).context(error::ParseArg { arg: blk })?,
