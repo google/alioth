@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -147,6 +147,25 @@ impl DevParam for BlockParam {
     }
 }
 
+enum BlkRequest<'d, 'm> {
+    Done {
+        written: usize,
+    },
+    In {
+        data: &'d mut IoSliceMut<'m>,
+        offset: u64,
+        status: &'d mut u8,
+    },
+    Out {
+        data: &'d IoSlice<'m>,
+        offset: u64,
+        status: &'d mut u8,
+    },
+    Flush {
+        status: &'d mut u8,
+    },
+}
+
 #[derive(Debug)]
 pub struct Block {
     name: Arc<str>,
@@ -184,109 +203,59 @@ impl Block {
         })
     }
 
-    fn handle_req_queue(&self, desc: &mut Descriptor) -> Result<Option<usize>> {
-        let disk = &self.disk;
-        let Some(buf0) = desc.readable.first() else {
+    fn handle_desc<'d, 'm>(&self, desc: &'d mut Descriptor<'m>) -> Result<BlkRequest<'d, 'm>> {
+        let [hdr, data_out @ ..] = &desc.readable[..] else {
             return error::InvalidBuffer.fail();
         };
-        let Some(request) = Request::read_from(buf0) else {
+        let Some(request) = Request::read_from(hdr) else {
+            return error::InvalidBuffer.fail();
+        };
+        let [data_in @ .., status_buf] = &mut desc.writable[..] else {
+            return error::InvalidBuffer.fail();
+        };
+        let [status] = &mut status_buf[..] else {
             return error::InvalidBuffer.fail();
         };
         let offset = request.sector * SECTOR_SIZE as u64;
-        let w_len = match request.type_ {
+        match request.type_ {
             RequestType::IN => {
-                let Some(buf1) = desc.writable.first_mut() else {
+                let [data] = data_in else {
                     return error::InvalidBuffer.fail();
                 };
-                let l = buf1.len();
-                let status = match disk.read_exact_at(buf1, offset) {
-                    Ok(()) => Status::OK,
-                    Err(e) => {
-                        log::error!("{}: read {l} bytes from offset {offset:#x}: {e}", self.name);
-                        Status::IOERR
-                    }
-                };
-                let Some(buf2) = desc.writable.get_mut(1) else {
-                    return error::InvalidBuffer.fail();
-                };
-                let Some(status_byte) = buf2.first_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                *status_byte = status.into();
-                l + 1
+                Ok(BlkRequest::In {
+                    data,
+                    offset,
+                    status,
+                })
             }
             RequestType::OUT => {
-                let Some(buf1) = desc.readable.get(1) else {
-                    return error::InvalidBuffer.fail();
-                };
-                let l = buf1.len();
-                let status = if self.feature.contains(BlockFeature::RO) {
-                    Status::IOERR
-                } else {
-                    match disk.write_all_at(buf1, offset) {
-                        Ok(()) => Status::OK,
-                        Err(e) => {
-                            log::error!(
-                                "{}: write {l} bytes to offset {offset:#x}: {e}",
-                                self.name
-                            );
-                            Status::IOERR
-                        }
-                    }
-                };
-                let Some(buf2) = desc.writable.first_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                let Some(status_byte) = buf2.first_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                *status_byte = status.into();
-                1
-            }
-            RequestType::FLUSH => {
-                let Some(w_buf) = desc.writable.last_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                let Some(status_byte) = w_buf.get_mut(0) else {
-                    return error::InvalidBuffer.fail();
-                };
-                match (&self.disk).flush() {
-                    Ok(()) => *status_byte = Status::OK.into(),
-                    Err(e) => {
-                        log::error!("{}: flush: {e}", self.name);
-                        *status_byte = Status::IOERR.into();
-                    }
+                if self.feature.contains(BlockFeature::RO) {
+                    log::error!("{}: attempt to write to a read-only device", self.name);
+                    *status = Status::IOERR.into();
+                    return Ok(BlkRequest::Done { written: 1 });
                 }
-                1
+                let [data] = data_out else {
+                    return error::InvalidBuffer.fail();
+                };
+                Ok(BlkRequest::Out {
+                    data,
+                    offset,
+                    status,
+                })
             }
+            RequestType::FLUSH => Ok(BlkRequest::Flush { status }),
             RequestType::GET_ID => {
-                let Some(buf1) = desc.writable.first_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                let len = std::cmp::min(self.name.len(), buf1.len());
-                buf1[0..len].copy_from_slice(&self.name.as_bytes()[0..len]);
-                let Some(buf2) = desc.writable.get_mut(1) else {
-                    return error::InvalidBuffer.fail();
-                };
-                let Some(status_byte) = buf2.first_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                *status_byte = Status::OK.into();
-                1 + len
+                let mut name_bytes = self.name.as_bytes();
+                let count = name_bytes.read_vectored(data_in)?;
+                *status = Status::OK.into();
+                Ok(BlkRequest::Done { written: 1 + count })
             }
-            _ => {
-                log::error!("unimplemented op: {:#x?}", request.type_);
-                let Some(w_buf) = desc.writable.last_mut() else {
-                    return error::InvalidBuffer.fail();
-                };
-                let Some(w_byte) = w_buf.get_mut(0) else {
-                    return error::InvalidBuffer.fail();
-                };
-                *w_byte = Status::UNSUPP.into();
-                1
+            unknown => {
+                log::error!("{}: unimplemented op: {unknown:#x?}", self.name);
+                *status = Status::UNSUPP.into();
+                Ok(BlkRequest::Done { written: 1 })
             }
-        };
-        Ok(Some(w_len))
+        }
     }
 }
 
@@ -368,8 +337,55 @@ impl VirtioMio for Block {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
+        let mut disk = &self.disk;
         handle_desc(&self.name, index, queue, irq_sender, |desc| {
-            self.handle_req_queue(desc)
+            let written_len = match self.handle_desc(desc) {
+                Err(e) => {
+                    log::error!("{}: handle descriptor: {e}", self.name);
+                    0
+                }
+                Ok(BlkRequest::Done { written }) => written,
+                Ok(BlkRequest::In {
+                    data,
+                    offset,
+                    status,
+                }) => match disk.read_exact_at(data, offset) {
+                    Ok(_) => {
+                        *status = Status::OK.into();
+                        data.len() + 1
+                    }
+                    Err(e) => {
+                        log::error!("{}: read: {e}", self.name);
+                        *status = Status::IOERR.into();
+                        1
+                    }
+                },
+                Ok(BlkRequest::Out {
+                    data,
+                    offset,
+                    status,
+                }) => {
+                    match disk.write_all_at(data, offset) {
+                        Ok(_) => *status = Status::OK.into(),
+                        Err(e) => {
+                            log::error!("{}: write: {e}", self.name);
+                            *status = Status::IOERR.into();
+                        }
+                    }
+                    1
+                }
+                Ok(BlkRequest::Flush { status }) => {
+                    match disk.flush() {
+                        Ok(_) => *status = Status::OK.into(),
+                        Err(e) => {
+                            log::error!("{}: flush: {e}", self.name);
+                            *status = Status::IOERR.into();
+                        }
+                    }
+                    1
+                }
+            };
+            Ok(Some(written_len))
         })
     }
 }
