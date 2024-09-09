@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -243,14 +244,19 @@ impl Block {
                 1
             }
             RequestType::FLUSH => {
-                // TODO flush the file
                 let Some(w_buf) = desc.writable.last_mut() else {
                     return error::InvalidBuffer.fail();
                 };
                 let Some(status_byte) = w_buf.get_mut(0) else {
                     return error::InvalidBuffer.fail();
                 };
-                *status_byte = Status::OK.into();
+                match (&self.disk).flush() {
+                    Ok(()) => *status_byte = Status::OK.into(),
+                    Err(e) => {
+                        log::error!("{}: flush: {e}", self.name);
+                        *status_byte = Status::IOERR.into();
+                    }
+                }
                 1
             }
             RequestType::GET_ID => {
