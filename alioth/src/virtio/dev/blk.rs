@@ -14,6 +14,8 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{IoSlice, IoSliceMut, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -21,6 +23,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
+#[cfg(target_os = "linux")]
+use io_uring::cqueue::Entry as Cqe;
+#[cfg(target_os = "linux")]
+use io_uring::opcode;
+#[cfg(target_os = "linux")]
+use io_uring::types::Fd;
 use mio::event::Event;
 use mio::Registry;
 use serde::Deserialize;
@@ -33,8 +41,10 @@ use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+#[cfg(target_os = "linux")]
+use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{Mio, VirtioMio};
-use crate::virtio::worker::Waker;
+use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
@@ -130,13 +140,16 @@ pub struct BlockConfig {
 }
 impl_mmio_for_zerocopy!(BlockConfig);
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, Deserialize, Help, Default)]
 pub struct BlockParam {
     /// Path to a raw-formatted disk image.
     pub path: PathBuf,
     /// Set the device as readonly. [default: false]
     #[serde(default)]
     pub readonly: bool,
+    /// System API for asynchronous IO.
+    #[serde(default)]
+    pub api: WorkerApi,
 }
 
 impl DevParam for BlockParam {
@@ -172,6 +185,7 @@ pub struct Block {
     config: Arc<BlockConfig>,
     disk: File,
     feature: BlockFeature,
+    api: WorkerApi,
 }
 
 impl Block {
@@ -200,6 +214,7 @@ impl Block {
             disk,
             config,
             feature,
+            api: param.api,
         })
     }
 
@@ -292,7 +307,11 @@ impl Virtio for Block {
         S: IrqSender,
         E: IoeventFd,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+        match self.api {
+            #[cfg(target_os = "linux")]
+            WorkerApi::IoUring => IoUring::spawn_worker(self, event_rx, memory, queue_regs, fds),
+            WorkerApi::Mio => Mio::spawn_worker(self, event_rx, memory, queue_regs, fds),
+        }
     }
 }
 
@@ -387,5 +406,78 @@ impl VirtioMio for Block {
             };
             Ok(Some(written_len))
         })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl VirtioIoUring for Block {
+    fn activate(
+        &mut self,
+        _feature: u64,
+        _memory: &Ram,
+        _irq_sender: &impl IrqSender,
+        _queues: &[Queue],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_buffer(
+        &mut self,
+        _q_index: u16,
+        buffer: &mut Descriptor,
+        _irq_sender: &impl IrqSender,
+    ) -> Result<BufferAction> {
+        let fd = Fd(self.disk.as_raw_fd());
+        let action = match Block::handle_desc(self, buffer)? {
+            BlkRequest::Done { written } => BufferAction::Written(written),
+            BlkRequest::In { data, offset, .. } => {
+                let read = opcode::Read::new(fd, data.as_mut_ptr(), data.len() as u32)
+                    .offset(offset)
+                    .build();
+                BufferAction::Sqe(read)
+            }
+            BlkRequest::Out { data, offset, .. } => {
+                let write = opcode::Write::new(fd, data.as_ptr(), data.len() as u32)
+                    .offset(offset)
+                    .build();
+                BufferAction::Sqe(write)
+            }
+            BlkRequest::Flush { .. } => {
+                let flush = opcode::Fsync::new(fd).build();
+                BufferAction::Sqe(flush)
+            }
+        };
+        Ok(action)
+    }
+
+    fn complete_buffer(
+        &mut self,
+        q_index: u16,
+        buffer: &mut Descriptor,
+        cqe: &Cqe,
+    ) -> Result<usize> {
+        let result = cqe.result();
+        let status_code = if result >= 0 {
+            Status::OK
+        } else {
+            let err = std::io::Error::from_raw_os_error(-result);
+            log::error!("{}: queue-{q_index} io error: {err}", self.name,);
+            Status::IOERR
+        };
+        match Block::handle_desc(self, buffer)? {
+            BlkRequest::Done { .. } => unreachable!(),
+            BlkRequest::Flush { status } => {
+                *status = status_code.into();
+                Ok(1)
+            }
+            BlkRequest::In { data, status, .. } => {
+                *status = status_code.into();
+                Ok(data.len() + 1)
+            }
+            BlkRequest::Out { status, .. } => {
+                *status = status_code.into();
+                Ok(1)
+            }
+        }
     }
 }

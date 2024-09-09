@@ -30,7 +30,7 @@ use crate::ffi;
 use crate::virtio::error;
 use crate::virtio::Result;
 
-#[derive(Debug, Default, Deserialize, Help)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Help)]
 pub enum WorkerApi {
     /// I/O event queue backed by epoll/kqeueu.
     #[default]
