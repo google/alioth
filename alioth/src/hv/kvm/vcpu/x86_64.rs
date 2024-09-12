@@ -500,7 +500,7 @@ mod test {
         let prot = PROT_WRITE | PROT_EXEC | PROT_READ;
         let flag = MAP_ANONYMOUS | MAP_SHARED;
         let user_mem = ffi!(
-            unsafe { mmap(null_mut(), 0x4000, prot, flag, -1, 0,) },
+            unsafe { mmap(null_mut(), 0x5000, prot, flag, -1, 0,) },
             MAP_FAILED
         )
         .unwrap();
@@ -511,7 +511,7 @@ mod test {
             ..Default::default()
         };
         memory
-            .mem_map(0, 0x4000, user_mem as usize, mmap_option)
+            .mem_map(0, 0x5000, user_mem as usize, mmap_option)
             .unwrap();
 
         // layout
@@ -519,6 +519,7 @@ mod test {
         // 0x1f00 - 0x2000 GDT
         // 0x2000 - 0x3000 PML4
         // 0x3000 - 0x4000 PDPT
+        // 0x4000 - 0x5000 PD
 
         #[rustfmt::skip]
         const CODE: [u8; 29] = [
@@ -543,8 +544,10 @@ mod test {
 
         let pml4e = (Entry::P | Entry::RW).bits() as u64 | 0x3000;
         unsafe { ((user_mem as usize + 0x2000) as *mut u64).write(pml4e) }
-        let ptpte = (Entry::P | Entry::RW | Entry::PS).bits() as u64;
-        unsafe { ((user_mem as usize + 0x3000) as *mut u64).write(ptpte) }
+        let pdpte = (Entry::P | Entry::RW).bits() as u64 | 0x4000;
+        unsafe { ((user_mem as usize + 0x3000) as *mut u64).write(pdpte) }
+        let pde = (Entry::P | Entry::RW | Entry::PS).bits() as u64;
+        unsafe { ((user_mem as usize + 0x4000) as *mut u64).write(pde) }
 
         let mut vcpu = vm.create_vcpu(0).unwrap();
         let cs = SegRegVal {
