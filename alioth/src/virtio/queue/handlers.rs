@@ -28,6 +28,7 @@ pub fn handle_desc<'m, Q>(
 where
     Q: VirtQueue<'m>,
 {
+    let mut send_irq = false;
     'out: loop {
         if !queue.has_next_desc() {
             break;
@@ -44,15 +45,16 @@ where
                 Ok(None) => break 'out,
                 Ok(Some(len)) => {
                     queue.push_used(desc, len);
-                    if queue.interrupt_enabled() {
-                        fence(Ordering::SeqCst);
-                        irq_sender.queue_irq(q_index)
-                    }
+                    send_irq = send_irq || queue.interrupt_enabled();
                 }
             }
         }
         queue.enable_notification(true);
         fence(Ordering::SeqCst);
+    }
+    if send_irq {
+        fence(Ordering::SeqCst);
+        irq_sender.queue_irq(q_index)
     }
     Ok(())
 }
