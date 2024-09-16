@@ -77,7 +77,9 @@ pub struct UsedElem {
 }
 
 #[derive(Debug)]
-pub struct SplitQueue<'m> {
+pub struct SplitQueue<'q, 'm> {
+    reg: &'q Queue,
+
     ram: &'m Ram,
 
     size: u16,
@@ -96,7 +98,7 @@ pub struct SplitQueue<'m> {
 
 type DescIov = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 
-impl<'m> SplitQueue<'m> {
+impl<'q, 'm> SplitQueue<'q, 'm> {
     pub fn avail_index(&self) -> u16 {
         unsafe { &*self.avail_hdr }.idx
     }
@@ -203,8 +205,8 @@ impl<'m> SplitQueue<'m> {
     }
 }
 
-impl<'m> SplitQueue<'m> {
-    pub fn new(reg: &Queue, ram: &'m Ram, feature: u64) -> Result<Option<SplitQueue<'m>>> {
+impl<'q, 'm> SplitQueue<'q, 'm> {
+    pub fn new(reg: &'q Queue, ram: &'m Ram, feature: u64) -> Result<Option<SplitQueue<'q, 'm>>> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }
@@ -228,6 +230,7 @@ impl<'m> SplitQueue<'m> {
         let used_ring_gpa = used + size_of::<UsedHeader>() as u64;
         let desc = reg.desc.load(Ordering::Acquire);
         Ok(Some(SplitQueue {
+            reg,
             ram,
             size: size as u16,
             avail_hdr: ram.get_ptr(avail)?,
@@ -242,7 +245,11 @@ impl<'m> SplitQueue<'m> {
     }
 }
 
-impl<'m> VirtQueue<'m> for SplitQueue<'m> {
+impl<'q, 'm> VirtQueue<'m> for SplitQueue<'q, 'm> {
+    fn reg(&self) -> &Queue {
+        &self.reg
+    }
+
     fn size(&self) -> u16 {
         self.size
     }

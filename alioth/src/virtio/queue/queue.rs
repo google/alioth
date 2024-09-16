@@ -39,6 +39,7 @@ pub struct Descriptor<'m> {
 }
 
 pub trait VirtQueue<'m> {
+    fn reg(&self) -> &Queue;
     fn size(&self) -> u16;
     fn next_desc(&self) -> Option<Result<Descriptor<'m>>>;
     fn avail_index(&self) -> u16;

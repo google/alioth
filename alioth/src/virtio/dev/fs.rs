@@ -245,17 +245,21 @@ impl Virtio for VuFs {
 }
 
 impl VirtioMio for VuFs {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
+        memory: &'m Ram,
+        irq_sender: &S,
+        queues: &mut [Option<Q>],
     ) -> Result<()> {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         for (index, queue) in queues.iter().enumerate() {
+            let Some(queue) = queue else {
+                continue;
+            };
+            let reg = queue.reg();
             let irq_fd = irq_sender.queue_irqfd(index as _)?;
             self.vu_dev.set_virtq_call(&(index as u64), irq_fd).unwrap();
 
@@ -273,7 +277,7 @@ impl VirtioMio for VuFs {
 
             let virtq_num = VirtqState {
                 index: index as _,
-                val: queue.size.load(Ordering::Acquire) as _,
+                val: reg.size.load(Ordering::Acquire) as _,
             };
             self.vu_dev.set_virtq_num(&virtq_num).unwrap();
             log::info!("set_virtq_num: {virtq_num:x?}");
@@ -288,13 +292,13 @@ impl VirtioMio for VuFs {
             let virtq_addr = VirtqAddr {
                 index: index as _,
                 flags: 0,
-                desc_hva: memory.translate(queue.desc.load(Ordering::Acquire) as _)? as _,
-                used_hva: memory.translate(queue.device.load(Ordering::Acquire) as _)? as _,
-                avail_hva: memory.translate(queue.driver.load(Ordering::Acquire) as _)? as _,
+                desc_hva: memory.translate(reg.desc.load(Ordering::Acquire) as _)? as _,
+                used_hva: memory.translate(reg.device.load(Ordering::Acquire) as _)? as _,
+                avail_hva: memory.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
                 log_guest_addr: 0,
             };
             self.vu_dev.set_virtq_addr(&virtq_addr).unwrap();
-            log::info!("queue: {:x?}", queue);
+            log::info!("queue: {:x?}", reg);
             log::info!("virtq_addr: {virtq_addr:x?}");
         }
         for index in 0..queues.len() {
