@@ -32,6 +32,7 @@ use alioth::loader::{ExecType, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
 use alioth::vfio::VfioParam;
+use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 #[cfg(target_os = "linux")]
@@ -216,6 +217,10 @@ struct RunArgs {
     ))]
     vfio: Vec<String>,
 
+    #[arg(long)]
+    #[arg(long, help(help_text::<BalloonParam>("Add a VirtIO balloon device.")))]
+    balloon: Option<String>,
+
     #[arg(short, long("object"), help = DOC_OBJECTS, value_name = "OBJECT")]
     objects: Vec<String>,
 }
@@ -399,6 +404,12 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
                 .add_virtio_dev("vhost-vsock", p)
                 .context(error::CreateDevice)?,
         };
+    }
+    if let Some(balloon) = args.balloon {
+        let param: BalloonParam =
+            serde_aco::from_args(&balloon, &objects).context(error::ParseArg { arg: balloon })?;
+        vm.add_virtio_dev("virtio-balloon", param)
+            .context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]
     for (index, vfio) in args.vfio.into_iter().enumerate() {

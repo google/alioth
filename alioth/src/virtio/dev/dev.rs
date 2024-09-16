@@ -30,6 +30,7 @@ use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
 use crate::virtio::worker::Waker;
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 
+pub mod balloon;
 pub mod blk;
 pub mod entropy;
 #[cfg(target_os = "linux")]

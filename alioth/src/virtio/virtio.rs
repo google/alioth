@@ -98,6 +98,7 @@ pub enum DeviceId {
     Net = 1,
     Block = 2,
     Entropy = 4,
+    Balloon = 5,
     Socket = 19,
     Iommu = 23,
     Mem = 24,
