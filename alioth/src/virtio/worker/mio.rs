@@ -137,6 +137,10 @@ where
         }
     }
 
+    fn reregister_waker(&mut self, _data: &mut ()) -> Result<()> {
+        Ok(())
+    }
+
     fn activate_dev(
         &mut self,
         dev: &mut D,
