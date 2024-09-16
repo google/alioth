@@ -85,8 +85,8 @@ where
 
     fn submit_waker(&mut self, data: &mut RingData) -> Result<()> {
         let fd = types::Fd(self.waker.0.as_raw_fd());
-        let read = opcode::Read::new(fd, self.efd_buffer.get() as *mut u8, 8);
-        let entry = read.build().user_data(self.waker_token);
+        let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _).multi(true);
+        let entry = poll.build().user_data(self.waker_token);
         unsafe { data.ring.submission().push(&entry) }.unwrap();
         Ok(())
     }
@@ -199,10 +199,6 @@ where
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
         self.waker_token = token;
         Ok(self.waker.clone())
-    }
-
-    fn reregister_waker(&mut self, data: &mut RingData<'_>) -> Result<()> {
-        self.submit_waker(data)
     }
 
     fn activate_dev(
