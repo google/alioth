@@ -28,11 +28,11 @@ use snafu::ResultExt;
 use crate::hv::IoeventFd;
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
 use crate::virtio::{error, IrqSender, Result, FEATURE_BUILT_IN};
 
@@ -117,44 +117,37 @@ impl Virtio for Entropy {
 }
 
 impl VirtioMio for Entropy {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        _registry: &Registry,
         _feature: u64,
-        _memory: &'m Ram,
-        _irq_sender: &S,
-        _queues: &mut [Option<Q>],
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()> {
         Ok(())
     }
 
-    fn handle_queue<'m, Q>(
+    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         index: u16,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
-        let Some(Some(queue)) = queues.get_mut(index as usize) else {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
+        let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        reader_to_queue(&self.name, &mut self.source, index, queue, irq_sender)
+        reader_to_queue(
+            &self.name,
+            &mut self.source,
+            index,
+            queue,
+            active_mio.irq_sender,
+        )
     }
 
-    fn handle_event<'m, Q>(
+    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         _event: &Event,
-        _queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         Ok(())
     }
 

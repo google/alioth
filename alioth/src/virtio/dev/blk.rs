@@ -37,13 +37,15 @@ use snafu::ResultExt;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{Ram, RamBus};
+#[cfg(target_os = "linux")]
+use crate::mem::mapped::Ram;
+use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
-use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
@@ -318,46 +320,33 @@ impl Virtio for Block {
 impl VirtioMio for Block {
     fn reset(&mut self, _registry: &Registry) {}
 
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        _registry: &Registry,
         _feature: u64,
-        _memory: &'m Ram,
-        _irq_sender: &S,
-        _queues: &mut [Option<Q>],
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()> {
         Ok(())
     }
 
-    fn handle_event<'m, Q>(
+    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         _event: &Event,
-        _queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         Ok(())
     }
 
-    fn handle_queue<'m, Q>(
+    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         index: u16,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
-        let Some(Some(queue)) = queues.get_mut(index as usize) else {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
+        let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
         let mut disk = &self.disk;
-        handle_desc(&self.name, index, queue, irq_sender, |desc| {
+        handle_desc(&self.name, index, queue, active_mio.irq_sender, |desc| {
             let written_len = match self.handle_desc(desc) {
                 Err(e) => {
                     log::error!("{}: handle descriptor: {e}", self.name);

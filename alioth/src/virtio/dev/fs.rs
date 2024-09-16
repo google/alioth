@@ -35,14 +35,14 @@ use serde_aco::Help;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{ArcMemPages, Ram, RamBus};
+use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
     error as vu_error, DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature,
 };
-use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
@@ -245,22 +245,19 @@ impl Virtio for VuFs {
 }
 
 impl VirtioMio for VuFs {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        registry: &Registry,
         feature: u64,
-        memory: &'m Ram,
-        irq_sender: &S,
-        queues: &mut [Option<Q>],
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()> {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
-        for (index, queue) in queues.iter().enumerate() {
+        for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
                 continue;
             };
             let reg = queue.reg();
-            let irq_fd = irq_sender.queue_irqfd(index as _)?;
+            let irq_fd = active_mio.irq_sender.queue_irqfd(index as _)?;
             self.vu_dev.set_virtq_call(&(index as u64), irq_fd).unwrap();
 
             let err_fd =
@@ -268,7 +265,7 @@ impl VirtioMio for VuFs {
             self.vu_dev
                 .set_virtq_err(&(index as u64), err_fd.as_raw_fd())
                 .unwrap();
-            registry.register(
+            active_mio.poll.registry().register(
                 &mut SourceFd(&err_fd.as_raw_fd()),
                 Token(index),
                 Interest::READABLE,
@@ -289,19 +286,20 @@ impl VirtioMio for VuFs {
             self.vu_dev.set_virtq_base(&virtq_base).unwrap();
 
             log::info!("set_virtq_base: {virtq_base:x?}");
+            let mem = active_mio.mem;
             let virtq_addr = VirtqAddr {
                 index: index as _,
                 flags: 0,
-                desc_hva: memory.translate(reg.desc.load(Ordering::Acquire) as _)? as _,
-                used_hva: memory.translate(reg.device.load(Ordering::Acquire) as _)? as _,
-                avail_hva: memory.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
+                desc_hva: mem.translate(reg.desc.load(Ordering::Acquire) as _)? as _,
+                used_hva: mem.translate(reg.device.load(Ordering::Acquire) as _)? as _,
+                avail_hva: mem.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
                 log_guest_addr: 0,
             };
             self.vu_dev.set_virtq_addr(&virtq_addr).unwrap();
             log::info!("queue: {:x?}", reg);
             log::info!("virtq_addr: {virtq_addr:x?}");
         }
-        for index in 0..queues.len() {
+        for index in 0..active_mio.queues.len() {
             let virtq_enable = VirtqState {
                 index: index as _,
                 val: 1,
@@ -311,7 +309,7 @@ impl VirtioMio for VuFs {
         }
         if let Some(channel) = self.vu_dev.get_channel() {
             channel.set_nonblocking(true)?;
-            registry.register(
+            active_mio.poll.registry().register(
                 &mut SourceFd(&channel.as_raw_fd()),
                 Token(self.num_queues as _),
                 Interest::READABLE,
@@ -320,18 +318,13 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_event<'m, Q>(
+    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         event: &Event,
-        queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         let q_index = event.token().0;
-        if q_index < queues.len() {
+        if q_index < active_mio.queues.len() {
             return vu_error::QueueErr {
                 index: q_index as u16,
             }
@@ -411,16 +404,11 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_queue<'m, Q>(
+    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         index: u16,
-        _queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         unreachable!(
             "{}: queue {index} notification should go to vhost-user backend",
             self.name
