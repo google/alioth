@@ -117,13 +117,13 @@ impl Virtio for Entropy {
 }
 
 impl VirtioMio for Entropy {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         _registry: &Registry,
         _feature: u64,
-        _memory: &Ram,
-        _irq_sender: &impl IrqSender,
-        _queues: &[Queue],
+        _memory: &'m Ram,
+        _irq_sender: &S,
+        _queues: &mut [Option<Q>],
     ) -> Result<()> {
         Ok(())
     }
