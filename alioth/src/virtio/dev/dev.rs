@@ -224,14 +224,7 @@ where
     }
 }
 
-pub trait BackendEvent {
-    fn token(&self) -> u64;
-}
-
 pub trait Backend<D: Virtio>: Send + 'static {
-    type Event: BackendEvent;
-    type Data<'m>;
-
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>>;
     fn activate_dev(
         &mut self,
@@ -241,22 +234,6 @@ pub trait Backend<D: Virtio>: Send + 'static {
         irq_sender: &impl IrqSender,
         queues: &[Queue],
     ) -> Result<()>;
-    fn handle_event<'m, Q: VirtQueue<'m>>(
-        &mut self,
-        dev: &mut D,
-        event: &Self::Event,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        data: &mut Self::Data<'m>,
-    ) -> Result<()>;
-    fn handle_queue<'m, Q: VirtQueue<'m>>(
-        &mut self,
-        dev: &mut D,
-        index: u16,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        data: &mut Self::Data<'m>,
-    ) -> Result<()>;
     fn reset(&self, dev: &mut D) -> Result<()>;
     fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
@@ -264,6 +241,16 @@ pub trait Backend<D: Virtio>: Send + 'static {
         queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()>;
+}
+
+pub trait BackendEvent {
+    fn token(&self) -> u64;
+}
+
+pub trait ActiveBackend<D: Virtio> {
+    type Event: BackendEvent;
+    fn handle_event(&mut self, dev: &mut D, event: &Self::Event) -> Result<()>;
+    fn handle_queue(&mut self, dev: &mut D, index: u16) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -283,18 +270,13 @@ where
     D: Virtio,
     S: IrqSender,
 {
-    fn handle_wake_events<'m, B: Backend<D>, Q: VirtQueue<'m>>(
-        &mut self,
-        queues: &mut [Option<Q>],
-        irq_sender: &S,
-        backend: &mut B,
-        data: &mut B::Data<'m>,
-    ) -> Result<()> {
+    fn handle_wake_events<B>(&mut self, backend: &mut B) -> Result<()>
+    where
+        B: ActiveBackend<D>,
+    {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                WakeEvent::Notify { q_index } => {
-                    backend.handle_queue(&mut self.dev, q_index, queues, irq_sender, data)?
-                }
+                WakeEvent::Notify { q_index } => backend.handle_queue(&mut self.dev, q_index)?,
                 WakeEvent::Shutdown => {
                     self.state = WorkerState::Shutdown;
                     break;
@@ -336,21 +318,14 @@ where
         None
     }
 
-    pub fn handle_event<'m, B, Q: VirtQueue<'m>>(
-        &mut self,
-        queues: &mut [Option<Q>],
-        event: &B::Event,
-        irq_sender: &S,
-        backend: &mut B,
-        data: &mut B::Data<'m>,
-    ) -> Result<()>
+    pub fn handle_event<B>(&mut self, event: &B::Event, backend: &mut B) -> Result<()>
     where
-        B: Backend<D>,
+        B: ActiveBackend<D>,
     {
         if event.token() == TOKEN_WARKER {
-            self.handle_wake_events(queues, irq_sender, backend, data)
+            self.handle_wake_events(backend)
         } else {
-            backend.handle_event(&mut self.dev, event, queues, irq_sender, data)
+            backend.handle_event(&mut self.dev, event)
         }
     }
 }
