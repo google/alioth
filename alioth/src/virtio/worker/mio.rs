@@ -32,32 +32,23 @@ use crate::virtio::worker::Waker;
 use crate::virtio::{error, IrqSender, Result};
 
 pub trait VirtioMio: Virtio {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        registry: &Registry,
         feature: u64,
-        memory: &'m Ram,
-        irq_sender: &S,
-        queues: &mut [Option<Q>],
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()>;
-    fn handle_queue<'m, Q>(
+
+    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         index: u16,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>;
-    fn handle_event<'m, Q>(
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()>;
+
+    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         event: &Event,
-        queues: &mut [Option<Q>],
-        irq_sender: &impl IrqSender,
-        registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>;
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()>;
 
     fn reset(&mut self, registry: &Registry);
 }
@@ -149,16 +140,14 @@ where
         queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()> {
-        context
-            .dev
-            .activate(self.poll.registry(), feature, memory, irq_sender, queues)?;
-
         let mut events = Events::with_capacity(128);
         let mut active_mio = ActiveMio {
             queues,
             irq_sender,
             poll: &mut self.poll,
+            mem: memory,
         };
+        context.dev.activate(feature, &mut active_mio)?;
         'out: loop {
             active_mio
                 .poll
@@ -174,13 +163,14 @@ where
     }
 }
 
-struct ActiveMio<'a, Q, S> {
-    queues: &'a mut [Option<Q>],
-    irq_sender: &'a S,
-    poll: &'a mut Poll,
+pub struct ActiveMio<'a, 'm, Q, S> {
+    pub queues: &'a mut [Option<Q>],
+    pub irq_sender: &'a S,
+    pub poll: &'a mut Poll,
+    pub mem: &'m Ram,
 }
 
-impl<'a, 'm, Q, S, D> ActiveBackend<D> for ActiveMio<'a, Q, S>
+impl<'a, 'm, Q, S, D> ActiveBackend<D> for ActiveMio<'a, 'm, Q, S>
 where
     D: VirtioMio,
     Q: VirtQueue<'m>,
@@ -189,16 +179,14 @@ where
     type Event = Event;
     fn handle_event(&mut self, dev: &mut D, event: &Self::Event) -> Result<()> {
         let token = event.token().0 as u64;
-        let registry = self.poll.registry();
         if token & TOKEN_QUEUE == TOKEN_QUEUE {
-            dev.handle_queue(token as u16, self.queues, self.irq_sender, registry)
+            dev.handle_queue(token as u16, self)
         } else {
-            dev.handle_event(event, self.queues, self.irq_sender, registry)
+            dev.handle_event(event, self)
         }
     }
 
     fn handle_queue(&mut self, dev: &mut D, index: u16) -> Result<()> {
-        let registry = self.poll.registry();
-        dev.handle_queue(index, self.queues, self.irq_sender, registry)
+        dev.handle_queue(index, self)
     }
 }

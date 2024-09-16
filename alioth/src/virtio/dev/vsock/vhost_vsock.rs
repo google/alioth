@@ -29,14 +29,14 @@ use serde_aco::Help;
 
 use crate::ffi;
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::mem::LayoutUpdated;
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vhost::bindings::{VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND};
 use crate::virtio::vhost::{error, UpdateVsockMem, VhostDev};
-use crate::virtio::worker::mio::{Mio, VirtioMio};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
@@ -159,24 +159,21 @@ impl Virtio for VhostVsock {
 }
 
 impl VirtioMio for VhostVsock {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        registry: &Registry,
         feature: u64,
-        memory: &'m Ram,
-        irq_sender: &S,
-        queues: &mut [Option<Q>],
+        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()> {
         self.vhost_dev.set_features(&feature)?;
         for (index, (queue, error_fd)) in
-            zip(queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
+            zip(active_mio.queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
         {
             let Some(queue) = queue else {
                 continue;
             };
             let reg = queue.reg();
             let index = index as u32;
-            let fd = irq_sender.queue_irqfd(index as _)?;
+            let fd = active_mio.irq_sender.queue_irqfd(index as _)?;
             self.vhost_dev.set_virtq_call(&VirtqFile { index, fd })?;
 
             let err_fd =
@@ -185,7 +182,7 @@ impl VirtioMio for VhostVsock {
                 index,
                 fd: err_fd.as_raw_fd(),
             })?;
-            registry.register(
+            active_mio.poll.registry().register(
                 &mut SourceFd(&err_fd.as_raw_fd()),
                 Token(index as _),
                 Interest::READABLE,
@@ -198,12 +195,13 @@ impl VirtioMio for VhostVsock {
             })?;
             self.vhost_dev
                 .set_virtq_base(&VirtqState { index, val: 0 })?;
+            let mem = active_mio.mem;
             let virtq_addr = VirtqAddr {
                 index,
                 flags: 0,
-                desc_hva: memory.translate(reg.desc.load(Ordering::Acquire))? as _,
-                used_hva: memory.translate(reg.device.load(Ordering::Acquire))? as _,
-                avail_hva: memory.translate(reg.driver.load(Ordering::Acquire))? as _,
+                desc_hva: mem.translate(reg.desc.load(Ordering::Acquire))? as _,
+                used_hva: mem.translate(reg.device.load(Ordering::Acquire))? as _,
+                avail_hva: mem.translate(reg.driver.load(Ordering::Acquire))? as _,
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
@@ -231,16 +229,11 @@ impl VirtioMio for VhostVsock {
         }
     }
 
-    fn handle_event<'m, Q>(
+    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         event: &Event,
-        _queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         let q_index = event.token();
         error::VhostQueueErr {
             dev: "vsock",
@@ -250,16 +243,11 @@ impl VirtioMio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue<'m, Q>(
+    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
         index: u16,
-        _queues: &mut [Option<Q>],
-        _irq_sender: &impl IrqSender,
-        _registry: &Registry,
-    ) -> Result<()>
-    where
-        Q: VirtQueue<'m>,
-    {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
+    ) -> Result<()> {
         match index {
             0 | 1 => unreachable!("{}: queue 0 and 1 are offloaded to kernel", self.name),
             2 => log::info!("{}: event queue buffer available", self.name),
