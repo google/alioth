@@ -340,13 +340,13 @@ impl VirtioMio for Net {
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
     }
 
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         registry: &Registry,
         feature: u64,
-        _memory: &Ram,
-        _irq_sender: &impl IrqSender,
-        _queues: &[Queue],
+        _memory: &'m Ram,
+        _irq_sender: &S,
+        _queues: &mut [Option<Q>],
     ) -> Result<()> {
         self.driver_feature = NetFeature::from_bits_retain(feature);
         let socket = &mut self.tap_sockets[0];
@@ -431,12 +431,12 @@ impl VirtioMio for Net {
 }
 
 impl VirtioIoUring for Net {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         feature: u64,
         _memory: &Ram,
-        _irq_sender: &impl IrqSender,
-        _queues: &[Queue],
+        _irq_sender: &S,
+        _queues: &mut [Option<Q>],
     ) -> Result<()> {
         self.driver_feature = NetFeature::from_bits_retain(feature);
         let socket = &mut self.tap_sockets[0];

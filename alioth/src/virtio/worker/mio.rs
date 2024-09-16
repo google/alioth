@@ -32,13 +32,13 @@ use crate::virtio::worker::Waker;
 use crate::virtio::{error, IrqSender, Result};
 
 pub trait VirtioMio: Virtio {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
+        memory: &'m Ram,
+        irq_sender: &S,
+        queues: &mut [Option<Q>],
     ) -> Result<()>;
     fn handle_queue<'m, Q>(
         &mut self,
@@ -136,17 +136,6 @@ where
         }
     }
 
-    fn activate_dev(
-        &mut self,
-        dev: &mut D,
-        feature: u64,
-        memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
-    ) -> Result<()> {
-        dev.activate(self.poll.registry(), feature, memory, irq_sender, queues)
-    }
-
     fn reset(&self, dev: &mut D) -> Result<()> {
         dev.reset(self.poll.registry());
         Ok(())
@@ -154,10 +143,16 @@ where
 
     fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
+        feature: u64,
+        memory: &'m Ram,
         context: &mut Context<D, S>,
         queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()> {
+        context
+            .dev
+            .activate(self.poll.registry(), feature, memory, irq_sender, queues)?;
+
         let mut events = Events::with_capacity(128);
         let mut active_mio = ActiveMio {
             queues,

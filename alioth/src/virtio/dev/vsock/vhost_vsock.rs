@@ -159,18 +159,22 @@ impl Virtio for VhostVsock {
 }
 
 impl VirtioMio for VhostVsock {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         registry: &Registry,
         feature: u64,
-        memory: &Ram,
-        irq_sender: &impl crate::virtio::IrqSender,
-        queues: &[crate::virtio::queue::Queue],
+        memory: &'m Ram,
+        irq_sender: &S,
+        queues: &mut [Option<Q>],
     ) -> Result<()> {
         self.vhost_dev.set_features(&feature)?;
         for (index, (queue, error_fd)) in
             zip(queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
         {
+            let Some(queue) = queue else {
+                continue;
+            };
+            let reg = queue.reg();
             let index = index as u32;
             let fd = irq_sender.queue_irqfd(index as _)?;
             self.vhost_dev.set_virtq_call(&VirtqFile { index, fd })?;
@@ -190,16 +194,16 @@ impl VirtioMio for VhostVsock {
 
             self.vhost_dev.set_virtq_num(&VirtqState {
                 index: index as _,
-                val: queue.size.load(Ordering::Acquire) as _,
+                val: reg.size.load(Ordering::Acquire) as _,
             })?;
             self.vhost_dev
                 .set_virtq_base(&VirtqState { index, val: 0 })?;
             let virtq_addr = VirtqAddr {
                 index,
                 flags: 0,
-                desc_hva: memory.translate(queue.desc.load(Ordering::Acquire))? as _,
-                used_hva: memory.translate(queue.device.load(Ordering::Acquire))? as _,
-                avail_hva: memory.translate(queue.driver.load(Ordering::Acquire))? as _,
+                desc_hva: memory.translate(reg.desc.load(Ordering::Acquire))? as _,
+                used_hva: memory.translate(reg.device.load(Ordering::Acquire))? as _,
+                avail_hva: memory.translate(reg.driver.load(Ordering::Acquire))? as _,
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;

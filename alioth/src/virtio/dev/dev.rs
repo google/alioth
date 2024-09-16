@@ -226,17 +226,11 @@ where
 
 pub trait Backend<D: Virtio>: Send + 'static {
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>>;
-    fn activate_dev(
-        &mut self,
-        dev: &mut D,
-        feature: u64,
-        memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
-    ) -> Result<()>;
     fn reset(&self, dev: &mut D) -> Result<()>;
     fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
+        feature: u64,
+        memory: &'m Ram,
         context: &mut Context<D, S>,
         queues: &mut [Option<Q>],
         irq_sender: &S,
@@ -362,6 +356,26 @@ where
         Ok((handle, waker))
     }
 
+    fn event_loop<'m, Q>(
+        &mut self,
+        queues: &mut [Option<Q>],
+        irq_sender: &S,
+        feature: u64,
+        ram: &'m Ram,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+    {
+        log::debug!(
+            "{}: activated with {:x?} {:x?}",
+            self.context.dev.name(),
+            VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
+            D::Feature::from_bits_truncate(feature)
+        );
+        self.backend
+            .event_loop(feature, ram, &mut self.context, queues, irq_sender)
+    }
+
     fn loop_until_reset(&mut self) -> Result<()> {
         let Some((feature, irq_sender)) = self.context.wait_start() else {
             return Ok(());
@@ -369,27 +383,13 @@ where
         let memory = self.context.memory.clone();
         let ram = memory.lock_layout();
         let feature = feature & !VirtioFeature::ACCESS_PLATFORM.bits();
-        self.backend.activate_dev(
-            &mut self.context.dev,
-            feature,
-            &ram,
-            irq_sender.as_ref(),
-            &self.context.queue_regs,
-        )?;
-        log::debug!(
-            "{}: activated with {:x?} {:x?}",
-            self.context.dev.name(),
-            VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
-            D::Feature::from_bits_truncate(feature)
-        );
+        let queue_regs = self.context.queue_regs.clone();
         if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
             todo!()
         } else {
             let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
-            let queues: Result<Box<_>> = self.context.queue_regs.iter().map(new_queue).collect();
-            let mut queues = queues?;
-            self.backend
-                .event_loop(&mut self.context, &mut queues, &irq_sender)?;
+            let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
+            self.event_loop(&mut (queues?), &irq_sender, feature, &ram)?;
         };
         self.backend.reset(&mut self.context.dev)?;
         Ok(())

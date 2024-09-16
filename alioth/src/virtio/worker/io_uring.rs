@@ -37,12 +37,12 @@ pub enum BufferAction {
 }
 
 pub trait VirtioIoUring: Virtio {
-    fn activate(
+    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
         feature: u64,
         memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
+        irq_sender: &S,
+        queues: &mut [Option<Q>],
     ) -> Result<()>;
 
     fn handle_buffer(
@@ -128,27 +128,20 @@ where
         Ok(self.waker.clone())
     }
 
-    fn activate_dev(
-        &mut self,
-        dev: &mut D,
-        feature: u64,
-        memory: &Ram,
-        irq_sender: &impl IrqSender,
-        queues: &[Queue],
-    ) -> Result<()> {
-        dev.activate(feature, memory, irq_sender, queues)
-    }
-
     fn reset(&self, _dev: &mut D) -> Result<()> {
         Ok(())
     }
 
     fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
         &mut self,
+        feature: u64,
+        memory: &'m Ram,
         context: &mut Context<D, S>,
         queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()> {
+        context.dev.activate(feature, memory, irq_sender, queues)?;
+
         let queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
         let mut ring = io_uring::IoUring::new(RING_SIZE as u32)?;
         let mut queue_count = 0;
