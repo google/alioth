@@ -16,7 +16,7 @@ bitflags = "2.4.0"
 bitfield = "0.17.0"
 log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
-libc = "0.2.158"
+libc = "0.2.159"
 parking_lot.workspace = true
 macros.workspace = true
 serde.workspace = true
