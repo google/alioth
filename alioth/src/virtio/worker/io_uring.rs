@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::mpsc::Receiver;
@@ -63,7 +62,6 @@ const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = 1 << 62 | 1 << 61;
 
 pub struct IoUring<E> {
-    efd_buffer: UnsafeCell<u64>,
     queue_ioeventfds: Arc<[(E, bool)]>,
     queue_submits: Box<[QueueSubmit]>,
     waker: Arc<Waker>,
@@ -77,8 +75,8 @@ where
     fn submit_queue_ioeventfd(&self, index: u16, fd: &E, data: &mut RingData) -> Result<()> {
         let token = index as u64 | TOKEN_QUEUE;
         let fd = types::Fd(fd.as_fd().as_raw_fd());
-        let read = opcode::Read::new(fd, self.efd_buffer.get() as *mut u8, 8);
-        let entry = read.build().user_data(token);
+        let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _).multi(true);
+        let entry = poll.build().user_data(token);
         unsafe { data.ring.submission().push(&entry) }.unwrap();
         Ok(())
     }
@@ -105,7 +103,6 @@ where
     {
         let waker = Waker::new_eventfd()?;
         let ring = IoUring {
-            efd_buffer: UnsafeCell::new(0),
             queue_ioeventfds: fds,
             waker: Arc::new(waker),
             waker_token: 0,
@@ -267,10 +264,7 @@ where
         };
 
         let queue_submit = self.queue_submits.get_mut(index as usize).unwrap();
-        submit_buffer(q, queue_submit, dev, index, irq_sender, data)?;
-        let (fd, _) = self.queue_ioeventfds.get(index as usize).unwrap();
-        self.submit_queue_ioeventfd(index, fd, data)?;
-        Ok(())
+        submit_buffer(q, queue_submit, dev, index, irq_sender, data)
     }
 
     fn reset(&self, _dev: &mut D) -> Result<()> {
