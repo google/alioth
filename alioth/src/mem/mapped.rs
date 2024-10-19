@@ -33,7 +33,7 @@ use libc::{
 use libc::{madvise, MADV_HUGEPAGE, MFD_CLOEXEC};
 use parking_lot::{RwLock, RwLockReadGuard};
 use snafu::ResultExt;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::ffi;
 use crate::mem::addressable::{Addressable, SlotBackend};
@@ -163,28 +163,28 @@ impl ArcMemPages {
         T: FromBytes,
     {
         let s = self.get_partial_slice(offset, size_of::<T>())?;
-        match FromBytes::read_from(s) {
-            None => error::ExceedsLimit {
+        match FromBytes::read_from_bytes(s) {
+            Err(_) => error::ExceedsLimit {
                 addr: offset as u64,
                 size: size_of::<T>() as u64,
             }
             .fail(),
-            Some(v) => Ok(v),
+            Ok(v) => Ok(v),
         }
     }
 
     pub fn write<T>(&self, offset: usize, val: &T) -> Result<(), Error>
     where
-        T: AsBytes,
+        T: IntoBytes + Immutable,
     {
         let s = self.get_partial_slice_mut(offset, size_of::<T>())?;
-        match AsBytes::write_to(val, s) {
-            None => error::ExceedsLimit {
+        match IntoBytes::write_to(val, s) {
+            Err(_) => error::ExceedsLimit {
                 addr: offset as u64,
                 size: size_of::<T>() as u64,
             }
             .fail(),
-            Some(()) => Ok(()),
+            Ok(()) => Ok(()),
         }
     }
 
@@ -335,10 +335,10 @@ impl Ram {
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
     where
-        T: FromBytes + AsBytes,
+        T: FromBytes + IntoBytes,
     {
         let mut val = T::new_zeroed();
-        let buf = val.as_bytes_mut();
+        let buf = val.as_mut_bytes();
         let host_ref = self.get_partial_slice(gpa, size_of::<T>() as u64)?;
         if host_ref.len() == buf.len() {
             buf.copy_from_slice(host_ref);
@@ -357,7 +357,7 @@ impl Ram {
 
     pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
-        T: AsBytes,
+        T: IntoBytes + Immutable,
     {
         let buf = val.as_bytes();
         let host_ref = self.get_partial_slice_mut(gpa, size_of::<T>() as u64)?;
@@ -438,7 +438,7 @@ impl RamBus {
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
     where
-        T: FromBytes + AsBytes,
+        T: FromBytes + IntoBytes,
     {
         let ram = self.ram.read();
         ram.read(gpa)
@@ -446,7 +446,7 @@ impl RamBus {
 
     pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
-        T: AsBytes,
+        T: IntoBytes + Immutable,
     {
         let ram = self.ram.read();
         ram.write(gpa, val)
@@ -504,11 +504,11 @@ mod test {
     use std::mem::size_of;
 
     use libc::{PROT_READ, PROT_WRITE};
-    use zerocopy::{AsBytes, FromBytes, FromZeroes};
+    use zerocopy::{FromBytes, Immutable, IntoBytes};
 
     use super::{ArcMemPages, RamBus};
 
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+    #[derive(Debug, IntoBytes, FromBytes, Immutable, PartialEq, Eq)]
     #[repr(C)]
     struct MyStruct {
         data: [u32; 8],

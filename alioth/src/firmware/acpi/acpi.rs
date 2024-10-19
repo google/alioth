@@ -17,27 +17,23 @@ pub mod reg;
 
 use std::mem::{offset_of, size_of};
 
-use zerocopy::{transmute, AsBytes, FromBytes};
+use zerocopy::{transmute, FromBytes, IntoBytes};
 
 use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{
     APIC_START, IOAPIC_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_SLEEP_STATUS,
 };
-use crate::unsafe_impl_zerocopy;
 use crate::utils::wrapping_sum;
 
 use bindings::{
     AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
-    AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg,
-    AcpiTableRsdp, AcpiTableXsdt, FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC,
+    AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg1,
+    AcpiTableRsdp, AcpiTableXsdt3, FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC,
     MADT_LOCAL_X2APIC, MADT_REVISION, MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG,
     SIG_RSDP, SIG_XSDT, XSDT_REVISION,
 };
 use reg::FADT_RESET_VAL;
-
-unsafe_impl_zerocopy!(AcpiTableMcfg<1>, FromBytes, FromZeroes, AsBytes);
-unsafe_impl_zerocopy!(AcpiTableXsdt<3>, FromBytes, FromZeroes, AsBytes);
 
 const OEM_ID: [u8; 6] = *b"ALIOTH";
 
@@ -66,10 +62,10 @@ pub fn create_rsdp(xsdt_addr: u64) -> AcpiTableRsdp {
 }
 
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#extended-system-description-table-fields-xsdt
-pub fn create_xsdt<const N: usize>(entries: [u64; N]) -> AcpiTableXsdt<N> {
-    let total_length = size_of::<AcpiTableHeader>() + size_of::<u64>() * N;
+pub fn create_xsdt(entries: [u64; 3]) -> AcpiTableXsdt3 {
+    let total_length = size_of::<AcpiTableHeader>() + size_of::<u64>() * 3;
     let entries = entries.map(|e| transmute!(e));
-    AcpiTableXsdt {
+    AcpiTableXsdt3 {
         header: AcpiTableHeader {
             signature: SIG_XSDT,
             length: total_length as u32,
@@ -171,11 +167,11 @@ pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadt
     (madt, io_apic, x2apics)
 }
 
-pub fn create_mcfg() -> AcpiTableMcfg<1> {
-    let mut mcfg = AcpiTableMcfg {
+pub fn create_mcfg() -> AcpiTableMcfg1 {
+    let mut mcfg = AcpiTableMcfg1 {
         header: AcpiTableHeader {
             signature: SIG_MCFG,
-            length: size_of::<AcpiTableMcfg<1>>() as u32,
+            length: size_of::<AcpiTableMcfg1>() as u32,
             revision: MCFG_REVISION,
             ..default_header()
         },
@@ -210,9 +206,9 @@ impl AcpiTable {
         self.rsdp.extended_checksum = self.rsdp.extended_checksum.wrapping_sub(ext_sum);
 
         for pointer in self.table_pointers.iter() {
-            let old_val: u64 = FromBytes::read_from_prefix(&self.tables[*pointer..]).unwrap();
+            let (old_val, _) = u64::read_from_prefix(&self.tables[*pointer..]).unwrap();
             let new_val = old_val.wrapping_sub(old_addr).wrapping_add(table_addr);
-            AsBytes::write_to_prefix(&new_val, &mut self.tables[*pointer..]).unwrap();
+            IntoBytes::write_to_prefix(&new_val, &mut self.tables[*pointer..]).unwrap();
         }
 
         for (start, len) in self.table_checksums.iter() {

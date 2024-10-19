@@ -420,14 +420,13 @@ where
         let mut buf: [u8; 4096] = transmute!([0u32; 1024]);
         cdev.dev.fd().read_at(&mut buf, region_config.offset)?;
 
-        let header = CommonHeader::ref_from_prefix(&buf).unwrap();
-        if header.header_type != HeaderType::Device as u8 {
+        let (mut dev_header, _) = DeviceHeader::read_from_prefix(&buf).unwrap();
+        if dev_header.common.header_type != HeaderType::Device as u8 {
             return error::NotSupportedHeader {
-                ty: header.header_type,
+                ty: dev_header.common.header_type,
             }
             .fail();
         }
-        let mut dev_header = DeviceHeader::read_from_prefix(&buf).unwrap();
         dev_header.intx_pin = 0;
         dev_header.common.command = Command::empty();
 
@@ -438,9 +437,11 @@ where
         if dev_header.common.status.contains(Status::CAP) {
             let mut cap_offset = dev_header.capability_pointer as usize;
             while cap_offset != 0 {
-                let cap_header = PciCapHdr::ref_from_prefix(&buf[cap_offset..]).unwrap();
+                let (cap_header, _) = PciCapHdr::ref_from_prefix(&buf[cap_offset..]).unwrap();
                 if cap_header.id == PciCapId::Msix as u8 {
-                    msix_cap = MsixCap::read_from_prefix(&buf[cap_offset..]);
+                    if let Ok((c, _)) = MsixCap::read_from_prefix(&buf[cap_offset..]) {
+                        msix_cap = Some(c)
+                    }
                     msix_msg_ctrl_offset = cap_offset + MsixCap::OFFSET_CONTROL;
                 } else if cap_header.id == PciCapId::Msi as u8 {
                     log::trace!("{}: hiding MSI cap at {cap_offset:#x}", cdev.name);

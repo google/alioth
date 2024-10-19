@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 pub const SIG_RSDP: [u8; 8] = *b"RSD PTR ";
 pub const SIG_XSDT: [u8; 4] = *b"XSDT";
@@ -26,7 +26,7 @@ pub const SIG_DSDT: [u8; 4] = *b"DSDT";
 pub const RSDP_REVISION: u8 = 2;
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiTableRsdp {
     pub signature: [u8; 8],
     pub checksum: u8,
@@ -40,7 +40,7 @@ pub struct AcpiTableRsdp {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiTableHeader {
     pub signature: [u8; 4],
     pub length: u32,
@@ -55,15 +55,22 @@ pub struct AcpiTableHeader {
 
 pub const XSDT_REVISION: u8 = 1;
 
+#[derive(Debug, FromBytes)]
 #[repr(C, align(4))]
-#[derive(Debug, Clone)]
 pub struct AcpiTableXsdt<const N: usize> {
     pub header: AcpiTableHeader,
     pub entries: [[u32; 2]; N],
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
+pub struct AcpiTableXsdt3 {
+    pub header: AcpiTableHeader,
+    pub entries: [[u32; 2]; 3],
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiGenericAddress {
     pub space_id: u8,
     pub bit_width: u8,
@@ -76,7 +83,7 @@ pub const FADT_MAJOR_VERSION: u8 = 6;
 pub const FADT_MINOR_VERSION: u8 = 4;
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiTableFadt {
     pub header: AcpiTableHeader,
     pub facs: u32,
@@ -141,7 +148,7 @@ pub struct AcpiTableFadt {
 pub const MADT_REVISION: u8 = 6;
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiTableMadt {
     pub header: AcpiTableHeader,
     pub address: u32,
@@ -152,14 +159,14 @@ pub const MADT_IO_APIC: u8 = 1;
 pub const MADT_LOCAL_X2APIC: u8 = 9;
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiSubtableHeader {
     pub type_: u8,
     pub length: u8,
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiMadtLocalX2apic {
     pub header: AcpiSubtableHeader,
     pub reserved: u16,
@@ -169,7 +176,7 @@ pub struct AcpiMadtLocalX2apic {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiMadtIoApic {
     pub header: AcpiSubtableHeader,
     pub id: u8,
@@ -179,7 +186,7 @@ pub struct AcpiMadtIoApic {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, AsBytes, Default, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiMcfgAllocation {
     pub address: [u32; 2],
     pub pci_segment: u16,
@@ -196,6 +203,22 @@ pub struct AcpiTableMcfg<const N: usize> {
     pub header: AcpiTableHeader,
     pub reserved: [u8; 8],
     pub allocations: [AcpiMcfgAllocation; N],
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
+pub struct AcpiTableMcfg1 {
+    pub header: AcpiTableHeader,
+    pub reserved: [u8; 8],
+    pub allocations: [AcpiMcfgAllocation; 1],
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
+pub struct AcpiTableMcfg3 {
+    pub header: AcpiTableHeader,
+    pub reserved: [u8; 8],
+    pub allocations: [AcpiMcfgAllocation; 3],
 }
 
 bitfield! {
@@ -219,7 +242,7 @@ mod test {
 
     use super::{
         AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation, AcpiTableFadt,
-        AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg, AcpiTableRsdp, AcpiTableXsdt,
+        AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg1, AcpiTableRsdp, AcpiTableXsdt,
     };
 
     #[test]
@@ -232,7 +255,7 @@ mod test {
         assert_eq!(size_of::<AcpiMadtIoApic>(), 12);
         assert_eq!(size_of::<AcpiMadtLocalX2apic>(), 16);
         assert_eq!(size_of::<AcpiMcfgAllocation>(), 16);
-        assert_eq!(size_of::<AcpiTableMcfg<1>>(), 60);
+        assert_eq!(size_of::<AcpiTableMcfg1>(), 60);
         assert_eq!(size_of::<AcpiTableXsdt<0>>(), 36);
         assert_eq!(size_of::<AcpiTableXsdt<4>>(), 36 + 4 * 8);
     }

@@ -24,7 +24,7 @@ use crate::arch::reg::{
 };
 use crate::mem::mapped::RamBus;
 use snafu::ResultExt;
-use zerocopy::{AsBytes, FromZeroes};
+use zerocopy::{FromZeros, IntoBytes};
 
 use crate::arch::layout::{
     BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
@@ -60,7 +60,7 @@ pub fn load<P: AsRef<Path>>(
         .seek(SeekFrom::Start(SETUP_HEADER_OFFSET))
         .context(access_kernel)?;
     kernel
-        .read_exact(boot_params.hdr.as_bytes_mut())
+        .read_exact(boot_params.hdr.as_mut_bytes())
         .context(access_kernel)?;
 
     // For backwards compatibility, if the setup_sects field contains 0,

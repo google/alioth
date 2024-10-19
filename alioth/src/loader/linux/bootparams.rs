@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bitflags::bitflags;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 pub const MAGIC_AA55: u16 = 0xaa55;
 pub const MAGIC_HDRS: u32 = 0x53726448; // "HdrS"
@@ -45,7 +45,7 @@ bitflags! {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable)]
 pub struct SetupHeader {
     pub setup_sects: u8,
     pub root_flags: u16,
@@ -97,7 +97,7 @@ pub const E820_PMEM: u32 = 7;
 pub const E820_RESERVED_KERN: u32 = 128;
 
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable)]
 pub struct BootE820Entry {
     pub addr: u64,
     pub size: u64,
@@ -105,7 +105,7 @@ pub struct BootE820Entry {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct BootParams {
     pub screen_info: [u8; 64],
     pub apm_bios_info: [u8; 20],

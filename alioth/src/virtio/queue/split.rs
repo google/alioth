@@ -17,14 +17,14 @@ use std::sync::atomic::{fence, Ordering};
 
 use bitflags::bitflags;
 use macros::Layout;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::{error, Result, VirtioFeature};
 
 #[repr(C, align(16))]
-#[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct Desc {
     pub addr: u64,
     pub len: u32,

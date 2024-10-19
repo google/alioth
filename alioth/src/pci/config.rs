@@ -19,16 +19,19 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use macros::Layout;
 use parking_lot::RwLock;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
-use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
+use crate::{assign_bits, impl_mmio_for_zerocopy, mask_bits, mem};
+
+#[derive(Clone, Copy, Default, IntoBytes, FromBytes, KnownLayout, Immutable)]
+#[repr(transparent)]
+pub struct Command(u16);
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Command: u16 {
+    impl Command: u16 {
         const INTX_DISABLE = 1 << 10;
         const SERR = 1 << 8;
         const PARITY_ERR = 1 << 6;
@@ -43,11 +46,19 @@ bitflags! {
             | Self::IO.bits();
     }
 }
-unsafe_impl_zerocopy!(Command, FromBytes, FromZeroes, AsBytes);
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
+#[derive(Clone, Copy, Default, IntoBytes, FromBytes, KnownLayout, Immutable)]
+#[repr(transparent)]
+pub struct Status(u16);
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Status: u16 {
+    impl Status: u16 {
         const PARITY_ERR = 1 << 15;
         const SYSTEM_ERR = 1 << 14;
         const RECEIVED_MASTER_ABORT = 1 << 13;
@@ -65,7 +76,12 @@ bitflags! {
             | Self::MASTER_PARITY_ERR.bits();
     }
 }
-unsafe_impl_zerocopy!(Status, FromBytes, FromZeroes, AsBytes);
+
+impl std::fmt::Debug for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -74,7 +90,7 @@ pub enum HeaderType {
     Bridge = 1,
 }
 
-#[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes, Layout)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, KnownLayout, IntoBytes, Layout)]
 #[repr(C, align(8))]
 pub struct CommonHeader {
     pub vendor: u16,
@@ -91,7 +107,7 @@ pub struct CommonHeader {
     pub bist: u8,
 }
 
-#[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes, Layout)]
+#[derive(Debug, Clone, Default, FromBytes, Immutable, KnownLayout, IntoBytes, Layout)]
 #[repr(C, align(8))]
 pub struct DeviceHeader {
     pub common: CommonHeader,
@@ -107,6 +123,7 @@ pub struct DeviceHeader {
     pub min_gnt: u8,
     pub max_lat: u8,
 }
+impl_mmio_for_zerocopy!(DeviceHeader);
 
 pub const OFFSET_BAR0: usize = DeviceHeader::OFFSET_BARS;
 pub const OFFSET_BAR5: usize = OFFSET_BAR0 + 5 * size_of::<u32>();
@@ -376,19 +393,10 @@ impl Mmio for EmulatedHeader {
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
-        let offset = offset as usize;
         let data = self.data.read();
-        let bytes = match &data.header {
-            ConfigHeader::Device(header) => AsBytes::as_bytes(header),
-        };
-        let ret = match size {
-            1 => bytes.get(offset).map(|b| *b as u64),
-            2 => u16::read_from_prefix(&bytes[offset..]).map(|w| w as u64),
-            4 => u32::read_from_prefix(&bytes[offset..]).map(|d| d as u64),
-            8 => u64::read_from_prefix(&bytes[offset..]),
-            _ => Some(0),
-        };
-        Ok(ret.unwrap_or(0))
+        match &data.header {
+            ConfigHeader::Device(header) => Mmio::read(header, offset, size),
+        }
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {

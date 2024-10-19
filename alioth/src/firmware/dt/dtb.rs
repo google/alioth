@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::align_up;
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
@@ -77,7 +77,7 @@ impl PropVal {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, FromBytes, Immutable, Debug)]
 pub struct FdtHeader {
     magic: Bu32,
     total_size: Bu32,
@@ -91,14 +91,14 @@ pub struct FdtHeader {
     size_dt_struct: Bu32,
 }
 
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, FromBytes, Immutable, Debug)]
 #[repr(C)]
 pub struct FdtProp {
     len: Bu32,
     name_off: Bu32,
 }
 
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, FromBytes, Immutable, Debug)]
 #[repr(C)]
 struct FdtReserveEntry {
     address: Bu64,
@@ -199,7 +199,7 @@ impl DeviceTree {
             size_dt_strings: Bu32::from(size_dt_strings as u32),
             size_dt_struct: Bu32::from(size_dt_struct as u32),
         };
-        header.write_to_prefix(&mut data);
+        header.write_to_prefix(&mut data).unwrap();
         data
     }
 }

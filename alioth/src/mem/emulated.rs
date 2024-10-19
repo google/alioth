@@ -68,15 +68,23 @@ macro_rules! impl_mmio_for_zerocopy {
             }
 
             fn read(&self, offset: u64, size: u8) -> $crate::mem::Result<u64> {
-                let bytes = AsBytes::as_bytes(self);
+                fn read_from_prefix<T: ::zerocopy::FromBytes + Into<u64>>(
+                    bytes: &[u8],
+                ) -> ::core::option::Option<u64> {
+                    let (n, _) = T::read_from_prefix(bytes).ok()?;
+                    Some(n.into())
+                }
+
+                let bytes = ::zerocopy::IntoBytes::as_bytes(self);
                 let offset = offset as usize;
                 let val = match size {
                     1 => bytes.get(offset).map(|b| *b as u64),
-                    2 => u16::read_from_prefix(&bytes[offset..]).map(|w| w as u64),
-                    4 => u32::read_from_prefix(&bytes[offset..]).map(|d| d as u64),
-                    8 => u64::read_from_prefix(&bytes[offset..]),
+                    2 => bytes.get(offset..).and_then(read_from_prefix::<u16>),
+                    4 => bytes.get(offset..).and_then(read_from_prefix::<u32>),
+                    8 => bytes.get(offset..).and_then(read_from_prefix::<u64>),
                     _ => ::core::option::Option::None,
                 };
+
                 if let ::core::option::Option::Some(val) = val {
                     ::core::result::Result::Ok(val)
                 } else {

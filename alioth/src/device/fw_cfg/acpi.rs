@@ -14,7 +14,7 @@
 
 use std::mem::{offset_of, size_of};
 
-use zerocopy::AsBytes;
+use zerocopy::{Immutable, IntoBytes};
 
 use crate::device::fw_cfg::{create_file_name, FwCfgContent, FwCfgItem, FILE_NAME_SIZE};
 use crate::firmware::acpi::bindings::{AcpiTableHeader, AcpiTableRsdp};
@@ -32,7 +32,7 @@ pub const FW_CFG_FILENAME_RSDP: &str = "acpi/rsdp";
 pub const FW_CFG_FILENAME_ACPI_TABLES: &str = "acpi/tables";
 
 #[repr(C, align(4))]
-#[derive(Debug, AsBytes)]
+#[derive(Debug, IntoBytes, Immutable)]
 pub struct Allocate {
     command: u32,
     file: [u8; FILE_NAME_SIZE],
@@ -42,7 +42,7 @@ pub struct Allocate {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, AsBytes)]
+#[derive(Debug, IntoBytes, Immutable)]
 pub struct AddPointer {
     command: u32,
     dst: [u8; FILE_NAME_SIZE],
@@ -53,7 +53,7 @@ pub struct AddPointer {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, AsBytes)]
+#[derive(Debug, IntoBytes, Immutable)]
 pub struct AddChecksum {
     command: u32,
     file: [u8; FILE_NAME_SIZE],

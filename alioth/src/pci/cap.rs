@@ -18,7 +18,7 @@ use std::mem::size_of;
 use bitfield::bitfield;
 use macros::Layout;
 use parking_lot::{RwLock, RwLockWriteGuard};
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
@@ -36,7 +36,7 @@ pub enum PciCapId {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes, Layout)]
+#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout, Layout)]
 pub struct PciCapHdr {
     pub id: u8,
     pub next: u8,
@@ -53,7 +53,7 @@ bitfield! {
 }
 
 bitfield! {
-    #[derive(Copy, Clone, Default, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
     pub struct MsixMsgCtrl(u16);
     impl Debug;
@@ -70,7 +70,7 @@ impl MsixMsgCtrl {
 }
 
 bitfield! {
-    #[derive(Copy, Clone, Default, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes)]
     #[repr(C)]
     pub struct MsixCapOffset(u32);
     impl Debug;
@@ -87,7 +87,7 @@ impl MsixCapOffset {
     }
 }
 
-#[derive(Debug, Default, Clone, FromBytes, FromZeroes, AsBytes, Layout)]
+#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
 #[repr(C)]
 pub struct MsixCap {
     pub header: PciCapHdr,

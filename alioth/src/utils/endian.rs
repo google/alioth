@@ -16,7 +16,7 @@ macro_rules! endian_impl {
     ($ne_type:ident, $ed_type:ident, $endian:expr, $opposite:expr) => {
         #[repr(transparent)]
         #[derive(
-            ::zerocopy::AsBytes, ::zerocopy::FromBytes, ::zerocopy::FromZeroes, Copy, Clone,
+            ::zerocopy::Immutable, ::zerocopy::IntoBytes, ::zerocopy::FromBytes, Copy, Clone,
         )]
         pub struct $ed_type {
             v: $ne_type,
