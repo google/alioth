@@ -34,7 +34,7 @@ use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use serde_aco::Help;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
@@ -53,7 +53,7 @@ pub mod tap;
 use tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
 
 #[repr(C, align(8))]
-#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
 pub struct NetConfig {
     mac: MacAddr,
     status: u16,
@@ -69,7 +69,7 @@ pub struct NetConfig {
 impl_mmio_for_zerocopy!(NetConfig);
 
 c_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     struct CtrlAck(u8);
     {
         OK = 0;
@@ -78,7 +78,7 @@ c_enum! {
 }
 
 c_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     struct CtrlClass(u8);
     {
         MQ = 4;
@@ -86,6 +86,7 @@ c_enum! {
 }
 
 c_enum! {
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     struct CtrlMq(u8);
     {
         VQ_PARIS_SET = 0;
@@ -93,13 +94,13 @@ c_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, FromBytes, FromZeroes)]
+#[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
 struct CtrlMqParisSet {
     virtq_pairs: u16,
 }
 
 #[repr(C)]
-#[derive(Debug, FromBytes, FromZeroes)]
+#[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
 struct CtrlHdr {
     class: CtrlClass,
     command: u8,
@@ -241,7 +242,11 @@ impl Net {
         desc: &mut Descriptor,
         registry: Option<&Registry>,
     ) -> Result<usize> {
-        let Some(header) = desc.readable.first().and_then(|b| CtrlHdr::ref_from(b)) else {
+        let Some(header) = desc
+            .readable
+            .first()
+            .and_then(|b| CtrlHdr::read_from_bytes(b).ok())
+        else {
             return error::InvalidBuffer.fail();
         };
         let Some(ack_byte) = desc.writable.first_mut().and_then(|v| v.first_mut()) else {
@@ -250,7 +255,7 @@ impl Net {
         let ack = match header.class {
             CtrlClass::MQ => match CtrlMq(header.command) {
                 CtrlMq::VQ_PARIS_SET => {
-                    let to_set = |b: &IoSlice| CtrlMqParisSet::read_from(b);
+                    let to_set = |b: &IoSlice| CtrlMqParisSet::read_from_bytes(b).ok();
                     let Some(data) = desc.readable.get(1).and_then(to_set) else {
                         return error::InvalidBuffer.fail();
                     };
@@ -500,7 +505,7 @@ fn setup_socket(file: &mut File, if_name: Option<&str>, mq: bool) -> Result<()> 
 
     if let Some(name) = if_name {
         let name_len = std::cmp::min(tap_ifconfig.ifr_name.len() - 1, name.len());
-        tap_ifconfig.ifr_name.as_bytes_mut()[0..name_len]
+        tap_ifconfig.ifr_name.as_mut_bytes()[0..name_len]
             .copy_from_slice(&name.as_bytes()[0..name_len]);
     }
 

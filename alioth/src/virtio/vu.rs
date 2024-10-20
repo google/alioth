@@ -25,7 +25,7 @@ use bitfield::bitfield;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
 use crate::mem::mapped::ArcMemPages;
@@ -104,7 +104,7 @@ pub const VHOST_USER_SET_DEVICE_STATE_FD: u32 = 42;
 pub const VHOST_USER_CHECK_DEVICE_STATE: u32 = 43;
 
 bitfield! {
-    #[derive(Copy, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Default, IntoBytes, FromBytes, Immutable)]
     #[repr(transparent)]
     pub struct MessageFlag(u32);
     impl Debug;
@@ -125,14 +125,14 @@ impl MessageFlag {
     }
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct VirtqState {
     pub index: u32,
     pub val: u32,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct VirtqAddr {
     pub index: u32,
@@ -143,7 +143,7 @@ pub struct VirtqAddr {
     pub log_guest_addr: u64,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct MemoryRegion {
     pub gpa: u64,
@@ -152,14 +152,14 @@ pub struct MemoryRegion {
     pub mmap_offset: u64,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct MemorySingleRegion {
     pub _padding: u64,
     pub region: MemoryRegion,
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct MemoryMultipleRegion {
     pub num: u32,
@@ -167,7 +167,7 @@ pub struct MemoryMultipleRegion {
     pub regions: [MemoryRegion; 8],
 }
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct DeviceConfig {
     pub offset: u32,
@@ -176,7 +176,7 @@ pub struct DeviceConfig {
     pub region: [u8; 256],
 }
 
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable)]
 #[repr(C)]
 pub struct Message {
     pub request: u32,
@@ -251,7 +251,7 @@ impl VuDev {
         self.channel.as_ref()
     }
 
-    fn send_msg<T: AsBytes, R: FromBytes + AsBytes>(
+    fn send_msg<T: IntoBytes + Immutable, R: FromBytes + IntoBytes>(
         &self,
         req: u32,
         payload: &T,
@@ -306,13 +306,13 @@ impl VuDev {
         let mut ret_code = u64::MAX;
         let mut bufs = if size_of::<R>() == 0 {
             [
-                IoSliceMut::new(resp.as_bytes_mut()),
-                IoSliceMut::new(ret_code.as_bytes_mut()),
+                IoSliceMut::new(resp.as_mut_bytes()),
+                IoSliceMut::new(ret_code.as_mut_bytes()),
             ]
         } else {
             [
-                IoSliceMut::new(resp.as_bytes_mut()),
-                IoSliceMut::new(payload.as_bytes_mut()),
+                IoSliceMut::new(resp.as_mut_bytes()),
+                IoSliceMut::new(payload.as_mut_bytes()),
             ]
         };
         let read_size = conn.read_vectored(&mut bufs)?;
@@ -425,7 +425,7 @@ impl VuDev {
         fds: &mut [Option<OwnedFd>],
     ) -> Result<(u32, u32)> {
         let mut msg = Message::new_zeroed();
-        let mut bufs = [IoSliceMut::new(msg.as_bytes_mut()), IoSliceMut::new(buf)];
+        let mut bufs = [IoSliceMut::new(msg.as_mut_bytes()), IoSliceMut::new(buf)];
         const CMSG_BUF_LEN: usize = unsafe { libc::CMSG_SPACE(8) } as usize;
         debug_assert_eq!(CMSG_BUF_LEN % size_of::<u64>(), 0);
         let mut cmsg_buf = [0u64; CMSG_BUF_LEN / size_of::<u64>()];
@@ -480,7 +480,7 @@ impl VuDev {
         Ok((msg.request, msg.size))
     }
 
-    pub fn ack_request<T: AsBytes>(&self, req: u32, payload: &T) -> Result<()> {
+    pub fn ack_request<T: IntoBytes + Immutable>(&self, req: u32, payload: &T) -> Result<()> {
         let Some(channel) = &self.channel else {
             return error::ProtocolFeature {
                 feature: VuFeature::BACKEND_REQ,

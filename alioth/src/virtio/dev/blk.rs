@@ -34,7 +34,7 @@ use mio::Registry;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::ResultExt;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
@@ -49,7 +49,7 @@ use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
 c_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(FromBytes)]
     pub struct RequestType(u32);
     {
         IN = 0;
@@ -64,7 +64,7 @@ c_enum! {
 }
 
 c_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(FromBytes)]
     pub struct Status(u8);
     {
         OK = 0;
@@ -74,7 +74,7 @@ c_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, FromZeroes, FromBytes)]
+#[derive(Debug, FromBytes)]
 pub struct Request {
     type_: RequestType,
     reserved: u32,
@@ -104,7 +104,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, FromZeros, Immutable, IntoBytes)]
 #[repr(C)]
 pub struct BlockConfig {
     capacity: u64,
@@ -222,7 +222,7 @@ impl Block {
         let [hdr, data_out @ ..] = &desc.readable[..] else {
             return error::InvalidBuffer.fail();
         };
-        let Some(request) = Request::read_from(hdr) else {
+        let Ok(request) = Request::read_from_bytes(hdr) else {
             return error::InvalidBuffer.fail();
         };
         let [data_in @ .., status_buf] = &mut desc.writable[..] else {

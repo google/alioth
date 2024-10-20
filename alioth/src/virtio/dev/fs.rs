@@ -32,7 +32,7 @@ use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use serde_aco::Help;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, Ram, RamBus};
@@ -48,7 +48,7 @@ use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
 #[repr(C, align(4))]
-#[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, FromBytes, Immutable, IntoBytes)]
 pub struct FsConfig {
     tag: [u8; 36],
     num_request_queues: u32,
@@ -64,7 +64,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Clone, FromBytes, Immutable, IntoBytes)]
 #[repr(C)]
 struct VuFsMap {
     pub fd_offset: [u64; 8],
@@ -135,7 +135,7 @@ impl VuFs {
             let mut empty_cfg = DeviceConfig::new_zeroed();
             empty_cfg.size = size_of_val(&empty_cfg.region) as _;
             let dev_config = vu_dev.get_config(&empty_cfg)?;
-            FsConfig::read_from_prefix(&dev_config.region).unwrap()
+            FsConfig::read_from_prefix(&dev_config.region).unwrap().0
         };
         let dax_region = if param.dax_window > 0 {
             vu_dev.setup_channel()?;
@@ -345,7 +345,7 @@ impl VirtioMio for VuFs {
             let mut fds = [None, None, None, None, None, None, None, None];
             let ret = self
                 .vu_dev
-                .receive_from_channel(fs_map.as_bytes_mut(), &mut fds);
+                .receive_from_channel(fs_map.as_mut_bytes(), &mut fds);
             let (request, size) = match ret {
                 Ok((r, s)) => (r, s),
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,

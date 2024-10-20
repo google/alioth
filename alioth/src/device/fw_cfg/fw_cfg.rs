@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_aco::Help;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{
@@ -175,7 +175,7 @@ pub struct FwCfg {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Layout)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable, Layout)]
 struct FwCfgDmaAccess {
     control_be: u32,
     length_be: u32,
@@ -194,13 +194,13 @@ bitfield! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes)]
+#[derive(Debug, IntoBytes, Immutable)]
 struct FwCfgFilesHeader {
     count_be: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes)]
+#[derive(Debug, IntoBytes, Immutable)]
 struct FwCfgFile {
     size_be: u32,
     select_be: u16,
@@ -281,8 +281,8 @@ impl FwCfg {
     #[cfg(target_arch = "x86_64")]
     pub fn add_kernel_data(&mut self, file: File) -> Result<()> {
         let mut buffer = vec![0u8; size_of::<BootParams>()];
-        file.read_exact_at(buffer.as_bytes_mut(), 0)?;
-        let bp = BootParams::mut_from(&mut buffer).unwrap();
+        file.read_exact_at(&mut buffer, 0)?;
+        let bp = BootParams::mut_from_bytes(&mut buffer).unwrap();
         if bp.hdr.setup_sects == 0 {
             bp.hdr.setup_sects = 4;
         }

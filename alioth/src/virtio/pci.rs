@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use macros::Layout;
 use parking_lot::{Mutex, RwLock};
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::hv::{IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
 use crate::mem::emulated::{Action, Mmio};
@@ -577,7 +577,7 @@ pub enum VirtioPciCfg {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, FromZeros, Immutable, IntoBytes)]
 pub struct VirtioPciCap {
     header: PciCapHdr,
     cap_len: u8,
@@ -599,7 +599,7 @@ impl PciCap for VirtioPciCap {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, FromZeros, Immutable, IntoBytes)]
 pub struct VirtioPciCap64 {
     cap: VirtioPciCap,
     offset_hi: u32,
@@ -615,7 +615,7 @@ impl PciCap for VirtioPciCap64 {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Default, FromZeros, Immutable, IntoBytes)]
 pub struct VirtioPciNotifyCap {
     cap: VirtioPciCap,
     multiplier: u32,

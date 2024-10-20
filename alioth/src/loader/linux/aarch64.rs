@@ -17,7 +17,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use snafu::ResultExt;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::arch::layout::{DEVICE_TREE_START, KERNEL_IMAGE_START};
 use crate::arch::reg::{Pstate, Reg};
@@ -26,7 +26,7 @@ use crate::mem::mapped::RamBus;
 use crate::mem::MemRegionEntry;
 
 #[repr(C)]
-#[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, FromBytes, Immutable, IntoBytes)]
 struct ImageHeader {
     code0: u32,
     code1: u32,
@@ -57,7 +57,7 @@ pub fn load<P: AsRef<Path>>(
     let mut kernel = BufReader::new(kernel);
     let mut header = ImageHeader::new_zeroed();
     kernel
-        .read_exact(header.as_bytes_mut())
+        .read_exact(header.as_mut_bytes())
         .context(access_kernel)?;
     if header.magic != IMAGE_MAGIC {
         return error::MissingMagic {

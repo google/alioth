@@ -18,7 +18,7 @@ use std::mem::{offset_of, size_of, size_of_val};
 use std::path::Path;
 
 use snafu::ResultExt;
-use zerocopy::{AsBytes, FromZeroes};
+use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::align_up;
 use crate::arch::layout::{
@@ -44,7 +44,7 @@ use start_info::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
 pub const XEN_ELFNOTE_PHYS32_ENTRY: u32 = 18;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, Default)]
+#[derive(Debug, IntoBytes, Default, Immutable)]
 struct StartInfoPage {
     start_info: HvmStartInfo,
     initramfs: HvmModlistEntry,
@@ -61,7 +61,7 @@ fn search_pvh_note<F: Read + Seek>(
     while pos < size {
         file.seek(SeekFrom::Start(offset + pos))?;
         let mut header = Elf64Note::new_zeroed();
-        file.read_exact(header.as_bytes_mut())?;
+        file.read_exact(header.as_mut_bytes())?;
         pos += size_of::<Elf64Note>() as u64;
         pos += align_up!(header.desc_sz as u64, align);
         pos += align_up!(header.name_sz as u64, align);
@@ -74,12 +74,12 @@ fn search_pvh_note<F: Read + Seek>(
         match header.desc_sz {
             4 => {
                 let mut entry_point = 0u32;
-                file.read_exact(entry_point.as_bytes_mut())?;
+                file.read_exact(entry_point.as_mut_bytes())?;
                 return Ok(Some(entry_point as u64));
             }
             8 => {
                 let mut entry_point = 0u64;
-                file.read_exact(entry_point.as_bytes_mut())?;
+                file.read_exact(entry_point.as_mut_bytes())?;
                 return Ok(Some(entry_point));
             }
             _ => {}
@@ -105,7 +105,7 @@ pub fn load<P: AsRef<Path>>(
     // load kernel
     let mut elf_header = Elf64Header::new_zeroed();
     kernel
-        .read_exact(elf_header.as_bytes_mut())
+        .read_exact(elf_header.as_mut_bytes())
         .context(access_kernel)?;
     if elf_header.ident_magic != ELF_HEADER_MAGIC {
         return error::MissingMagic {
@@ -124,9 +124,10 @@ pub fn load<P: AsRef<Path>>(
     kernel
         .seek(SeekFrom::Start(elf_header.ph_off))
         .context(access_kernel)?;
-    let mut program_header = Elf64ProgramHeader::new_vec_zeroed(elf_header.ph_num as usize);
+    let mut program_header =
+        Elf64ProgramHeader::new_vec_zeroed(elf_header.ph_num as usize).unwrap();
     kernel
-        .read_exact(program_header.as_bytes_mut())
+        .read_exact(program_header.as_mut_bytes())
         .context(access_kernel)?;
     for program_header in program_header.iter() {
         if program_header.type_ == PT_NOTE && pvh_entry.is_none() {
@@ -153,9 +154,9 @@ pub fn load<P: AsRef<Path>>(
         kernel
             .seek(SeekFrom::Start(elf_header.sh_off))
             .context(access_kernel)?;
-        let mut sections = Elf64SectionHeader::new_vec_zeroed(elf_header.sh_num as usize);
+        let mut sections = Elf64SectionHeader::new_vec_zeroed(elf_header.sh_num as usize).unwrap();
         kernel
-            .read_exact(sections.as_bytes_mut())
+            .read_exact(sections.as_mut_bytes())
             .context(access_kernel)?;
         for section in sections.iter() {
             if section.type_ != SHT_NOTE {

@@ -172,21 +172,6 @@ macro_rules! c_enum {
     }
 }
 
-#[macro_export]
-macro_rules! unsafe_impl_zerocopy {
-    ($ty:ty, $($name:ident), +) => {
-         $(
-            unsafe impl ::zerocopy::$name for $ty {
-                fn only_derive_is_allowed_to_implement_this_trait()
-                where
-                    Self: Sized,
-                {
-                }
-            }
-         )+
-    };
-}
-
 #[cfg(test)]
 mod test {
     #[test]

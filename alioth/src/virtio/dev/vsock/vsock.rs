@@ -15,13 +15,13 @@
 mod vhost_vsock;
 
 use bitflags::bitflags;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::impl_mmio_for_zerocopy;
 
 pub use vhost_vsock::{VhostVsock, VhostVsockParam};
 
-#[derive(Debug, Clone, Copy, Default, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Clone, Copy, Default, FromZeros, Immutable, IntoBytes)]
 #[repr(C)]
 pub struct VsockConfig {
     pub guest_cid: u32,
