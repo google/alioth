@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-use std::io::IoSlice;
+use std::io::{IoSlice, IoSliceMut};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -37,7 +37,7 @@ use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, FEATURE_BUILT_IN};
-use crate::{c_enum, impl_mmio_for_zerocopy, mem};
+use crate::{c_enum, ffi, impl_mmio_for_zerocopy, mem};
 
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Default, FromBytes, IntoBytes, Immutable, Layout)]
@@ -130,7 +130,7 @@ impl Balloon {
             Err(std::io::Error::from(err))?;
         }
         let config = BalloonConfig {
-            num_pages: 4,
+            num_pages: 0,
             ..Default::default()
         };
         let name = name.into();
@@ -155,6 +155,19 @@ impl Balloon {
                 };
                 let gpa = (page_num as u64) << 12;
                 log::info!("{}: TODO: inflating GPA {gpa:#x}", self.name);
+            }
+        }
+    }
+
+    fn free_reporting(&self, desc: &mut [IoSliceMut]) {
+        for buf in desc.iter_mut() {
+            let addr = buf.as_mut_ptr();
+            let len = buf.len();
+            let ret = ffi!(unsafe { libc::madvise(addr as _, len, libc::MADV_DONTNEED) });
+            if let Err(e) = ret {
+                log::error!("freeing pages: {addr:p} {len:#x}: {e:?}");
+            } else {
+                log::trace!("freed pages: {addr:p} {len:#x}");
             }
         }
     }
@@ -224,10 +237,6 @@ impl VirtioMio for Balloon {
                 log::info!("{}: VQ_FREE_PAGE avaibale", self.name);
                 return Ok(());
             }
-            VQ_REPORTING => {
-                log::info!("{}: VQ_REPORTING avaibale", self.name);
-                return Ok(());
-            }
             _ => {}
         };
         handle_desc(&self.name, index, queue, active_mio.irq_sender, |desc| {
@@ -236,6 +245,7 @@ impl VirtioMio for Balloon {
                 VQ_DEFLATE => {
                     log::info!("{}: VQ_DEFLATE available", self.name);
                 }
+                VQ_REPORTING => self.free_reporting(&mut desc.writable),
                 _ => log::error!("{}: invalid queue index {index}", self.name),
             }
             Ok(Some(0))
