@@ -143,9 +143,9 @@ impl Balloon {
         })
     }
 
-    fn inflate(&self, desc: &[IoSlice], _ram: &Ram) {
+    fn inflate(&self, desc: &[IoSlice], ram: &Ram) {
         for buf in desc {
-            for bytes in buf.chunks(4) {
+            for bytes in buf.chunks(size_of::<u32>()) {
                 let Ok(page_num) = u32::read_from_bytes(bytes) else {
                     log::error!(
                         "{}: inflate: invalid page_num bytes: {bytes:02x?}",
@@ -154,7 +154,11 @@ impl Balloon {
                     continue;
                 };
                 let gpa = (page_num as u64) << 12;
-                log::info!("{}: TODO: inflating GPA {gpa:#x}", self.name);
+                if let Err(e) = ram.madvise(gpa, 1 << 12, libc::MADV_DONTNEED) {
+                    log::error!("{}: inflate at GPA {gpa:#x}: {e:?}", self.name);
+                } else {
+                    log::trace!("{}: freed GPA {gpa:#x}", self.name);
+                }
             }
         }
     }

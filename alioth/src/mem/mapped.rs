@@ -26,11 +26,11 @@ use std::ptr::{null_mut, NonNull};
 use std::sync::Arc;
 
 use libc::{
-    c_void, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC,
-    PROT_EXEC, PROT_READ, PROT_WRITE,
+    c_void, madvise, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED,
+    MS_ASYNC, PROT_EXEC, PROT_READ, PROT_WRITE,
 };
 #[cfg(target_os = "linux")]
-use libc::{madvise, MADV_HUGEPAGE, MFD_CLOEXEC};
+use libc::{MADV_HUGEPAGE, MFD_CLOEXEC};
 use parking_lot::{RwLock, RwLockReadGuard};
 use snafu::ResultExt;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -403,6 +403,14 @@ impl Ram {
 
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (u64, &ArcMemPages)> {
         self.inner.iter()
+    }
+
+    pub fn madvise(&self, gpa: u64, size: u64, advice: i32) -> Result<()> {
+        for r in self.slice_iter_mut(gpa, size) {
+            let s = r?;
+            ffi!(unsafe { madvise(s.as_mut_ptr() as _, s.len(), advice) })?;
+        }
+        Ok(())
     }
 }
 
