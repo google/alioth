@@ -46,7 +46,8 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
   - `blk` backed by a raw-formatted image,
   - `entropy` backed by host `/dev/urandom`,
   - `fs` backed by [virtiofsd](https://gitlab.com/virtio-fs/virtiofsd) with
-    experimental Direct Access (DAX).
+    experimental Direct Access (DAX),
+  - (WIP) `balloon` with free page reporting.
 - PCI device passthrough based on
   [VFIO/IOMMUFD](https://docs.kernel.org/driver-api/vfio.html#iommufd-and-vfio-iommu-type1).
 - Other devices
@@ -57,7 +58,7 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 
 ## TODOs
 
-- [ ] device passthrough with VFIO,
+- [ ] device passthrough with legacy VFIO API (groups and containers),
 - [ ] explore a better solution to ACPI DSDT to replace the pre-compiled AML
       bytes,
 - [ ] increase test coverage,
