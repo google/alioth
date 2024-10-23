@@ -48,7 +48,7 @@ use crate::vfio::{error, Result, VfioParam};
 use crate::{align_down, align_up, assign_bits, mask_bits, mem};
 
 fn round_up_range(range: Range<usize>) -> Range<usize> {
-    (align_down!(range.start, 0x1000))..(align_up!(range.end, 0x1000))
+    (align_down!(range.start, 12))..(align_up!(range.end, 12))
 }
 
 fn create_mapped_bar_pages(
@@ -177,7 +177,7 @@ where
     let table_offset = msix_table_offset.0 as usize & !0b111;
     let pba_offset = msix_pba_offset.0 as usize & !0b111;
     let table_range = table_offset..(table_offset + size_of::<MsixTableEntry>() * num_msix_entries);
-    let pba_range = pba_offset..(pba_offset + (align_up!(num_msix_entries, 64) >> 3));
+    let pba_range = pba_offset..(pba_offset + (align_up!(num_msix_entries, 6) >> 3));
 
     if msix_table_offset.bar() == index && msix_pba_offset.bar() == index {
         create_splitted_bar_region(

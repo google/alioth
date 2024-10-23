@@ -203,7 +203,7 @@ impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
             let next = if index == num_caps - 1 {
                 0
             } else {
-                align_up!(ptr + Mmio::size(&cap), 4)
+                align_up!(ptr + Mmio::size(&cap), 2)
             };
             cap.set_next(next as u8);
             bus.add(ptr, cap)?;

@@ -20,18 +20,16 @@ pub mod ioctls;
 
 #[macro_export]
 macro_rules! align_up {
-    ($num:expr, $align:expr) => {{
-        debug_assert_eq!(($align as u64).count_ones(), 1);
-        let mask = $align - 1;
+    ($num:expr, $bits:expr) => {{
+        let mask = (1 << $bits) - 1;
         ($num.wrapping_add(mask)) & !mask
     }};
 }
 
 #[macro_export]
 macro_rules! align_down {
-    ($num:expr, $align:expr) => {{
-        debug_assert_eq!(($align as u64).count_ones(), 1);
-        let mask = $align - 1;
+    ($num:expr, $bits:expr) => {{
+        let mask = (1 << $bits) - 1;
         $num & !mask
     }};
 }
@@ -176,17 +174,11 @@ macro_rules! c_enum {
 mod test {
     #[test]
     fn test_align_up() {
-        assert_eq!(align_up!(0u64, 4), 0);
-        assert_eq!(align_up!(1u64, 4), 4);
-        assert_eq!(align_up!(3u64, 4), 4);
+        assert_eq!(align_up!(0u64, 2), 0);
+        assert_eq!(align_up!(1u64, 2), 4);
+        assert_eq!(align_up!(3u64, 2), 4);
 
-        assert_eq!(align_up!(u64::MAX, 1), u64::MAX);
-        assert_eq!(align_up!(u64::MAX, 4), 0);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_align_up_panic() {
-        let _ = align_up!(1u64, 3);
+        assert_eq!(align_up!(u64::MAX, 0), u64::MAX);
+        assert_eq!(align_up!(u64::MAX, 2), 0);
     }
 }
