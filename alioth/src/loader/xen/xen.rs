@@ -57,6 +57,12 @@ fn search_pvh_note<F: Read + Seek>(
     size: u64,
     align: u64,
 ) -> std::io::Result<Option<u64>> {
+    if align.count_ones() > 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("align = {align}, not a power of 2"),
+        ));
+    }
     let align_bits = std::cmp::max(align, 1).trailing_zeros();
     let mut pos = 0;
     while pos < size {
