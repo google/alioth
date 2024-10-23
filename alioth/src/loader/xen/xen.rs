@@ -57,19 +57,20 @@ fn search_pvh_note<F: Read + Seek>(
     size: u64,
     align: u64,
 ) -> std::io::Result<Option<u64>> {
+    let align_bits = std::cmp::max(align, 1).trailing_zeros();
     let mut pos = 0;
     while pos < size {
         file.seek(SeekFrom::Start(offset + pos))?;
         let mut header = Elf64Note::new_zeroed();
         file.read_exact(header.as_mut_bytes())?;
         pos += size_of::<Elf64Note>() as u64;
-        pos += align_up!(header.desc_sz as u64, align);
-        pos += align_up!(header.name_sz as u64, align);
+        pos += align_up!(header.desc_sz as u64, align_bits);
+        pos += align_up!(header.name_sz as u64, align_bits);
         if header.type_ != XEN_ELFNOTE_PHYS32_ENTRY {
             continue;
         }
         file.seek(SeekFrom::Current(
-            align_up!(header.name_sz as u64, align) as i64
+            align_up!(header.name_sz as u64, align_bits) as i64,
         ))?;
         match header.desc_sz {
             4 => {

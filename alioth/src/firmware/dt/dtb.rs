@@ -33,14 +33,14 @@ pub const FDT_END: [u8; 4] = [0x00, 0x00, 0x00, 0x09];
 
 fn push_string_align(data: &mut Vec<u8>, s: &str) {
     data.extend(s.as_bytes());
-    let padding = align_up!(s.len() + 1, 4) - s.len();
+    let padding = align_up!(s.len() + 1, 2) - s.len();
     for _ in 0..padding {
         data.push(b'\0');
     }
 }
 
 fn pad_data(data: &mut Vec<u8>) {
-    let padding = align_up!(data.len(), 4) - data.len();
+    let padding = align_up!(data.len(), 2) - data.len();
     for _ in 0..padding {
         data.push(b'\0');
     }

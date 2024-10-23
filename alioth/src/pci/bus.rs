@@ -179,7 +179,7 @@ impl PciBus {
             for (bdf, dev, index, size) in bar_list {
                 let config = dev.dev.config();
                 let mut header = config.get_header().data.write();
-                let aligned_addr = align_up!(addr, size);
+                let aligned_addr = align_up!(addr, size.trailing_zeros());
                 if aligned_addr + size > *end {
                     log::error!(
                         "{bdf}: cannot map BAR {index} into address range {start:#x}..{end:#x}"
