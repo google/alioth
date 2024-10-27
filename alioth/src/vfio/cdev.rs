@@ -14,7 +14,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
-use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
@@ -32,24 +31,16 @@ use crate::vfio::ioctls::{
     vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset,
     vfio_device_set_irqs,
 };
-use crate::vfio::iommu::{Ioas, Iommu};
+use crate::vfio::iommu::Ioas;
 use crate::vfio::{error, Result};
 
 #[derive(Debug)]
-pub struct Cdev<I = Arc<Iommu>, A = Arc<Ioas<I>>>
-where
-    A: Deref<Target = Ioas<I>>,
-    I: Deref<Target = Iommu>,
-{
+pub struct Cdev {
     fd: File,
-    ioas: Option<A>,
+    ioas: Option<Arc<Ioas>>,
 }
 
-impl<I, A> Cdev<I, A>
-where
-    A: Deref<Target = Ioas<I>>,
-    I: Deref<Target = Iommu>,
-{
+impl Cdev {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let fd = OpenOptions::new()
             .read(true)
@@ -62,12 +53,8 @@ where
     }
 }
 
-impl<I, A> Cdev<I, A>
-where
-    A: Deref<Target = Ioas<I>>,
-    I: Deref<Target = Iommu>,
-{
-    pub fn attach_iommu_ioas(&mut self, ioas: A) -> Result<()> {
+impl Cdev {
+    pub fn attach_iommu_ioas(&mut self, ioas: Arc<Ioas>) -> Result<()> {
         let bind = VfioDeviceBindIommufd {
             argsz: size_of::<VfioDeviceBindIommufd>() as u32,
             iommufd: ioas.iommu.fd.as_raw_fd(),
@@ -164,11 +151,7 @@ where
     }
 }
 
-impl<I, A> Drop for Cdev<I, A>
-where
-    A: Deref<Target = Ioas<I>>,
-    I: Deref<Target = Iommu>,
-{
+impl Drop for Cdev {
     fn drop(&mut self) {
         if self.ioas.is_none() {
             return;

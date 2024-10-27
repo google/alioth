@@ -14,7 +14,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
-use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,18 +48,12 @@ impl Iommu {
 }
 
 #[derive(Debug)]
-pub struct Ioas<I = Arc<Iommu>>
-where
-    I: Deref<Target = Iommu>,
-{
-    pub(super) iommu: I,
+pub struct Ioas {
+    pub(super) iommu: Arc<Iommu>,
     pub(super) id: u32,
 }
 
-impl<I> Drop for Ioas<I>
-where
-    I: Deref<Target = Iommu>,
-{
+impl Drop for Ioas {
     fn drop(&mut self) {
         if let Err(e) = self.reset() {
             log::error!("Removing mappings from ioas id {:#x}: {e}", self.id)
@@ -76,11 +69,8 @@ where
     }
 }
 
-impl<I> Ioas<I>
-where
-    I: Deref<Target = Iommu>,
-{
-    pub fn alloc_on(iommu: I) -> Result<Self> {
+impl Ioas {
+    pub fn alloc_on(iommu: Arc<Iommu>) -> Result<Self> {
         let mut alloc: IommuIoasAlloc = IommuIoasAlloc {
             size: size_of::<IommuIoasAlloc>() as u32,
             ..Default::default()
