@@ -231,3 +231,51 @@ pub struct IommuIoasUnmap {
     pub iova: u64,
     pub length: u64,
 }
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Default)]
+    pub struct VfioDmaMapFlag: u32 {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const VADDR = 1 << 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct VfioIommuType1DmaMap {
+    pub argsz: u32,
+    pub flags: VfioDmaMapFlag,
+    pub vaddr: u64,
+    pub iova: u64,
+    pub size: u64,
+}
+
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Default)]
+    pub struct VfioDmaUnmapFlag: u32 {
+        const GET_DIRTY_BITMAP  = 1 << 0;
+        const ALL = 1 << 1;
+        const VADDR = 1 << 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct VfioIommuType1DmaUnmap {
+    pub argsz: u32,
+    pub flags: VfioDmaUnmapFlag,
+    pub iova: u64,
+    pub size: u64,
+}
+
+c_enum! {
+    pub struct VfioIommu(i32);
+    {
+        TYPE1 = 1;
+        SPAR_TCE= 2;
+        TYPE1_V2 = 3;
+    }
+}

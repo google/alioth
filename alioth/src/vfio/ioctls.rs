@@ -15,10 +15,11 @@
 use crate::utils::ioctls::ioctl_io;
 use crate::vfio::bindings::{
     IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasUnmap, VfioDeviceAttachIommufdPt,
-    VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo, VfioIrqInfo, VfioIrqSet,
-    VfioRegionInfo, IOMMUFD_TYPE, VFIO_TYPE,
+    VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo, VfioIommu,
+    VfioIommuType1DmaMap, VfioIommuType1DmaUnmap, VfioIrqInfo, VfioIrqSet, VfioRegionInfo,
+    IOMMUFD_TYPE, VFIO_TYPE,
 };
-use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_writeread};
+use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread};
 
 ioctl_writeread!(
     vfio_device_get_info,
@@ -73,3 +74,27 @@ ioctl_write_ptr!(
     ioctl_io(IOMMUFD_TYPE, 0x86),
     IommuIoasUnmap
 );
+
+ioctl_write_ptr!(
+    vfio_iommu_map_dma,
+    ioctl_io(VFIO_TYPE, 113),
+    VfioIommuType1DmaMap
+);
+
+ioctl_writeread!(
+    vfio_iommu_unmap_dma,
+    ioctl_io(VFIO_TYPE, 114),
+    VfioIommuType1DmaUnmap
+);
+
+ioctl_write_val!(
+    vfio_group_get_device_fd,
+    ioctl_io(VFIO_TYPE, 106),
+    *const libc::c_char
+);
+
+ioctl_write_ptr!(vfio_group_set_container, ioctl_io(VFIO_TYPE, 104), i32);
+
+ioctl_none!(vfio_group_unset_container, VFIO_TYPE, 105);
+
+ioctl_write_val!(vfio_set_iommu, ioctl_io(VFIO_TYPE, 102), VfioIommu);
