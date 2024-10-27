@@ -14,6 +14,7 @@
 
 pub mod bindings;
 pub mod cdev;
+pub mod device;
 pub mod ioctls;
 pub mod iommu;
 pub mod pci;

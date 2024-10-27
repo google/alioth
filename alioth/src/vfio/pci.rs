@@ -43,6 +43,7 @@ use crate::vfio::bindings::{
     VfioRegionInfoFlag,
 };
 use crate::vfio::cdev::Cdev;
+use crate::vfio::device::Device;
 use crate::vfio::iommu::Ioas;
 use crate::vfio::{error, Result, VfioParam};
 use crate::{align_down, align_up, assign_bits, mask_bits, mem};
