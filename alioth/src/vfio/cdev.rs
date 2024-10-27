@@ -72,6 +72,9 @@ impl Cdev {
     }
 
     pub fn detach_iommu_ioas(&mut self) -> Result<()> {
+        if self.ioas.is_none() {
+            return Ok(());
+        };
         let detach = VfioDeviceDetachIommufdPt {
             argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
             flags: 0,
@@ -153,9 +156,6 @@ impl Cdev {
 
 impl Drop for Cdev {
     fn drop(&mut self) {
-        if self.ioas.is_none() {
-            return;
-        };
         if let Err(e) = self.detach_iommu_ioas() {
             log::error!("Cdev-{}: detaching ioas: {e:?}", self.fd.as_raw_fd())
         }
