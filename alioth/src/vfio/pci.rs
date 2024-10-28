@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fs::File;
 use std::mem::{size_of, size_of_val};
 use std::ops::Range;
 use std::os::fd::{AsFd, AsRawFd};
@@ -42,7 +43,6 @@ use crate::vfio::bindings::{
     VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo,
     VfioRegionInfoFlag,
 };
-use crate::vfio::cdev::Cdev;
 use crate::vfio::device::Device;
 use crate::vfio::{error, Result};
 use crate::{align_down, align_up, assign_bits, mask_bits, mem};
@@ -52,7 +52,7 @@ fn round_up_range(range: Range<usize>) -> Range<usize> {
 }
 
 fn create_mapped_bar_pages(
-    cdev: &VfioCdev,
+    fd: &File,
     region_flags: VfioRegionInfoFlag,
     offset: i64,
     size: usize,
@@ -64,12 +64,12 @@ fn create_mapped_bar_pages(
     if region_flags.contains(VfioRegionInfoFlag::WRITE) {
         prot |= PROT_WRITE;
     }
-    let mapped_pages = ArcMemPages::from_file(cdev.dev.fd().try_clone()?, offset, size, prot)?;
+    let mapped_pages = ArcMemPages::from_file(fd.try_clone()?, offset, size, prot)?;
     Ok(mapped_pages)
 }
 
-fn create_splitted_bar_region<I, M>(
-    cdev: Arc<VfioCdev>,
+fn create_splitted_bar_region<I, M, D>(
+    dev: Arc<VfioDev<D>>,
     region_info: &VfioRegionInfo,
     table_range: Range<usize>,
     pba_range: Range<usize>,
@@ -79,6 +79,7 @@ fn create_splitted_bar_region<I, M>(
 where
     I: IrqFd,
     M: MsiSender<IrqFd = I>,
+    D: Device,
 {
     let table_pages = round_up_range(table_range.clone());
     let pba_pages = round_up_range(pba_range.clone());
@@ -105,7 +106,7 @@ where
     };
     if excluded_page1.start > 0 {
         region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            &cdev,
+            dev.dev.fd(),
             region_info.flags,
             region_info.offset as i64,
             excluded_page1.start,
@@ -118,7 +119,7 @@ where
             msi_sender: msi_sender.clone(),
             pba: Arc::new([]),
             pba_range: pba_range.clone(),
-            cdev: cdev.clone(),
+            cdev: dev.clone(),
             cdev_offset: region_info.offset,
             region_start: excluded_page1.start,
             region_size: excluded_page1.end - excluded_page1.start,
@@ -126,7 +127,7 @@ where
     }
     if excluded_page2.start - excluded_page1.end > 0 {
         region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            &cdev,
+            dev.dev.fd(),
             region_info.flags,
             region_info.offset as i64 + excluded_page1.end as i64,
             excluded_page2.start - excluded_page1.end,
@@ -139,7 +140,7 @@ where
             msi_sender,
             pba: Arc::new([]),
             pba_range,
-            cdev: cdev.clone(),
+            cdev: dev.clone(),
             cdev_offset: region_info.offset,
             region_start: excluded_page2.start,
             region_size: excluded_page2.end - excluded_page2.start,
@@ -147,7 +148,7 @@ where
     }
     if excluded_page2.end < region_info.size as usize {
         region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            &cdev,
+            dev.dev.fd(),
             region_info.flags,
             region_info.offset as i64 + excluded_page2.end as i64,
             region_info.size as usize - excluded_page2.end,
@@ -156,8 +157,8 @@ where
     Ok(region)
 }
 
-fn create_mappable_bar_region<I, M>(
-    cdev: Arc<VfioCdev>,
+fn create_mappable_bar_region<I, M, D>(
+    cdev: Arc<VfioDev<D>>,
     index: u32,
     region_info: &VfioRegionInfo,
     msix_cap: Option<&MsixCap>,
@@ -167,6 +168,7 @@ fn create_mappable_bar_region<I, M>(
 where
     I: IrqFd,
     M: MsiSender<IrqFd = I>,
+    D: Device,
 {
     let (msix_table_offset, msix_pba_offset, msix_control) = if let Some(msix_cap) = msix_cap {
         (msix_cap.table_offset, msix_cap.pba_offset, msix_cap.control)
@@ -209,25 +211,28 @@ impl SlotBackend for MaskedCap {
 }
 
 #[derive(Debug)]
-struct VfioCdev {
+struct VfioDev<D> {
     name: Arc<str>,
-    dev: Cdev,
+    dev: D,
 }
 
 #[derive(Debug)]
-pub struct ExtraConfig {
+pub struct ExtraConfig<D> {
     msix_msg_ctrl_hi: AtomicU8,
     msix_msg_ctrl_offset: usize,
     masked_caps: Addressable<MaskedCap>,
 
-    cdev: Arc<VfioCdev>,
+    dev: Arc<VfioDev<D>>,
     offset: u64,
     size: usize,
 }
 
-impl ExtraConfig {
+impl<D> ExtraConfig<D>
+where
+    D: Device,
+{
     fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
-        let name = &self.cdev.name;
+        let name = &self.dev.name;
         let mut masks = [0; 8];
         let vals = val.to_ne_bytes();
         for index in 0..(size as usize) {
@@ -256,7 +261,7 @@ impl ExtraConfig {
         if mask.trailing_ones() == (size << 3) as u32 {
             return Ok(());
         }
-        let cdev = &self.cdev.dev;
+        let cdev = &self.dev.dev;
         let masked_val = if mask == 0 {
             val
         } else {
@@ -286,12 +291,12 @@ impl ExtraConfig {
         let ret = if mask.trailing_ones() == (size << 3) as u32 {
             emulated_val
         } else {
-            let real_val = self.cdev.dev.read(self.offset + offset as u64, size)?;
+            let real_val = self.dev.dev.read(self.offset + offset as u64, size)?;
             mask_bits!(real_val, emulated_val, mask)
         };
         log::trace!(
             "{}: read config: offset={offset:#05x}, size={size}, mask=0x{mask:0width$x}, emulated_val=0x{emulated_val:0width$x}, ret=0x{ret:0width$x}",
-            self.cdev.name,
+            self.dev.name,
             width = 2 * size as usize
         );
         Ok(ret)
@@ -299,12 +304,15 @@ impl ExtraConfig {
 }
 
 #[derive(Debug)]
-pub struct PciPthConfig {
+pub struct PciPthConfig<D> {
     header: EmulatedHeader,
-    extra: ExtraConfig,
+    extra: ExtraConfig<D>,
 }
 
-impl Mmio for PciPthConfig {
+impl<D> Mmio for PciPthConfig<D>
+where
+    D: Device,
+{
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         if offset < self.header.size() {
             Mmio::read(&self.header, offset, size)
@@ -327,7 +335,10 @@ impl Mmio for PciPthConfig {
     }
 }
 
-impl PciConfig for PciPthConfig {
+impl<D> PciConfig for PciPthConfig<D>
+where
+    D: Device,
+{
     fn get_header(&self) -> &EmulatedHeader {
         &self.header
     }
@@ -339,13 +350,16 @@ impl PciConfig for PciPthConfig {
 }
 
 #[derive(Debug)]
-pub struct PthBarRegion {
-    cdev: Arc<VfioCdev>,
+pub struct PthBarRegion<D> {
+    cdev: Arc<VfioDev<D>>,
     size: usize,
     offset: u64,
 }
 
-impl Mmio for PthBarRegion {
+impl<D> Mmio for PthBarRegion<D>
+where
+    D: Device,
+{
     fn size(&self) -> u64 {
         self.size as u64
     }
@@ -369,16 +383,17 @@ impl Mmio for PthBarRegion {
 }
 
 #[derive(Debug)]
-pub struct VfioPciDev<M>
+pub struct VfioPciDev<M, D>
 where
     M: MsiSender,
 {
-    config: Arc<PciPthConfig>,
+    config: Arc<PciPthConfig<D>>,
     msix_table: Arc<MsixTableMmio<M::IrqFd>>,
 }
 
-impl<M> Pci for VfioPciDev<M>
+impl<M, D> Pci for VfioPciDev<M, D>
 where
+    D: Device,
     M: MsiSender,
 {
     fn config(&self) -> Arc<dyn PciConfig> {
@@ -392,12 +407,13 @@ where
     }
 }
 
-impl<M> VfioPciDev<M>
+impl<M, D> VfioPciDev<M, D>
 where
     M: MsiSender,
+    D: Device,
 {
-    pub fn new(name: Arc<str>, dev: Cdev, msi_sender: M) -> Result<VfioPciDev<M>> {
-        let cdev = Arc::new(VfioCdev { dev, name });
+    pub fn new(name: Arc<str>, dev: D, msi_sender: M) -> Result<VfioPciDev<M, D>> {
+        let cdev = Arc::new(VfioDev { dev, name });
 
         let region_config = cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?;
 
@@ -516,7 +532,7 @@ where
                     msix_msg_ctrl_hi: AtomicU8::new(0),
                     msix_msg_ctrl_offset,
                     masked_caps,
-                    cdev,
+                    dev: cdev,
                     offset: region_config.offset,
                     size: region_config.size as usize,
                 },
@@ -534,15 +550,15 @@ where
             count: 0,
             data: VfioIrqSetData { eventfds: [] },
         };
-        self.config.extra.cdev.dev.set_irqs(&disable_msix)?;
+        self.config.extra.dev.dev.set_irqs(&disable_msix)?;
 
         self.msix_table.reset();
-        self.config.extra.cdev.dev.reset()
+        self.config.extra.dev.dev.reset()
     }
 }
 
 #[derive(Debug)]
-struct MsixBarMmio<M>
+struct MsixBarMmio<M, D>
 where
     M: MsiSender,
 {
@@ -552,15 +568,16 @@ where
     #[allow(dead_code)]
     pba: Arc<[AtomicU64]>, // TODO
     pba_range: Range<usize>,
-    cdev: Arc<VfioCdev>,
+    cdev: Arc<VfioDev<D>>,
     cdev_offset: u64,
     region_start: usize,
     region_size: usize,
 }
 
-impl<M> MsixBarMmio<M>
+impl<M, D> MsixBarMmio<M, D>
 where
     M: MsiSender,
+    D: Device,
 {
     fn enable_irqfd(&self, index: usize, entry: &mut MsixTableMmioEntry<M::IrqFd>) -> Result<()> {
         let MsixTableMmioEntry::Entry(e) = &*entry else {
@@ -593,9 +610,10 @@ where
     }
 }
 
-impl<M> Mmio for MsixBarMmio<M>
+impl<M, D> Mmio for MsixBarMmio<M, D>
 where
     M: MsiSender,
+    D: Device,
 {
     fn size(&self) -> u64 {
         self.region_size as u64
