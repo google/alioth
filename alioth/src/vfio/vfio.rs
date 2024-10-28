@@ -60,3 +60,13 @@ pub struct VfioParam {
     /// Path to the iommu device. [default: /dev/iommu]
     pub dev_iommu: Option<Box<Path>>,
 }
+
+#[derive(Debug, Deserialize, Help)]
+pub struct VfioParamLegacy {
+    /// Path to a VFIO group file, e.g. /dev/vfio/12.
+    pub group: Box<Path>,
+    /// Device ID, e.g. 0000:06:0d.0.
+    pub device: Box<str>,
+    /// Path to the vfio device. [default: /dev/vfio/vfio]
+    pub dev_vfio: Option<Box<Path>>,
+}

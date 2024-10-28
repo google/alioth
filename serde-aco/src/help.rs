@@ -76,6 +76,7 @@ impl_help_for_types!(Bool, bool);
 impl_help_for_types!(
     String,
     &str,
+    Box<str>,
     String,
     CStr,
     CString,
