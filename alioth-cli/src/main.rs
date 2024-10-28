@@ -415,7 +415,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     for (index, vfio) in args.vfio.into_iter().enumerate() {
         let param: VfioParam =
             serde_aco::from_args(&vfio, &objects).context(error::ParseArg { arg: vfio })?;
-        vm.add_vfio_dev(format!("vfio-{index}"), param)
+        vm.add_vfio_dev(format!("vfio-{index}").into(), param)
             .context(error::CreateDevice)?;
     }
 

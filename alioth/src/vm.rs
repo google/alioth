@@ -45,6 +45,8 @@ use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 #[cfg(target_os = "linux")]
+use crate::vfio::cdev::Cdev;
+#[cfg(target_os = "linux")]
 use crate::vfio::iommu::UpdateIommuIoas;
 #[cfg(target_os = "linux")]
 use crate::vfio::iommu::{Ioas, Iommu};
@@ -303,12 +305,7 @@ where
 
 #[cfg(target_os = "linux")]
 impl Machine<Kvm> {
-    pub fn add_vfio_dev(
-        &mut self,
-        name: impl Into<Arc<str>>,
-        param: VfioParam,
-    ) -> Result<(), Error> {
-        let name = name.into();
+    pub fn add_vfio_dev(&mut self, name: Arc<str>, param: VfioParam) -> Result<(), Error> {
         let iommu = if let Some(iommu) = &self.iommu {
             iommu.clone()
         } else {
@@ -340,8 +337,11 @@ impl Machine<Kvm> {
             u32::from(bdf.0),
         )?;
 
-        let dev = Arc::new(VfioPciDev::new(name.clone(), &param, ioas, msi_sender)?);
-        let pci_dev = PciDevice::new(name, dev);
+        let mut cdev = Cdev::new(&param.cdev)?;
+        cdev.attach_iommu_ioas(ioas)?;
+
+        let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
+        let pci_dev = PciDevice::new(name, Arc::new(dev));
         self.add_pci_dev(Some(bdf), pci_dev)?;
         Ok(())
     }
