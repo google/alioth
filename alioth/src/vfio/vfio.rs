@@ -14,13 +14,16 @@
 
 pub mod bindings;
 pub mod cdev;
+pub mod container;
 pub mod device;
+pub mod group;
 pub mod ioctls;
 pub mod iommu;
 pub mod pci;
 
 use std::path::PathBuf;
 
+use bindings::VfioIommu;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
@@ -44,6 +47,8 @@ pub enum Error {
     },
     #[snafu(display("Not supported PCI header type {ty:#x}"))]
     NotSupportedHeader { ty: u8 },
+    #[snafu(display("Setting container iommu to {new:?}, but it already has {current:?}"))]
+    SetContainerIommu { current: VfioIommu, new: VfioIommu },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
