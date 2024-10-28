@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::fs::File;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use std::ops::Range;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::FileExt;
@@ -460,9 +460,11 @@ where
 
         cdev.dev.reset()?;
         let msix_info = cdev.dev.get_irq_info(VfioPciIrq::MSIX.raw())?;
-        let msix_entries = (0..msix_info.count)
-            .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
-            .collect();
+        let msix_entries = RwLock::new(
+            (0..msix_info.count)
+                .map(|_| MsixTableMmioEntry::Entry(MsixTableEntry::default()))
+                .collect(),
+        );
 
         let msix_table = Arc::new(MsixTableMmio {
             entries: msix_entries,
@@ -579,34 +581,70 @@ where
     M: MsiSender,
     D: Device,
 {
-    fn enable_irqfd(&self, index: usize, entry: &mut MsixTableMmioEntry<M::IrqFd>) -> Result<()> {
+    fn disable_all_irqs(&self) -> Result<()> {
+        let vfio_irq_disable_all = VfioIrqSet {
+            argsz: size_of::<VfioIrqSet<0>>() as u32,
+            flags: VfioIrqSetFlag::DATA_NONE | VfioIrqSetFlag::ACTION_TRIGGER,
+            index: VfioPciIrq::MSIX.raw(),
+            start: 0,
+            count: 0,
+            data: VfioIrqSetData { eventfds: [] },
+        };
+        self.cdev.dev.set_irqs(&vfio_irq_disable_all)
+    }
+
+    fn enable_irqfd(&self, index: usize) -> Result<()> {
+        let mut entries = self.table.entries.write();
+        let Some(entry) = entries.get_mut(index) else {
+            log::error!(
+                "{}: MSIX-X index {index} is out of range ({})",
+                self.cdev.name,
+                entries.len()
+            );
+            return Ok(());
+        };
         let MsixTableMmioEntry::Entry(e) = &*entry else {
             return Ok(());
         };
         if e.control.masked() {
             return Ok(());
         }
+
         log::debug!("{}: enabling irqfd for MSI-X {index}", self.cdev.name);
         let irqfd = self.msi_sender.create_irqfd()?;
         irqfd.set_addr_hi(e.addr_hi)?;
         irqfd.set_addr_lo(e.addr_lo)?;
         irqfd.set_data(e.data)?;
         irqfd.set_masked(false)?;
-
-        let eventfds = [irqfd.as_fd().as_raw_fd()];
-        let vfio_irq_set_eventfd = VfioIrqSet {
-            argsz: size_of::<VfioIrqSet<0>>() as u32 + size_of_val(&eventfds) as u32,
-            flags: VfioIrqSetFlag::DATA_EVENTFD | VfioIrqSetFlag::ACTION_TRIGGER,
-            index: VfioPciIrq::MSIX.raw(),
-            start: index as u32,
-            count: 1,
-            data: VfioIrqSetData { eventfds },
-        };
-        self.cdev.dev.set_irqs(&vfio_irq_set_eventfd)?;
-
         *entry = MsixTableMmioEntry::IrqFd(irqfd);
 
-        Ok(())
+        // If a device IRQ has flag NORESIZE, it must be disabled before a new
+        // subindex can be enabled.
+        // However if this IRQ has been disabled, VFIO returns error if we try
+        // to call disable_all_irqs(). This happens when the guest enables a
+        // subindex for the first time.
+        // As long as the following set_irqs() succeeds, we can safely ignore
+        // the error here.
+        let _ = self.disable_all_irqs();
+
+        let mut eventfds = [-1; 2048];
+        let mut count = 0;
+        for (index, (entry, fd)) in std::iter::zip(entries.iter(), &mut eventfds).enumerate() {
+            let MsixTableMmioEntry::IrqFd(irqfd) = entry else {
+                continue;
+            };
+            count = index + 1;
+            *fd = irqfd.as_fd().as_raw_fd();
+        }
+        let vfio_irq_set_eventfd = VfioIrqSet {
+            argsz: (size_of::<VfioIrqSet<0>>() + size_of::<i32>() * count) as u32,
+            flags: VfioIrqSetFlag::DATA_EVENTFD | VfioIrqSetFlag::ACTION_TRIGGER,
+            index: VfioPciIrq::MSIX.raw(),
+            start: 0,
+            count: count as u32,
+            data: VfioIrqSetData { eventfds },
+        };
+        self.cdev.dev.set_irqs(&vfio_irq_set_eventfd)
     }
 }
 
@@ -639,8 +677,8 @@ where
         let name = &self.cdev.name;
         if offset < self.table_range.end && offset + size as usize > self.table_range.start {
             let offset = offset - self.table_range.start;
-            if let Some(mut entry) = self.table.write_val(offset as u64, size, val)? {
-                self.enable_irqfd(offset / size_of::<MsixTableEntry>(), &mut entry)
+            if self.table.write_val(offset as u64, size, val)? {
+                self.enable_irqfd(offset / size_of::<MsixTableEntry>())
                     .map_err(boxed_debug_trace)
                     .context(mem::error::Mmio)?;
             }
