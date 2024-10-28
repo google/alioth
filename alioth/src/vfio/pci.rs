@@ -44,8 +44,7 @@ use crate::vfio::bindings::{
 };
 use crate::vfio::cdev::Cdev;
 use crate::vfio::device::Device;
-use crate::vfio::iommu::Ioas;
-use crate::vfio::{error, Result, VfioParam};
+use crate::vfio::{error, Result};
 use crate::{align_down, align_up, assign_bits, mask_bits, mem};
 
 fn round_up_range(range: Range<usize>) -> Range<usize> {
@@ -397,18 +396,8 @@ impl<M> VfioPciDev<M>
 where
     M: MsiSender,
 {
-    pub fn new(
-        name: impl Into<Arc<str>>,
-        param: &VfioParam,
-        ioas: Arc<Ioas>,
-        msi_sender: M,
-    ) -> Result<VfioPciDev<M>> {
-        let mut dev = Cdev::new(&param.cdev)?;
-        dev.attach_iommu_ioas(ioas)?;
-        let cdev = Arc::new(VfioCdev {
-            dev,
-            name: name.into(),
-        });
+    pub fn new(name: Arc<str>, dev: Cdev, msi_sender: M) -> Result<VfioPciDev<M>> {
+        let cdev = Arc::new(VfioCdev { dev, name });
 
         let region_config = cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?;
 
