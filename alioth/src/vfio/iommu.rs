@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -36,13 +36,9 @@ pub struct Iommu {
 
 impl Iommu {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let fd = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .context(error::AccessDevice {
-                path: path.as_ref(),
-            })?;
+        let fd = File::open(&path).context(error::AccessDevice {
+            path: path.as_ref(),
+        })?;
         Ok(Iommu { fd })
     }
 }
