@@ -21,7 +21,7 @@ pub mod ioctls;
 pub mod iommu;
 pub mod pci;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bindings::VfioIommu;
 use serde::Deserialize;
@@ -56,5 +56,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Deserialize, Help)]
 pub struct VfioParam {
     /// Path to a VFIO cdev, e.g. /dev/vfio/devices/vfio0.
-    pub cdev: PathBuf,
+    pub cdev: Box<Path>,
+    /// Path to the iommu device. [default: /dev/iommu]
+    pub dev_iommu: Option<Box<Path>>,
 }
