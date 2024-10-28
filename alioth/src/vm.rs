@@ -45,7 +45,13 @@ use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 #[cfg(target_os = "linux")]
+use crate::vfio::bindings::VfioIommu;
+#[cfg(target_os = "linux")]
 use crate::vfio::cdev::Cdev;
+#[cfg(target_os = "linux")]
+use crate::vfio::container::{Container, UpdateContainerMapping};
+#[cfg(target_os = "linux")]
+use crate::vfio::group::{DevFd, Group};
 #[cfg(target_os = "linux")]
 use crate::vfio::iommu::UpdateIommuIoas;
 #[cfg(target_os = "linux")]
@@ -54,6 +60,8 @@ use crate::vfio::iommu::{Ioas, Iommu};
 use crate::vfio::pci::VfioPciDev;
 #[cfg(target_os = "linux")]
 use crate::vfio::VfioParam;
+#[cfg(target_os = "linux")]
+use crate::vfio::VfioParamLegacy;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 
@@ -136,6 +144,8 @@ where
             fw_cfg: Mutex::new(None),
             #[cfg(target_os = "linux")]
             default_ioas: RwLock::new(None),
+            #[cfg(target_os = "linux")]
+            default_vfio_container: RwLock::new(None),
         });
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -341,6 +351,41 @@ impl Machine<Kvm> {
         cdev.attach_iommu_ioas(ioas)?;
 
         let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
+        let pci_dev = PciDevice::new(name, Arc::new(dev));
+        self.add_pci_dev(Some(bdf), pci_dev)?;
+        Ok(())
+    }
+
+    pub fn add_vfio_dev_legacy(&mut self, name: Arc<str>, param: VfioParamLegacy) -> Result<()> {
+        let mut default_container = self.board.default_vfio_container.write();
+        let container = if let Some(container) = &*default_container {
+            container.clone()
+        } else {
+            let vfio_path = if let Some(dev_vfio) = &param.dev_vfio {
+                dev_vfio
+            } else {
+                Path::new("/dev/vfio/vfio")
+            };
+            let container = Arc::new(Container::new(vfio_path)?);
+            default_container.replace(container.clone());
+            let update = Box::new(UpdateContainerMapping {
+                container: container.clone(),
+            });
+            self.board.memory.register_change_callback(update)?;
+            container
+        };
+        drop(default_container);
+
+        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
+        let msi_sender = self.board.vm.create_msi_sender(
+            #[cfg(target_arch = "aarch64")]
+            u32::from(bdf.0),
+        )?;
+        let mut group = Group::new(&param.group)?;
+        group.attach(container, VfioIommu::TYPE1_V2)?;
+        let group = Arc::new(group);
+        let devfd = DevFd::new(group, &param.device)?;
+        let dev = VfioPciDev::new(name.clone(), devfd, msi_sender)?;
         let pci_dev = PciDevice::new(name, Arc::new(dev));
         self.add_pci_dev(Some(bdf), pci_dev)?;
         Ok(())

@@ -47,6 +47,8 @@ use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
 use crate::pci::Bdf;
 #[cfg(target_os = "linux")]
+use crate::vfio::container::Container;
+#[cfg(target_os = "linux")]
 use crate::vfio::iommu::Ioas;
 
 #[cfg(target_arch = "aarch64")]
@@ -134,6 +136,8 @@ where
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
     #[cfg(target_os = "linux")]
     pub default_ioas: RwLock<Option<Arc<Ioas>>>,
+    #[cfg(target_os = "linux")]
+    pub default_vfio_container: RwLock<Option<Arc<Container>>>,
 }
 
 impl<V> Board<V>
