@@ -58,7 +58,6 @@ type-2 hypervisor (virtual machine monitor) in Rust implemented from scratch.
 
 ## TODOs
 
-- [ ] device passthrough with legacy VFIO API (groups and containers),
 - [ ] explore a better solution to ACPI DSDT to replace the pre-compiled AML
       bytes,
 - [ ] increase test coverage,
