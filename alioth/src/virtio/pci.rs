@@ -70,12 +70,11 @@ where
     S: MsiSender,
 {
     fn send(&self, vector: u16) {
-        let entries = &self.msix_table.entries;
+        let entries = self.msix_table.entries.read();
         let Some(entry) = entries.get(vector as usize) else {
             log::error!("invalid config vector: {:x}", vector);
             return;
         };
-        let entry = entry.read();
         if entry.get_masked() {
             log::info!("{} is masked", vector);
             return;
@@ -90,11 +89,10 @@ where
     }
 
     fn get_irqfd(&self, vector: u16) -> Result<RawFd> {
-        let entries = &self.msix_table.entries;
-        let Some(entry) = entries.get(vector as usize) else {
+        let mut entries = self.msix_table.entries.write();
+        let Some(entry) = entries.get_mut(vector as usize) else {
             return error::InvalidMsixVector { vector }.fail();
         };
-        let mut entry = entry.write();
         match &*entry {
             MsixTableMmioEntry::Entry(e) => {
                 let irqfd = self.msi_sender.create_irqfd()?;
@@ -223,11 +221,11 @@ where
     }
 
     fn msix_change_allowed(&self, old: u16) -> bool {
-        let Some(entry) = self.irq_sender.msix_table.entries.get(old as usize) else {
+        let entries = self.irq_sender.msix_table.entries.read();
+        let Some(entry) = entries.get(old as usize) else {
             return true;
         };
-        let entry = entry.read();
-        if let MsixTableMmioEntry::IrqFd(fd) = &*entry {
+        if let MsixTableMmioEntry::IrqFd(fd) = entry {
             log::error!(
                 "{}: MSI-X vector {old:#x} was assigned to irqfd {:#x}",
                 self.name,
@@ -748,9 +746,11 @@ where
             length: device_config.size() as u32,
             ..Default::default()
         };
-        let entries = (0..table_entries)
-            .map(|_| RwLock::new(MsixTableMmioEntry::Entry(MsixTableEntry::default())))
-            .collect();
+        let entries = RwLock::new(
+            (0..table_entries)
+                .map(|_| MsixTableMmioEntry::Entry(MsixTableEntry::default()))
+                .collect(),
+        );
         let msix_table = Arc::new(MsixTableMmio { entries });
         let bar0_size = 16 << 10;
         let mut bar0 = MemRegion {

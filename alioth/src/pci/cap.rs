@@ -17,7 +17,7 @@ use std::mem::size_of;
 
 use bitfield::bitfield;
 use macros::Layout;
-use parking_lot::{RwLock, RwLockWriteGuard};
+use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::hv::IrqFd;
@@ -305,7 +305,7 @@ where
 
 #[derive(Debug)]
 pub struct MsixTableMmio<F> {
-    pub entries: Vec<RwLock<MsixTableMmioEntry<F>>>,
+    pub entries: RwLock<Box<[MsixTableMmioEntry<F>]>>,
 }
 
 impl<F> MsixTableMmio<F>
@@ -314,27 +314,22 @@ where
 {
     /// Write `val` to `offset`.
     ///
-    /// Returns an MSI entry if its `masked` bit gets flipped.
-    pub fn write_val(
-        &self,
-        offset: u64,
-        size: u8,
-        val: u64,
-    ) -> mem::Result<Option<RwLockWriteGuard<MsixTableMmioEntry<F>>>> {
+    /// Returns `true` if a `masked` bit gets flipped.
+    pub fn write_val(&self, offset: u64, size: u8, val: u64) -> mem::Result<bool> {
         if size != 4 || offset & 0b11 != 0 {
             log::error!("unaligned access to msix table: size = {size}, offset = {offset:#x}");
-            return Ok(None);
+            return Ok(false);
         }
         let val = val as u32;
         let index = offset as usize / size_of::<MsixTableEntry>();
-        let Some(entry) = self.entries.get(index) else {
+        let mut entries = self.entries.write();
+        let Some(entry) = entries.get_mut(index) else {
             log::error!(
                 "MSI-X table size: {}, accessing index {index}",
-                self.entries.len()
+                entries.len()
             );
-            return Ok(None);
+            return Ok(false);
         };
-        let mut entry = entry.write();
         let mut state_changed = false;
         match offset as usize % size_of::<MsixTableEntry>() {
             0 => entry.set_addr_lo(val)?,
@@ -343,16 +338,12 @@ where
             12 => state_changed = entry.set_masked(MsixVectorCtrl(val).masked())?,
             _ => unreachable!(),
         };
-        if state_changed {
-            Ok(Some(entry))
-        } else {
-            Ok(None)
-        }
+        Ok(state_changed)
     }
 
     pub fn reset(&self) {
-        for entry in self.entries.iter() {
-            let mut entry = entry.write();
+        let mut entries = self.entries.write();
+        for entry in entries.iter_mut() {
             *entry = MsixTableMmioEntry::Entry(MsixTableEntry::default());
         }
     }
@@ -363,7 +354,7 @@ where
     F: IrqFd,
 {
     fn size(&self) -> u64 {
-        (size_of::<MsixTableEntry>() * self.entries.len()) as u64
+        (size_of::<MsixTableEntry>() * self.entries.read().len()) as u64
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
@@ -372,14 +363,14 @@ where
             return Ok(0);
         }
         let index = offset as usize / size_of::<MsixTableEntry>();
-        let Some(entry) = self.entries.get(index) else {
+        let entries = self.entries.read();
+        let Some(entry) = entries.get(index) else {
             log::error!(
                 "MSI-X table size: {}, accessing index {index}",
-                self.entries.len()
+                entries.len()
             );
             return Ok(0);
         };
-        let entry = entry.read();
         let ret = match offset as usize % size_of::<MsixTableEntry>() {
             0 => entry.get_addr_lo(),
             4 => entry.get_addr_hi(),
