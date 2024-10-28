@@ -31,7 +31,7 @@ use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
-use alioth::vfio::VfioParam;
+use alioth::vfio::{VfioParam, VfioParamLegacy};
 use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
@@ -216,6 +216,12 @@ struct RunArgs {
         help_text::<VfioParam>("Assign a host PCI device to the guest.")
     ))]
     vfio: Vec<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(help_text::<VfioParamLegacy>(
+        "Assign a host PCI device to the guest using legacy VFIO API."
+    )))]
+    vfio_legacy: Vec<String>,
 
     #[arg(long)]
     #[arg(long, help(help_text::<BalloonParam>("Add a VirtIO balloon device.")))]
@@ -416,6 +422,14 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         let param: VfioParam =
             serde_aco::from_args(&vfio, &objects).context(error::ParseArg { arg: vfio })?;
         vm.add_vfio_dev(format!("vfio-{index}").into(), param)
+            .context(error::CreateDevice)?;
+    }
+    #[cfg(target_os = "linux")]
+    for vfio_legacy in args.vfio_legacy.into_iter() {
+        let param: VfioParamLegacy = serde_aco::from_args(&vfio_legacy, &objects)
+            .context(error::ParseArg { arg: vfio_legacy })?;
+        let name = format!("vfio-{}", param.device).into();
+        vm.add_vfio_dev_legacy(name, param)
             .context(error::CreateDevice)?;
     }
 
