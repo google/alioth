@@ -73,7 +73,18 @@ macro_rules! impl_help_for_types {
 impl_help_for_num_types!(Int, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
 impl_help_for_types!(Float, f32, f64);
 impl_help_for_types!(Bool, bool);
-impl_help_for_types!(String, &str, String, CStr, CString, &OsStr, OsString, &Path, PathBuf);
+impl_help_for_types!(
+    String,
+    &str,
+    String,
+    CStr,
+    CString,
+    &OsStr,
+    OsString,
+    &Path,
+    Box<Path>,
+    PathBuf
+);
 
 impl<T> Help for Option<T>
 where

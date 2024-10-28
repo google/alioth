@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -310,7 +312,12 @@ impl Machine<Kvm> {
         let iommu = if let Some(iommu) = &self.iommu {
             iommu.clone()
         } else {
-            let iommu = Arc::new(Iommu::new("/dev/iommu")?);
+            let iommu_path = if let Some(dev_iommu) = &param.dev_iommu {
+                dev_iommu
+            } else {
+                Path::new("/dev/iommu")
+            };
+            let iommu = Arc::new(Iommu::new(iommu_path)?);
             self.iommu.replace(iommu.clone());
             iommu
         };
