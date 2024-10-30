@@ -91,7 +91,7 @@ bitflags! {
         const DEFLATE_ON_OOM = 1 << 2;
         const FREE_PAGE_HINT = 1 << 3;
         const PAGE_POISON = 1 << 4;
-        const REPORTING = 1 << 5;
+        const PAGE_REPORTING = 1 << 5;
     }
 }
 
@@ -111,20 +111,26 @@ c_enum! {
     }
 }
 
-const VQ_INFLATE: u16 = 0;
-const VQ_DEFLATE: u16 = 1;
-const VQ_STATES: u16 = 2;
-const VQ_FREE_PAGE: u16 = 3;
-const VQ_REPORTING: u16 = 4;
+#[derive(Debug, Clone, Copy)]
+enum BalloonQueue {
+    Inflate,
+    Deflate,
+    Stats,
+    FreePage,
+    Reporting,
+    NotExist,
+}
 
 #[derive(Debug)]
 pub struct Balloon {
     name: Arc<str>,
     config: Arc<BalloonConfigMmio>,
+    feature: BalloonFeature,
+    queues: [BalloonQueue; 5],
 }
 
 impl Balloon {
-    pub fn new(_param: BalloonParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(param: BalloonParam, name: impl Into<Arc<str>>) -> Result<Self> {
         if unsafe { sysconf(_SC_PAGESIZE) } != 1 << 12 {
             let err = std::io::ErrorKind::Unsupported;
             Err(std::io::Error::from(err))?;
@@ -133,6 +139,10 @@ impl Balloon {
             num_pages: 0,
             ..Default::default()
         };
+        let mut feature = BalloonFeature::all();
+        if !param.free_page_reporting {
+            feature.remove(BalloonFeature::PAGE_REPORTING);
+        };
         let name = name.into();
         Ok(Balloon {
             name: name.clone(),
@@ -140,6 +150,8 @@ impl Balloon {
                 config: RwLock::new(config),
                 name,
             }),
+            feature,
+            queues: [BalloonQueue::NotExist; 5],
         })
     }
 
@@ -202,7 +214,7 @@ impl Virtio for Balloon {
     }
 
     fn num_queues(&self) -> u16 {
-        5
+        self.queues.len() as u16
     }
 
     fn config(&self) -> Arc<BalloonConfigMmio> {
@@ -210,16 +222,31 @@ impl Virtio for Balloon {
     }
 
     fn feature(&self) -> u64 {
-        FEATURE_BUILT_IN | BalloonFeature::all().bits()
+        FEATURE_BUILT_IN | self.feature.bits()
     }
 }
 
 impl VirtioMio for Balloon {
     fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
         &mut self,
-        _feature: u64,
+        feature: u64,
         _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
     ) -> Result<()> {
+        let feature = BalloonFeature::from_bits_retain(feature);
+        self.queues[0] = BalloonQueue::Inflate;
+        self.queues[1] = BalloonQueue::Deflate;
+        let mut index = 2;
+        if feature.contains(BalloonFeature::STATS_VQ) {
+            self.queues[index] = BalloonQueue::Stats;
+            index += 1;
+        }
+        if feature.contains(BalloonFeature::FREE_PAGE_HINT) {
+            self.queues[index] = BalloonQueue::FreePage;
+            index += 1;
+        }
+        if feature.contains(BalloonFeature::PAGE_REPORTING) {
+            self.queues[index] = BalloonQueue::Reporting;
+        }
         Ok(())
     }
 
@@ -232,25 +259,30 @@ impl VirtioMio for Balloon {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        match index {
-            VQ_STATES => {
-                log::info!("{}: VQ_STATES avaibale", self.name);
+        let Some(&ballon_q) = self.queues.get(index as usize) else {
+            log::error!("{}: invalid queue index {index}", self.name);
+            return Ok(());
+        };
+        match ballon_q {
+            BalloonQueue::Stats => {
+                log::info!("{}: VQ_STATES available", self.name);
                 return Ok(());
             }
-            VQ_FREE_PAGE => {
-                log::info!("{}: VQ_FREE_PAGE avaibale", self.name);
+            BalloonQueue::FreePage => {
+                log::info!("{}: VQ_FREE_PAGE available", self.name);
                 return Ok(());
             }
             _ => {}
         };
         handle_desc(&self.name, index, queue, active_mio.irq_sender, |desc| {
-            match index {
-                VQ_INFLATE => self.inflate(&desc.readable, active_mio.mem),
-                VQ_DEFLATE => {
+            match ballon_q {
+                BalloonQueue::Inflate => self.inflate(&desc.readable, active_mio.mem),
+                BalloonQueue::Deflate => {
                     log::info!("{}: VQ_DEFLATE available", self.name);
                 }
-                VQ_REPORTING => self.free_reporting(&mut desc.writable),
-                _ => log::error!("{}: invalid queue index {index}", self.name),
+                BalloonQueue::Reporting => self.free_reporting(&mut desc.writable),
+                BalloonQueue::Stats | BalloonQueue::FreePage => todo!(),
+                BalloonQueue::NotExist => log::error!("{}: invalid queue index {index}", self.name),
             }
             Ok(Some(0))
         })
@@ -264,11 +296,17 @@ impl VirtioMio for Balloon {
         Ok(())
     }
 
-    fn reset(&mut self, _registry: &Registry) {}
+    fn reset(&mut self, _registry: &Registry) {
+        self.queues = [BalloonQueue::NotExist; 5];
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Help, Default)]
-pub struct BalloonParam {}
+pub struct BalloonParam {
+    /// Enable free page reporting. [default: false]
+    #[serde(default)]
+    pub free_page_reporting: bool,
+}
 
 impl DevParam for BalloonParam {
     type Device = Balloon;
