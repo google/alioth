@@ -427,6 +427,7 @@ where
         cdev.dev.fd().read_at(&mut buf, region_config.offset)?;
 
         let (mut dev_header, _) = DeviceHeader::read_from_prefix(&buf).unwrap();
+        dev_header.common.header_type &= !(1 << 7);
         if dev_header.common.header_type != HeaderType::Device as u8 {
             return error::NotSupportedHeader {
                 ty: dev_header.common.header_type,
