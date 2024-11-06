@@ -55,6 +55,40 @@ bitfield! {
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
+    pub struct MsiMsgCtrl(u16);
+    impl Debug;
+    pub enable, set_enable: 0;
+    pub multi_msg_cap, set_multi_msg_cap: 3, 1;
+    pub multi_msg_enable, set_multi_msg_enable: 6, 4;
+    pub addr_64, set_addr_64: 7;
+    pub per_vector_masking, set_per_vector_masking: 8;
+    pub ext_msg_data_cap, set_ext_msg_data_cap: 9;
+    pub ext_msg_data_enable, set_ext_msg_data_enable: 10;
+}
+
+impl MsiMsgCtrl {
+    pub fn cap_size(&self) -> usize {
+        let mut size = 12;
+        if self.addr_64() {
+            size += 4;
+        }
+        if self.per_vector_masking() {
+            size += 8;
+        }
+        size
+    }
+}
+
+#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+#[repr(C)]
+pub struct MsiCapHdr {
+    pub header: PciCapHdr,
+    pub control: MsiMsgCtrl,
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
+    #[repr(C)]
     pub struct MsixMsgCtrl(u16);
     impl Debug;
     pub table_len, _ : 10, 0;

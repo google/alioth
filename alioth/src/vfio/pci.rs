@@ -32,7 +32,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{IoRegion, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::pci::cap::{
-    MsixCap, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry, PciCapHdr, PciCapId,
+    MsiCapHdr, MsixCap, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry, PciCapHdr, PciCapId,
 };
 use crate::pci::config::{
     Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderData, HeaderType,
@@ -443,15 +443,31 @@ where
         if dev_header.common.status.contains(Status::CAP) {
             let mut cap_offset = dev_header.capability_pointer as usize;
             while cap_offset != 0 {
-                let (cap_header, _) = PciCapHdr::ref_from_prefix(&buf[cap_offset..]).unwrap();
+                let Some(cap_buf) = buf.get(cap_offset..) else {
+                    log::error!("{}: invalid cap offset: {cap_offset:#x}", cdev.name);
+                    break;
+                };
+                let (cap_header, _) = PciCapHdr::ref_from_prefix(cap_buf).unwrap();
                 if cap_header.id == PciCapId::Msix as u8 {
-                    if let Ok((c, _)) = MsixCap::read_from_prefix(&buf[cap_offset..]) {
+                    if let Ok((c, _)) = MsixCap::read_from_prefix(cap_buf) {
                         msix_cap = Some(c)
                     }
                     msix_msg_ctrl_offset = cap_offset + MsixCap::OFFSET_CONTROL;
                 } else if cap_header.id == PciCapId::Msi as u8 {
+                    let Ok((c, _)) = MsiCapHdr::read_from_prefix(cap_buf) else {
+                        log::error!(
+                            "{}: MSI capability is at an invalid offset: {cap_offset:#x}",
+                            cdev.name
+                        );
+                        continue;
+                    };
                     log::trace!("{}: hiding MSI cap at {cap_offset:#x}", cdev.name);
-                    masked_caps.add(cap_offset as u64, MaskedCap { size: 0x20 })?;
+                    masked_caps.add(
+                        cap_offset as u64,
+                        MaskedCap {
+                            size: c.control.cap_size(),
+                        },
+                    )?;
                 }
                 cap_offset = cap_header.next as usize;
             }
