@@ -44,6 +44,7 @@ pub enum TypedHelp {
     Custom {
         desc: &'static str,
     },
+    Array(&'static TypedHelp),
     Option(&'static TypedHelp),
 }
 
@@ -70,6 +71,14 @@ macro_rules! impl_help_for_types {
     };
 }
 
+macro_rules! impl_help_for_array_types {
+    ($($ty:ty),+) => {
+        $(impl<T> Help for $ty where T: Help {
+            const HELP: TypedHelp = TypedHelp::Array(&T::HELP);
+        })+
+    };
+}
+
 impl_help_for_num_types!(Int, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
 impl_help_for_types!(Float, f32, f64);
 impl_help_for_types!(Bool, bool);
@@ -86,6 +95,7 @@ impl_help_for_types!(
     Box<Path>,
     PathBuf
 );
+impl_help_for_array_types!(&[T], Box<[T]>, Vec<T>);
 
 impl<T> Help for Option<T>
 where
@@ -100,8 +110,8 @@ struct ExtraHelp<'a> {
     helps: Vec<&'a TypedHelp>,
 }
 
-fn value_type(v: &TypedHelp) -> &'static str {
-    match v {
+fn add_value_type(s: &mut String, v: &TypedHelp) {
+    let type_s = match v {
         TypedHelp::Bool => "bool",
         TypedHelp::Int => "integer",
         TypedHelp::Float => "float",
@@ -110,8 +120,15 @@ fn value_type(v: &TypedHelp) -> &'static str {
         TypedHelp::Custom { desc } => desc,
         TypedHelp::Struct { name, .. } => name,
         TypedHelp::Enum { name, .. } => name,
-        TypedHelp::Option(o) => value_type(o),
-    }
+        TypedHelp::Option(o) => return add_value_type(s, o),
+        TypedHelp::Array(t) => {
+            s.push_str("array<");
+            add_value_type(s, t);
+            s.push('>');
+            return;
+        }
+    };
+    s.push_str(type_s);
 }
 
 fn add_extra_help<'a>(extra: &mut ExtraHelp<'a>, v: &'a TypedHelp) {
@@ -171,7 +188,7 @@ fn one_key_val<'a>(s: &mut String, extra: &mut Option<&mut ExtraHelp<'a>>, f: &'
     } else {
         s.push_str(f.ident);
         s.push_str("=<");
-        s.push_str(value_type(&f.ty));
+        add_value_type(s, &f.ty);
         s.push('>');
         if let Some(extra) = extra {
             add_extra_help(extra, &f.ty)
@@ -319,7 +336,7 @@ fn enum_help<'a>(
             | TypedHelp::Custom { .. } => {
                 s.push_str(variant.ident);
                 s.push_str(",<");
-                s.push_str(value_type(&variant.ty));
+                add_value_type(s, &variant.ty);
                 s.push('>');
                 next_line(s, indent + 2);
                 s.push_str(variant.doc);
