@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -59,9 +61,7 @@ use crate::vfio::iommu::{Ioas, Iommu};
 #[cfg(target_os = "linux")]
 use crate::vfio::pci::VfioPciDev;
 #[cfg(target_os = "linux")]
-use crate::vfio::VfioParam;
-#[cfg(target_os = "linux")]
-use crate::vfio::VfioParamLegacy;
+use crate::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 
@@ -93,6 +93,12 @@ pub enum Error {
     },
     #[snafu(display("Failed to configure guest memory"), context(false))]
     Memory { source: Box<crate::mem::Error> },
+    #[cfg(target_os = "linux")]
+    #[snafu(display("{name:?} already exists"))]
+    AlreadyExists { name: Box<str> },
+    #[cfg(target_os = "linux")]
+    #[snafu(display("{name:?} does not exist"))]
+    NotExist { name: Box<str> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -143,9 +149,9 @@ where
             #[cfg(target_arch = "x86_64")]
             fw_cfg: Mutex::new(None),
             #[cfg(target_os = "linux")]
-            default_ioas: RwLock::new(None),
+            vfio_ioases: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
-            default_vfio_container: RwLock::new(None),
+            vfio_containers: Mutex::new(HashMap::new()),
         });
 
         let (event_tx, event_rx) = mpsc::channel();
@@ -315,7 +321,13 @@ where
 
 #[cfg(target_os = "linux")]
 impl Machine<Kvm> {
-    pub fn add_vfio_dev(&mut self, name: Arc<str>, param: VfioParam) -> Result<(), Error> {
+    const DEFAULT_NAME: &str = "default";
+
+    pub fn add_vfio_ioas(&mut self, param: IoasParam) -> Result<Arc<Ioas>, Error> {
+        let mut ioases = self.board.vfio_ioases.lock();
+        if ioases.contains_key(&param.name) {
+            return error::AlreadyExists { name: param.name }.fail();
+        }
         let iommu = if let Some(iommu) = &self.iommu {
             iommu.clone()
         } else {
@@ -328,66 +340,105 @@ impl Machine<Kvm> {
             self.iommu.replace(iommu.clone());
             iommu
         };
+        let ioas = Arc::new(Ioas::alloc_on(iommu)?);
+        let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
+        self.board.memory.register_change_callback(update)?;
+        ioases.insert(param.name, ioas.clone());
+        Ok(ioas)
+    }
 
-        let mut default_ioas = self.board.default_ioas.write();
-        let ioas = if let Some(ioas) = &*default_ioas {
-            ioas.clone()
-        } else {
-            let ioas = Arc::new(Ioas::alloc_on(iommu.clone())?);
-            default_ioas.replace(ioas.clone());
-            let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
-            self.board.memory.register_change_callback(update)?;
-            ioas
+    fn get_ioas(&mut self, name: Option<&str>) -> Result<Arc<Ioas>> {
+        let ioas_name = name.unwrap_or(Self::DEFAULT_NAME);
+        if let Some(ioas) = self.board.vfio_ioases.lock().get(ioas_name) {
+            return Ok(ioas.clone());
         };
-        drop(default_ioas);
+        if name.is_none() {
+            self.add_vfio_ioas(IoasParam {
+                name: Self::DEFAULT_NAME.into(),
+                dev_iommu: None,
+            })
+        } else {
+            error::NotExist { name: ioas_name }.fail()
+        }
+    }
+
+    pub fn add_vfio_cdev(&mut self, name: Arc<str>, param: CdevParam) -> Result<(), Error> {
+        let ioas = self.get_ioas(param.ioas.as_deref())?;
+
+        let mut cdev = Cdev::new(&param.path)?;
+        cdev.attach_iommu_ioas(ioas.clone())?;
 
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let msi_sender = self.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
-
-        let mut cdev = Cdev::new(&param.cdev)?;
-        cdev.attach_iommu_ioas(ioas)?;
-
         let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
         let pci_dev = PciDevice::new(name, Arc::new(dev));
         self.add_pci_dev(Some(bdf), pci_dev)?;
         Ok(())
     }
 
-    pub fn add_vfio_dev_legacy(&mut self, name: Arc<str>, param: VfioParamLegacy) -> Result<()> {
-        let mut default_container = self.board.default_vfio_container.write();
-        let container = if let Some(container) = &*default_container {
-            container.clone()
+    pub fn add_vfio_container(&mut self, param: ContainerParam) -> Result<Arc<Container>, Error> {
+        let mut containers = self.board.vfio_containers.lock();
+        if containers.contains_key(&param.name) {
+            return error::AlreadyExists { name: param.name }.fail();
+        }
+        let vfio_path = if let Some(dev_vfio) = &param.dev_vfio {
+            dev_vfio
         } else {
-            let vfio_path = if let Some(dev_vfio) = &param.dev_vfio {
-                dev_vfio
-            } else {
-                Path::new("/dev/vfio/vfio")
-            };
-            let container = Arc::new(Container::new(vfio_path)?);
-            default_container.replace(container.clone());
-            let update = Box::new(UpdateContainerMapping {
-                container: container.clone(),
-            });
-            self.board.memory.register_change_callback(update)?;
-            container
+            Path::new("/dev/vfio/vfio")
         };
-        drop(default_container);
+        let container = Arc::new(Container::new(vfio_path)?);
+        let update = Box::new(UpdateContainerMapping {
+            container: container.clone(),
+        });
+        self.board.memory.register_change_callback(update)?;
+        containers.insert(param.name, container.clone());
+        Ok(container)
+    }
 
+    fn get_container(&mut self, name: Option<&str>) -> Result<Arc<Container>> {
+        let container_name = name.unwrap_or(Self::DEFAULT_NAME);
+        if let Some(container) = self.board.vfio_containers.lock().get(container_name) {
+            return Ok(container.clone());
+        }
+        if name.is_none() {
+            self.add_vfio_container(ContainerParam {
+                name: Self::DEFAULT_NAME.into(),
+                dev_vfio: None,
+            })
+        } else {
+            error::NotExist {
+                name: container_name,
+            }
+            .fail()
+        }
+    }
+
+    pub fn add_vfio_devs_in_group(&mut self, name: &str, param: GroupParam) -> Result<()> {
+        let container = self.get_container(param.container.as_deref())?;
+        let mut group = Group::new(&param.path)?;
+        group.attach(container, VfioIommu::TYPE1_V2)?;
+
+        let group = Arc::new(group);
+        for device in param.devices {
+            let devfd = DevFd::new(group.clone(), &device)?;
+            let name = format!("{name}-{device}");
+            self.add_vfio_devfd(name.into(), devfd)?;
+        }
+
+        Ok(())
+    }
+
+    fn add_vfio_devfd(&mut self, name: Arc<str>, devfd: DevFd) -> Result<()> {
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let msi_sender = self.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
-        let mut group = Group::new(&param.group)?;
-        group.attach(container, VfioIommu::TYPE1_V2)?;
-        let group = Arc::new(group);
-        let devfd = DevFd::new(group, &param.device)?;
         let dev = VfioPciDev::new(name.clone(), devfd, msi_sender)?;
         let pci_dev = PciDevice::new(name, Arc::new(dev));
-        self.add_pci_dev(Some(bdf), pci_dev)?;
-        Ok(())
+        self.add_pci_dev(Some(bdf), pci_dev)
     }
 }

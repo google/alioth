@@ -17,6 +17,8 @@ mod aarch64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -135,9 +137,9 @@ where
     #[cfg(target_arch = "x86_64")]
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
     #[cfg(target_os = "linux")]
-    pub default_ioas: RwLock<Option<Arc<Ioas>>>,
+    pub vfio_ioases: Mutex<HashMap<Box<str>, Arc<Ioas>>>,
     #[cfg(target_os = "linux")]
-    pub default_vfio_container: RwLock<Option<Arc<Container>>>,
+    pub vfio_containers: Mutex<HashMap<Box<str>, Arc<Container>>>,
 }
 
 impl<V> Board<V>

@@ -31,7 +31,7 @@ use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
-use alioth::vfio::{VfioParam, VfioParamLegacy};
+use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
 use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlockParam;
 use alioth::virtio::dev::entropy::EntropyParam;
@@ -212,16 +212,24 @@ struct RunArgs {
     vsock: Option<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(
-        help_text::<VfioParam>("Assign a host PCI device to the guest.")
-    ))]
-    vfio: Vec<String>,
+    #[arg(long, help(help_text::<CdevParam>(
+        "Assign a host PCI device to the guest using IOMMUFD API."
+    ) ))]
+    vfio_cdev: Vec<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(help_text::<VfioParamLegacy>(
+    #[arg(long, help(help_text::<IoasParam>("Create a new IO address space.")))]
+    vfio_ioas: Vec<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(help_text::<GroupParam>(
         "Assign a host PCI device to the guest using legacy VFIO API."
     )))]
-    vfio_legacy: Vec<String>,
+    vfio_group: Vec<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(help_text::<ContainerParam>("Add a new VFIO container.")))]
+    vfio_container: Vec<String>,
 
     #[arg(long)]
     #[arg(long, help(help_text::<BalloonParam>("Add a VirtIO balloon device.")))]
@@ -417,19 +425,32 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         vm.add_virtio_dev("virtio-balloon", param)
             .context(error::CreateDevice)?;
     }
+
     #[cfg(target_os = "linux")]
-    for (index, vfio) in args.vfio.into_iter().enumerate() {
-        let param: VfioParam =
-            serde_aco::from_args(&vfio, &objects).context(error::ParseArg { arg: vfio })?;
-        vm.add_vfio_dev(format!("vfio-{index}").into(), param)
-            .context(error::CreateDevice)?;
+    for ioas in args.vfio_ioas.into_iter() {
+        let param: IoasParam =
+            serde_aco::from_args(&ioas, &objects).context(error::ParseArg { arg: ioas })?;
+        vm.add_vfio_ioas(param).context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]
-    for vfio_legacy in args.vfio_legacy.into_iter() {
-        let param: VfioParamLegacy = serde_aco::from_args(&vfio_legacy, &objects)
-            .context(error::ParseArg { arg: vfio_legacy })?;
-        let name = format!("vfio-{}", param.device).into();
-        vm.add_vfio_dev_legacy(name, param)
+    for (index, vfio) in args.vfio_cdev.into_iter().enumerate() {
+        let param: CdevParam =
+            serde_aco::from_args(&vfio, &objects).context(error::ParseArg { arg: vfio })?;
+        vm.add_vfio_cdev(format!("vfio-{index}").into(), param)
+            .context(error::CreateDevice)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    for container in args.vfio_container.into_iter() {
+        let param: ContainerParam = serde_aco::from_args(&container, &objects)
+            .context(error::ParseArg { arg: container })?;
+        vm.add_vfio_container(param).context(error::CreateDevice)?;
+    }
+    #[cfg(target_os = "linux")]
+    for (index, group) in args.vfio_group.into_iter().enumerate() {
+        let param: GroupParam =
+            serde_aco::from_args(&group, &objects).context(error::ParseArg { arg: group })?;
+        vm.add_vfio_devs_in_group(&index.to_string(), param)
             .context(error::CreateDevice)?;
     }
 
