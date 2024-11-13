@@ -54,19 +54,36 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Deserialize, Help)]
-pub struct VfioParam {
+pub struct CdevParam {
     /// Path to a VFIO cdev, e.g. /dev/vfio/devices/vfio0.
-    pub cdev: Box<Path>,
+    pub path: Box<Path>,
+    /// Name of the IO Address space to which this device should be attached.
+    pub ioas: Option<Box<str>>,
+}
+
+#[derive(Debug, Deserialize, Help)]
+pub struct IoasParam {
+    /// Name of the IO Address space.
+    pub name: Box<str>,
     /// Path to the iommu device. [default: /dev/iommu]
     pub dev_iommu: Option<Box<Path>>,
 }
 
 #[derive(Debug, Deserialize, Help)]
-pub struct VfioParamLegacy {
+pub struct GroupParam {
     /// Path to a VFIO group file, e.g. /dev/vfio/12.
-    pub group: Box<Path>,
+    pub path: Box<Path>,
     /// Device ID, e.g. 0000:06:0d.0.
-    pub device: Box<str>,
+    #[serde(default)]
+    pub devices: Vec<Box<str>>,
+    /// Name of the container to which this device should be attached.
+    pub container: Option<Box<str>>,
+}
+
+#[derive(Debug, Deserialize, Help)]
+pub struct ContainerParam {
+    /// Name of the Container.
+    pub name: Box<str>,
     /// Path to the vfio device. [default: /dev/vfio/vfio]
     pub dev_vfio: Option<Box<Path>>,
 }
