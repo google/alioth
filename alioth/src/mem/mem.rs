@@ -255,27 +255,29 @@ struct LayoutCallbacks {
     updated: Vec<Box<dyn LayoutUpdated>>,
 }
 
+// lock order: region -> callbacks -> bus
 #[derive(Debug)]
 pub struct Memory {
+    regions: Mutex<Addressable<Arc<MemRegion>>>,
+    callbacks: Mutex<LayoutCallbacks>,
     ram_bus: Arc<RamBus>,
     mmio_bus: RwLock<MmioBus>,
-    regions: Mutex<Addressable<Arc<MemRegion>>>,
     vm_memory: Box<dyn VmMemory>,
+
     io_bus: RwLock<MmioBus>,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
-    callbacks: Mutex<LayoutCallbacks>,
 }
 
 impl Memory {
     pub fn new(vm_memory: impl VmMemory) -> Self {
         Memory {
+            regions: Mutex::new(Addressable::new()),
+            callbacks: Mutex::new(LayoutCallbacks::default()),
             ram_bus: Arc::new(RamBus::new()),
             mmio_bus: RwLock::new(MmioBus::new()),
-            regions: Mutex::new(Addressable::new()),
             vm_memory: Box::new(vm_memory),
             io_bus: RwLock::new(MmioBus::new()),
             io_regions: Mutex::new(Addressable::new()),
-            callbacks: Mutex::new(LayoutCallbacks::default()),
         }
     }
 
@@ -299,9 +301,9 @@ impl Memory {
 
     pub fn register_update_callback(&self, callback: Box<dyn LayoutUpdated>) -> Result<()> {
         let _regions = self.regions.lock();
+        let mut callbacks = self.callbacks.lock();
         let ram = self.ram_bus.lock_layout();
         callback.ram_updated(&ram)?;
-        let mut callbacks = self.callbacks.lock();
         callbacks.updated.push(callback);
         Ok(())
     }
