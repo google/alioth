@@ -329,7 +329,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         num_cpu: args.num_cpu,
         coco,
     };
-    let mut vm = Machine::new(hypervisor, board_config).context(error::CreateVm)?;
+    let vm = Machine::new(hypervisor, board_config).context(error::CreateVm)?;
     #[cfg(target_arch = "x86_64")]
     vm.add_com1().context(error::CreateDevice)?;
     #[cfg(target_arch = "aarch64")]
