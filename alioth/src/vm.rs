@@ -109,7 +109,7 @@ where
 {
     board: Arc<Board<H::Vm>>,
     #[cfg(target_os = "linux")]
-    iommu: Option<Arc<Iommu>>,
+    iommu: Mutex<Option<Arc<Iommu>>>,
     event_rx: Receiver<u32>,
     _event_tx: Sender<u32>,
 }
@@ -177,7 +177,7 @@ where
             event_rx,
             _event_tx: event_tx,
             #[cfg(target_os = "linux")]
-            iommu: None,
+            iommu: Mutex::new(None),
         };
 
         Ok(machine)
@@ -205,7 +205,7 @@ where
         Ok(())
     }
 
-    pub fn add_pci_dev(&mut self, bdf: Option<Bdf>, dev: PciDevice) -> Result<(), Error> {
+    pub fn add_pci_dev(&self, bdf: Option<Bdf>, dev: PciDevice) -> Result<(), Error> {
         let name = dev.name.clone();
         let bdf = if let Some(bdf) = bdf {
             bdf
@@ -220,7 +220,7 @@ where
         Ok(())
     }
 
-    pub fn add_pvpanic(&mut self) -> Result<(), Error> {
+    pub fn add_pvpanic(&self) -> Result<(), Error> {
         let dev = PvPanic::new();
         let pci_dev = PciDevice::new("pvpanic", Arc::new(dev));
         self.add_pci_dev(None, pci_dev)
@@ -228,7 +228,7 @@ where
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_fw_cfg(
-        &mut self,
+        &self,
         params: impl Iterator<Item = FwCfgItemParam>,
     ) -> Result<Arc<Mutex<FwCfg>>, Error> {
         let items = params
@@ -245,7 +245,7 @@ where
     }
 
     pub fn add_virtio_dev<D, P>(
-        &mut self,
+        &self,
         name: impl Into<Arc<str>>,
         param: P,
     ) -> Result<Arc<VirtioPciDev<D, H>>, Error>
@@ -284,11 +284,11 @@ where
         Ok(dev)
     }
 
-    pub fn add_payload(&mut self, payload: Payload) {
+    pub fn add_payload(&self, payload: Payload) {
         *self.board.payload.write() = Some(payload)
     }
 
-    pub fn boot(&mut self) -> Result<(), Error> {
+    pub fn boot(&self) -> Result<(), Error> {
         let vcpus = self.board.vcpus.read();
         self.board.state.store(STATE_RUNNING, Ordering::Release);
         for (_, boot_tx) in vcpus.iter() {
@@ -297,7 +297,7 @@ where
         Ok(())
     }
 
-    pub fn wait(&mut self) -> Vec<Result<()>> {
+    pub fn wait(&self) -> Vec<Result<()>> {
         self.event_rx.recv().unwrap();
         let vcpus = self.board.vcpus.read();
         for _ in 1..vcpus.len() {
@@ -323,12 +323,13 @@ where
 impl Machine<Kvm> {
     const DEFAULT_NAME: &str = "default";
 
-    pub fn add_vfio_ioas(&mut self, param: IoasParam) -> Result<Arc<Ioas>, Error> {
+    pub fn add_vfio_ioas(&self, param: IoasParam) -> Result<Arc<Ioas>, Error> {
         let mut ioases = self.board.vfio_ioases.lock();
         if ioases.contains_key(&param.name) {
             return error::AlreadyExists { name: param.name }.fail();
         }
-        let iommu = if let Some(iommu) = &self.iommu {
+        let maybe_iommu = &mut *self.iommu.lock();
+        let iommu = if let Some(iommu) = maybe_iommu {
             iommu.clone()
         } else {
             let iommu_path = if let Some(dev_iommu) = &param.dev_iommu {
@@ -337,7 +338,7 @@ impl Machine<Kvm> {
                 Path::new("/dev/iommu")
             };
             let iommu = Arc::new(Iommu::new(iommu_path)?);
-            self.iommu.replace(iommu.clone());
+            maybe_iommu.replace(iommu.clone());
             iommu
         };
         let ioas = Arc::new(Ioas::alloc_on(iommu)?);
@@ -347,7 +348,7 @@ impl Machine<Kvm> {
         Ok(ioas)
     }
 
-    fn get_ioas(&mut self, name: Option<&str>) -> Result<Arc<Ioas>> {
+    fn get_ioas(&self, name: Option<&str>) -> Result<Arc<Ioas>> {
         let ioas_name = name.unwrap_or(Self::DEFAULT_NAME);
         if let Some(ioas) = self.board.vfio_ioases.lock().get(ioas_name) {
             return Ok(ioas.clone());
@@ -362,7 +363,7 @@ impl Machine<Kvm> {
         }
     }
 
-    pub fn add_vfio_cdev(&mut self, name: Arc<str>, param: CdevParam) -> Result<(), Error> {
+    pub fn add_vfio_cdev(&self, name: Arc<str>, param: CdevParam) -> Result<(), Error> {
         let ioas = self.get_ioas(param.ioas.as_deref())?;
 
         let mut cdev = Cdev::new(&param.path)?;
@@ -379,7 +380,7 @@ impl Machine<Kvm> {
         Ok(())
     }
 
-    pub fn add_vfio_container(&mut self, param: ContainerParam) -> Result<Arc<Container>, Error> {
+    pub fn add_vfio_container(&self, param: ContainerParam) -> Result<Arc<Container>, Error> {
         let mut containers = self.board.vfio_containers.lock();
         if containers.contains_key(&param.name) {
             return error::AlreadyExists { name: param.name }.fail();
@@ -398,7 +399,7 @@ impl Machine<Kvm> {
         Ok(container)
     }
 
-    fn get_container(&mut self, name: Option<&str>) -> Result<Arc<Container>> {
+    fn get_container(&self, name: Option<&str>) -> Result<Arc<Container>> {
         let container_name = name.unwrap_or(Self::DEFAULT_NAME);
         if let Some(container) = self.board.vfio_containers.lock().get(container_name) {
             return Ok(container.clone());
@@ -416,7 +417,7 @@ impl Machine<Kvm> {
         }
     }
 
-    pub fn add_vfio_devs_in_group(&mut self, name: &str, param: GroupParam) -> Result<()> {
+    pub fn add_vfio_devs_in_group(&self, name: &str, param: GroupParam) -> Result<()> {
         let container = self.get_container(param.container.as_deref())?;
         let mut group = Group::new(&param.path)?;
         group.attach(container, VfioIommu::TYPE1_V2)?;
@@ -431,7 +432,7 @@ impl Machine<Kvm> {
         Ok(())
     }
 
-    fn add_vfio_devfd(&mut self, name: Arc<str>, devfd: DevFd) -> Result<()> {
+    fn add_vfio_devfd(&self, name: Arc<str>, devfd: DevFd) -> Result<()> {
         let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
         let msi_sender = self.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
