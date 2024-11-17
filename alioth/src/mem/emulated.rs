@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use crate::mem::addressable::{Addressable, SlotBackend};
 use crate::mem::{Memory, Result};
-use parking_lot::RwLock;
 
 pub trait ChangeLayout: Debug + Send + Sync + 'static {
     fn change(&self, memory: &Memory) -> Result<()>;
@@ -118,7 +117,7 @@ pub struct MmioBus<R = MmioRange>
 where
     R: Debug + SlotBackend,
 {
-    pub(crate) inner: RwLock<Addressable<R>>,
+    pub(crate) inner: Addressable<R>,
 }
 
 impl<R> Default for MmioBus<R>
@@ -136,36 +135,32 @@ where
 {
     pub fn new() -> MmioBus<R> {
         Self {
-            inner: RwLock::new(Addressable::new()),
+            inner: Addressable::new(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.read().is_empty()
+        self.inner.is_empty()
     }
 
-    pub fn add(&self, addr: u64, range: R) -> Result<()> {
-        let mut inner = self.inner.write();
-        inner.add(addr, range)?;
+    pub fn add(&mut self, addr: u64, range: R) -> Result<()> {
+        self.inner.add(addr, range)?;
         Ok(())
     }
 
-    pub(super) fn remove(&self, addr: u64) -> Result<R> {
-        let mut inner = self.inner.write();
-        inner.remove(addr)
+    pub(super) fn remove(&mut self, addr: u64) -> Result<R> {
+        self.inner.remove(addr)
     }
 
     pub fn read(&self, addr: u64, size: u8) -> Result<u64> {
-        let inner = self.inner.read();
-        match inner.search(addr) {
+        match self.inner.search(addr) {
             Some((start, dev)) => dev.read(addr - start, size),
             None => Ok(0),
         }
     }
 
     pub fn write(&self, addr: u64, size: u8, val: u64) -> Result<Action> {
-        let inner = self.inner.read();
-        match inner.search(addr) {
+        match self.inner.search(addr) {
             Some((start, dev)) => dev.write(addr - start, size, val),
             None => Ok(Action::None),
         }

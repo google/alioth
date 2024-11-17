@@ -206,8 +206,7 @@ impl PciCapList {
     }
 
     pub fn reset(&self) {
-        let inner = self.inner.inner.read();
-        for (_, cap) in inner.iter() {
+        for (_, cap) in self.inner.inner.iter() {
             cap.reset();
         }
     }
@@ -230,7 +229,7 @@ impl Mmio for PciCapList {
 impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
     type Error = Error;
     fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
-        let bus = MmioBus::new();
+        let mut bus = MmioBus::new();
         let mut ptr = size_of::<DeviceHeader>() as u64;
         let num_caps = caps.len();
         for (index, mut cap) in caps.into_iter().enumerate() {
