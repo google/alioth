@@ -212,10 +212,8 @@ where
         } else {
             self.board.pci_bus.reserve(None, name.clone()).unwrap()
         };
-        let config = dev.dev.config();
+        dev.dev.config().get_header().set_bdf(bdf);
         self.board.pci_bus.add(bdf, dev);
-        let header = config.get_header();
-        header.set_bdf(bdf);
         log::info!("{bdf}: device: {name}");
         Ok(())
     }

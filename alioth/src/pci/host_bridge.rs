@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use crate::pci;
 use crate::pci::cap::PciCapList;
 use crate::pci::config::{CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig};
@@ -21,7 +19,7 @@ use crate::pci::{Pci, PciBar};
 
 #[derive(Debug)]
 pub struct HostBridge {
-    pub config: Arc<EmulatedConfig>,
+    pub config: EmulatedConfig,
 }
 
 impl Default for HostBridge {
@@ -45,15 +43,13 @@ impl HostBridge {
         };
         let bars = [const { PciBar::Empty }; 6];
         let config = EmulatedConfig::new_device(header, [0; 6], bars, PciCapList::new());
-        HostBridge {
-            config: Arc::new(config),
-        }
+        HostBridge { config }
     }
 }
 
 impl Pci for HostBridge {
-    fn config(&self) -> Arc<dyn PciConfig> {
-        self.config.clone()
+    fn config(&self) -> &dyn PciConfig {
+        &self.config
     }
 
     fn reset(&self) -> pci::Result<()> {
