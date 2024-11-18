@@ -23,11 +23,10 @@ impl KvmVcpu {
     #[cfg(target_endian = "little")]
     pub(super) fn handle_mmio(&mut self) -> Result<VmExit, Error> {
         let kvm_mmio = unsafe { &self.kvm_run.exit.mmio };
-        let data = u64::from_ne_bytes(kvm_mmio.data) & u64::MAX >> (64 - (kvm_mmio.len << 3));
         let exit = VmExit::Mmio {
             addr: kvm_mmio.phys_addr,
             write: if kvm_mmio.is_write > 0 {
-                Some(data)
+                Some(u64::from_ne_bytes(kvm_mmio.data))
             } else {
                 None
             },
