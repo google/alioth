@@ -55,7 +55,7 @@ impl<const N: u64> Mmio for PvPanicBar<N> {
 
 #[derive(Debug)]
 pub struct PvPanic {
-    pub config: Arc<EmulatedConfig>,
+    pub config: EmulatedConfig,
 }
 
 impl PvPanic {
@@ -82,9 +82,7 @@ impl PvPanic {
         let mut bars = [const { PciBar::Empty }; 6];
         bars[0] = bar0;
         let config = EmulatedConfig::new_device(header, bar_masks, bars, PciCapList::new());
-        PvPanic {
-            config: Arc::new(config),
-        }
+        PvPanic { config }
     }
 }
 
@@ -95,8 +93,8 @@ impl Default for PvPanic {
 }
 
 impl Pci for PvPanic {
-    fn config(&self) -> Arc<dyn PciConfig> {
-        self.config.clone()
+    fn config(&self) -> &dyn PciConfig {
+        &self.config
     }
 
     fn reset(&self) -> pci::Result<()> {

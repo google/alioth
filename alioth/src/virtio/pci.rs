@@ -635,7 +635,7 @@ where
     E: IoeventFd,
 {
     pub dev: VirtioDevice<D, PciIrqSender<M>, E>,
-    pub config: Arc<EmulatedConfig>,
+    pub config: EmulatedConfig,
     pub registers: Arc<VirtioPciRegisterMmio<M>>,
 }
 
@@ -854,9 +854,7 @@ where
             }
         }
 
-        let config = Arc::new(EmulatedConfig::new_device(
-            header, bar_masks, bars, cap_list,
-        ));
+        let config = EmulatedConfig::new_device(header, bar_masks, bars, cap_list);
 
         Ok(VirtioPciDevice {
             dev,
@@ -872,8 +870,8 @@ where
     D: Virtio,
     E: IoeventFd,
 {
-    fn config(&self) -> Arc<dyn PciConfig> {
-        self.config.clone()
+    fn config(&self) -> &dyn PciConfig {
+        &self.config
     }
     fn reset(&self) -> pci::Result<()> {
         self.registers.wake_up_dev(WakeEvent::Reset);

@@ -61,7 +61,7 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub trait Pci: Debug + Send + Sync + 'static {
-    fn config(&self) -> Arc<dyn PciConfig>;
+    fn config(&self) -> &dyn PciConfig;
     fn reset(&self) -> Result<()>;
 }
 

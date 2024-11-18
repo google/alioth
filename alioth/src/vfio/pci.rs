@@ -387,7 +387,7 @@ pub struct VfioPciDev<M, D>
 where
     M: MsiSender,
 {
-    config: Arc<PciPthConfig<D>>,
+    config: PciPthConfig<D>,
     msix_table: Arc<MsixTableMmio<M::IrqFd>>,
 }
 
@@ -396,8 +396,8 @@ where
     D: Device,
     M: MsiSender,
 {
-    fn config(&self) -> Arc<dyn PciConfig> {
-        self.config.clone()
+    fn config(&self) -> &dyn PciConfig {
+        &self.config
     }
 
     fn reset(&self) -> pci::Result<()> {
@@ -538,7 +538,7 @@ where
         }
 
         Ok(VfioPciDev {
-            config: Arc::new(PciPthConfig {
+            config: PciPthConfig {
                 header: EmulatedHeader {
                     data: Arc::new(RwLock::new(HeaderData {
                         header: config_header,
@@ -555,7 +555,7 @@ where
                     offset: region_config.offset,
                     size: region_config.size as usize,
                 },
-            }),
+            },
             msix_table,
         })
     }

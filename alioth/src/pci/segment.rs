@@ -26,7 +26,7 @@ use crate::pci::{Bdf, Pci, PciDevice, Result};
 struct EmptyDevice;
 
 impl Pci for EmptyDevice {
-    fn config(&self) -> Arc<dyn PciConfig> {
+    fn config(&self) -> &dyn PciConfig {
         unreachable!()
     }
 
