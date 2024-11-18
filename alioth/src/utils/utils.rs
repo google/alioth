@@ -18,6 +18,10 @@ pub mod endian;
 #[cfg(target_os = "linux")]
 pub mod ioctls;
 
+pub fn truncate_u64(val: u64, size: u64) -> u64 {
+    val & u64::MAX >> (64 - (size << 3))
+}
+
 #[macro_export]
 macro_rules! align_up {
     ($num:expr, $bits:expr) => {{

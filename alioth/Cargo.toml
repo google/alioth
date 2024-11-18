@@ -28,3 +28,4 @@ io-uring = "0.7"
 
 [dev-dependencies]
 assert_matches.workspace = true
+rstest.workspace = true
