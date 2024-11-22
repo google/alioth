@@ -36,7 +36,7 @@ use crate::pci::cap::{
 };
 use crate::pci::config::{
     Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderData, HeaderType,
-    PciConfig, Status, BAR_IO, BAR_MEM64,
+    PciConfig, PciConfigArea, Status, BAR_IO, BAR_MEM64,
 };
 use crate::pci::{self, Bdf, Pci, PciBar};
 use crate::vfio::bindings::{
