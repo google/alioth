@@ -21,10 +21,35 @@ use macros::Layout;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
 use crate::{assign_bits, impl_mmio_for_zerocopy, mask_bits, mem};
+
+pub trait PciConfigArea: Mmio {
+    fn reset(&self);
+}
+
+impl Mmio for Box<dyn PciConfigArea> {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        Mmio::read(self.as_ref(), offset, size)
+    }
+
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
+        Mmio::write(self.as_ref(), offset, size, val)
+    }
+
+    fn size(&self) -> u64 {
+        Mmio::size(self.as_ref())
+    }
+}
+
+impl SlotBackend for Box<dyn PciConfigArea> {
+    fn size(&self) -> u64 {
+        Mmio::size(self.as_ref())
+    }
+}
 
 #[derive(Clone, Copy, Default, IntoBytes, FromBytes, KnownLayout, Immutable)]
 #[repr(transparent)]
@@ -380,11 +405,6 @@ impl EmulatedHeader {
         let mut header = self.data.write();
         header.set_command(command)
     }
-
-    pub fn reset(&self) {
-        let mut header = self.data.write();
-        header.set_command(Command::empty());
-    }
 }
 
 impl Mmio for EmulatedHeader {
@@ -406,6 +426,13 @@ impl Mmio for EmulatedHeader {
         } else {
             Ok(Action::None)
         }
+    }
+}
+
+impl PciConfigArea for EmulatedHeader {
+    fn reset(&self) {
+        let mut header = self.data.write();
+        header.set_command(Command::empty());
     }
 }
 
