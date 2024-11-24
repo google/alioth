@@ -26,6 +26,8 @@ use crate::vfio::ioctls::{
 };
 use crate::vfio::Result;
 
+use super::bindings::{VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq};
+
 pub trait Device: Debug + Send + Sync + 'static {
     fn fd(&self) -> &File;
 
@@ -61,6 +63,18 @@ pub trait Device: Debug + Send + Sync + 'static {
     fn set_irqs<const N: usize>(&self, irq: &VfioIrqSet<N>) -> Result<()> {
         unsafe { vfio_device_set_irqs(self.fd(), irq) }?;
         Ok(())
+    }
+
+    fn disable_all_irqs(&self, index: VfioPciIrq) -> Result<()> {
+        let vfio_irq_disable_all = VfioIrqSet {
+            argsz: size_of::<VfioIrqSet<0>>() as u32,
+            flags: VfioIrqSetFlag::DATA_NONE | VfioIrqSetFlag::ACTION_TRIGGER,
+            index: index.raw(),
+            start: 0,
+            count: 0,
+            data: VfioIrqSetData { eventfds: [] },
+        };
+        self.set_irqs(&vfio_irq_disable_all)
     }
 
     fn reset(&self) -> Result<()> {

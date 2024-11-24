@@ -86,24 +86,26 @@ bitfield! {
     impl Debug;
     pub enable, set_enable: 0;
     pub multi_msg_cap, set_multi_msg_cap: 3, 1;
-    pub multi_msg_enable, set_multi_msg_enable: 6, 4;
-    pub addr_64, set_addr_64: 7;
-    pub per_vector_masking, set_per_vector_masking: 8;
+    pub multi_msg, set_multi_msg: 6, 4;
+    pub addr_64_cap, set_addr_64_cap: 7;
+    pub per_vector_masking_cap, set_per_vector_masking_cap: 8;
     pub ext_msg_data_cap, set_ext_msg_data_cap: 9;
-    pub ext_msg_data_enable, set_ext_msg_data_enable: 10;
+    pub ext_msg_data, set_ext_msg_data: 10;
 }
 
 impl MsiMsgCtrl {
     pub fn cap_size(&self) -> u8 {
         let mut size = 12;
-        if self.addr_64() {
+        if self.addr_64_cap() {
             size += 4;
         }
-        if self.per_vector_masking() {
+        if self.per_vector_masking_cap() {
             size += 8;
         }
         size
     }
+
+    pub const WRITABLE: u16 = 1 | 0xb111 << 4 | 1 << 10;
 }
 
 #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
@@ -112,6 +114,41 @@ pub struct MsiCapHdr {
     pub header: PciCapHdr,
     pub control: MsiMsgCtrl,
 }
+impl_mmio_for_zerocopy!(MsiCapHdr);
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap32 {
+//     pub addr: u32,
+//     pub data: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap64 {
+//     pub addr: u32,
+//     pub addr_upper: u32,
+//     pub data: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap32Pvm {
+//     pub addr: u32,
+//     pub data: u32,
+//     pub mask: u32,
+//     pub pending: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap64Pvm {
+//     pub addr: u32,
+//     pub addr_upper: u32,
+//     pub data: u32,
+//     pub mask: u32,
+//     pub pending: u32,
+// }
 
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
