@@ -23,8 +23,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
-use crate::pci::config::DeviceHeader;
+use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::pci::Error;
+use crate::utils::truncate_u64;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
 
 #[repr(u8)]
@@ -52,6 +53,32 @@ bitfield! {
     pub id, _: 15,0;
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Clone)]
+pub struct NullCap {
+    pub next: u8,
+    pub size: u8,
+}
+
+impl Mmio for NullCap {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let shift = std::cmp::min(63, offset << 3);
+        let val = ((self.next as u64) << 8) >> shift;
+        Ok(truncate_u64(val, size as u64))
+    }
+
+    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
+        Ok(Action::None)
+    }
+    fn size(&self) -> u64 {
+        self.size as u64
+    }
+}
+
+impl PciConfigArea for NullCap {
+    fn reset(&self) {}
+}
+
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
@@ -59,24 +86,26 @@ bitfield! {
     impl Debug;
     pub enable, set_enable: 0;
     pub multi_msg_cap, set_multi_msg_cap: 3, 1;
-    pub multi_msg_enable, set_multi_msg_enable: 6, 4;
-    pub addr_64, set_addr_64: 7;
-    pub per_vector_masking, set_per_vector_masking: 8;
+    pub multi_msg, set_multi_msg: 6, 4;
+    pub addr_64_cap, set_addr_64_cap: 7;
+    pub per_vector_masking_cap, set_per_vector_masking_cap: 8;
     pub ext_msg_data_cap, set_ext_msg_data_cap: 9;
-    pub ext_msg_data_enable, set_ext_msg_data_enable: 10;
+    pub ext_msg_data, set_ext_msg_data: 10;
 }
 
 impl MsiMsgCtrl {
-    pub fn cap_size(&self) -> usize {
+    pub fn cap_size(&self) -> u8 {
         let mut size = 12;
-        if self.addr_64() {
+        if self.addr_64_cap() {
             size += 4;
         }
-        if self.per_vector_masking() {
+        if self.per_vector_masking_cap() {
             size += 8;
         }
         size
     }
+
+    pub const WRITABLE: u16 = 1 | 0xb111 << 4 | 1 << 10;
 }
 
 #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
@@ -85,6 +114,41 @@ pub struct MsiCapHdr {
     pub header: PciCapHdr,
     pub control: MsiMsgCtrl,
 }
+impl_mmio_for_zerocopy!(MsiCapHdr);
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap32 {
+//     pub addr: u32,
+//     pub data: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap64 {
+//     pub addr: u32,
+//     pub addr_upper: u32,
+//     pub data: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap32Pvm {
+//     pub addr: u32,
+//     pub data: u32,
+//     pub mask: u32,
+//     pub pending: u32,
+// }
+
+// #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+// #[repr(C)]
+// pub struct MsiCap64Pvm {
+//     pub addr: u32,
+//     pub addr_upper: u32,
+//     pub data: u32,
+//     pub mask: u32,
+//     pub pending: u32,
+// }
 
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
@@ -158,9 +222,8 @@ impl Default for MsixTableEntry {
     }
 }
 
-pub trait PciCap: Mmio {
+pub trait PciCap: PciConfigArea {
     fn set_next(&mut self, val: u8);
-    fn reset(&self);
 }
 
 impl SlotBackend for Box<dyn PciCap> {
@@ -206,8 +269,7 @@ impl PciCapList {
     }
 
     pub fn reset(&self) {
-        let inner = self.inner.inner.read();
-        for (_, cap) in inner.iter() {
+        for (_, cap) in self.inner.inner.iter() {
             cap.reset();
         }
     }
@@ -230,7 +292,7 @@ impl Mmio for PciCapList {
 impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
     type Error = Error;
     fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
-        let bus = MmioBus::new();
+        let mut bus = MmioBus::new();
         let mut ptr = size_of::<DeviceHeader>() as u64;
         let num_caps = caps.len();
         for (index, mut cap) in caps.into_iter().enumerate() {
@@ -273,15 +335,17 @@ impl Mmio for MsixCapMmio {
     }
 }
 
-impl PciCap for MsixCapMmio {
-    fn set_next(&mut self, val: u8) {
-        self.cap.write().header.next = val;
-    }
-
+impl PciConfigArea for MsixCapMmio {
     fn reset(&self) {
         let mut cap = self.cap.write();
         cap.control.set_enabled(false);
         cap.control.set_masked(false);
+    }
+}
+
+impl PciCap for MsixCapMmio {
+    fn set_next(&mut self, val: u8) {
+        self.cap.write().header.next = val;
     }
 }
 
@@ -418,5 +482,32 @@ where
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         self.write_val(offset, size, val)?;
         Ok(Action::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert_matches::assert_matches;
+    use rstest::rstest;
+
+    use crate::mem::emulated::Mmio;
+    use crate::pci::cap::NullCap;
+
+    #[rstest]
+    #[case(0x0, 1, 0x0)]
+    #[case(0x0, 2, 0x60_00)]
+    #[case(0x0, 4, 0x60_00)]
+    #[case(0x1, 1, 0x60)]
+    #[case(0x1, 2, 0x60)]
+    #[case(0x1, 2, 0x60)]
+    #[case(0x2, 1, 0x0)]
+    #[case(0x2, 2, 0x0)]
+    #[case(0xb, 1, 0x0)]
+    fn test_null_cap(#[case] offset: u64, #[case] size: u8, #[case] val: u64) {
+        let null_cap = NullCap {
+            next: 0x60,
+            size: 0xc,
+        };
+        assert_matches!(null_cap.read(offset, size), Ok(v) if v == val);
     }
 }

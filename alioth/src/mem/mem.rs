@@ -16,7 +16,7 @@ use std::any::type_name;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
@@ -255,27 +255,29 @@ struct LayoutCallbacks {
     updated: Vec<Box<dyn LayoutUpdated>>,
 }
 
+// lock order: region -> callbacks -> bus
 #[derive(Debug)]
 pub struct Memory {
-    ram_bus: Arc<RamBus>,
-    mmio_bus: MmioBus,
     regions: Mutex<Addressable<Arc<MemRegion>>>,
-    vm_memory: Box<dyn VmMemory>,
-    io_bus: MmioBus,
-    io_regions: Mutex<Addressable<Arc<IoRegion>>>,
     callbacks: Mutex<LayoutCallbacks>,
+    ram_bus: Arc<RamBus>,
+    mmio_bus: RwLock<MmioBus>,
+    vm_memory: Box<dyn VmMemory>,
+
+    io_bus: RwLock<MmioBus>,
+    io_regions: Mutex<Addressable<Arc<IoRegion>>>,
 }
 
 impl Memory {
     pub fn new(vm_memory: impl VmMemory) -> Self {
         Memory {
-            ram_bus: Arc::new(RamBus::new()),
-            mmio_bus: MmioBus::new(),
             regions: Mutex::new(Addressable::new()),
-            vm_memory: Box::new(vm_memory),
-            io_bus: MmioBus::new(),
-            io_regions: Mutex::new(Addressable::new()),
             callbacks: Mutex::new(LayoutCallbacks::default()),
+            ram_bus: Arc::new(RamBus::new()),
+            mmio_bus: RwLock::new(MmioBus::new()),
+            vm_memory: Box::new(vm_memory),
+            io_bus: RwLock::new(MmioBus::new()),
+            io_regions: Mutex::new(Addressable::new()),
         }
     }
 
@@ -299,9 +301,9 @@ impl Memory {
 
     pub fn register_update_callback(&self, callback: Box<dyn LayoutUpdated>) -> Result<()> {
         let _regions = self.regions.lock();
+        let mut callbacks = self.callbacks.lock();
         let ram = self.ram_bus.lock_layout();
         callback.ram_updated(&ram)?;
-        let mut callbacks = self.callbacks.lock();
         callbacks.updated.push(callback);
         Ok(())
     }
@@ -343,7 +345,10 @@ impl Memory {
         for range in &region.ranges {
             let gpa = addr + offset;
             match range {
-                MemRange::Emulated(r) => self.mmio_bus.add(gpa, r.clone())?,
+                MemRange::Emulated(r) => {
+                    let mut mmio_bus = self.mmio_bus.write();
+                    mmio_bus.add(gpa, r.clone())?
+                }
                 MemRange::Ram(r) => {
                     self.map_to_vm(gpa, r)?;
                     for callback in &callbacks.changed {
@@ -378,7 +383,8 @@ impl Memory {
             let gpa = addr + offset;
             match range {
                 MemRange::Emulated(_) => {
-                    self.mmio_bus.remove(gpa)?;
+                    let mut mmio_bus = self.mmio_bus.write();
+                    mmio_bus.remove(gpa)?;
                 }
                 MemRange::Ram(r) => {
                     self.ram_bus.remove(gpa)?;
@@ -451,7 +457,8 @@ impl Memory {
     pub fn add_io_region(&self, port: u16, region: Arc<IoRegion>) -> Result<()> {
         let mut regions = self.io_regions.lock();
         regions.add(port as u64, region.clone())?;
-        self.io_bus.add(port as u64, region.range.clone())?;
+        let mut io_bus = self.io_bus.write();
+        io_bus.add(port as u64, region.range.clone())?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.mapped(port as u64)?;
@@ -460,7 +467,8 @@ impl Memory {
     }
 
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
-        self.io_bus.remove(port as u64)?;
+        let mut io_bus = self.io_bus.write();
+        io_bus.remove(port as u64)?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.unmapped()?;
@@ -542,21 +550,25 @@ impl Memory {
     }
 
     pub fn handle_mmio(&self, gpa: u64, write: Option<u64>, size: u8) -> Result<VmEntry> {
+        let mmio_bus = self.mmio_bus.read();
         if let Some(val) = write {
-            let action = self.mmio_bus.write(gpa, size, val)?;
+            let action = mmio_bus.write(gpa, size, val)?;
+            drop(mmio_bus);
             self.handle_action(action)
         } else {
-            let data = self.mmio_bus.read(gpa, size)?;
+            let data = mmio_bus.read(gpa, size)?;
             Ok(VmEntry::Mmio { data })
         }
     }
 
     pub fn handle_io(&self, port: u16, write: Option<u32>, size: u8) -> Result<VmEntry> {
+        let io_bus = self.io_bus.read();
         if let Some(val) = write {
-            let action = self.io_bus.write(port as u64, size, val as u64)?;
+            let action = io_bus.write(port as u64, size, val as u64)?;
+            drop(io_bus);
             self.handle_action(action)
         } else {
-            let data = self.io_bus.read(port as u64, size)? as u32;
+            let data = io_bus.read(port as u64, size)? as u32;
             Ok(VmEntry::Io { data })
         }
     }
