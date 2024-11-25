@@ -383,13 +383,15 @@ where
                 };
                 let (cap_header, _) = PciCapHdr::ref_from_prefix(cap_buf).unwrap();
                 if cap_header.id == PciCapId::Msix as u8 {
-                    let Ok((c, _)) = MsixCap::read_from_prefix(cap_buf) else {
+                    let Ok((mut c, _)) = MsixCap::read_from_prefix(cap_buf) else {
                         log::error!(
                             "{}: MSIX capability is at an invalid offset: {cap_offset:#x}",
                             cdev.name
                         );
                         continue;
                     };
+                    c.control.set_enabled(false);
+                    c.control.set_masked(false);
                     masked_caps.push((
                         cap_offset as u64,
                         Box::new(MsixCapMmio {
