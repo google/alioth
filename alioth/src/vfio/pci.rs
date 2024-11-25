@@ -17,7 +17,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use libc::{PROT_READ, PROT_WRITE};
@@ -27,12 +27,12 @@ use zerocopy::{transmute, FromBytes};
 
 use crate::errors::boxed_debug_trace;
 use crate::hv::{IrqFd, MsiSender};
-use crate::mem::addressable::{Addressable, SlotBackend};
-use crate::mem::emulated::{Action, Mmio};
+use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{IoRegion, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::pci::cap::{
-    MsiCapHdr, MsixCap, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry, PciCapHdr, PciCapId,
+    MsiCapHdr, MsixCap, MsixCapMmio, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry, NullCap,
+    PciCapHdr, PciCapId,
 };
 use crate::pci::config::{
     Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderData, HeaderType,
@@ -45,7 +45,7 @@ use crate::vfio::bindings::{
 };
 use crate::vfio::device::Device;
 use crate::vfio::{error, Result};
-use crate::{align_down, align_up, assign_bits, mask_bits, mem};
+use crate::{align_down, align_up, mem};
 
 fn round_up_range(range: Range<usize>) -> Range<usize> {
     (align_down!(range.start, 12))..(align_up!(range.end, 12))
@@ -200,113 +200,46 @@ where
 }
 
 #[derive(Debug)]
-struct MaskedCap {
-    size: usize,
-}
-
-impl SlotBackend for MaskedCap {
-    fn size(&self) -> u64 {
-        self.size as u64
-    }
-}
-
-#[derive(Debug)]
 struct VfioDev<D> {
     name: Arc<str>,
     dev: D,
 }
 
 #[derive(Debug)]
-pub struct ExtraConfig<D> {
-    msix_msg_ctrl_hi: AtomicU8,
-    msix_msg_ctrl_offset: usize,
-    masked_caps: Addressable<MaskedCap>,
-
+struct PthConfigArea<D> {
+    offset: u64, // offset to dev
+    size: u64,
     dev: Arc<VfioDev<D>>,
-    offset: u64,
-    size: usize,
 }
 
-impl<D> ExtraConfig<D>
+impl<D> Mmio for PthConfigArea<D>
 where
     D: Device,
 {
-    fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
-        let name = &self.dev.name;
-        let mut masks = [0; 8];
-        let vals = val.to_ne_bytes();
-        for index in 0..(size as usize) {
-            let pos = offset + index;
-            if pos == self.msix_msg_ctrl_offset + 1 {
-                let mut msix_msg_ctrl_hi = self.msix_msg_ctrl_hi.load(Ordering::Acquire);
-                const MASKED: u8 = 1 << 6;
-                const ENABLED: u8 = 1 << 7;
-                assign_bits!(msix_msg_ctrl_hi, vals[index], MASKED | ENABLED);
-                // TODO trigger mask / enable interrupt
-                self.msix_msg_ctrl_hi
-                    .store(msix_msg_ctrl_hi, Ordering::Release);
-                log::trace!("{name}: msix_msg_ctrl_hi -> {msix_msg_ctrl_hi:#x?}",);
-                masks[index] = 0xff;
-            } else if pos == self.msix_msg_ctrl_offset
-                || self.masked_caps.search(pos as u64).is_some()
-            {
-                masks[index] = 0xff;
-            }
-        }
-        let mask = u64::from_ne_bytes(masks);
-        log::trace!(
-            "{name}: write config: val=0x{val:0width$x}, offset={offset:#05x}, size={size}, mask=0x{mask:0width$x}",
-            width = 2 * size as usize
-        );
-        if mask.trailing_ones() == (size << 3) as u32 {
-            return Ok(());
-        }
-        let cdev = &self.dev.dev;
-        let masked_val = if mask == 0 {
-            val
-        } else {
-            let real_val = cdev.read(self.offset + offset as u64, size)?;
-            mask_bits!(val, real_val, mask)
-        };
-        cdev.write(self.offset + offset as u64, size, masked_val)
+    fn size(&self) -> u64 {
+        self.size
     }
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        self.dev.dev.read(self.offset + offset, size)
+    }
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
+        self.dev.dev.write(self.offset + offset, size, val)?;
+        Ok(Action::None)
+    }
+}
 
-    fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
-        let mut emulated_bytes = [0; 8];
-        let mut masks = [0; 8];
-        for index in 0..(size as usize) {
-            let pos = offset + index;
-            if pos == self.msix_msg_ctrl_offset + 1 {
-                emulated_bytes[index] = self.msix_msg_ctrl_hi.load(Ordering::Acquire);
-                masks[index] = 0xff;
-            } else if let Some((start, _)) = self.masked_caps.search(pos as u64) {
-                if pos != start as usize + PciCapHdr::OFFSET_NEXT {
-                    emulated_bytes[index] = 0;
-                    masks[index] = 0xff;
-                }
-            }
-        }
-        let mask = u64::from_ne_bytes(masks);
-        let emulated_val = u64::from_ne_bytes(emulated_bytes);
-        let ret = if mask.trailing_ones() == (size << 3) as u32 {
-            emulated_val
-        } else {
-            let real_val = self.dev.dev.read(self.offset + offset as u64, size)?;
-            mask_bits!(real_val, emulated_val, mask)
-        };
-        log::trace!(
-            "{}: read config: offset={offset:#05x}, size={size}, mask=0x{mask:0width$x}, emulated_val=0x{emulated_val:0width$x}, ret=0x{ret:0width$x}",
-            self.dev.name,
-            width = 2 * size as usize
-        );
-        Ok(ret)
-    }
+impl<D> PciConfigArea for PthConfigArea<D>
+where
+    D: Device,
+{
+    fn reset(&self) {}
 }
 
 #[derive(Debug)]
 pub struct PciPthConfig<D> {
     header: EmulatedHeader,
-    extra: ExtraConfig<D>,
+    extra: MmioBus<Box<dyn PciConfigArea>>,
+    dev: Arc<VfioDev<D>>,
 }
 
 impl<D> Mmio for PciPthConfig<D>
@@ -317,20 +250,19 @@ where
         if offset < self.header.size() {
             Mmio::read(&self.header, offset, size)
         } else {
-            self.extra.read(offset as usize, size)
+            self.extra.read(offset, size)
         }
     }
 
     fn size(&self) -> u64 {
-        self.extra.size as u64
+        4096
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         if offset < self.header.size() {
             Mmio::write(&self.header, offset, size, val)
         } else {
-            self.extra.write(offset as usize, size, val)?;
-            Ok(Action::None)
+            self.extra.write(offset, size, val)
         }
     }
 }
@@ -345,7 +277,9 @@ where
 
     fn reset(&self) {
         self.header.reset();
-        self.extra.msix_msg_ctrl_hi.store(0, Ordering::Release)
+        for (_, area) in self.extra.inner.iter() {
+            area.reset();
+        }
     }
 }
 
@@ -438,8 +372,7 @@ where
         dev_header.common.command = Command::empty();
 
         let mut msix_cap = None;
-        let mut msix_msg_ctrl_offset = 0;
-        let mut masked_caps = Addressable::new();
+        let mut masked_caps: Vec<(u64, Box<dyn PciConfigArea>)> = vec![];
 
         if dev_header.common.status.contains(Status::CAP) {
             let mut cap_offset = dev_header.capability_pointer as usize;
@@ -450,10 +383,20 @@ where
                 };
                 let (cap_header, _) = PciCapHdr::ref_from_prefix(cap_buf).unwrap();
                 if cap_header.id == PciCapId::Msix as u8 {
-                    if let Ok((c, _)) = MsixCap::read_from_prefix(cap_buf) {
-                        msix_cap = Some(c)
-                    }
-                    msix_msg_ctrl_offset = cap_offset + MsixCap::OFFSET_CONTROL;
+                    let Ok((c, _)) = MsixCap::read_from_prefix(cap_buf) else {
+                        log::error!(
+                            "{}: MSIX capability is at an invalid offset: {cap_offset:#x}",
+                            cdev.name
+                        );
+                        continue;
+                    };
+                    masked_caps.push((
+                        cap_offset as u64,
+                        Box::new(MsixCapMmio {
+                            cap: RwLock::new(c.clone()),
+                        }),
+                    ));
+                    msix_cap = Some(c);
                 } else if cap_header.id == PciCapId::Msi as u8 {
                     let Ok((c, _)) = MsiCapHdr::read_from_prefix(cap_buf) else {
                         log::error!(
@@ -463,16 +406,46 @@ where
                         continue;
                     };
                     log::trace!("{}: hiding MSI cap at {cap_offset:#x}", cdev.name);
-                    masked_caps.add(
+                    masked_caps.push((
                         cap_offset as u64,
-                        MaskedCap {
+                        Box::new(NullCap {
+                            next: cap_header.next,
                             size: c.control.cap_size(),
-                        },
-                    )?;
+                        }),
+                    ));
                 }
                 cap_offset = cap_header.next as usize;
             }
         }
+
+        let mut extra_areas: MmioBus<Box<dyn PciConfigArea>> = MmioBus::new();
+        masked_caps.sort_by_key(|(offset, _)| *offset);
+        let mut area_end = 0x40;
+        for (offset, cap) in masked_caps {
+            if area_end < offset {
+                extra_areas.add(
+                    area_end,
+                    Box::new(PthConfigArea {
+                        offset: region_config.offset + area_end,
+                        size: offset - area_end,
+                        dev: cdev.clone(),
+                    }),
+                )?;
+            }
+            area_end = offset + Mmio::size(&*cap);
+            extra_areas.add(offset, cap)?;
+        }
+        if area_end < region_config.size {
+            extra_areas.add(
+                area_end,
+                Box::new(PthConfigArea {
+                    offset: region_config.offset + area_end,
+                    size: region_config.size - area_end,
+                    dev: cdev.clone(),
+                }),
+            )?;
+        }
+
         let config_header = ConfigHeader::Device(dev_header);
 
         cdev.dev.reset()?;
@@ -547,14 +520,8 @@ where
                     })),
                     bars,
                 },
-                extra: ExtraConfig {
-                    msix_msg_ctrl_hi: AtomicU8::new(0),
-                    msix_msg_ctrl_offset,
-                    masked_caps,
-                    dev: cdev,
-                    offset: region_config.offset,
-                    size: region_config.size as usize,
-                },
+                extra: extra_areas,
+                dev: cdev,
             },
             msix_table,
         })
@@ -569,10 +536,10 @@ where
             count: 0,
             data: VfioIrqSetData { eventfds: [] },
         };
-        self.config.extra.dev.dev.set_irqs(&disable_msix)?;
+        self.config.dev.dev.set_irqs(&disable_msix)?;
 
         self.msix_table.reset();
-        self.config.extra.dev.dev.reset()
+        self.config.dev.dev.reset()
     }
 }
 
