@@ -94,7 +94,7 @@ bitfield! {
 }
 
 impl MsiMsgCtrl {
-    pub fn cap_size(&self) -> usize {
+    pub fn cap_size(&self) -> u8 {
         let mut size = 12;
         if self.addr_64() {
             size += 4;
