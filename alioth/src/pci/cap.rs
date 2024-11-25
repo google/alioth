@@ -25,6 +25,7 @@ use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::pci::Error;
+use crate::utils::truncate_u64;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
 
 #[repr(u8)]
@@ -50,6 +51,32 @@ bitfield! {
     pub next, _: 31,20;
     pub version, _: 19,16;
     pub id, _: 15,0;
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone)]
+pub struct NullCap {
+    pub next: u8,
+    pub size: u8,
+}
+
+impl Mmio for NullCap {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let shift = std::cmp::min(63, offset << 3);
+        let val = ((self.next as u64) << 8) >> shift;
+        Ok(truncate_u64(val, size as u64))
+    }
+
+    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
+        Ok(Action::None)
+    }
+    fn size(&self) -> u64 {
+        self.size as u64
+    }
+}
+
+impl PciConfigArea for NullCap {
+    fn reset(&self) {}
 }
 
 bitfield! {
@@ -418,5 +445,32 @@ where
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         self.write_val(offset, size, val)?;
         Ok(Action::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert_matches::assert_matches;
+    use rstest::rstest;
+
+    use crate::mem::emulated::Mmio;
+    use crate::pci::cap::NullCap;
+
+    #[rstest]
+    #[case(0x0, 1, 0x0)]
+    #[case(0x0, 2, 0x60_00)]
+    #[case(0x0, 4, 0x60_00)]
+    #[case(0x1, 1, 0x60)]
+    #[case(0x1, 2, 0x60)]
+    #[case(0x1, 2, 0x60)]
+    #[case(0x2, 1, 0x0)]
+    #[case(0x2, 2, 0x0)]
+    #[case(0xb, 1, 0x0)]
+    fn test_null_cap(#[case] offset: u64, #[case] size: u8, #[case] val: u64) {
+        let null_cap = NullCap {
+            next: 0x60,
+            size: 0xc,
+        };
+        assert_matches!(null_cap.read(offset, size), Ok(v) if v == val);
     }
 }
