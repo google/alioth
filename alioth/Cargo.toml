@@ -11,12 +11,12 @@ license.workspace = true
 test-hv = []
 
 [dependencies]
-zerocopy = { version = "0.8.9", features = ["derive", "alloc"] }
+zerocopy = { version = "0.8.11", features = ["derive", "alloc"] }
 bitflags = "2.4.0"
 bitfield = "0.17.0"
 log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
-libc = "0.2.162"
+libc = "0.2.167"
 parking_lot.workspace = true
 macros.workspace = true
 serde.workspace = true
