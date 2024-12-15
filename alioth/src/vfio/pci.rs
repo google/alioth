@@ -569,15 +569,13 @@ where
     }
 
     fn reset(&self) -> Result<()> {
-        let disable_msix = VfioIrqSet {
-            argsz: size_of::<VfioIrqSet<0>>() as u32,
-            flags: VfioIrqSetFlag::DATA_NONE | VfioIrqSetFlag::ACTION_TRIGGER,
-            index: VfioPciIrq::MSIX.raw(),
-            start: 0,
-            count: 0,
-            data: VfioIrqSetData { eventfds: [] },
-        };
-        self.config.dev.dev.set_irqs(&disable_msix)?;
+        let is_irqfd = |e| matches!(e, &MsixTableMmioEntry::IrqFd(_));
+        if self.msix_table.entries.read().iter().any(is_irqfd) {
+            let dev = &self.config.dev;
+            if let Err(e) = dev.dev.disable_all_irqs(VfioPciIrq::MSIX) {
+                log::error!("{}: failed to disable MSIX IRQs: {e:?}", dev.name)
+            }
+        }
 
         self.msix_table.reset();
         self.config.dev.dev.reset()
@@ -606,18 +604,6 @@ where
     M: MsiSender,
     D: Device,
 {
-    fn disable_all_irqs(&self) -> Result<()> {
-        let vfio_irq_disable_all = VfioIrqSet {
-            argsz: size_of::<VfioIrqSet<0>>() as u32,
-            flags: VfioIrqSetFlag::DATA_NONE | VfioIrqSetFlag::ACTION_TRIGGER,
-            index: VfioPciIrq::MSIX.raw(),
-            start: 0,
-            count: 0,
-            data: VfioIrqSetData { eventfds: [] },
-        };
-        self.cdev.dev.set_irqs(&vfio_irq_disable_all)
-    }
-
     fn enable_irqfd(&self, index: usize) -> Result<()> {
         let mut entries = self.table.entries.write();
         let Some(entry) = entries.get_mut(index) else {
@@ -650,7 +636,7 @@ where
         // subindex for the first time.
         // As long as the following set_irqs() succeeds, we can safely ignore
         // the error here.
-        let _ = self.disable_all_irqs();
+        let _ = self.cdev.dev.disable_all_irqs(VfioPciIrq::MSIX);
 
         let mut eventfds = [-1; 2048];
         let mut count = 0;

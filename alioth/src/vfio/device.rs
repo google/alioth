@@ -19,7 +19,10 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
 use crate::mem;
-use crate::vfio::bindings::{VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioRegionInfo};
+use crate::vfio::bindings::{
+    VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq,
+    VfioRegionInfo,
+};
 use crate::vfio::ioctls::{
     vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset,
     vfio_device_set_irqs,
@@ -61,6 +64,18 @@ pub trait Device: Debug + Send + Sync + 'static {
     fn set_irqs<const N: usize>(&self, irq: &VfioIrqSet<N>) -> Result<()> {
         unsafe { vfio_device_set_irqs(self.fd(), irq) }?;
         Ok(())
+    }
+
+    fn disable_all_irqs(&self, index: VfioPciIrq) -> Result<()> {
+        let vfio_irq_disable_all = VfioIrqSet {
+            argsz: size_of::<VfioIrqSet<0>>() as u32,
+            flags: VfioIrqSetFlag::DATA_NONE | VfioIrqSetFlag::ACTION_TRIGGER,
+            index: index.raw(),
+            start: 0,
+            count: 0,
+            data: VfioIrqSetData { eventfds: [] },
+        };
+        self.set_irqs(&vfio_irq_disable_all)
     }
 
     fn reset(&self) -> Result<()> {
