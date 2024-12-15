@@ -351,7 +351,7 @@ where
 
         let region_config = cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?;
 
-        let pci_command = Command::MEM | Command::BUS_MASTER | Command::INTX_DISABLE;
+        let pci_command = Command::IO | Command::MEM | Command::BUS_MASTER | Command::INTX_DISABLE;
         cdev.dev.write(
             region_config.offset + CommonHeader::OFFSET_COMMAND as u64,
             CommonHeader::SIZE_COMMAND as u8,
