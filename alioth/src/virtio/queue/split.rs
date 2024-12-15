@@ -98,7 +98,7 @@ pub struct SplitQueue<'q, 'm> {
 
 type DescIov = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 
-impl<'q, 'm> SplitQueue<'q, 'm> {
+impl<'m> SplitQueue<'_, 'm> {
     pub fn avail_index(&self) -> u16 {
         unsafe { &*self.avail_hdr }.idx
     }
@@ -245,7 +245,7 @@ impl<'q, 'm> SplitQueue<'q, 'm> {
     }
 }
 
-impl<'q, 'm> VirtQueue<'m> for SplitQueue<'q, 'm> {
+impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
     fn reg(&self) -> &Queue {
         self.reg
     }

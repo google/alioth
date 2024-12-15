@@ -207,7 +207,7 @@ where
     Ok(())
 }
 
-impl<'a, 'm, Q, S> ActiveIoUring<'a, 'm, Q, S>
+impl<'m, Q, S> ActiveIoUring<'_, 'm, Q, S>
 where
     Q: VirtQueue<'m>,
     S: IrqSender,
@@ -263,7 +263,7 @@ where
     }
 }
 
-impl<'a, 'm, Q, S, D> ActiveBackend<D> for ActiveIoUring<'a, 'm, Q, S>
+impl<'m, Q, S, D> ActiveBackend<D> for ActiveIoUring<'_, 'm, Q, S>
 where
     D: VirtioIoUring,
     Q: VirtQueue<'m>,

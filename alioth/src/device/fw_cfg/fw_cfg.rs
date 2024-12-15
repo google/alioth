@@ -109,7 +109,7 @@ struct FwCfgContentAccess<'a> {
     offset: u32,
 }
 
-impl<'a> Read for FwCfgContentAccess<'a> {
+impl Read for FwCfgContentAccess<'_> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self.content {
             FwCfgContent::File(offset, f) => {
