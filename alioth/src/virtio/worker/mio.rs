@@ -170,7 +170,7 @@ pub struct ActiveMio<'a, 'm, Q, S> {
     pub mem: &'m Ram,
 }
 
-impl<'a, 'm, Q, S, D> ActiveBackend<D> for ActiveMio<'a, 'm, Q, S>
+impl<'m, Q, S, D> ActiveBackend<D> for ActiveMio<'_, 'm, Q, S>
 where
     D: VirtioMio,
     Q: VirtQueue<'m>,
