@@ -86,20 +86,20 @@ bitfield! {
     impl Debug;
     pub enable, set_enable: 0;
     pub multi_msg_cap, set_multi_msg_cap: 3, 1;
-    pub multi_msg_enable, set_multi_msg_enable: 6, 4;
-    pub addr_64, set_addr_64: 7;
-    pub per_vector_masking, set_per_vector_masking: 8;
+    pub multi_msg, set_multi_msg: 6, 4;
+    pub addr_64_cap, set_addr_64_cap: 7;
+    pub per_vector_masking_cap, set_per_vector_masking_cap: 8;
     pub ext_msg_data_cap, set_ext_msg_data_cap: 9;
-    pub ext_msg_data_enable, set_ext_msg_data_enable: 10;
+    pub ext_msg_data, set_ext_msg_data: 10;
 }
 
 impl MsiMsgCtrl {
     pub fn cap_size(&self) -> u8 {
         let mut size = 12;
-        if self.addr_64() {
+        if self.addr_64_cap() {
             size += 4;
         }
-        if self.per_vector_masking() {
+        if self.per_vector_masking_cap() {
             size += 8;
         }
         size
@@ -112,6 +112,7 @@ pub struct MsiCapHdr {
     pub header: PciCapHdr,
     pub control: MsiMsgCtrl,
 }
+impl_mmio_for_zerocopy!(MsiCapHdr);
 
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
