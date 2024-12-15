@@ -27,7 +27,7 @@ pub struct Deserializer<'s, 'o> {
     key: &'s str,
 }
 
-impl<'s, 'o, 'a> de::Deserializer<'s> for &'a mut Deserializer<'s, 'o> {
+impl<'s> de::Deserializer<'s> for &mut Deserializer<'s, '_> {
     type Error = Error;
 
     fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value>
@@ -431,7 +431,7 @@ impl<'a, 's, 'o> CommaSeparated<'a, 's, 'o> {
     }
 }
 
-impl<'a, 's, 'o> SeqAccess<'s> for CommaSeparated<'a, 's, 'o> {
+impl<'s> SeqAccess<'s> for CommaSeparated<'_, 's, '_> {
     type Error = Error;
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
     where
@@ -444,7 +444,7 @@ impl<'a, 's, 'o> SeqAccess<'s> for CommaSeparated<'a, 's, 'o> {
     }
 }
 
-impl<'a, 's, 'o> MapAccess<'s> for CommaSeparated<'a, 's, 'o> {
+impl<'s> MapAccess<'s> for CommaSeparated<'_, 's, '_> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
@@ -487,7 +487,7 @@ impl<'a, 's, 'o> Enum<'a, 's, 'o> {
     }
 }
 
-impl<'a, 's, 'o> EnumAccess<'s> for Enum<'a, 's, 'o> {
+impl<'s> EnumAccess<'s> for Enum<'_, 's, '_> {
     type Error = Error;
     type Variant = Self;
 
@@ -500,7 +500,7 @@ impl<'a, 's, 'o> EnumAccess<'s> for Enum<'a, 's, 'o> {
     }
 }
 
-impl<'a, 's, 'o> VariantAccess<'s> for Enum<'a, 's, 'o> {
+impl<'s> VariantAccess<'s> for Enum<'_, 's, '_> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {

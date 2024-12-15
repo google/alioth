@@ -497,7 +497,6 @@ pub const SEV_DESC_TYPE_CPUID: u32 = 3;
 
 #[derive(Debug, FromBytes, IntoBytes, Immutable)]
 #[repr(C)]
-
 struct SevMetadataDesc {
     base: u32,
     len: u32,
