@@ -63,7 +63,7 @@ Alioth /AL-lee-oth/ is an experimental
     bytes,
 -   [ ] increase test coverage,
 -   [ ] add missing documents,
--   [ ](long term) port Alioth to Apple's
+-   [ ] (long term) port Alioth to Apple's
     [Hypervisor](https://developer.apple.com/documentation/hypervisor)
     framework,
 -   [ ] performance, performance, and performance!
