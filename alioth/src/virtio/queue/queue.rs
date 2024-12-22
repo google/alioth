@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod handlers;
+pub mod split;
+
 use std::io::{IoSlice, IoSliceMut};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 
 use crate::virtio::Result;
-
-pub mod handlers;
-pub mod split;
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
 

@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod bus;
+pub mod cap;
+pub mod config;
+pub mod host_bridge;
+pub mod segment;
+
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
@@ -23,13 +29,7 @@ use crate::errors::{trace_error, DebugTrace};
 use crate::mem;
 use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
 
-pub mod bus;
-pub mod cap;
-pub mod config;
-pub mod host_bridge;
-pub mod segment;
-
-use config::{HeaderData, PciConfig, BAR_MEM64};
+use self::config::{HeaderData, PciConfig, BAR_MEM64};
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]

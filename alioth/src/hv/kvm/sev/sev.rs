@@ -21,12 +21,13 @@ use std::fs::File;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
+use snafu::ResultExt;
+
 use crate::hv::kvm::kvm_error;
 use crate::hv::Result;
 use crate::ioctl_writeread;
 
-use bindings::{SevIssueCmd, SEV_RET_SUCCESS};
-use snafu::ResultExt;
+use self::bindings::{SevIssueCmd, SEV_RET_SUCCESS};
 
 const SEV_IOC_TYPE: u8 = b'S';
 

@@ -38,14 +38,11 @@ use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };
-use crate::virtio::dev::{Register, WakeEvent};
+use crate::virtio::dev::{Register, Virtio, VirtioDevice, WakeEvent};
 use crate::virtio::queue::Queue;
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, DevStatus, IrqSender, Result};
+use crate::virtio::{error, DevStatus, DeviceId, IrqSender, Result};
 use crate::{impl_mmio_for_zerocopy, mem};
-
-use super::dev::{Virtio, VirtioDevice};
-use super::DeviceId;
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 

@@ -26,10 +26,10 @@ use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
 use crate::mem::mapped::Ram;
 use crate::mem::{self, LayoutUpdated};
 
-use bindings::{
+use self::bindings::{
     MemoryMultipleRegion, MemoryRegion, VhostFeature, VirtqAddr, VirtqFile, VirtqState,
 };
-use ioctls::{
+use self::ioctls::{
     vhost_get_backend_features, vhost_get_features, vhost_set_backend_features, vhost_set_features,
     vhost_set_mem_table, vhost_set_owner, vhost_set_virtq_addr, vhost_set_virtq_base,
     vhost_set_virtq_call, vhost_set_virtq_err, vhost_set_virtq_kick, vhost_set_virtq_num,

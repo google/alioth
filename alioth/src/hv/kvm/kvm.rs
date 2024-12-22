@@ -41,6 +41,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
+use libc::SIGRTMIN;
 use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -54,15 +55,14 @@ use crate::ffi;
 use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
 
 #[cfg(target_arch = "aarch64")]
-use bindings::KvmDevType;
-use bindings::KVM_API_VERSION;
+use self::bindings::KvmDevType;
+use self::bindings::KVM_API_VERSION;
 #[cfg(target_arch = "x86_64")]
-use bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_MAX_CPUID_ENTRIES};
+use self::bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_MAX_CPUID_ENTRIES};
 #[cfg(target_arch = "x86_64")]
-use ioctls::kvm_get_supported_cpuid;
-use ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
-use libc::SIGRTMIN;
-use vm::{KvmVm, VmInner};
+use self::ioctls::kvm_get_supported_cpuid;
+use self::ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use self::vm::{KvmVm, VmInner};
 
 #[trace_error]
 #[derive(DebugTrace, Snafu)]

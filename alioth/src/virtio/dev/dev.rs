@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod balloon;
+pub mod blk;
+pub mod entropy;
+#[cfg(target_os = "linux")]
+pub mod fs;
+#[cfg(target_os = "linux")]
+#[path = "net/net.rs"]
+pub mod net;
+#[cfg(target_os = "linux")]
+#[path = "vsock/vsock.rs"]
+pub mod vsock;
+
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -29,18 +41,6 @@ use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
 use crate::virtio::worker::Waker;
 use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
-
-pub mod balloon;
-pub mod blk;
-pub mod entropy;
-#[cfg(target_os = "linux")]
-pub mod fs;
-#[cfg(target_os = "linux")]
-#[path = "net/net.rs"]
-pub mod net;
-#[cfg(target_os = "linux")]
-#[path = "vsock/vsock.rs"]
-pub mod vsock;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     const DEVICE_ID: DeviceId;

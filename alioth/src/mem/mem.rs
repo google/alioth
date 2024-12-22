@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod addressable;
+pub mod emulated;
+pub mod mapped;
+
 use std::any::type_name;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -24,13 +28,9 @@ use snafu::Snafu;
 use crate::errors::{trace_error, DebugTrace};
 use crate::hv::{MemMapOption, VmEntry, VmMemory};
 
-pub mod addressable;
-pub mod emulated;
-pub mod mapped;
-
-use addressable::{Addressable, SlotBackend};
-use emulated::{Action, MmioBus, MmioRange};
-use mapped::{ArcMemPages, Ram, RamBus};
+use self::addressable::{Addressable, SlotBackend};
+use self::emulated::{Action, MmioBus, MmioRange};
+use self::mapped::{ArcMemPages, Ram, RamBus};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

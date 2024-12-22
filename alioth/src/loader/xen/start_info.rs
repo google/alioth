@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 pub const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;

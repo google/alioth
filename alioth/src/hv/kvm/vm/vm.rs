@@ -55,7 +55,7 @@ use crate::hv::{
 };
 
 #[cfg(target_arch = "x86_64")]
-pub use x86_64::VmArch;
+pub use self::x86_64::VmArch;
 
 #[derive(Debug)]
 pub(super) struct VmInner {
@@ -756,9 +756,9 @@ impl Vm for KvmVm {
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
     use std::ptr::null_mut;
 
+    use assert_matches::assert_matches;
     use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
 
     use super::*;

@@ -19,7 +19,7 @@ use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::impl_mmio_for_zerocopy;
 
-pub use vhost_vsock::{VhostVsock, VhostVsockParam};
+pub use self::vhost_vsock::{VhostVsock, VhostVsockParam};
 
 #[derive(Debug, Clone, Copy, Default, FromZeros, Immutable, IntoBytes)]
 #[repr(C)]

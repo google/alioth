@@ -20,9 +20,15 @@ pub mod mio;
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::io::{ErrorKind, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd;
 
+#[cfg(target_os = "linux")]
+use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
 use serde::Deserialize;
 use serde_aco::Help;
+#[cfg(target_os = "linux")]
+use snafu::ResultExt;
 
 #[cfg(target_os = "linux")]
 use crate::ffi;
@@ -51,11 +57,6 @@ pub struct Waker(
 impl Waker {
     #[cfg(target_os = "linux")]
     pub fn new_eventfd() -> Result<Self> {
-        use std::os::fd::FromRawFd;
-
-        use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
-        use snafu::ResultExt;
-
         let efd =
             ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) }).context(error::CreateWaker)?;
         Ok(Waker(unsafe { File::from_raw_fd(efd) }))
