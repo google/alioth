@@ -729,7 +729,10 @@ where
     M: MsiSender,
     D: Device,
 {
-    fn update_msi(&self, ctrl: MsiMsgCtrl, data: &[u32; 4]) -> Result<()> {
+    fn update_msi(&self) -> Result<()> {
+        let (hdr, body) = &*self.cap.read();
+        let ctrl = &hdr.control;
+        let data = &body.data;
         let msg_mask = if ctrl.ext_msg_data() {
             u32::MAX
         } else {
@@ -783,8 +786,9 @@ where
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        let (hdr, body) = &mut *self.cap.write();
         let mut need_update = false;
+        let mut cap = self.cap.write();
+        let (hdr, body) = &mut *cap;
         match (offset as usize, size) {
             (0x2, 2) => {
                 let ctrl = &mut hdr.control;
@@ -810,8 +814,9 @@ where
                 width = 2 * size as usize
             ),
         }
+        drop(cap);
         if need_update {
-            self.update_msi(hdr.control, &body.data)
+            self.update_msi()
                 .map_err(boxed_debug_trace)
                 .context(mem::error::Mmio)?;
         }
@@ -825,6 +830,12 @@ where
     M: MsiSender,
 {
     fn reset(&self) {
-        log::error!("{}: TODO: MsiCapMmio reset.", self.dev.name)
+        {
+            let (hdr, _) = &mut *self.cap.write();
+            hdr.control.set_enable(false);
+        }
+        if let Err(e) = self.update_msi() {
+            log::error!("{}: failed to reset: {e:?}", self.dev.name);
+        }
     }
 }
