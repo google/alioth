@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod elf;
+#[path = "firmware/firmware.rs"]
+pub mod firmware;
+#[path = "linux/linux.rs"]
+pub mod linux;
+#[cfg(target_arch = "x86_64")]
+#[path = "xen/xen.rs"]
+pub mod xen;
+
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -22,15 +31,6 @@ use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 use crate::errors::{trace_error, DebugTrace};
 use crate::mem::{MemRegionEntry, MemRegionType};
-
-pub mod elf;
-#[path = "firmware/firmware.rs"]
-pub mod firmware;
-#[path = "linux/linux.rs"]
-pub mod linux;
-#[cfg(target_arch = "x86_64")]
-#[path = "xen/xen.rs"]
-pub mod xen;
 
 #[derive(Debug)]
 pub struct Payload {

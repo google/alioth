@@ -26,14 +26,14 @@ use crate::arch::layout::{
 };
 use crate::utils::wrapping_sum;
 
-use bindings::{
+use self::bindings::{
     AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
     AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg1,
     AcpiTableRsdp, AcpiTableXsdt3, FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC,
     MADT_LOCAL_X2APIC, MADT_REVISION, MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG,
     SIG_RSDP, SIG_XSDT, XSDT_REVISION,
 };
-use reg::FADT_RESET_VAL;
+use self::reg::FADT_RESET_VAL;
 
 const OEM_ID: [u8; 6] = *b"ALIOTH";
 

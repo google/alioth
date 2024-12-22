@@ -23,12 +23,13 @@ pub mod pci;
 
 use std::path::{Path, PathBuf};
 
-use bindings::VfioIommu;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
 
 use crate::errors::{trace_error, DebugTrace};
+
+use self::bindings::VfioIommu;
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

@@ -15,8 +15,8 @@
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;
 
-use core::fmt;
 use std::ffi::CString;
+use std::fmt;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
 #[cfg(target_arch = "x86_64")]
@@ -51,7 +51,7 @@ use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 #[cfg(target_arch = "x86_64")]
-use acpi::create_acpi_loader;
+use self::acpi::create_acpi_loader;
 
 pub const SELECTOR_WR: u16 = 1 << 14;
 

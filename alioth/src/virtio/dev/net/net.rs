@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod tap;
+
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, IoSlice};
@@ -48,9 +50,7 @@ use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{error, IrqSender, FEATURE_BUILT_IN};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
-pub mod tap;
-
-use tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
+use self::tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]

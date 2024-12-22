@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{KvmExit, KvmExitIo};
-
-use super::vcpu::KvmVcpu;
+use crate::hv::kvm::vcpu::KvmVcpu;
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]

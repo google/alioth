@@ -21,13 +21,13 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::ptr::null_mut;
 
-use bindings::hv_vm_create;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::hv::{error, Hypervisor, Result, VmConfig};
 
-use vm::HvfVm;
+use self::bindings::hv_vm_create;
+use self::vm::HvfVm;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]

@@ -12,15 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::os::fd::RawFd;
-use std::path::PathBuf;
-
-use bitflags::bitflags;
-use snafu::Snafu;
-
-use crate::errors::{trace_error, DebugTrace};
-
 #[path = "dev/dev.rs"]
 pub mod dev;
 pub mod pci;
@@ -33,6 +24,15 @@ pub mod vhost;
 pub mod vu;
 #[path = "worker/worker.rs"]
 pub mod worker;
+
+use std::fmt::Debug;
+use std::os::fd::RawFd;
+use std::path::PathBuf;
+
+use bitflags::bitflags;
+use snafu::Snafu;
+
+use crate::errors::{trace_error, DebugTrace};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

@@ -42,9 +42,9 @@ use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 use crate::errors::{trace_error, DebugTrace};
 
 #[cfg(target_os = "macos")]
-pub use hvf::Hvf;
+pub use self::hvf::Hvf;
 #[cfg(target_os = "linux")]
-pub use kvm::{Kvm, KvmConfig, KvmError};
+pub use self::kvm::{Kvm, KvmConfig, KvmError};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

@@ -15,9 +15,8 @@
 use crate::hv::kvm::bindings::{
     KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent, KVM_HC_MAP_GPA_RANGE,
 };
+use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, VmExit};
-
-use super::vcpu::KvmVcpu;
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]

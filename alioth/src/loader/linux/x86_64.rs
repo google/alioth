@@ -17,12 +17,6 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{size_of, size_of_val};
 use std::path::Path;
 
-use crate::arch::msr::Efer;
-use crate::arch::paging::Entry;
-use crate::arch::reg::{
-    Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
-};
-use crate::mem::mapped::RamBus;
 use snafu::ResultExt;
 use zerocopy::{FromZeros, IntoBytes};
 
@@ -30,6 +24,12 @@ use crate::arch::layout::{
     BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
     KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
+use crate::arch::msr::Efer;
+use crate::arch::paging::Entry;
+use crate::arch::reg::{
+    Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
+};
+use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 use crate::loader::linux::bootparams::{

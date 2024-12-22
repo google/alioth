@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 pub mod endian;
 #[cfg(target_os = "linux")]
 pub mod ioctls;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn truncate_u64(val: u64, size: u64) -> u64 {
     val & u64::MAX >> (64 - (size << 3))

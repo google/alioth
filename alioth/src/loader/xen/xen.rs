@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod start_info;
+
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{offset_of, size_of, size_of_val};
@@ -37,9 +39,7 @@ use crate::loader::{error, search_initramfs_address, InitState, Result};
 use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-pub mod start_info;
-
-use start_info::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
+use self::start_info::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
 
 pub const XEN_ELFNOTE_PHYS32_ENTRY: u32 = 18;
 

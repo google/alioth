@@ -507,10 +507,10 @@ impl RamBus {
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
     use std::io::{Read, Write};
     use std::mem::size_of;
 
+    use assert_matches::assert_matches;
     use libc::{PROT_READ, PROT_WRITE};
     use zerocopy::{FromBytes, Immutable, IntoBytes};
 
