@@ -491,9 +491,13 @@ where
         let config_header = ConfigHeader::Device(dev_header);
 
         cdev.dev.reset()?;
-        let msix_info = cdev.dev.get_irq_info(VfioPciIrq::MSIX.raw())?;
+
+        let msix_count = match &msix_cap {
+            Some(cap) => cap.control.table_len() + 1,
+            None => 0,
+        };
         let msix_entries = RwLock::new(
-            (0..msix_info.count)
+            (0..msix_count)
                 .map(|_| MsixTableMmioEntry::Entry(MsixTableEntry::default()))
                 .collect(),
         );
