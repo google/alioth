@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -142,6 +142,7 @@ where
             payload: RwLock::new(None),
             vcpus: Arc::new(RwLock::new(Vec::new())),
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
+            mp_error: AtomicBool::new(false),
             io_devs: RwLock::new(Vec::new()),
             #[cfg(target_arch = "aarch64")]
             mmio_devs: RwLock::new(Vec::new()),
