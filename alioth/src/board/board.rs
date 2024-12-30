@@ -20,7 +20,7 @@ mod x86_64;
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -92,6 +92,8 @@ pub enum Error {
     VmExit { msg: String },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
+    #[snafu(display("Other VCPU threads have failed"))]
+    OtherVCPU,
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -130,6 +132,7 @@ where
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
+    pub mp_error: AtomicBool,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     #[cfg(target_arch = "aarch64")]
     pub mmio_devs: RwLock<Vec<(u64, Arc<MemRegion>)>>,
@@ -235,7 +238,10 @@ where
         }
     }
 
-    fn sync_vcpus(&self, vcpus: &VcpuGuard) {
+    fn sync_vcpus(&self, vcpus: &VcpuGuard) -> Result<()> {
+        if self.mp_error.load(Ordering::Acquire) {
+            return error::OtherVCPU.fail();
+        }
         let (lock, cvar) = &*self.mp_sync;
         let mut count = lock.lock();
         *count += 1;
@@ -245,6 +251,10 @@ where
         } else {
             cvar.wait(&mut count)
         }
+        if self.mp_error.load(Ordering::Acquire) {
+            return error::OtherVCPU.fail();
+        }
+        Ok(())
     }
 
     fn run_vcpu_inner(
@@ -279,6 +289,7 @@ where
             }
             self.init_ap(id, &mut vcpu, &vcpus)?;
             self.coco_finalize(id, &vcpus)?;
+            self.sync_vcpus(&vcpus)?;
             drop(vcpus);
 
             let reboot = self.vcpu_loop(&mut vcpu, id)?;
@@ -309,7 +320,7 @@ where
                 }
             }
 
-            self.sync_vcpus(&vcpus);
+            self.sync_vcpus(&vcpus)?;
 
             if id == 0 {
                 let devices = self.pci_bus.segment.devices.read();
@@ -346,6 +357,12 @@ where
     ) -> Result<(), Error> {
         let ret = self.run_vcpu_inner(id, &event_tx, &boot_rx);
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
+        if ret.is_err() && !matches!(ret, Err(Error::OtherVCPU { .. })) {
+            log::error!("Error from VCPU-{id}, unblocking other VCPUs");
+            self.mp_error.store(true, Ordering::Release);
+            let (_, cvar) = &*self.mp_sync;
+            cvar.notify_all();
+        }
         event_tx.send(id).unwrap();
         ret
     }

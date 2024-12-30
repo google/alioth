@@ -207,7 +207,7 @@ where
             Some(Coco::AmdSnp { .. }) => {}
             _ => return Ok(()),
         }
-        self.sync_vcpus(vcpus);
+        self.sync_vcpus(vcpus)?;
         if id == 0 {
             return Ok(());
         }
@@ -319,7 +319,7 @@ where
 
     pub fn coco_finalize(&self, id: u32, vcpus: &VcpuGuard) -> Result<()> {
         if let Some(coco) = &self.config.coco {
-            self.sync_vcpus(vcpus);
+            self.sync_vcpus(vcpus)?;
             if id == 0 {
                 match coco {
                     Coco::AmdSev { policy } => {
@@ -334,7 +334,7 @@ where
                     }
                 }
             }
-            self.sync_vcpus(vcpus);
+            self.sync_vcpus(vcpus)?;
         }
         Ok(())
     }
