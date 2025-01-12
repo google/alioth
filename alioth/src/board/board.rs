@@ -92,6 +92,8 @@ pub enum Error {
     VmExit { msg: String },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
+    #[snafu(display("Failed to notify the VMM thread"))]
+    NotifyVmm,
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -250,12 +252,10 @@ where
     fn run_vcpu_inner(
         &self,
         id: u32,
-        event_tx: &Sender<u32>,
+        vcpu: &mut V::Vcpu,
         boot_rx: &Receiver<()>,
     ) -> Result<(), Error> {
-        let mut vcpu = self.vm.create_vcpu(id).context(error::CreateVcpu { id })?;
-        event_tx.send(id).unwrap();
-        self.init_vcpu(id, &mut vcpu)?;
+        self.init_vcpu(id, vcpu)?;
         boot_rx.recv().unwrap();
         if self.state.load(Ordering::Acquire) != STATE_RUNNING {
             return Ok(());
@@ -274,14 +274,14 @@ where
                 }
                 self.add_pci_devs()?;
                 let init_state = self.load_payload()?;
-                self.init_boot_vcpu(&mut vcpu, &init_state)?;
+                self.init_boot_vcpu(vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
-            self.init_ap(id, &mut vcpu, &vcpus)?;
+            self.init_ap(id, vcpu, &vcpus)?;
             self.coco_finalize(id, &vcpus)?;
             drop(vcpus);
 
-            let reboot = self.vcpu_loop(&mut vcpu, id)?;
+            let reboot = self.vcpu_loop(vcpu, id)?;
 
             let new_state = if reboot {
                 STATE_REBOOT_PENDING
@@ -334,7 +334,16 @@ where
                 _ => break Ok(()),
             }
 
-            self.reset_vcpu(id, &mut vcpu)?;
+            self.reset_vcpu(id, vcpu)?;
+        }
+    }
+
+    fn create_vcpu(&self, id: u32, event_tx: &Sender<u32>) -> Result<V::Vcpu> {
+        let vcpu = self.vm.create_vcpu(id).context(error::CreateVcpu { id })?;
+        if event_tx.send(id).is_err() {
+            error::NotifyVmm.fail()
+        } else {
+            Ok(vcpu)
         }
     }
 
@@ -344,7 +353,9 @@ where
         event_tx: Sender<u32>,
         boot_rx: Receiver<()>,
     ) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(id, &event_tx, &boot_rx);
+        let mut vcpu = self.create_vcpu(id, &event_tx)?;
+
+        let ret = self.run_vcpu_inner(id, &mut vcpu, &boot_rx);
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
         event_tx.send(id).unwrap();
         ret
