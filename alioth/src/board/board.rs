@@ -401,15 +401,18 @@ where
         let mut vcpu = self.create_vcpu(id, &event_tx)?;
 
         let ret = self.run_vcpu_inner(id, &mut vcpu, &boot_rx);
-        if ret.is_err() && !matches!(ret, Err(Error::PeerFailure { .. })) {
-            log::warn!("VCPU-{id} reported error, unblocking other VCPUs...");
-            let mut mp_sync = self.mp_sync.lock();
-            mp_sync.fatal = true;
-            if mp_sync.count > 0 {
-                self.cond_var.notify_all();
-            }
-        }
         event_tx.send(id).unwrap();
+
+        if matches!(ret, Ok(_) | Err(Error::PeerFailure { .. })) {
+            return Ok(());
+        }
+
+        log::warn!("VCPU-{id} reported error, unblocking other VCPUs...");
+        let mut mp_sync = self.mp_sync.lock();
+        mp_sync.fatal = true;
+        if mp_sync.count > 0 {
+            self.cond_var.notify_all();
+        }
         ret
     }
 

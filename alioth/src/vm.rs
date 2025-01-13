@@ -273,7 +273,7 @@ where
         Ok(())
     }
 
-    pub fn wait(&self) -> Vec<Result<()>> {
+    pub fn wait(&self) -> Result<()> {
         self.event_rx.recv().unwrap();
         let vcpus = self.board.vcpus.read();
         for _ in 1..vcpus.len() {
@@ -281,17 +281,17 @@ where
         }
         drop(vcpus);
         let mut vcpus = self.board.vcpus.write();
-        vcpus
-            .drain(..)
-            .enumerate()
-            .map(|(id, (handle, _))| match handle.join() {
-                Err(e) => {
-                    log::error!("cannot join vcpu {}: {:?}", id, e);
-                    Ok(())
-                }
-                Ok(r) => r.context(error::Vcpu { id: id as u32 }),
-            })
-            .collect()
+        let mut ret = Ok(());
+        for (id, (handle, _)) in vcpus.drain(..).enumerate() {
+            let Ok(r) = handle.join() else {
+                log::error!("Cannot join VCPU-{id}");
+                continue;
+            };
+            if r.is_err() && ret.is_ok() {
+                ret = r.context(error::Vcpu { id: id as u32 });
+            }
+        }
+        ret
     }
 }
 
