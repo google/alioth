@@ -488,9 +488,7 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
     }
 
     vm.boot().context(error::BootVm)?;
-    for result in vm.wait() {
-        result.context(error::WaitVm)?;
-    }
+    vm.wait().context(error::WaitVm)?;
     Ok(())
 }
 
