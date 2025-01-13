@@ -341,12 +341,12 @@ where
             self.sync_vcpus(&vcpus)?;
             drop(vcpus);
 
-            let reboot = self.vcpu_loop(vcpu, id)?;
+            let maybe_reboot = self.vcpu_loop(vcpu, id);
 
             let vcpus = self.vcpus.read();
             let mut mp_sync = self.mp_sync.lock();
             if mp_sync.state == BoardState::Running {
-                mp_sync.state = if reboot {
+                mp_sync.state = if matches!(maybe_reboot, Ok(true)) {
                     BoardState::RebootPending
                 } else {
                     BoardState::Shutdown
@@ -370,6 +370,10 @@ where
                 self.memory.reset()?;
             }
             self.reset_vcpu(id, vcpu)?;
+
+            if let Err(e) = maybe_reboot {
+                break Err(e);
+            }
 
             let mut mp_sync = self.mp_sync.lock();
             if mp_sync.state == BoardState::Shutdown {
