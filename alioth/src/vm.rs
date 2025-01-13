@@ -13,23 +13,21 @@
 // limitations under the License.
 
 #[cfg(target_os = "linux")]
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use parking_lot::{Condvar, Mutex, RwLock};
+#[cfg(target_os = "linux")]
+use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "aarch64")]
 use crate::arch::layout::PL011_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
-use crate::board::{ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::board::{ArchBoard, Board, BoardConfig};
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "aarch64")]
@@ -45,7 +43,6 @@ use crate::loader::Payload;
 use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
 use crate::mem::{MemRegion, MemRegionType};
-use crate::pci::bus::PciBus;
 use crate::pci::{Bdf, PciDevice};
 #[cfg(target_os = "linux")]
 use crate::vfio::bindings::VfioIommu;
@@ -134,26 +131,7 @@ where
         let memory = Memory::new(vm_memory);
         let arch = ArchBoard::new(&hv, &vm, &config)?;
 
-        let board = Arc::new(Board {
-            vm,
-            memory,
-            arch,
-            config,
-            state: AtomicU8::new(STATE_CREATED),
-            payload: RwLock::new(None),
-            vcpus: Arc::new(RwLock::new(Vec::new())),
-            mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
-            io_devs: RwLock::new(Vec::new()),
-            #[cfg(target_arch = "aarch64")]
-            mmio_devs: RwLock::new(Vec::new()),
-            pci_bus: PciBus::new(),
-            #[cfg(target_arch = "x86_64")]
-            fw_cfg: Mutex::new(None),
-            #[cfg(target_os = "linux")]
-            vfio_ioases: Mutex::new(HashMap::new()),
-            #[cfg(target_os = "linux")]
-            vfio_containers: Mutex::new(HashMap::new()),
-        });
+        let board = Arc::new(Board::new(vm, memory, arch, config));
 
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -291,11 +269,7 @@ where
     }
 
     pub fn boot(&self) -> Result<(), Error> {
-        let vcpus = self.board.vcpus.read();
-        self.board.state.store(STATE_RUNNING, Ordering::Release);
-        for (_, boot_tx) in vcpus.iter() {
-            boot_tx.send(()).unwrap();
-        }
+        self.board.boot()?;
         Ok(())
     }
 
