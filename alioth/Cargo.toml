@@ -12,7 +12,7 @@ test-hv = []
 
 [dependencies]
 zerocopy = { version = "0.8.14", features = ["derive", "alloc"] }
-bitflags = "2.7.0"
+bitflags = "2.8.0"
 bitfield = "0.17.0"
 log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
