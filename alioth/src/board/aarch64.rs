@@ -25,7 +25,7 @@ use crate::arch::layout::{
     RAM_32_START,
 };
 use crate::arch::reg::SReg;
-use crate::board::{Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
+use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};

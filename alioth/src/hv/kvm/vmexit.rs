@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::hv::kvm::bindings::{
-    KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent, KVM_HC_MAP_GPA_RANGE,
+    KVM_HC_MAP_GPA_RANGE, KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent,
 };
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, VmExit};

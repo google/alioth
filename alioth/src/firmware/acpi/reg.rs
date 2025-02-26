@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::firmware::acpi::bindings::FadtSleepControlReg;
-use crate::mem::emulated::{Action, Mmio};
 use crate::mem::Result;
+use crate::mem::emulated::{Action, Mmio};
 
 pub const FADT_RESET_VAL: u8 = b'r';
 
@@ -25,9 +25,11 @@ impl Mmio for FadtReset {
     fn size(&self) -> u64 {
         1
     }
+
     fn read(&self, _offset: u64, _size: u8) -> Result<u64> {
         Ok(0)
     }
+
     fn write(&self, _offset: u64, _size: u8, val: u64) -> Result<Action> {
         if val as u8 == FADT_RESET_VAL {
             Ok(Action::Reset)

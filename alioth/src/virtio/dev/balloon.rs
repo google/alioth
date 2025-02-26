@@ -14,15 +14,15 @@
 
 use std::fmt::Debug;
 use std::io::{IoSlice, IoSliceMut};
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
-use libc::{sysconf, _SC_PAGESIZE};
+use libc::{_SC_PAGESIZE, sysconf};
 use macros::Layout;
-use mio::event::Event;
 use mio::Registry;
+use mio::event::Event;
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_aco::Help;
@@ -34,9 +34,9 @@ use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
-use crate::virtio::{IrqSender, Result, FEATURE_BUILT_IN};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
+use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
 use crate::{c_enum, ffi, impl_mmio_for_zerocopy, mem};
 
 #[repr(C, align(8))]
@@ -190,10 +190,10 @@ impl Balloon {
 }
 
 impl Virtio for Balloon {
-    const DEVICE_ID: DeviceId = DeviceId::Balloon;
-
     type Config = BalloonConfigMmio;
     type Feature = BalloonFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::Balloon;
 
     fn name(&self) -> &str {
         &self.name
@@ -310,6 +310,7 @@ pub struct BalloonParam {
 
 impl DevParam for BalloonParam {
     type Device = Balloon;
+
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
         Balloon::new(self, name)
     }

@@ -17,7 +17,7 @@ pub mod reg;
 
 use std::mem::{offset_of, size_of};
 
-use zerocopy::{transmute, FromBytes, IntoBytes};
+use zerocopy::{FromBytes, IntoBytes, transmute};
 
 use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]

@@ -15,7 +15,7 @@
 use crate::{ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr};
 
 use crate::virtio::vhost::bindings::{
-    MemoryMultipleRegion, VirtqAddr, VirtqFile, VirtqState, VHOST_VIRTIO,
+    MemoryMultipleRegion, VHOST_VIRTIO, VirtqAddr, VirtqFile, VirtqState,
 };
 
 ioctl_read!(vhost_get_features, VHOST_VIRTIO, 0x00, u64);

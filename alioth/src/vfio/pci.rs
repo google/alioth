@@ -19,14 +19,14 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use libc::{PROT_READ, PROT_WRITE};
 use macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
-use zerocopy::{transmute, FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, transmute};
 
 use crate::errors::boxed_debug_trace;
 use crate::hv::{IrqFd, MsiSender};
@@ -38,8 +38,8 @@ use crate::pci::cap::{
     NullCap, PciCapHdr, PciCapId,
 };
 use crate::pci::config::{
-    Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderData, HeaderType,
-    PciConfig, PciConfigArea, Status, BAR_IO, BAR_MEM64,
+    BAR_IO, BAR_MEM64, Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader,
+    HeaderData, HeaderType, PciConfig, PciConfigArea, Status,
 };
 use crate::pci::{self, Bdf, Pci, PciBar};
 use crate::vfio::bindings::{
@@ -47,7 +47,7 @@ use crate::vfio::bindings::{
     VfioRegionInfoFlag,
 };
 use crate::vfio::device::Device;
-use crate::vfio::{error, Result};
+use crate::vfio::{Result, error};
 use crate::{align_down, align_up, impl_mmio_for_zerocopy, mem};
 
 fn round_up_range(range: Range<usize>) -> Range<usize> {
@@ -222,9 +222,11 @@ where
     fn size(&self) -> u64 {
         self.size
     }
+
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         self.dev.dev.read(self.offset + offset, size)
     }
+
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         self.dev.dev.write(self.offset + offset, size, val)?;
         Ok(Action::None)

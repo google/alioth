@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use libc::{
-    cfmakeraw, fcntl, tcgetattr, tcsetattr, termios, F_GETFL, F_SETFL, OPOST, O_NONBLOCK,
-    STDIN_FILENO, STDOUT_FILENO, TCSANOW,
+    F_GETFL, F_SETFL, O_NONBLOCK, OPOST, STDIN_FILENO, STDOUT_FILENO, TCSANOW, cfmakeraw, fcntl,
+    tcgetattr, tcsetattr, termios,
 };
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};

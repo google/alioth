@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use alioth::board::BoardConfig;
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::FwCfgItemParam;
-use alioth::errors::{trace_error, DebugTrace};
+use alioth::errors::{DebugTrace, trace_error};
 use alioth::hv::Coco;
 #[cfg(target_os = "macos")]
 use alioth::hv::Hvf;
@@ -45,7 +45,7 @@ use alioth::vm::Machine;
 use clap::{Args, Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
 use serde::Deserialize;
-use serde_aco::{help_text, Help};
+use serde_aco::{Help, help_text};
 use snafu::{ResultExt, Snafu};
 
 #[derive(Parser, Debug)]
@@ -387,7 +387,9 @@ fn main_run(args: RunArgs) -> Result<(), Error> {
         let param = match serde_aco::from_args(&blk, &objects) {
             Ok(param) => param,
             Err(serde_aco::Error::ExpectedMapEq) => {
-                eprintln!("Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details");
+                eprintln!(
+                    "Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details"
+                );
                 BlockParam {
                     path: blk.into(),
                     ..Default::default()

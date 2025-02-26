@@ -21,11 +21,11 @@ use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_enable_cap,
     kvm_set_identity_map_addr, kvm_set_tss_addr,
 };
-use crate::hv::kvm::sev::bindings::{KvmSevInit, KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2};
 use crate::hv::kvm::sev::SevFd;
+use crate::hv::kvm::sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2, KvmSevInit};
 use crate::hv::kvm::vm::{KvmVm, VmArch};
-use crate::hv::kvm::{kvm_error, Kvm};
-use crate::hv::{error, Coco, Result, VmConfig};
+use crate::hv::kvm::{Kvm, kvm_error};
+use crate::hv::{Coco, Result, VmConfig, error};
 
 impl Kvm {
     pub(super) fn determine_vm_type(config: &VmConfig) -> Result<KvmVmType> {
@@ -114,8 +114,8 @@ impl Kvm {
 
 #[cfg(test)]
 mod test {
-    use crate::hv::kvm::{Kvm, KvmConfig};
     use crate::hv::Hypervisor;
+    use crate::hv::kvm::{Kvm, KvmConfig};
 
     #[test]
     #[cfg_attr(not(feature = "test-hv"), ignore)]

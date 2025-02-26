@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::arch::x86_64::{CpuidResult, __cpuid};
+use std::arch::x86_64::{__cpuid, CpuidResult};
 use std::collections::HashMap;
 use std::iter::zip;
 use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
@@ -29,16 +29,16 @@ use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL,
     RAM_32_SIZE,
 };
-use crate::arch::msr::{MiscEnable, IA32_MISC_ENABLE};
+use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
-use crate::board::{error, Board, BoardConfig, Result, VcpuGuard, PCIE_MMIO_64_SIZE};
+use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
 };
 use crate::firmware::acpi::reg::{FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
-    create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt, AcpiTable,
+    AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
 };
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;

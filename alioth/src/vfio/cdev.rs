@@ -29,7 +29,7 @@ use crate::vfio::ioctls::{
     vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd, vfio_device_detach_iommufd_pt,
 };
 use crate::vfio::iommu::Ioas;
-use crate::vfio::{error, Result};
+use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Cdev {

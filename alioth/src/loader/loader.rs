@@ -29,7 +29,7 @@ use snafu::Snafu;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 #[derive(Debug)]

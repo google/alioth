@@ -20,7 +20,7 @@ use crate::hv::kvm::ioctls::{
     kvm_arm_preferred_target, kvm_arm_vcpu_init, kvm_get_one_reg, kvm_set_one_reg,
 };
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::{error, Result};
+use crate::hv::{Result, error};
 
 const fn encode_reg(reg: Reg) -> u64 {
     0x6030_0000_0010_0000 | ((reg as u64) << 1)

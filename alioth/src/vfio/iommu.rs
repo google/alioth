@@ -27,7 +27,7 @@ use crate::vfio::bindings::{
     IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap,
 };
 use crate::vfio::ioctls::{iommu_destroy, iommu_ioas_alloc, iommu_ioas_map, iommu_ioas_unmap};
-use crate::vfio::{error, Result};
+use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Iommu {

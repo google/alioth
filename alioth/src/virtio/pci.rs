@@ -15,9 +15,9 @@
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 
 use macros::Layout;
 use parking_lot::{Mutex, RwLock};
@@ -31,8 +31,8 @@ use crate::pci::cap::{
     MsixTableMmioEntry, PciCap, PciCapHdr, PciCapId, PciCapList,
 };
 use crate::pci::config::{
-    CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, PciConfigArea, BAR_MEM32,
-    BAR_MEM64, BAR_PREFETCHABLE,
+    BAR_MEM32, BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType,
+    PciConfig, PciConfigArea,
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
@@ -41,7 +41,7 @@ use crate::utils::{
 use crate::virtio::dev::{Register, Virtio, VirtioDevice, WakeEvent};
 use crate::virtio::queue::Queue;
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, DevStatus, DeviceId, IrqSender, Result};
+use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
 use crate::{impl_mmio_for_zerocopy, mem};
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
@@ -878,6 +878,7 @@ where
     fn config(&self) -> &dyn PciConfig {
         &self.config
     }
+
     fn reset(&self) -> pci::Result<()> {
         self.registers.wake_up_dev(WakeEvent::Reset);
         self.registers.reset();

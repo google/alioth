@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::hv::kvm::Result;
 use crate::hv::kvm::bindings::{
     KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
 };
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
-use crate::hv::kvm::Result;
 use crate::hv::{GicV2, GicV3, Its};
 
 #[derive(Debug)]

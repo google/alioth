@@ -14,10 +14,10 @@
 
 use crate::utils::ioctls::ioctl_io;
 use crate::vfio::bindings::{
-    IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasUnmap, VfioDeviceAttachIommufdPt,
-    VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo, VfioIommu,
-    VfioIommuType1DmaMap, VfioIommuType1DmaUnmap, VfioIrqInfo, VfioIrqSet, VfioRegionInfo,
-    IOMMUFD_TYPE, VFIO_TYPE,
+    IOMMUFD_TYPE, IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasUnmap, VFIO_TYPE,
+    VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo,
+    VfioIommu, VfioIommuType1DmaMap, VfioIommuType1DmaUnmap, VfioIrqInfo, VfioIrqSet,
+    VfioRegionInfo,
 };
 use crate::{ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread};
 

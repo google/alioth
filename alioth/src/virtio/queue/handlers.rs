@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::io::{ErrorKind, Read, Write};
-use std::sync::atomic::{fence, Ordering};
+use std::sync::atomic::{Ordering, fence};
 
 use crate::virtio::queue::{Descriptor, VirtQueue};
 use crate::virtio::{IrqSender, Result};

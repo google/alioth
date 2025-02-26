@@ -17,15 +17,15 @@ use std::iter::zip;
 use std::mem::size_of_val;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use libc::{
-    eventfd, mmap, EFD_CLOEXEC, EFD_NONBLOCK, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE,
-    MAP_SHARED, PROT_NONE,
+    EFD_CLOEXEC, EFD_NONBLOCK, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED,
+    PROT_NONE, eventfd, mmap,
 };
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -40,11 +40,11 @@ use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
-    error as vu_error, DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature,
+    DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature, error as vu_error,
 };
-use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
+use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
 #[repr(C, align(4))]
@@ -182,9 +182,10 @@ impl DevParam for VuFsParam {
 }
 
 impl Virtio for VuFs {
-    const DEVICE_ID: DeviceId = DeviceId::FileSystem;
     type Config = FsConfig;
     type Feature = FsFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::FileSystem;
 
     fn name(&self) -> &str {
         &self.name

@@ -33,10 +33,10 @@ use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 use crate::loader::linux::bootparams::{
-    BootE820Entry, BootParams, XLoadFlags, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED,
-    MAGIC_AA55, MAGIC_HDRS, SETUP_HEADER_OFFSET,
+    BootE820Entry, BootParams, E820_ACPI, E820_PMEM, E820_RAM, E820_RESERVED, MAGIC_AA55,
+    MAGIC_HDRS, SETUP_HEADER_OFFSET, XLoadFlags,
 };
-use crate::loader::{error, search_initramfs_address, Error, InitState};
+use crate::loader::{Error, InitState, error, search_initramfs_address};
 
 // loading bzImage and ramdisk above 4G in 64bit.
 const MINIMAL_VERSION: u16 = 0x020c;

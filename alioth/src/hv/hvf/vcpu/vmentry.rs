@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::hv::VmExit;
 use crate::hv::hvf::bindings::hv_vcpu_set_reg;
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
-use crate::hv::VmExit;
 
 impl HvfVcpu {
     pub fn entry_mmio(&mut self, data: u64) {

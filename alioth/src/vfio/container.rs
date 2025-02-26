@@ -27,7 +27,7 @@ use crate::vfio::bindings::{
     VfioDmaMapFlag, VfioDmaUnmapFlag, VfioIommu, VfioIommuType1DmaMap, VfioIommuType1DmaUnmap,
 };
 use crate::vfio::ioctls::{vfio_iommu_map_dma, vfio_iommu_unmap_dma, vfio_set_iommu};
-use crate::vfio::{error, Result};
+use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Container {

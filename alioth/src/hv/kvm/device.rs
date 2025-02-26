@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::mem::{size_of_val, MaybeUninit};
+use std::mem::{MaybeUninit, size_of_val};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use snafu::ResultExt;

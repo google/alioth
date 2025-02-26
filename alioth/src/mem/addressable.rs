@@ -14,7 +14,7 @@
 
 use std::ops::RangeBounds;
 
-use crate::mem::{error, Result};
+use crate::mem::{Result, error};
 
 pub trait SlotBackend {
     fn size(&self) -> u64;

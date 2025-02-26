@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 use std::iter::zip;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use bitfield::bitfield;
 use parking_lot::{Mutex, RwLock};

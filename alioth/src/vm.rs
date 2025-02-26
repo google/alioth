@@ -14,8 +14,8 @@
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ use crate::device::pl011::Pl011;
 use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 #[cfg(target_os = "linux")]
 use crate::hv::Kvm;
 use crate::hv::{Hypervisor, IoeventFdRegistry, Vm, VmConfig};

@@ -19,11 +19,11 @@ use snafu::ResultExt;
 
 use crate::arch::reg::{Reg, SReg};
 use crate::hv::hvf::bindings::{
-    hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg, hv_vcpu_run, hv_vcpu_set_reg,
-    hv_vcpu_set_sys_reg, HvExitReason, HvReg, HvVcpuExit,
+    HvExitReason, HvReg, HvVcpuExit, hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg,
+    hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
 };
 use crate::hv::hvf::check_ret;
-use crate::hv::{error, Result, Vcpu, VmEntry, VmExit};
+use crate::hv::{Result, Vcpu, VmEntry, VmExit, error};
 
 #[derive(Debug)]
 pub struct HvfVcpu {
@@ -165,7 +165,7 @@ mod test {
     use std::ptr::null_mut;
 
     use assert_matches::assert_matches;
-    use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
 
     use crate::arch::reg::Reg;
     use crate::ffi;

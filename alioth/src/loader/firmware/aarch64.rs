@@ -15,8 +15,8 @@
 use std::path::Path;
 
 use crate::loader::{InitState, Result};
-use crate::mem::mapped::ArcMemPages;
 use crate::mem::Memory;
+use crate::mem::mapped::ArcMemPages;
 
 pub fn load<P: AsRef<Path>>(_memory: &Memory, _path: P) -> Result<(InitState, ArcMemPages)> {
     unimplemented!()

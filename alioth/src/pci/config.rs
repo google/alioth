@@ -370,7 +370,9 @@ impl HeaderData {
                         }
                         _ => {
                             header.bars[bar_index] = masked_val;
-                            log::info!("{bdf}: bar {bar_index}: write {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}");
+                            log::info!(
+                                "{bdf}: bar {bar_index}: write {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}"
+                            );
                             None
                         }
                     }

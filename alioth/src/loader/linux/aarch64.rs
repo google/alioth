@@ -21,9 +21,9 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::arch::layout::{DEVICE_TREE_START, KERNEL_IMAGE_START};
 use crate::arch::reg::{Pstate, Reg};
-use crate::loader::{error, search_initramfs_address, InitState, Result};
-use crate::mem::mapped::RamBus;
+use crate::loader::{InitState, Result, error, search_initramfs_address};
 use crate::mem::MemRegionEntry;
+use crate::mem::mapped::RamBus;
 
 #[repr(C)]
 #[derive(Debug, FromBytes, Immutable, IntoBytes)]

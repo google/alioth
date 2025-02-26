@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 
-use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::Deserialize;
+use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 
 use crate::error::{Error, Result};
 
@@ -433,6 +433,7 @@ impl<'a, 's, 'o> CommaSeparated<'a, 's, 'o> {
 
 impl<'s> SeqAccess<'s> for CommaSeparated<'_, 's, '_> {
     type Error = Error;
+
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
     where
         T: DeserializeSeed<'s>,
@@ -539,7 +540,7 @@ mod test {
     use serde::Deserialize;
     use serde_bytes::{ByteArray, ByteBuf};
 
-    use crate::{from_arg, from_args, Error};
+    use crate::{Error, from_arg, from_args};
 
     #[test]
     fn test_option() {

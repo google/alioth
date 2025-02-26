@@ -18,8 +18,8 @@ use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
@@ -29,8 +29,8 @@ use io_uring::cqueue::Entry as Cqe;
 use io_uring::opcode;
 #[cfg(target_os = "linux")]
 use io_uring::types::Fd;
-use mio::event::Event;
 use mio::Registry;
+use mio::event::Event;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::ResultExt;
@@ -47,7 +47,7 @@ use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
-use crate::virtio::{error, DeviceId, IrqSender, Result, FEATURE_BUILT_IN};
+use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
 c_enum! {
@@ -277,10 +277,10 @@ impl Block {
 }
 
 impl Virtio for Block {
-    const DEVICE_ID: DeviceId = DeviceId::Block;
-
     type Config = BlockConfig;
     type Feature = BlockFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::Block;
 
     fn name(&self) -> &str {
         &self.name

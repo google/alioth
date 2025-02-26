@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use bitflags::bitflags;
 use snafu::Snafu;
 
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]

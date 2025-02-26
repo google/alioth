@@ -222,8 +222,8 @@ mod tests {
     use parking_lot::Mutex;
     use rstest::{fixture, rstest};
 
-    use crate::mem::emulated::{Action, Mmio, MmioBus};
     use crate::mem::Result;
+    use crate::mem::emulated::{Action, Mmio, MmioBus};
 
     #[derive(Debug)]
     struct TestRange {
@@ -235,10 +235,12 @@ mod tests {
         fn size(&self) -> u64 {
             self.size
         }
+
         fn read(&self, offset: u64, _size: u8) -> Result<u64> {
             let val = *self.val.lock() >> (offset << 3);
             Ok(val)
         }
+
         fn write(&self, offset: u64, size: u8, val: u64) -> Result<Action> {
             assert_eq!(size.count_ones(), 1);
             assert!(offset.trailing_zeros() >= size.trailing_zeros());

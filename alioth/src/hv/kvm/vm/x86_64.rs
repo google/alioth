@@ -17,17 +17,17 @@ use std::os::fd::{AsFd, AsRawFd};
 use snafu::ResultExt;
 
 use crate::arch::sev::{SnpPageType, SnpPolicy};
-use crate::hv::kvm::ioctls::kvm_memory_encrypt_op;
-use crate::hv::kvm::sev::bindings::{
-    KvmSevCmd, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
-    KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KvmSevSnpLaunchUpdate, KVM_SEV_LAUNCH_FINISH,
-    KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START, KVM_SEV_LAUNCH_UPDATE_DATA,
-    KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH, KVM_SEV_SNP_LAUNCH_START,
-    KVM_SEV_SNP_LAUNCH_UPDATE,
-};
-use crate::hv::kvm::sev::SevFd;
-use crate::hv::kvm::{kvm_error, KvmError, KvmVm};
 use crate::hv::Result;
+use crate::hv::kvm::ioctls::kvm_memory_encrypt_op;
+use crate::hv::kvm::sev::SevFd;
+use crate::hv::kvm::sev::bindings::{
+    KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
+    KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH,
+    KVM_SEV_SNP_LAUNCH_START, KVM_SEV_SNP_LAUNCH_UPDATE, KvmSevCmd, KvmSevLaunchMeasure,
+    KvmSevLaunchStart, KvmSevLaunchUpdateData, KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart,
+    KvmSevSnpLaunchUpdate,
+};
+use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 
 #[derive(Debug)]
 pub struct VmArch {
