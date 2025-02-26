@@ -41,7 +41,7 @@ fn extract_type_from_box(ty: &Type) -> Option<&Type> {
 
 pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as DeriveInput);
-    let syn::Data::Enum(ref mut enum_data) = &mut input.data else {
+    let syn::Data::Enum(enum_data) = &mut input.data else {
         panic!("not an enum")
     };
     for variant in enum_data.variants.iter_mut() {
@@ -77,7 +77,7 @@ pub fn trace_error(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn derive_debug_trace(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let syn::Data::Enum(ref mut enum_data) = &mut input.data else {
+    let syn::Data::Enum(enum_data) = &mut input.data else {
         panic!("not an enum")
     };
     let mut debug_trace_arms = vec![];

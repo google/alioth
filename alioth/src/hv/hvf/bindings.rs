@@ -97,7 +97,7 @@ bitflags! {
 }
 
 #[link(name = "Hypervisor", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     pub fn hv_vm_create(config: *mut i32) -> i32;
     pub fn hv_vm_destroy() -> i32;
     pub fn hv_vcpu_create(vcpu: &mut u64, exit: &mut *mut HvVcpuExit, config: *mut c_void) -> i32;
