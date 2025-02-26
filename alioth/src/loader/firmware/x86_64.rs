@@ -21,7 +21,7 @@ use snafu::ResultExt;
 
 use crate::arch::layout::MEM_64_START;
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
-use crate::loader::{error, InitState, Result};
+use crate::loader::{InitState, Result, error};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRegion, MemRegionType, Memory};
 

@@ -25,9 +25,9 @@ pub mod net;
 pub mod vsock;
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use bitflags::Flags;
@@ -38,9 +38,9 @@ use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{Queue, VirtQueue, QUEUE_SIZE_MAX};
+use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, DeviceId, IrqSender, Result, VirtioFeature};
+use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     const DEVICE_ID: DeviceId;

@@ -1,2 +1,7 @@
+edition = "2024"
+format_macro_matchers = true
+format_macro_bodies = true
 imports_granularity = "Module"
-
+reorder_modules = true
+reorder_impl_items = true
+style_edition = "2024"

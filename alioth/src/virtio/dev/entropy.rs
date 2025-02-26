@@ -15,14 +15,14 @@
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
 use libc::O_NONBLOCK;
-use mio::event::Event;
 use mio::Registry;
+use mio::event::Event;
 use snafu::ResultExt;
 
 use crate::hv::IoeventFd;
@@ -32,9 +32,9 @@ use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, IrqSender, Result, FEATURE_BUILT_IN};
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
+use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result, error};
 
 #[derive(Debug, Clone)]
 pub struct EntropyConfig;
@@ -80,10 +80,10 @@ impl Entropy {
 }
 
 impl Virtio for Entropy {
-    const DEVICE_ID: DeviceId = DeviceId::Entropy;
-
     type Config = EntropyConfig;
     type Feature = EntropyFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::Entropy;
 
     fn name(&self) -> &str {
         &self.name
@@ -158,6 +158,7 @@ pub struct EntropyParam;
 
 impl DevParam for EntropyParam {
     type Device = Entropy;
+
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
         Entropy::new(name)
     }

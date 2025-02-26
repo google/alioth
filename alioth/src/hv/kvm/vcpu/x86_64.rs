@@ -21,7 +21,7 @@ use snafu::ResultExt;
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::bindings::{
-    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs, KVM_MAX_CPUID_ENTRIES,
+    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
     MAX_IO_MSRS,
 };
 use crate::hv::kvm::ioctls::{
@@ -30,7 +30,7 @@ use crate::hv::kvm::ioctls::{
 };
 use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::{error, Error, Result};
+use crate::hv::{Error, Result, error};
 
 macro_rules! set_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident, $val:expr) => {
@@ -327,7 +327,7 @@ mod test {
     use std::ptr::null_mut;
 
     use assert_matches::assert_matches;
-    use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE};
+    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE, mmap};
 
     use crate::arch::msr::Efer;
     use crate::arch::paging::Entry;
@@ -341,8 +341,8 @@ mod test {
     #[test]
     #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_vcpu_regs() {
-        use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
+        use crate::hv::kvm::KvmConfig;
 
         let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };
@@ -489,8 +489,8 @@ mod test {
     #[test]
     #[cfg_attr(not(feature = "test-hv"), ignore)]
     fn test_kvm_run() {
-        use crate::hv::kvm::KvmConfig;
         use crate::hv::VmConfig;
+        use crate::hv::kvm::KvmConfig;
 
         let kvm = Kvm::new(KvmConfig::default()).unwrap();
         let vm_config = VmConfig { coco: None };

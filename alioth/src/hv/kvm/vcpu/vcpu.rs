@@ -27,7 +27,7 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
-use libc::{mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
 use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
@@ -39,8 +39,8 @@ use crate::ffi;
 use crate::hv::kvm::bindings::{KvmExit, KvmRun};
 use crate::hv::kvm::ioctls::kvm_run;
 use crate::hv::kvm::vm::VmInner;
-use crate::hv::kvm::{kvm_error, KvmError};
-use crate::hv::{error, Error, Result, Vcpu, VmEntry, VmExit};
+use crate::hv::kvm::{KvmError, kvm_error};
+use crate::hv::{Error, Result, Vcpu, VmEntry, VmExit, error};
 
 pub(super) struct KvmRunBlock {
     addr: usize,

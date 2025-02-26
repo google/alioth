@@ -23,8 +23,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
-use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::pci::Error;
+use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::utils::truncate_u64;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
 
@@ -70,6 +70,7 @@ impl Mmio for NullCap {
     fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
         Ok(Action::None)
     }
+
     fn size(&self) -> u64 {
         self.size as u64
     }
@@ -255,6 +256,7 @@ impl Mmio for PciCapList {
 
 impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
     type Error = Error;
+
     fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
         let mut bus = MmioBus::new();
         let mut ptr = size_of::<DeviceHeader>() as u64;
@@ -342,8 +344,11 @@ where
     F: IrqFd,
 {
     impl_msix_table_mmio_entry_method!(addr_lo, get_addr_lo, set_addr_lo);
+
     impl_msix_table_mmio_entry_method!(addr_hi, get_addr_hi, set_addr_hi);
+
     impl_msix_table_mmio_entry_method!(data, get_data, set_data);
+
     fn set_masked(&mut self, val: bool) -> mem::Result<bool> {
         match self {
             MsixTableMmioEntry::Entry(e) => {
@@ -357,6 +362,7 @@ where
             }
         }
     }
+
     pub fn get_masked(&self) -> bool {
         match self {
             MsixTableMmioEntry::Entry(e) => e.control.masked(),

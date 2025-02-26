@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use snafu::{ResultExt, Snafu};
 
-use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
+use crate::errors::{DebugTrace, boxed_debug_trace, trace_error};
 use crate::mem::mapped::Ram;
 use crate::mem::{self, LayoutUpdated};
 
@@ -132,6 +132,7 @@ impl VhostDev {
         unsafe { vhost_vsock_set_guest_cid(&self.fd, &cid) }?;
         Ok(())
     }
+
     pub fn vsock_set_running(&self, val: bool) -> Result<()> {
         unsafe { vhost_vsock_set_running(&self.fd, &(val as _)) }?;
         Ok(())

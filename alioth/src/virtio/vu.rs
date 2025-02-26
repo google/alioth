@@ -27,9 +27,9 @@ use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
-use crate::errors::{boxed_debug_trace, trace_error, DebugTrace};
-use crate::mem::mapped::ArcMemPages;
+use crate::errors::{DebugTrace, boxed_debug_trace, trace_error};
 use crate::mem::LayoutChanged;
+use crate::mem::mapped::ArcMemPages;
 use crate::{ffi, mem};
 
 bitflags! {
@@ -114,12 +114,14 @@ bitfield! {
 }
 
 impl MessageFlag {
-    pub const VERSION_1: u32 = 0x1;
-    pub const REPLY: u32 = 1 << 2;
     pub const NEED_REPLY: u32 = 1 << 3;
+    pub const REPLY: u32 = 1 << 2;
+    pub const VERSION_1: u32 = 0x1;
+
     pub const fn sender() -> Self {
         MessageFlag(MessageFlag::VERSION_1 | MessageFlag::NEED_REPLY)
     }
+
     pub const fn receiver() -> Self {
         MessageFlag(MessageFlag::VERSION_1 | MessageFlag::REPLY)
     }
@@ -357,60 +359,79 @@ impl VuDev {
     pub fn get_features(&self) -> Result<u64> {
         self.send_msg(VHOST_USER_GET_FEATURES, &(), &[])
     }
+
     pub fn set_features(&self, payload: &u64) -> Result<()> {
         self.send_msg(VHOST_USER_SET_FEATURES, payload, &[])
     }
+
     pub fn get_protocol_features(&self) -> Result<u64> {
         self.send_msg(VHOST_USER_GET_PROTOCOL_FEATURES, &(), &[])
     }
+
     pub fn set_protocol_features(&self, payload: &u64) -> Result<u64> {
         self.send_msg(VHOST_USER_SET_PROTOCOL_FEATURES, payload, &[])
     }
+
     pub fn set_owner(&self) -> Result<()> {
         self.send_msg(VHOST_USER_SET_OWNER, &(), &[])
     }
+
     pub fn set_virtq_num(&self, payload: &VirtqState) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_NUM, payload, &[])
     }
+
     pub fn set_virtq_addr(&self, payload: &VirtqAddr) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_ADDR, payload, &[])
     }
+
     pub fn set_virtq_base(&self, payload: &VirtqState) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_BASE, payload, &[])
     }
+
     pub fn get_config(&self, payload: &DeviceConfig) -> Result<DeviceConfig> {
         self.send_msg(VHOST_USER_GET_CONFIG, payload, &[])
     }
+
     pub fn set_config(&self, payload: &DeviceConfig) -> Result<()> {
         self.send_msg(VHOST_USER_SET_CONFIG, payload, &[])
     }
+
     pub fn get_virtq_base(&self, payload: &VirtqState) -> Result<VirtqState> {
         self.send_msg(VHOST_USER_GET_VIRTQ_BASE, payload, &[])
     }
+
     pub fn get_queue_num(&self) -> Result<u64> {
         self.send_msg(VHOST_USER_GET_QUEUE_NUM, &(), &[])
     }
+
     pub fn set_virtq_kick(&self, payload: &u64, fd: RawFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_KICK, payload, &[fd])
     }
+
     pub fn set_virtq_call(&self, payload: &u64, fd: RawFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_CALL, payload, &[fd])
     }
+
     pub fn set_virtq_err(&self, payload: &u64, fd: RawFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_ERR, payload, &[fd])
     }
+
     pub fn set_virtq_enable(&self, payload: &VirtqState) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_ENABLE, payload, &[])
     }
+
     pub fn set_status(&self, payload: &u64) -> Result<()> {
         self.send_msg(VHOST_USER_SET_STATUS, payload, &[])
     }
+
     pub fn get_status(&self) -> Result<u64> {
         self.send_msg(VHOST_USER_GET_STATUS, &(), &[])
     }
+
     pub fn add_mem_region(&self, payload: &MemorySingleRegion, fd: RawFd) -> Result<()> {
         self.send_msg(VHOST_USER_ADD_MEM_REG, payload, &[fd])
     }
+
     pub fn remove_mem_region(&self, payload: &MemorySingleRegion) -> Result<()> {
         self.send_msg(VHOST_USER_REM_MEM_REG, payload, &[])
     }

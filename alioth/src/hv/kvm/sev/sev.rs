@@ -23,11 +23,11 @@ use std::path::Path;
 
 use snafu::ResultExt;
 
-use crate::hv::kvm::kvm_error;
 use crate::hv::Result;
+use crate::hv::kvm::kvm_error;
 use crate::ioctl_writeread;
 
-use self::bindings::{SevIssueCmd, SEV_RET_SUCCESS};
+use self::bindings::{SEV_RET_SUCCESS, SevIssueCmd};
 
 const SEV_IOC_TYPE: u8 = b'S';
 

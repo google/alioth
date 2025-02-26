@@ -24,7 +24,7 @@ use std::ptr::null_mut;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::hv::{error, Hypervisor, Result, VmConfig};
+use crate::hv::{Hypervisor, Result, VmConfig, error};
 
 use self::bindings::hv_vm_create;
 use self::vm::HvfVm;
@@ -60,6 +60,7 @@ pub struct Hvf {}
 
 impl Hypervisor for Hvf {
     type Vm = HvfVm;
+
     fn create_vm(&self, _config: &VmConfig) -> Result<Self::Vm> {
         let ret = unsafe { hv_vm_create(null_mut()) };
         check_ret(ret).context(error::CreateVm)?;

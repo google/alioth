@@ -15,8 +15,8 @@
 #[cfg(not(target_arch = "x86_64"))]
 use crate::hv::kvm::bindings::KvmOneReg;
 use crate::hv::kvm::bindings::{
-    KvmCap, KvmEncRegion, KvmIoEventFd, KvmIrqRouting, KvmIrqfd, KvmMemoryAttributes, KvmMsi,
-    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KvmVmType, KVMIO,
+    KVMIO, KvmCap, KvmEncRegion, KvmIoEventFd, KvmIrqRouting, KvmIrqfd, KvmMemoryAttributes,
+    KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, KvmVmType,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::hv::kvm::bindings::{

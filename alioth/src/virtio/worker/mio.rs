@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use std::os::fd::AsRawFd;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use mio::event::Event;
@@ -29,7 +29,7 @@ use crate::virtio::dev::{
 };
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::worker::Waker;
-use crate::virtio::{error, IrqSender, Result};
+use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
     fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
@@ -177,6 +177,7 @@ where
     S: IrqSender,
 {
     type Event = Event;
+
     fn handle_event(&mut self, dev: &mut D, event: &Self::Event) -> Result<()> {
         let token = event.token().0 as u64;
         if token & TOKEN_QUEUE == TOKEN_QUEUE {

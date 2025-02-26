@@ -16,6 +16,6 @@ mod de;
 mod error;
 mod help;
 
-pub use self::de::{from_arg, from_args, Deserializer};
+pub use self::de::{Deserializer, from_arg, from_args};
 pub use self::error::{Error, Result};
-pub use self::help::{help_text, FieldHelp, Help, TypedHelp};
+pub use self::help::{FieldHelp, Help, TypedHelp, help_text};

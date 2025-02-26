@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::mem::size_of;
-use std::sync::atomic::{fence, Ordering};
+use std::sync::atomic::{Ordering, fence};
 
 use bitflags::bitflags;
 use macros::Layout;
@@ -21,7 +21,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
-use crate::virtio::{error, Result, VirtioFeature};
+use crate::virtio::{Result, VirtioFeature, error};
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]

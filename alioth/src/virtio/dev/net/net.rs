@@ -22,8 +22,8 @@ use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
@@ -47,10 +47,10 @@ use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
-use crate::virtio::{error, IrqSender, FEATURE_BUILT_IN};
+use crate::virtio::{FEATURE_BUILT_IN, IrqSender, error};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
-use self::tap::{tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz, TunFeature};
+use self::tap::{TunFeature, tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz};
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
@@ -290,10 +290,10 @@ impl Net {
 }
 
 impl Virtio for Net {
-    const DEVICE_ID: DeviceId = DeviceId::Net;
-
     type Config = NetConfig;
     type Feature = NetFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::Net;
 
     fn name(&self) -> &str {
         &self.name

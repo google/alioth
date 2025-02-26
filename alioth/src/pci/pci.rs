@@ -25,11 +25,11 @@ use bitfield::bitfield;
 use parking_lot::RwLock;
 use snafu::Snafu;
 
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 use crate::mem;
 use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
 
-use self::config::{HeaderData, PciConfig, BAR_MEM64};
+use self::config::{BAR_MEM64, HeaderData, PciConfig};
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]

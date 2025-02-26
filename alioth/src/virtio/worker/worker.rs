@@ -24,7 +24,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::fd::FromRawFd;
 
 #[cfg(target_os = "linux")]
-use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use serde::Deserialize;
 use serde_aco::Help;
 #[cfg(target_os = "linux")]
@@ -32,9 +32,9 @@ use snafu::ResultExt;
 
 #[cfg(target_os = "linux")]
 use crate::ffi;
+use crate::virtio::Result;
 #[cfg(target_os = "linux")]
 use crate::virtio::error;
-use crate::virtio::Result;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Help)]
 pub enum WorkerApi {

@@ -20,7 +20,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, MemRegion};
 use crate::pci::cap::PciCapList;
 use crate::pci::config::{
-    CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig, BAR_MEM64, BAR_PREFETCHABLE,
+    BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig,
 };
 use crate::pci::{self, Pci, PciBar};
 

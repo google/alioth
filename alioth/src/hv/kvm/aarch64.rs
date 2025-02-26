@@ -14,9 +14,9 @@
 
 use std::os::fd::OwnedFd;
 
+use crate::hv::kvm::Kvm;
 use crate::hv::kvm::bindings::KvmVmType;
 use crate::hv::kvm::vm::KvmVm;
-use crate::hv::kvm::Kvm;
 use crate::hv::{Result, VmConfig};
 
 impl Kvm {

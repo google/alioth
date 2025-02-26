@@ -21,13 +21,13 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::hv::hvf::bindings::{
-    hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap, HvMemoryFlag,
+    HvMemoryFlag, hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
 };
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{
-    error, GicV2, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
-    MsiSender, Result, Vm, VmExit, VmMemory,
+    GicV2, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption, MsiSender,
+    Result, Vm, VmExit, VmMemory, error,
 };
 
 #[derive(Debug)]
@@ -37,6 +37,7 @@ impl VmMemory for HvfMemory {
     fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
         unimplemented!()
     }
+
     fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<()> {
         if option.log_dirty {
             return error::Capability { cap: "log dirty" }.fail();
@@ -94,24 +95,31 @@ impl IrqFd for HvfIrqFd {
     fn get_addr_hi(&self) -> u32 {
         unimplemented!()
     }
+
     fn get_addr_lo(&self) -> u32 {
         unimplemented!()
     }
+
     fn get_data(&self) -> u32 {
         unimplemented!()
     }
+
     fn get_masked(&self) -> bool {
         unimplemented!()
     }
+
     fn set_addr_hi(&self, _val: u32) -> Result<()> {
         unimplemented!()
     }
+
     fn set_addr_lo(&self, _val: u32) -> Result<()> {
         unimplemented!()
     }
+
     fn set_data(&self, _val: u32) -> Result<()> {
         unimplemented!()
     }
+
     fn set_masked(&self, _val: bool) -> Result<bool> {
         unimplemented!()
     }
@@ -122,9 +130,11 @@ pub struct HvfMsiSender {}
 
 impl MsiSender for HvfMsiSender {
     type IrqFd = HvfIrqFd;
+
     fn create_irqfd(&self) -> Result<Self::IrqFd> {
         unimplemented!()
     }
+
     fn send(&self, _addr: u64, _data: u32) -> Result<()> {
         unimplemented!()
     }
@@ -146,12 +156,15 @@ pub struct HvfIoeventFdRegistry {}
 
 impl IoeventFdRegistry for HvfIoeventFdRegistry {
     type IoeventFd = HvfIoeventFd;
+
     fn create(&self) -> Result<Self::IoeventFd> {
         unimplemented!()
     }
+
     fn deregister(&self, _fd: &Self::IoeventFd) -> Result<()> {
         unimplemented!()
     }
+
     fn register(
         &self,
         _fd: &Self::IoeventFd,
@@ -170,21 +183,27 @@ impl GicV2 for HvfGicV2 {
     fn init(&self) -> Result<()> {
         unimplemented!()
     }
+
     fn get_dist_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
         unimplemented!()
     }
+
     fn set_dist_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
         unimplemented!()
     }
+
     fn get_cpu_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
         unimplemented!()
     }
+
     fn set_cpu_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
         unimplemented!()
     }
+
     fn get_num_irqs(&self) -> Result<u32> {
         unimplemented!()
     }
+
     fn set_num_irqs(&self, _val: u32) -> Result<()> {
         unimplemented!()
     }
@@ -223,16 +242,23 @@ impl Drop for HvfVm {
 }
 
 impl Vm for HvfVm {
-    type Vcpu = HvfVcpu;
+    type GicV2 = HvfGicV2;
+    type GicV3 = HvfGicV3;
+    type IoeventFdRegistry = HvfIoeventFdRegistry;
+    type IrqSender = HvfIrqSender;
+    type Its = HvfIts;
     type Memory = HvfMemory;
     type MsiSender = HvfMsiSender;
-    type IoeventFdRegistry = HvfIoeventFdRegistry;
+    type Vcpu = HvfVcpu;
+
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
         unimplemented!()
     }
+
     fn create_msi_sender(&self, _devid: u32) -> Result<Self::MsiSender> {
         unimplemented!()
     }
+
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
         let mut exit = null_mut();
         let mut vcpu_id = 0;
@@ -246,14 +272,14 @@ impl Vm for HvfVm {
             exit_reg: None,
         })
     }
+
     fn create_vm_memory(&mut self) -> Result<Self::Memory> {
         Ok(HvfMemory {})
     }
+
     fn stop_vcpu<T>(_id: u32, _handle: &JoinHandle<T>) -> Result<()> {
         unimplemented!()
     }
-
-    type GicV2 = HvfGicV2;
 
     fn create_gic_v2(
         &self,
@@ -263,11 +289,10 @@ impl Vm for HvfVm {
         unimplemented!()
     }
 
-    type IrqSender = HvfIrqSender;
     fn create_irq_sender(&self, _pin: u8) -> Result<Self::IrqSender> {
         unimplemented!()
     }
-    type GicV3 = HvfGicV3;
+
     fn create_gic_v3(
         &self,
         _distributor_base: u64,
@@ -276,7 +301,7 @@ impl Vm for HvfVm {
     ) -> Result<Self::GicV3> {
         unimplemented!()
     }
-    type Its = HvfIts;
+
     fn create_its(&self, _base: u64) -> Result<Self::Its> {
         unimplemented!()
     }

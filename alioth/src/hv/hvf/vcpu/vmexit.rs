@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, Reg};
-use crate::hv::hvf::bindings::{hv_vcpu_get_reg, HvReg, HvVcpuExitException};
+use crate::hv::hvf::bindings::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{Vcpu, VmExit};

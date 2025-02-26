@@ -22,22 +22,22 @@ use std::mem::{align_of, size_of};
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-use std::ptr::{null_mut, NonNull};
+use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
 
-use libc::{
-    c_void, madvise, mmap, msync, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED,
-    MS_ASYNC, PROT_EXEC, PROT_READ, PROT_WRITE,
-};
 #[cfg(target_os = "linux")]
 use libc::{MADV_HUGEPAGE, MFD_CLOEXEC};
+use libc::{
+    MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC, PROT_EXEC, PROT_READ, PROT_WRITE,
+    c_void, madvise, mmap, msync, munmap,
+};
 use parking_lot::{RwLock, RwLockReadGuard};
 use snafu::ResultExt;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::ffi;
 use crate::mem::addressable::{Addressable, SlotBackend};
-use crate::mem::{error, Error, Result};
+use crate::mem::{Error, Result, error};
 
 #[derive(Debug)]
 struct MemPages {
@@ -227,6 +227,7 @@ struct Iter<'m> {
 
 impl<'m> Iterator for Iter<'m> {
     type Item = Result<&'m [u8]>;
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.remain == 0 {
             return None;
@@ -248,6 +249,7 @@ struct IterMut<'m> {
 
 impl<'m> Iterator for IterMut<'m> {
     type Item = Result<&'m mut [u8]>;
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.remain == 0 {
             return None;

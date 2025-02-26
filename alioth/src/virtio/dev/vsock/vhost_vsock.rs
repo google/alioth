@@ -15,12 +15,12 @@
 use std::iter::zip;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use libc::{eventfd, EFD_CLOEXEC, EFD_NONBLOCK};
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -29,15 +29,15 @@ use serde_aco::Help;
 
 use crate::ffi;
 use crate::hv::IoeventFd;
-use crate::mem::mapped::RamBus;
 use crate::mem::LayoutUpdated;
+use crate::mem::mapped::RamBus;
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::vhost::bindings::{VirtqAddr, VirtqFile, VirtqState, VHOST_FILE_UNBIND};
-use crate::virtio::vhost::{error, UpdateVsockMem, VhostDev};
-use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
+use crate::virtio::vhost::bindings::{VHOST_FILE_UNBIND, VirtqAddr, VirtqFile, VirtqState};
+use crate::virtio::vhost::{UpdateVsockMem, VhostDev, error};
 use crate::virtio::worker::Waker;
+use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
 #[derive(Debug, Clone, Deserialize, Help)]
@@ -50,6 +50,7 @@ pub struct VhostVsockParam {
 
 impl DevParam for VhostVsockParam {
     type Device = VhostVsock;
+
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
         VhostVsock::new(self, name)
     }
@@ -100,10 +101,10 @@ impl VhostVsock {
 }
 
 impl Virtio for VhostVsock {
-    const DEVICE_ID: DeviceId = DeviceId::Socket;
-
     type Config = VsockConfig;
     type Feature = VsockFeature;
+
+    const DEVICE_ID: DeviceId = DeviceId::Socket;
 
     fn name(&self) -> &str {
         &self.name

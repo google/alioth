@@ -38,27 +38,27 @@ use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use libc::SIGRTMIN;
-use parking_lot::lock_api::RwLock;
 use parking_lot::Mutex;
+use parking_lot::lock_api::RwLock;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::CpuidIn;
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 use crate::ffi;
-use crate::hv::{error, Hypervisor, MemMapOption, Result, VmConfig};
+use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
 
+use self::bindings::KVM_API_VERSION;
 #[cfg(target_arch = "aarch64")]
 use self::bindings::KvmDevType;
-use self::bindings::KVM_API_VERSION;
 #[cfg(target_arch = "x86_64")]
-use self::bindings::{KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KVM_MAX_CPUID_ENTRIES};
+use self::bindings::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
 #[cfg(target_arch = "x86_64")]
 use self::ioctls::kvm_get_supported_cpuid;
 use self::ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};

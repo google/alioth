@@ -21,8 +21,8 @@ use quote::quote;
 use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Field,
-    Fields, FieldsNamed, FieldsUnnamed, Ident, Lit, Meta, MetaNameValue, Token,
+    Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Field, Fields, FieldsNamed,
+    FieldsUnnamed, Ident, Lit, Meta, MetaNameValue, Token, parse_macro_input,
 };
 
 fn get_doc_from_attrs(attrs: &[Attribute]) -> String {

@@ -21,26 +21,26 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::thread::JoinHandleExt;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
-use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, eventfd, write};
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
-#[cfg(target_arch = "aarch64")]
-use crate::hv::kvm::bindings::KvmMsiFlag;
 #[cfg(target_arch = "x86_64")]
 use crate::hv::kvm::bindings::KVM_IRQCHIP_IOAPIC;
+#[cfg(target_arch = "aarch64")]
+use crate::hv::kvm::bindings::KvmMsiFlag;
 use crate::hv::kvm::bindings::{
-    KvmCap, KvmEncRegion, KvmIoEventFd, KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry,
-    KvmIrqRoutingIrqchip, KvmIrqRoutingMsi, KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute,
-    KvmMemoryAttributes, KvmMsi, KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI,
+    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEncRegion, KvmIoEventFd,
+    KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
+    KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
 };
 use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
@@ -48,10 +48,10 @@ use crate::hv::kvm::ioctls::{
     kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
 };
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
-use crate::hv::kvm::{kvm_error, KvmError};
+use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{
-    error, Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result,
-    Vm, VmMemory,
+    Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result, Vm,
+    VmMemory, error,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -429,7 +429,9 @@ macro_rules! impl_irqfd_method {
 
 impl IrqFd for KvmIrqFd {
     impl_irqfd_method!(addr_lo, get_addr_lo, set_addr_lo);
+
     impl_irqfd_method!(addr_hi, get_addr_hi, set_addr_hi);
+
     impl_irqfd_method!(data, get_data, set_data);
 
     fn get_masked(&self) -> bool {
@@ -558,6 +560,7 @@ pub struct KvmIoeventFdRegistry {
 
 impl IoeventFdRegistry for KvmIoeventFdRegistry {
     type IoeventFd = KvmIoeventFd;
+
     fn create(&self) -> Result<Self::IoeventFd> {
         let fd =
             ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) }).context(error::IoeventFd)?;
@@ -605,11 +608,17 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
 }
 
 impl Vm for KvmVm {
-    type Vcpu = KvmVcpu;
-    type IrqSender = KvmIrqSender;
-    type MsiSender = KvmMsiSender;
-    type Memory = KvmMemory;
+    #[cfg(target_arch = "aarch64")]
+    type GicV2 = aarch64::KvmGicV2;
+    #[cfg(target_arch = "aarch64")]
+    type GicV3 = aarch64::KvmGicV3;
     type IoeventFdRegistry = KvmIoeventFdRegistry;
+    type IrqSender = KvmIrqSender;
+    #[cfg(target_arch = "aarch64")]
+    type Its = aarch64::KvmIts;
+    type Memory = KvmMemory;
+    type MsiSender = KvmMsiSender;
+    type Vcpu = KvmVcpu;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
         let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm, id) }.context(error::CreateVcpu)?;
@@ -728,14 +737,10 @@ impl Vm for KvmVm {
     }
 
     #[cfg(target_arch = "aarch64")]
-    type GicV2 = aarch64::KvmGicV2;
-    #[cfg(target_arch = "aarch64")]
     fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2> {
         self.kvm_create_gic_v2(distributor_base, cpu_interface_base)
     }
 
-    #[cfg(target_arch = "aarch64")]
-    type GicV3 = aarch64::KvmGicV3;
     #[cfg(target_arch = "aarch64")]
     fn create_gic_v3(
         &self,
@@ -747,8 +752,6 @@ impl Vm for KvmVm {
     }
 
     #[cfg(target_arch = "aarch64")]
-    type Its = aarch64::KvmIts;
-    #[cfg(target_arch = "aarch64")]
     fn create_its(&self, base: u64) -> Result<Self::Its> {
         self.kvm_create_its(base)
     }
@@ -759,7 +762,7 @@ mod test {
     use std::ptr::null_mut;
 
     use assert_matches::assert_matches;
-    use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE};
+    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE, mmap};
 
     use super::*;
     use crate::ffi;

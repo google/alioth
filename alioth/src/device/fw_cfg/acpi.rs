@@ -16,9 +16,9 @@ use std::mem::{offset_of, size_of};
 
 use zerocopy::{Immutable, IntoBytes};
 
-use crate::device::fw_cfg::{create_file_name, FwCfgContent, FwCfgItem, FILE_NAME_SIZE};
-use crate::firmware::acpi::bindings::{AcpiTableHeader, AcpiTableRsdp};
+use crate::device::fw_cfg::{FILE_NAME_SIZE, FwCfgContent, FwCfgItem, create_file_name};
 use crate::firmware::acpi::AcpiTable;
+use crate::firmware::acpi::bindings::{AcpiTableHeader, AcpiTableRsdp};
 
 pub const COMMAND_ALLOCATE: u32 = 0x1;
 pub const COMMAND_ADD_POINTER: u32 = 0x2;

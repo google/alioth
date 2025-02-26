@@ -25,7 +25,7 @@ use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
 
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{MemMapOption, VmEntry, VmMemory};
 
 use self::addressable::{Addressable, SlotBackend};

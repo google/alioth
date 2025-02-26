@@ -26,7 +26,7 @@ use crate::vfio::device::Device;
 use crate::vfio::ioctls::{
     vfio_group_get_device_fd, vfio_group_set_container, vfio_group_unset_container,
 };
-use crate::vfio::{error, Result};
+use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Group {

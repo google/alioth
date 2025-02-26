@@ -20,8 +20,8 @@ mod x86_64;
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
 use libc::{MAP_PRIVATE, MAP_SHARED};
@@ -37,16 +37,16 @@ use crate::arch::layout::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
-use crate::errors::{trace_error, DebugTrace};
+use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::loader::xen;
-use crate::loader::{firmware, linux, ExecType, InitState, Payload};
+use crate::loader::{ExecType, InitState, Payload, firmware, linux};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
-use crate::pci::bus::PciBus;
 use crate::pci::Bdf;
+use crate::pci::bus::PciBus;
 #[cfg(target_os = "linux")]
 use crate::vfio::container::Container;
 #[cfg(target_os = "linux")]

@@ -15,7 +15,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, Parser};
-use syn::{parse_macro_input, parse_quote, DeriveInput, GenericArgument, PathArguments, Type};
+use syn::{DeriveInput, GenericArgument, PathArguments, Type, parse_macro_input, parse_quote};
 
 fn extract_type_from_box(ty: &Type) -> Option<&Type> {
     let Type::Path(type_path) = ty else {
