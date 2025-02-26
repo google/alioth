@@ -62,11 +62,11 @@ impl KvmRunBlock {
     }
 
     pub(super) unsafe fn data_slice<T>(&self, offset: usize, count: usize) -> &[T] {
-        std::slice::from_raw_parts((self.addr + offset) as *const T, count)
+        unsafe { std::slice::from_raw_parts((self.addr + offset) as *const T, count) }
     }
 
     pub(super) unsafe fn data_slice_mut<T>(&mut self, offset: usize, count: usize) -> &mut [T] {
-        std::slice::from_raw_parts_mut((self.addr + offset) as *mut T, count)
+        unsafe { std::slice::from_raw_parts_mut((self.addr + offset) as *mut T, count) }
     }
 }
 

@@ -7,7 +7,7 @@ authors = ["Changyuan Lyu <changyuan.lv@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/google/alioth"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
