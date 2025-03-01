@@ -19,7 +19,7 @@ pub mod ioctls;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn truncate_u64(val: u64, size: u64) -> u64 {
-    val & u64::MAX >> (64 - (size << 3))
+    val & (u64::MAX >> (64 - (size << 3)))
 }
 
 #[macro_export]

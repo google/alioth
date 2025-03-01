@@ -374,12 +374,12 @@ mod test {
         }
 
         let sregs = [
-            (SReg::Cr0, 1 << 0 | 1 << 5 | 1 << 31),
+            (SReg::Cr0, (1 << 0) | (1 << 5) | (1 << 31)),
             (SReg::Cr2, 0xffff88ac93e00000),
             (SReg::Cr3, 0x1362d001),
             (SReg::Cr4, 1 << 5),
             (SReg::Cr8, 0x0),
-            (SReg::Efer, 1 << 8 | 1 << 10),
+            (SReg::Efer, (1 << 8) | (1 << 10)),
             (SReg::ApicBase, 0xfee00900),
         ];
         let seg_regs = [

@@ -23,7 +23,7 @@ use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{error, Result};
 
 const fn encode_reg(reg: Reg) -> u64 {
-    0x6030_0000_0010_0000 | (reg as u64) << 1
+    0x6030_0000_0010_0000 | ((reg as u64) << 1)
 }
 
 const fn encode_system_reg(reg: SReg) -> u64 {

@@ -237,7 +237,7 @@ where
                 reg.divisor = (reg.divisor & 0xff00) | byte as u16;
             }
             DIVISOR_LATCH_MSB if reg.line_control.divisor_latch_access() => {
-                reg.divisor = (reg.divisor & 0x00ff) | (byte as u16) << 8;
+                reg.divisor = (reg.divisor & 0x00ff) | ((byte as u16) << 8);
             }
             TX_HOLDING_REGISTER => {
                 if reg.modem_control.loop_back() {

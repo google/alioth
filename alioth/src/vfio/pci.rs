@@ -743,7 +743,10 @@ where
             0xffff
         };
         let (addr, msg) = if ctrl.addr_64_cap() {
-            ((data[1] as u64) << 32 | data[0] as u64, data[2] & msg_mask)
+            (
+                ((data[1] as u64) << 32) | data[0] as u64,
+                data[2] & msg_mask,
+            )
         } else {
             (data[0] as u64, data[1] & msg_mask)
         };

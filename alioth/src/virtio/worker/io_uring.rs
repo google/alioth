@@ -61,7 +61,7 @@ pub trait VirtioIoUring: Virtio {
 }
 
 const TOKEN_QUEUE: u64 = 1 << 62;
-const TOKEN_DESCRIPTOR: u64 = 1 << 62 | 1 << 61;
+const TOKEN_DESCRIPTOR: u64 = (1 << 62) | (1 << 61);
 
 pub struct IoUring<E> {
     queue_ioeventfds: Arc<[(E, bool)]>,
@@ -235,7 +235,7 @@ where
                 let mut buffer = q.get_descriptor(queue_submit.index)?;
                 match dev.handle_buffer(index, &mut buffer, self.irq_sender)? {
                     BufferAction::Sqe(sqe) => {
-                        let buffer_key = (queue_submit.index as u32) << 16 | index as u32;
+                        let buffer_key = ((queue_submit.index as u32) << 16) | index as u32;
                         let sqe = sqe.user_data(buffer_key as u64 | TOKEN_DESCRIPTOR);
                         if unsafe { self.ring.submission().push(&sqe) }.is_err() {
                             log::error!("{}: queue-{index}: unexpected full queue", dev.name());
