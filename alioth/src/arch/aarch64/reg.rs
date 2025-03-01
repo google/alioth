@@ -56,7 +56,7 @@ pub enum Reg {
 }
 
 pub const fn encode(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
-    op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
+    (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
 }
 
 c_enum! {

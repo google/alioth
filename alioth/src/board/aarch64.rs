@@ -293,7 +293,7 @@ where
             Gic::V3 { .. } => 0,
         };
         for pin in irq_pins {
-            interrupts.extend([ppi, pin, cpu_mask << 8 | level_trigger]);
+            interrupts.extend([ppi, pin, (cpu_mask << 8) | level_trigger]);
         }
         let node = Node {
             props: HashMap::from([

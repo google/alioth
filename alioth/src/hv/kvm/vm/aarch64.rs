@@ -36,26 +36,26 @@ impl GicV2 for KvmGicV2 {
     }
 
     fn get_dist_reg(&self, cpu_index: u32, offset: u16) -> Result<u32> {
-        let attr = (cpu_index as u64) << 32 | (offset as u64);
+        let attr = ((cpu_index as u64) << 32) | (offset as u64);
         let v = self.dev.get_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr)?;
         Ok(v)
     }
 
     fn set_dist_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()> {
-        let attr = (cpu_index as u64) << 32 | (offset as u64);
+        let attr = ((cpu_index as u64) << 32) | (offset as u64);
         self.dev
             .set_attr(KvmDevArmVgicGrp::DIST_REGS.raw(), attr, &val)?;
         Ok(())
     }
 
     fn get_cpu_reg(&self, cpu_index: u32, offset: u16) -> Result<u32> {
-        let attr = (cpu_index as u64) << 32 | (offset as u64);
+        let attr = ((cpu_index as u64) << 32) | (offset as u64);
         let v = self.dev.get_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr)?;
         Ok(v)
     }
 
     fn set_cpu_reg(&self, cpu_index: u32, offset: u16, val: u32) -> Result<()> {
-        let attr = (cpu_index as u64) << 32 | (offset as u64);
+        let attr = ((cpu_index as u64) << 32) | (offset as u64);
         self.dev
             .set_attr(KvmDevArmVgicGrp::CPU_REGS.raw(), attr, &val)?;
         Ok(())

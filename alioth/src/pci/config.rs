@@ -364,8 +364,8 @@ impl HeaderData {
                             let lo_32 = header.bars[bar_index - 1] as u64;
                             Some(Box::new(MoveBarCallback {
                                 bdf,
-                                src: lo_32 | (old_val as u64) << 32,
-                                dst: lo_32 | (masked_val as u64) << 32,
+                                src: lo_32 | ((old_val as u64) << 32),
+                                dst: lo_32 | ((masked_val as u64) << 32),
                             }))
                         }
                         _ => {
