@@ -45,11 +45,9 @@ jobs:
         run: cargo build --verbose --target ${{ matrix.target.name }}
         if: matrix.target.name != 'aarch64-unknown-linux-gnu'
       - name: Format
-        run: > 
-          cargo +nightly --version || (
-            rustup toolchain install nightly &&
-            rustup component add --toolchain nightly-x86_64-unknown-linux-gnu rustfmt
-          ) &&
+        run: >
+          rustup toolchain install nightly &&
+          rustup component add --toolchain nightly rustfmt &&
           cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
       - name: Run tests
