@@ -18,7 +18,7 @@ use std::mem::size_of_val;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
@@ -30,17 +30,20 @@ use libc::{
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_aco::Help;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
-use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
+use crate::mem::{
+    self, LayoutChanged, MemRange, MemRegion, MemRegionCallback, MemRegionEntry, MemRegionType,
+};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::{
-    DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature, error as vu_error,
+    error as vu_error, DeviceConfig, Error, MemoryRegion, MemorySingleRegion, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature
 };
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -77,6 +80,25 @@ const VHOST_USER_BACKEND_FS_MAP: u32 = 6;
 const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 
 #[derive(Debug)]
+struct DaxWindowCallback {
+    name: Arc<str>,
+    addr: Arc<AtomicU64>,
+}
+
+impl MemRegionCallback for DaxWindowCallback {
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
+        self.addr.store(addr, Ordering::Release);
+        log::info!("{}: DAX window is located to {addr:#x}", self.name);
+        Ok(())
+    }
+
+    fn unmapped(&self) -> mem::Result<()> {
+        self.addr.store(u64::MAX, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct VuFs {
     name: Arc<str>,
     vu_dev: Arc<VuDev>,
@@ -84,6 +106,7 @@ pub struct VuFs {
     feature: u64,
     num_queues: u16,
     dax_region: Option<ArcMemPages>,
+    dax_addr: Arc<AtomicU64>,
     error_fds: Vec<OwnedFd>,
 }
 
@@ -153,6 +176,7 @@ impl VuFs {
             feature: dev_feat & !VirtioFeature::VHOST_PROTOCOL.bits(),
             error_fds: Vec::new(),
             dax_region,
+            dax_addr: Arc::new(AtomicU64::new(u64::MAX)),
         })
     }
 }
@@ -231,11 +255,20 @@ impl Virtio for VuFs {
     }
 
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
-        let dax_region = self.dax_region.as_ref()?;
-        Some(Arc::new(MemRegion::with_dev_mem(
-            dax_region.clone(),
-            MemRegionType::Hidden,
-        )))
+        let dax_region = self.dax_region.as_ref()?.clone();
+        let size = dax_region.size();
+        let callback = DaxWindowCallback {
+            name: self.name.clone(),
+            addr: self.dax_addr.clone(),
+        };
+        Some(Arc::new(MemRegion {
+            ranges: vec![MemRange::DevMem(dax_region)],
+            entries: vec![MemRegionEntry {
+                type_: MemRegionType::Hidden,
+                size,
+            }],
+            callbacks: Mutex::new(vec![Box::new(callback)]),
+        }))
     }
 
     fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
@@ -356,6 +389,7 @@ impl VirtioMio for VuFs {
                 }
                 .fail()?;
             }
+            let dax_addr =  self.dax_addr.load(Ordering::Acquire);
             match request {
                 VHOST_USER_BACKEND_FS_MAP => {
                     for (index, fd) in fds.iter().enumerate() {
@@ -369,6 +403,17 @@ impl VirtioMio for VuFs {
                             self.name,
                             fs_map.cache_offset[index]
                         );
+                        let region = MemorySingleRegion {
+                            _padding: 0,
+                            region: MemoryRegion {
+                                gpa: dax_addr + fs_map.cache_offset[index],
+                                size: fs_map.len[index],
+                                hva: map_addr as _,
+                                mmap_offset: fs_map.fd_offset[index],
+                            },
+                        };
+                        log::info!("{}: to map {raw_fd} with prot {:x}", self.name, fs_map.flags[index]);
+                        log::info!("{}: adding region: {region:x?}", self.name);
                         ffi!(
                             unsafe {
                                 mmap(
@@ -382,6 +427,10 @@ impl VirtioMio for VuFs {
                             },
                             MAP_FAILED
                         )?;
+                        self.vu_dev.ack_request(request, &0u64)?;
+                        log::info!("{}: ack map", self.name);
+                        self.vu_dev.add_mem_region(&region, raw_fd)?;
+                        log::info!("{}: add region done", self.name);
                     }
                 }
                 VHOST_USER_BACKEND_FS_UNMAP => {
@@ -397,10 +446,10 @@ impl VirtioMio for VuFs {
                             MAP_FAILED
                         )?;
                     }
+                    self.vu_dev.ack_request(request, &0u64)?;
                 }
                 _ => unimplemented!("unknown request {request:#x}"),
             }
-            self.vu_dev.ack_request(request, &0u64)?;
         }
         Ok(())
     }
