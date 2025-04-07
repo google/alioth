@@ -9,7 +9,7 @@ license.workspace = true
 
 [dependencies]
 log = "0.4"
-flexi_logger = "0.29"
+flexi_logger = "0.30"
 clap = { version = "4", features = ["derive"] }
 snafu.workspace = true
 alioth.workspace = true
