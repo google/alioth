@@ -56,7 +56,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[(E, bool)]>,
+        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
@@ -125,7 +125,7 @@ where
     pub device_config: Arc<dyn Mmio>,
     pub device_feature: u64,
     pub queue_regs: Arc<[Queue]>,
-    pub ioeventfds: Arc<[(E, bool)]>,
+    pub ioeventfds: Arc<[E]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
     pub event_tx: Sender<WakeEvent<S>>,
@@ -176,13 +176,8 @@ where
         });
         let queue_regs = queue_regs.collect::<Arc<_>>();
 
-        let create_ioeventfd = |index: u16| -> Result<(E, bool)> {
-            let fd = registry.create()?;
-            let offloaded = dev.offload_ioeventfd(index, &fd)?;
-            Ok((fd, offloaded))
-        };
         let ioeventfds = (0..num_queues)
-            .map(create_ioeventfd)
+            .map(|_| registry.create())
             .collect::<Result<Arc<_>, _>>()?;
 
         let shared_mem_regions = dev.shared_mem_regions();
