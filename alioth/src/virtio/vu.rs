@@ -242,9 +242,9 @@ impl VuDev {
         ffi!(unsafe {
             libc::socketpair(libc::PF_UNIX, libc::SOCK_STREAM, 0, socket_fds.as_mut_ptr())
         })?;
-        self.set_backend_req_fd(socket_fds[1])?;
-        ffi!(unsafe { libc::close(socket_fds[1]) })?;
         let channel = unsafe { UnixStream::from_raw_fd(socket_fds[0]) };
+        let peer = unsafe { OwnedFd::from_raw_fd(socket_fds[1]) };
+        self.set_backend_req_fd(peer.as_raw_fd())?;
         self.channel = Some(channel);
         Ok(())
     }
