@@ -14,7 +14,7 @@
 
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Result};
 use std::iter::zip;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::ptr::{null_mut, read_unaligned, write_unaligned};
 
@@ -91,7 +91,7 @@ pub fn recv_msg_with_fds(
     }
 }
 
-pub fn send_msg_with_fds(conn: &UnixStream, bufs: &[IoSlice], fds: &[RawFd]) -> Result<usize> {
+pub fn send_msg_with_fds(conn: &UnixStream, bufs: &[IoSlice], fds: &[BorrowedFd]) -> Result<usize> {
     if fds.len() > UDS_MAX_FD {
         return Err(ErrorKind::OutOfMemory.into());
     }

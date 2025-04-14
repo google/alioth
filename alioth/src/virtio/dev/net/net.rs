@@ -19,7 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, IoSlice};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU16;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -538,7 +538,7 @@ fn setup_socket(file: &mut File, if_name: Option<&str>, mq: bool) -> Result<()> 
     Ok(())
 }
 
-fn detect_tap_offload(tap: &impl AsRawFd) -> NetFeature {
+fn detect_tap_offload(tap: &impl AsFd) -> NetFeature {
     let mut tap_feature = TunFeature::all();
     let mut dev_feat = NetFeature::GUEST_CSUM
         | NetFeature::GUEST_TSO4

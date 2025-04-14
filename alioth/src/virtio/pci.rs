@@ -14,7 +14,7 @@
 
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
@@ -85,7 +85,10 @@ where
         }
     }
 
-    fn get_irqfd(&self, vector: u16) -> Result<RawFd> {
+    fn get_irqfd<F, T>(&self, vector: u16, f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>,
+    {
         let mut entries = self.msix_table.entries.write();
         let Some(entry) = entries.get_mut(vector as usize) else {
             return error::InvalidMsixVector { vector }.fail();
@@ -97,11 +100,11 @@ where
                 irqfd.set_addr_lo(e.addr_lo)?;
                 irqfd.set_data(e.data)?;
                 irqfd.set_masked(e.control.masked())?;
-                let raw_fd = irqfd.as_fd().as_raw_fd();
+                let r = f(irqfd.as_fd())?;
                 *entry = MsixTableMmioEntry::IrqFd(irqfd);
-                Ok(raw_fd)
+                Ok(r)
             }
-            MsixTableMmioEntry::IrqFd(f) => Ok(f.as_fd().as_raw_fd()),
+            MsixTableMmioEntry::IrqFd(fd) => f(fd.as_fd()),
         }
     }
 }
@@ -128,15 +131,21 @@ where
         }
     }
 
-    fn config_irqfd(&self) -> Result<RawFd> {
-        self.get_irqfd(self.msix_vector.config.load(Ordering::Acquire))
+    fn config_irqfd<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>,
+    {
+        self.get_irqfd(self.msix_vector.config.load(Ordering::Acquire), f)
     }
 
-    fn queue_irqfd(&self, idx: u16) -> Result<RawFd> {
+    fn queue_irqfd<F, T>(&self, idx: u16, f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>,
+    {
         let Some(vector) = self.msix_vector.queues.get(idx as usize) else {
             return error::InvalidQueueIndex { index: idx }.fail();
         };
-        self.get_irqfd(vector.load(Ordering::Acquire))
+        self.get_irqfd(vector.load(Ordering::Acquire), f)
     }
 }
 

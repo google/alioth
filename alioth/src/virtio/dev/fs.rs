@@ -15,7 +15,7 @@
 use std::io::ErrorKind;
 use std::iter::zip;
 use std::mem::size_of_val;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -255,21 +255,22 @@ impl VirtioMio for VuFs {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
-            self.vu_dev
-                .set_virtq_kick(&(index as u64), fd.as_fd().as_raw_fd())?;
+            self.vu_dev.set_virtq_kick(&(index as u64), fd.as_fd())?;
         }
         for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
                 continue;
             };
             let reg = queue.reg();
-            let irq_fd = active_mio.irq_sender.queue_irqfd(index as _)?;
-            self.vu_dev.set_virtq_call(&(index as u64), irq_fd).unwrap();
+            active_mio.irq_sender.queue_irqfd(index as _, |fd| {
+                self.vu_dev.set_virtq_call(&(index as u64), fd)?;
+                Ok(())
+            })?;
 
             let err_fd =
                 unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
             self.vu_dev
-                .set_virtq_err(&(index as u64), err_fd.as_raw_fd())
+                .set_virtq_err(&(index as u64), err_fd.as_fd())
                 .unwrap();
             active_mio.poll.registry().register(
                 &mut SourceFd(&err_fd.as_raw_fd()),

@@ -48,7 +48,7 @@ impl KvmVm {
             id: cmd,
             error: 0,
         };
-        unsafe { kvm_memory_encrypt_op(&self.vm, &mut req) }.context(kvm_error::SevCmd)?;
+        unsafe { kvm_memory_encrypt_op(&self.vm.fd, &mut req) }.context(kvm_error::SevCmd)?;
         Ok(())
     }
 

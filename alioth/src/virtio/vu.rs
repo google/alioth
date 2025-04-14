@@ -14,7 +14,7 @@
 
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::{size_of, size_of_val};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -241,7 +241,7 @@ impl VuDev {
         })?;
         let channel = unsafe { UnixStream::from_raw_fd(socket_fds[0]) };
         let peer = unsafe { OwnedFd::from_raw_fd(socket_fds[1]) };
-        self.set_backend_req_fd(peer.as_raw_fd())?;
+        self.set_backend_req_fd(peer.as_fd())?;
         self.channel = Some(channel);
         Ok(())
     }
@@ -254,7 +254,7 @@ impl VuDev {
         &self,
         req: u32,
         payload: &T,
-        fds: &[RawFd],
+        fds: &[BorrowedFd],
     ) -> Result<R> {
         let vhost_msg = Message {
             request: req,
@@ -369,15 +369,15 @@ impl VuDev {
         self.send_msg(VHOST_USER_GET_QUEUE_NUM, &(), &[])
     }
 
-    pub fn set_virtq_kick(&self, payload: &u64, fd: RawFd) -> Result<()> {
+    pub fn set_virtq_kick(&self, payload: &u64, fd: BorrowedFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_KICK, payload, &[fd])
     }
 
-    pub fn set_virtq_call(&self, payload: &u64, fd: RawFd) -> Result<()> {
+    pub fn set_virtq_call(&self, payload: &u64, fd: BorrowedFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_CALL, payload, &[fd])
     }
 
-    pub fn set_virtq_err(&self, payload: &u64, fd: RawFd) -> Result<()> {
+    pub fn set_virtq_err(&self, payload: &u64, fd: BorrowedFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_VIRTQ_ERR, payload, &[fd])
     }
 
@@ -393,7 +393,7 @@ impl VuDev {
         self.send_msg(VHOST_USER_GET_STATUS, &(), &[])
     }
 
-    pub fn add_mem_region(&self, payload: &MemorySingleRegion, fd: RawFd) -> Result<()> {
+    pub fn add_mem_region(&self, payload: &MemorySingleRegion, fd: BorrowedFd) -> Result<()> {
         self.send_msg(VHOST_USER_ADD_MEM_REG, payload, &[fd])
     }
 
@@ -401,7 +401,7 @@ impl VuDev {
         self.send_msg(VHOST_USER_REM_MEM_REG, payload, &[])
     }
 
-    fn set_backend_req_fd(&self, fd: RawFd) -> Result<()> {
+    fn set_backend_req_fd(&self, fd: BorrowedFd) -> Result<()> {
         self.send_msg(VHOST_USER_SET_BACKEND_REQ_FD, &0u64, &[fd])
     }
 
@@ -470,7 +470,7 @@ impl LayoutChanged for UpdateVuMem {
                 mmap_offset: offset,
             },
         };
-        let ret = self.dev.add_mem_region(&region, fd.as_raw_fd());
+        let ret = self.dev.add_mem_region(&region, fd);
         ret.box_trace(mem::error::ChangeLayout)?;
         log::trace!(
             "vu-{}: added memory region {:x?}",

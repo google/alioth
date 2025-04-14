@@ -18,8 +18,9 @@ mod aarch64;
 mod x86_64;
 
 use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
 use std::io::ErrorKind;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -113,17 +114,13 @@ impl VmInner {
             _flags: 0,
             entries,
         };
-        log::trace!(
-            "vm-{}: updating GSI routing table to {:#x?}",
-            self.as_raw_fd(),
-            irq_routing
-        );
-        unsafe { kvm_set_gsi_routing(self, &irq_routing) }.context(kvm_error::GsiRouting)?;
+        log::trace!("{self}: updating GSI routing table to {irq_routing:#x?}");
+        unsafe { kvm_set_gsi_routing(&self.fd, &irq_routing) }.context(kvm_error::GsiRouting)?;
         Ok(())
     }
 
     pub fn check_extension(&self, id: KvmCap) -> Result<i32, Error> {
-        let ret = unsafe { kvm_check_extension(self, id) };
+        let ret = unsafe { kvm_check_extension(&self.fd, id) };
         match ret {
             Ok(num) => Ok(num),
             Err(_) => error::Capability {
@@ -134,9 +131,9 @@ impl VmInner {
     }
 }
 
-impl AsRawFd for VmInner {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
+impl Display for VmInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "kvm-{}", self.fd.as_raw_fd())
     }
 }
 
@@ -171,11 +168,11 @@ impl KvmMemory {
             userspace_addr: 0,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.vm, &region) }
+        unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
             .context(error::GuestUnmap { gpa, size })?;
         log::trace!(
-            "vm-{}: slot-{slot}: unmapped: {gpa:#018x}, size={size:#x}",
-            self.vm.as_raw_fd()
+            "{}: slot-{slot}: unmapped: {gpa:#018x}, size={size:#x}",
+            self.vm
         );
         Ok(())
     }
@@ -206,7 +203,7 @@ impl VmMemory for KvmMemory {
                 guest_memfd_offset: gpa,
                 ..Default::default()
             };
-            unsafe { kvm_set_user_memory_region2(&self.vm, &region) }
+            unsafe { kvm_set_user_memory_region2(&self.vm.fd, &region) }
         } else {
             let region = KvmUserspaceMemoryRegion {
                 slot: *slot_id,
@@ -215,13 +212,13 @@ impl VmMemory for KvmMemory {
                 userspace_addr: hva as _,
                 flags,
             };
-            unsafe { kvm_set_user_memory_region(&self.vm, &region) }
+            unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
         }
         .context(error::GuestMap { hva, gpa, size })?;
         slots.insert((gpa, size), *slot_id);
         log::trace!(
-            "vm-{}: slot-{slot_id}: mapped: {gpa:#018x} -> {hva:#018x}, size = {size:#x}",
-            self.vm.as_raw_fd()
+            "{}: slot-{slot_id}: mapped: {gpa:#018x} -> {hva:#018x}, size = {size:#x}",
+            self.vm
         );
         *slot_id += 1;
         Ok(())
@@ -240,7 +237,7 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_reg_region(&self.vm, &region) }
+        unsafe { kvm_memory_encrypt_reg_region(&self.vm.fd, &region) }
             .context(error::EncryptedRegion)?;
         Ok(())
     }
@@ -250,7 +247,7 @@ impl VmMemory for KvmMemory {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_unreg_region(&self.vm, &region) }
+        unsafe { kvm_memory_encrypt_unreg_region(&self.vm.fd, &region) }
             .context(error::EncryptedRegion)?;
         Ok(())
     }
@@ -266,7 +263,7 @@ impl VmMemory for KvmMemory {
             },
             flags: 0,
         };
-        unsafe { kvm_set_memory_attributes(&self.vm, &attr) }.context(error::EncryptedRegion)?;
+        unsafe { kvm_set_memory_attributes(&self.vm.fd, &attr) }.context(error::EncryptedRegion)?;
         Ok(())
     }
 
@@ -297,10 +294,10 @@ impl Drop for KvmIrqSender {
             flags: KvmIrqfdFlag::DEASSIGN,
             ..Default::default()
         };
-        if let Err(e) = unsafe { kvm_irqfd(&self.vm, &request) } {
+        if let Err(e) = unsafe { kvm_irqfd(&self.vm.fd, &request) } {
             log::error!(
-                "vm-{}: removing irqfd {:#x}: {e}",
-                self.vm.as_raw_fd(),
+                "{}: removing irqfd {:#x}: {e}",
+                self.vm,
                 self.event_fd.as_raw_fd(),
             )
         }
@@ -338,9 +335,9 @@ impl Drop for KvmIrqFd {
         let mut table = self.vm.msi_table.write();
         let Some(entry) = table.remove(&self.gsi) else {
             log::error!(
-                "vm-{}: cannot find gsi {:#x} in the gsi table",
+                "{}: cannot find gsi {:#x} in the gsi table",
+                self.vm,
                 self.gsi,
-                self.vm.as_raw_fd()
             );
             return;
         };
@@ -349,8 +346,8 @@ impl Drop for KvmIrqFd {
         }
         if let Err(e) = self.deassign_irqfd() {
             log::error!(
-                "vm-{}: removing irqfd {:#x}: {e}",
-                self.vm.as_raw_fd(),
+                "{}: removing irqfd {:#x}: {e}",
+                self.vm,
                 self.event_fd.as_raw_fd(),
             )
         }
@@ -370,10 +367,10 @@ impl KvmIrqFd {
             gsi: self.gsi,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
+        unsafe { kvm_irqfd(&self.vm.fd, &request) }.context(error::IrqFd)?;
         log::debug!(
-            "vm-{}: assigned: gsi {:#x} -> irqfd {:#x}",
-            self.vm.as_raw_fd(),
+            "{}: assigned: gsi {:#x} -> irqfd {:#x}",
+            self.vm,
             self.gsi,
             self.event_fd.as_raw_fd()
         );
@@ -387,10 +384,10 @@ impl KvmIrqFd {
             flags: KvmIrqfdFlag::DEASSIGN,
             ..Default::default()
         };
-        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::IrqFd)?;
+        unsafe { kvm_irqfd(&self.vm.fd, &request) }.context(error::IrqFd)?;
         log::debug!(
-            "vm-{}: de-assigned: gsi {:#x} -> irqfd {:#x}",
-            self.vm.as_raw_fd(),
+            "{}: de-assigned: gsi {:#x} -> irqfd {:#x}",
+            self.vm,
             self.gsi,
             self.event_fd.as_raw_fd()
         );
@@ -437,11 +434,7 @@ impl IrqFd for KvmIrqFd {
     fn get_masked(&self) -> bool {
         let table = self.vm.msi_table.read();
         let Some(entry) = table.get(&self.gsi) else {
-            unreachable!(
-                "vm-{}: cannot find gsi {:#x}",
-                self.vm.as_raw_fd(),
-                self.gsi
-            );
+            unreachable!("{}: cannot find gsi {:#x}", self.vm, self.gsi);
         };
         entry.masked
     }
@@ -449,11 +442,7 @@ impl IrqFd for KvmIrqFd {
     fn set_masked(&self, val: bool) -> Result<bool> {
         let mut table = self.vm.msi_table.write();
         let Some(entry) = table.get_mut(&self.gsi) else {
-            unreachable!(
-                "vm-{}: cannot find gsi {:#x}",
-                self.vm.as_raw_fd(),
-                self.gsi
-            );
+            unreachable!("{}: cannot find gsi {:#x}", self.vm, self.gsi);
         };
         if entry.masked == val {
             return Ok(false);
@@ -494,7 +483,7 @@ impl MsiSender for KvmMsiSender {
             flags: KvmMsiFlag::VALID_DEVID,
             ..Default::default()
         };
-        unsafe { kvm_signal_msi(&self.vm, &kvm_msi) }.context(error::SendInterrupt)?;
+        unsafe { kvm_signal_msi(&self.vm.fd, &kvm_msi) }.context(error::SendInterrupt)?;
         Ok(())
     }
 
@@ -527,8 +516,8 @@ impl MsiSender for KvmMsiSender {
             return kvm_error::AllocateGsi.fail()?;
         };
         log::debug!(
-            "vm-{}: allocated: gsi {gsi:#x} -> irqfd {:#x}",
-            self.vm.as_raw_fd(),
+            "{}: allocated: gsi {gsi:#x} -> irqfd {:#x}",
+            self.vm,
             event_fd.as_raw_fd()
         );
         let entry = KvmIrqFd {
@@ -580,7 +569,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
             request.datamatch = data;
             request.flags |= KvmIoEventFdFlag::DATA_MATCH;
         }
-        unsafe { kvm_ioeventfd(&self.vm, &request) }.context(error::IoeventFd)?;
+        unsafe { kvm_ioeventfd(&self.vm.fd, &request) }.context(error::IoeventFd)?;
         let mut fds = self.vm.ioeventfds.lock();
         fds.insert(request.fd, request);
         Ok(())
@@ -601,7 +590,7 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
         let mut fds = self.vm.ioeventfds.lock();
         if let Some(mut request) = fds.remove(&fd.as_fd().as_raw_fd()) {
             request.flags |= KvmIoEventFdFlag::DEASSIGN;
-            unsafe { kvm_ioeventfd(&self.vm, &request) }.context(error::IoeventFd)?;
+            unsafe { kvm_ioeventfd(&self.vm.fd, &request) }.context(error::IoeventFd)?;
         }
         Ok(())
     }
@@ -621,7 +610,7 @@ impl Vm for KvmVm {
     type Vcpu = KvmVcpu;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
-        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm, id) }.context(error::CreateVcpu)?;
+        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm.fd, id) }.context(error::CreateVcpu)?;
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
         Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
@@ -665,7 +654,7 @@ impl Vm for KvmVm {
             ..Default::default()
         };
         self.vm.update_routing_table(&self.vm.msi_table.read())?;
-        unsafe { kvm_irqfd(&self.vm, &request) }.context(error::CreateIrq { pin })?;
+        unsafe { kvm_irqfd(&self.vm.fd, &request) }.context(error::CreateIrq { pin })?;
         Ok(KvmIrqSender {
             pin,
             vm: self.vm.clone(),

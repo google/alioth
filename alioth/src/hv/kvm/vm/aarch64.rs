@@ -79,7 +79,7 @@ impl KvmVm {
         distributor_base: u64,
         cpu_interface_base: u64,
     ) -> Result<KvmGicV2> {
-        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_VGIC_V2)?;
+        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_VGIC_V2)?;
         let gic = KvmGicV2 { dev };
         gic.dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
@@ -118,7 +118,7 @@ impl KvmVm {
         redistributor_base: u64,
         redistributor_count: u32,
     ) -> Result<KvmGicV3> {
-        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_VGIC_V3)?;
+        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_VGIC_V3)?;
         dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
             KvmVgicAddrType::DIST_V3.raw(),
@@ -153,7 +153,7 @@ impl Its for KvmIts {
 
 impl KvmVm {
     pub fn kvm_create_its(&self, base: u64) -> Result<KvmIts> {
-        let dev = KvmDevice::new(&self.vm, KvmDevType::ARM_ITS)?;
+        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_ITS)?;
         dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
             KvmVgicAddrType::ITS.raw(),

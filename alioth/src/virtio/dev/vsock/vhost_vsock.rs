@@ -175,8 +175,13 @@ impl VirtioMio for VhostVsock {
             };
             let reg = queue.reg();
             let index = index as u32;
-            let fd = active_mio.irq_sender.queue_irqfd(index as _)?;
-            self.vhost_dev.set_virtq_call(&VirtqFile { index, fd })?;
+            active_mio.irq_sender.queue_irqfd(index as _, |fd| {
+                self.vhost_dev.set_virtq_call(&VirtqFile {
+                    index,
+                    fd: fd.as_raw_fd(),
+                })?;
+                Ok(())
+            })?;
 
             self.vhost_dev.set_virtq_num(&VirtqState {
                 index,
