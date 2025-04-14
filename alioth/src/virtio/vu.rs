@@ -13,12 +13,10 @@
 // limitations under the License.
 
 use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::iter::zip;
 use std::mem::{size_of, size_of_val};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::ptr::null_mut;
 use std::sync::Arc;
 
 use bitfield::bitfield;
@@ -30,6 +28,7 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::errors::{BoxTrace, DebugTrace, trace_error};
 use crate::mem::LayoutChanged;
 use crate::mem::mapped::ArcMemPages;
+use crate::utils::uds::{recv_msg_with_fds, send_msg_with_fds};
 use crate::{ffi, mem};
 
 bitflags! {
@@ -211,8 +210,6 @@ pub enum Error {
     DeviceFeature { feature: u64 },
     #[snafu(display("vhost-user backend is missing protocol feature {feature:x?}"))]
     ProtocolFeature { feature: VuFeature },
-    #[snafu(display("Insufficient buffer (len {len}) for holding {need} fds"))]
-    InsufficientBuffer { len: usize, need: usize },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -268,40 +265,8 @@ impl VuDev {
             IoSlice::new(vhost_msg.as_bytes()),
             IoSlice::new(payload.as_bytes()),
         ];
-        let fd_size = size_of_val(fds);
-        let mut cmsg_buf = if fds.is_empty() {
-            vec![]
-        } else {
-            vec![0u8; unsafe { libc::CMSG_SPACE(fd_size as _) } as _]
-        };
-        let uds_msg = libc::msghdr {
-            msg_name: null_mut(),
-            msg_namelen: 0,
-            msg_iov: bufs.as_ptr() as _,
-            msg_iovlen: if size_of::<T>() == 0 { 1 } else { 2 },
-            msg_control: if fds.is_empty() {
-                null_mut()
-            } else {
-                cmsg_buf.as_mut_ptr() as _
-            },
-            msg_controllen: cmsg_buf.len(),
-            msg_flags: 0,
-        };
-        if !fds.is_empty() {
-            let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&uds_msg) };
-            let cmsg = libc::cmsghdr {
-                cmsg_level: libc::SOL_SOCKET,
-                cmsg_type: libc::SCM_RIGHTS,
-                cmsg_len: unsafe { libc::CMSG_LEN(fd_size as _) } as _,
-            };
-            unsafe { std::ptr::write_unaligned(cmsg_ptr, cmsg) };
-            let data =
-                unsafe { std::slice::from_raw_parts_mut(libc::CMSG_DATA(cmsg_ptr), fd_size) };
-            data.copy_from_slice(fds.as_bytes());
-        }
-
         let mut conn = self.conn.lock();
-        ffi!(unsafe { libc::sendmsg(conn.as_raw_fd(), &uds_msg, 0) })?;
+        send_msg_with_fds(&conn, &bufs, fds)?;
 
         let mut resp = Message::new_zeroed();
         let mut payload = R::new_zeroed();
@@ -447,25 +412,13 @@ impl VuDev {
     ) -> Result<(u32, u32)> {
         let mut msg = Message::new_zeroed();
         let mut bufs = [IoSliceMut::new(msg.as_mut_bytes()), IoSliceMut::new(buf)];
-        const CMSG_BUF_LEN: usize = unsafe { libc::CMSG_SPACE(8) } as usize;
-        debug_assert_eq!(CMSG_BUF_LEN % size_of::<u64>(), 0);
-        let mut cmsg_buf = [0u64; CMSG_BUF_LEN / size_of::<u64>()];
-        let mut uds_msg = libc::msghdr {
-            msg_name: null_mut(),
-            msg_namelen: 0,
-            msg_iov: bufs.as_mut_ptr() as _,
-            msg_iovlen: bufs.len(),
-            msg_control: cmsg_buf.as_mut_ptr() as _,
-            msg_controllen: CMSG_BUF_LEN,
-            msg_flags: 0,
-        };
         let Some(channel) = &self.channel else {
             return error::ProtocolFeature {
                 feature: VuFeature::BACKEND_REQ,
             }
             .fail();
         };
-        let r_size = ffi!(unsafe { libc::recvmsg(channel.as_raw_fd(), &mut uds_msg, 0) })? as usize;
+        let r_size = recv_msg_with_fds(channel, &mut bufs, fds)?;
         let expected_size = size_of::<Message>() + msg.size as usize;
         if r_size != expected_size {
             return error::MsgSize {
@@ -473,30 +426,6 @@ impl VuDev {
                 got: r_size,
             }
             .fail();
-        }
-
-        let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&uds_msg) };
-        if cmsg_ptr.is_null() {
-            return Ok((msg.request, msg.size));
-        }
-        let cmsg = unsafe { &*cmsg_ptr };
-        if cmsg.cmsg_level != libc::SOL_SOCKET || cmsg.cmsg_type != libc::SCM_RIGHTS {
-            return Ok((msg.request, msg.size));
-        }
-        let cmsg_data_ptr = unsafe { libc::CMSG_DATA(cmsg_ptr) } as *const RawFd;
-        let count =
-            (cmsg_ptr as usize + cmsg.cmsg_len - cmsg_data_ptr as usize) / size_of::<RawFd>();
-        if count > fds.len() {
-            return error::InsufficientBuffer {
-                len: fds.len(),
-                need: count,
-            }
-            .fail();
-        }
-        for (fd, index) in zip(fds.iter_mut(), 0..count) {
-            *fd = Some(unsafe {
-                OwnedFd::from_raw_fd(std::ptr::read_unaligned(cmsg_data_ptr.add(index)))
-            });
         }
         Ok((msg.request, msg.size))
     }
