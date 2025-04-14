@@ -64,7 +64,7 @@ const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = (1 << 62) | (1 << 61);
 
 pub struct IoUring<E> {
-    queue_ioeventfds: Arc<[(E, bool)]>,
+    queue_ioeventfds: Arc<[E]>,
     waker: Arc<Waker>,
     waker_token: u64,
 }
@@ -86,7 +86,7 @@ where
         event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[(E, bool)]>,
+        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         D: VirtioIoUring,
@@ -140,22 +140,22 @@ where
         queues: &mut [Option<Q>],
         irq_sender: &S,
     ) -> Result<()> {
-        context.dev.activate(feature, memory, irq_sender, queues)?;
-
         let queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
         let mut ring = io_uring::IoUring::new(RING_SIZE as u32)?;
         let mut queue_count = 0;
         {
             let sq = &mut ring.submission();
             self.submit_waker(sq)?;
-            for (index, (fd, offloaded)) in self.queue_ioeventfds.iter().enumerate() {
-                if *offloaded {
+            for (index, fd) in self.queue_ioeventfds.iter().enumerate() {
+                if context.dev.offload_ioeventfd(index as u16, fd)? {
                     continue;
                 }
                 submit_queue_ioeventfd(index as u16, fd, sq)?;
                 queue_count += 1;
             }
         }
+
+        context.dev.activate(feature, memory, irq_sender, queues)?;
 
         let mut active_ring = ActiveIoUring {
             ring,
