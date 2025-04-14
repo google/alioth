@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
@@ -79,10 +79,11 @@ impl Kvm {
                     }
                 }
                 Some(Coco::AmdSnp { .. }) => {
-                    let bitmap = unsafe { kvm_check_extension(&kvm_vm.vm, KvmCap::EXIT_HYPERCALL) }
-                        .context(kvm_error::CheckExtension {
-                            ext: "KVM_CAP_EXIT_HYPERCALL",
-                        })?;
+                    let bitmap =
+                        unsafe { kvm_check_extension(&kvm_vm.vm.fd, KvmCap::EXIT_HYPERCALL) }
+                            .context(kvm_error::CheckExtension {
+                                ext: "KVM_CAP_EXIT_HYPERCALL",
+                            })?;
                     if bitmap != 0 {
                         let request = KvmEnableCap {
                             cap: KvmCap::EXIT_HYPERCALL,
@@ -90,7 +91,7 @@ impl Kvm {
                             flags: 0,
                             pad: [0; 64],
                         };
-                        unsafe { kvm_enable_cap(&kvm_vm.vm, &request) }.context(
+                        unsafe { kvm_enable_cap(&kvm_vm.vm.fd, &request) }.context(
                             kvm_error::EnableCap {
                                 cap: "KVM_CAP_EXIT_HYPERCALL",
                             },
@@ -98,15 +99,15 @@ impl Kvm {
                     }
                     let mut init = KvmSevInit::default();
                     kvm_vm.sev_op(KVM_SEV_INIT2, Some(&mut init))?;
-                    log::debug!("vm-{}: snp init: {init:#x?}", kvm_vm.vm.as_raw_fd());
+                    log::debug!("{}: snp init: {init:#x?}", kvm_vm.vm);
                 }
                 _ => {}
             }
         }
-        unsafe { kvm_create_irqchip(&kvm_vm.vm) }.context(error::CreateDevice)?;
+        unsafe { kvm_create_irqchip(&kvm_vm.vm.fd) }.context(error::CreateDevice)?;
         // TODO should be in parameters
-        unsafe { kvm_set_tss_addr(&kvm_vm.vm, 0xf000_0000) }.context(error::SetVmParam)?;
-        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm, &0xf000_3000) }
+        unsafe { kvm_set_tss_addr(&kvm_vm.vm.fd, 0xf000_0000) }.context(error::SetVmParam)?;
+        unsafe { kvm_set_identity_map_addr(&kvm_vm.vm.fd, &0xf000_3000) }
             .context(error::SetVmParam)?;
         Ok(())
     }

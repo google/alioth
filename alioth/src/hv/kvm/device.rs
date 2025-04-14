@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::mem::{MaybeUninit, size_of_val};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
@@ -26,7 +26,7 @@ use crate::hv::{KvmError, Result};
 pub(super) struct KvmDevice(pub OwnedFd);
 
 impl KvmDevice {
-    pub fn new(vm_fd: &impl AsRawFd, type_: KvmDevType) -> Result<KvmDevice, KvmError> {
+    pub fn new(vm_fd: &impl AsFd, type_: KvmDevType) -> Result<KvmDevice, KvmError> {
         let mut create_device = KvmCreateDevice {
             type_,
             fd: 0,
@@ -41,12 +41,6 @@ impl KvmDevice {
 impl AsFd for KvmDevice {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
-    }
-}
-
-impl AsRawFd for KvmDevice {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
     }
 }
 

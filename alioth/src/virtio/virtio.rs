@@ -26,7 +26,7 @@ pub mod vu;
 pub mod worker;
 
 use std::fmt::Debug;
-use std::os::fd::RawFd;
+use std::os::fd::BorrowedFd;
 use std::path::PathBuf;
 
 use bitflags::bitflags;
@@ -121,6 +121,10 @@ bitflags! {
 pub trait IrqSender: Send + Sync + Debug + 'static {
     fn queue_irq(&self, idx: u16);
     fn config_irq(&self);
-    fn queue_irqfd(&self, idx: u16) -> Result<RawFd>;
-    fn config_irqfd(&self) -> Result<RawFd>;
+    fn queue_irqfd<F, T>(&self, idx: u16, f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>;
+    fn config_irqfd<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>;
 }
