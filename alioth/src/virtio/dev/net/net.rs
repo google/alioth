@@ -321,7 +321,7 @@ impl Virtio for Net {
         event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[(E, bool)]>,
+        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,

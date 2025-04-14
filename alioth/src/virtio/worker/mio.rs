@@ -63,7 +63,7 @@ const TOKEN_QUEUE: u64 = 1 << 62;
 
 pub struct Mio<E> {
     poll: Poll,
-    _queue_ioeventfds: Arc<[(E, bool)]>,
+    ioeventfds: Arc<[E]>,
 }
 
 impl<E> Mio<E>
@@ -75,29 +75,16 @@ where
         event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[(E, bool)]>,
+        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         D: VirtioMio,
         S: IrqSender,
     {
         let poll = Poll::new().context(error::CreatePoll)?;
-        for (index, (fd, offloaded)) in fds.iter().enumerate() {
-            if *offloaded {
-                continue;
-            }
-            let token = index as u64 | TOKEN_QUEUE;
-            poll.registry()
-                .register(
-                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
-                    Token(token as usize),
-                    Interest::READABLE,
-                )
-                .context(error::EventSource)?;
-        }
         let m = Mio {
             poll,
-            _queue_ioeventfds: fds,
+            ioeventfds: fds,
         };
         Worker::spawn(dev, m, event_rx, memory, queue_regs)
     }
@@ -147,6 +134,20 @@ where
             poll: &mut self.poll,
             mem: memory,
         };
+        let registry = active_mio.poll.registry();
+        for (index, fd) in self.ioeventfds.iter().enumerate() {
+            if context.dev.offload_ioeventfd(index as u16, fd)? {
+                continue;
+            }
+            let token = index as u64 | TOKEN_QUEUE;
+            registry
+                .register(
+                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                    Token(token as usize),
+                    Interest::READABLE,
+                )
+                .context(error::EventSource)?;
+        }
         context.dev.activate(feature, &mut active_mio)?;
         'out: loop {
             active_mio

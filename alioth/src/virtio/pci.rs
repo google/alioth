@@ -521,7 +521,7 @@ where
     R: IoeventFdRegistry,
 {
     registry: R,
-    ioeventfds: Arc<[(R::IoeventFd, bool)]>,
+    ioeventfds: Arc<[R::IoeventFd]>,
 }
 
 impl<R> MemRegionCallback for IoeventFdCallback<R>
@@ -529,7 +529,7 @@ where
     R: IoeventFdRegistry,
 {
     fn mapped(&self, addr: u64) -> mem::Result<()> {
-        for (q_index, (fd, _)) in self.ioeventfds.iter().enumerate() {
+        for (q_index, fd) in self.ioeventfds.iter().enumerate() {
             let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
             let notify_addr = base_addr + (q_index * size_of::<u32>()) as u64;
             self.registry.register(fd, notify_addr, 0, None)?;
@@ -539,7 +539,7 @@ where
     }
 
     fn unmapped(&self) -> mem::Result<()> {
-        for (fd, _) in self.ioeventfds.iter() {
+        for fd in self.ioeventfds.iter() {
             self.registry.deregister(fd)?;
             log::info!("ioeventfd {fd:?} de-registered")
         }
