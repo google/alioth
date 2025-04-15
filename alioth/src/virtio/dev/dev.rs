@@ -33,7 +33,7 @@ use std::thread::JoinHandle;
 use bitflags::Flags;
 use snafu::ResultExt;
 
-use crate::hv::{IoeventFd, IoeventFdRegistry};
+use crate::hv::IoeventFd;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
@@ -53,10 +53,9 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn feature(&self) -> u64;
     fn spawn_worker<S: IrqSender, E: IoeventFd>(
         self,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
@@ -88,13 +87,25 @@ pub struct Register {
 const TOKEN_WARKER: u64 = 1 << 63;
 
 #[derive(Debug, Clone)]
-pub enum WakeEvent<S>
+pub struct StartParam<S, E>
 where
     S: IrqSender,
+    E: IoeventFd,
+{
+    pub(crate) feature: u64,
+    pub(crate) irq_sender: Arc<S>,
+    pub(crate) ioeventfds: Option<Arc<[E]>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum WakeEvent<S, E>
+where
+    S: IrqSender,
+    E: IoeventFd,
 {
     Notify { q_index: u16 },
     Shutdown,
-    Start { feature: u64, irq_sender: Arc<S> },
+    Start { param: StartParam<S, E> },
     Reset,
 }
 
@@ -106,11 +117,12 @@ pub enum WorkerState {
 }
 
 #[derive(Debug)]
-pub struct Worker<D, S, B>
+pub struct Worker<D, S, E, B>
 where
     S: IrqSender,
+    E: IoeventFd,
 {
-    context: Context<D, S>,
+    context: Context<D, S, E>,
     backend: B,
 }
 
@@ -125,10 +137,9 @@ where
     pub device_config: Arc<dyn Mmio>,
     pub device_feature: u64,
     pub queue_regs: Arc<[Queue]>,
-    pub ioeventfds: Arc<[E]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
-    pub event_tx: Sender<WakeEvent<S>>,
+    pub event_tx: Sender<WakeEvent<S, E>>,
     worker_handle: Option<JoinHandle<()>>,
 }
 
@@ -149,16 +160,14 @@ where
         Ok(())
     }
 
-    pub fn new<D, R>(
+    pub fn new<D>(
         name: impl Into<Arc<str>>,
         dev: D,
         memory: Arc<RamBus>,
-        registry: &R,
         restricted_memory: bool,
     ) -> Result<Self>
     where
         D: Virtio,
-        R: IoeventFdRegistry<IoeventFd = E>,
     {
         let name = name.into();
         let id = D::DEVICE_ID;
@@ -176,14 +185,9 @@ where
         });
         let queue_regs = queue_regs.collect::<Arc<_>>();
 
-        let ioeventfds = (0..num_queues)
-            .map(|_| registry.create())
-            .collect::<Result<Arc<_>, _>>()?;
-
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
-        let (handle, waker) =
-            dev.spawn_worker(event_rx, memory, queue_regs.clone(), ioeventfds.clone())?;
+        let (handle, waker) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
         log::debug!(
             "{name}: created with {:x?} {:x?}",
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
@@ -194,7 +198,6 @@ where
             id,
             device_feature,
             queue_regs,
-            ioeventfds,
             worker_handle: Some(handle),
             event_tx,
             waker,
@@ -220,14 +223,17 @@ where
 pub trait Backend<D: Virtio>: Send + 'static {
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>>;
     fn reset(&self, dev: &mut D) -> Result<()>;
-    fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn event_loop<'m, S, Q, E>(
         &mut self,
-        feature: u64,
         memory: &'m Ram,
-        context: &mut Context<D, S>,
+        context: &mut Context<D, S, E>,
         queues: &mut [Option<Q>],
-        irq_sender: &S,
-    ) -> Result<()>;
+        param: &StartParam<S, E>,
+    ) -> Result<()>
+    where
+        S: IrqSender,
+        Q: VirtQueue<'m>,
+        E: IoeventFd;
 }
 
 pub trait BackendEvent {
@@ -241,21 +247,23 @@ pub trait ActiveBackend<D: Virtio> {
 }
 
 #[derive(Debug)]
-pub struct Context<D, S>
+pub struct Context<D, S, E>
 where
     S: IrqSender,
+    E: IoeventFd,
 {
     pub dev: D,
     memory: Arc<RamBus>,
-    event_rx: Receiver<WakeEvent<S>>,
+    event_rx: Receiver<WakeEvent<S, E>>,
     queue_regs: Arc<[Queue]>,
     pub state: WorkerState,
 }
 
-impl<D, S> Context<D, S>
+impl<D, S, E> Context<D, S, E>
 where
     D: Virtio,
     S: IrqSender,
+    E: IoeventFd,
 {
     fn handle_wake_events<B>(&mut self, backend: &mut B) -> Result<()>
     where
@@ -281,16 +289,13 @@ where
         Ok(())
     }
 
-    fn wait_start(&mut self) -> Option<(u64, Arc<S>)> {
+    fn wait_start(&mut self) -> Option<StartParam<S, E>> {
         for wake_event in self.event_rx.iter() {
             match wake_event {
                 WakeEvent::Reset => {}
-                WakeEvent::Start {
-                    feature,
-                    irq_sender,
-                } => {
+                WakeEvent::Start { param } => {
                     self.state = WorkerState::Running;
-                    return Some((feature, irq_sender));
+                    return Some(param);
                 }
                 WakeEvent::Shutdown => break,
                 WakeEvent::Notify { q_index } => {
@@ -317,16 +322,17 @@ where
     }
 }
 
-impl<D, S, B> Worker<D, S, B>
+impl<D, S, E, B> Worker<D, S, E, B>
 where
     D: Virtio,
     S: IrqSender,
     B: Backend<D>,
+    E: IoeventFd,
 {
     pub fn spawn(
         dev: D,
         mut backend: B,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)> {
@@ -352,37 +358,37 @@ where
     fn event_loop<'m, Q>(
         &mut self,
         queues: &mut [Option<Q>],
-        irq_sender: &S,
-        feature: u64,
         ram: &'m Ram,
+        param: &StartParam<S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
+        E: IoeventFd,
     {
         log::debug!(
             "{}: activated with {:x?} {:x?}",
             self.context.dev.name(),
-            VirtioFeature::from_bits_retain(feature & !D::Feature::all().bits()),
-            D::Feature::from_bits_truncate(feature)
+            VirtioFeature::from_bits_retain(param.feature & !D::Feature::all().bits()),
+            D::Feature::from_bits_truncate(param.feature)
         );
         self.backend
-            .event_loop(feature, ram, &mut self.context, queues, irq_sender)
+            .event_loop(ram, &mut self.context, queues, param)
     }
 
     fn loop_until_reset(&mut self) -> Result<()> {
-        let Some((feature, irq_sender)) = self.context.wait_start() else {
+        let Some(param) = self.context.wait_start() else {
             return Ok(());
         };
         let memory = self.context.memory.clone();
         let ram = memory.lock_layout();
-        let feature = feature & !VirtioFeature::ACCESS_PLATFORM.bits();
+        let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
         let queue_regs = self.context.queue_regs.clone();
         if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
             todo!()
         } else {
             let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
-            self.event_loop(&mut (queues?), &irq_sender, feature, &ram)?;
+            self.event_loop(&mut (queues?), &ram, &param)?;
         };
         self.backend.reset(&mut self.context.dev)?;
         Ok(())
