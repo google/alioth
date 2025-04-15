@@ -318,18 +318,17 @@ impl Virtio for Net {
 
     fn spawn_worker<S, E>(
         self,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,
         E: IoeventFd,
     {
         match self.api {
-            WorkerApi::Mio => Mio::spawn_worker(self, event_rx, memory, queue_regs, fds),
-            WorkerApi::IoUring => IoUring::spawn_worker(self, event_rx, memory, queue_regs, fds),
+            WorkerApi::Mio => Mio::spawn_worker(self, event_rx, memory, queue_regs),
+            WorkerApi::IoUring => IoUring::spawn_worker(self, event_rx, memory, queue_regs),
         }
     }
 }

@@ -38,7 +38,7 @@ use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };
-use crate::virtio::dev::{Register, VirtioDevice, WakeEvent};
+use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::queue::Queue;
 use crate::virtio::worker::Waker;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
@@ -175,23 +175,26 @@ pub struct VirtioPciRegister {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciRegisterMmio<M>
+pub struct VirtioPciRegisterMmio<M, E>
 where
     M: MsiSender,
+    E: IoeventFd,
 {
     name: Arc<str>,
     reg: Register,
     queues: Arc<[Queue]>,
     irq_sender: Arc<PciIrqSender<M>>,
-    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
+    ioeventfds: Option<Arc<[E]>>,
+    event_tx: Sender<WakeEvent<PciIrqSender<M>, E>>,
     waker: Arc<Waker>,
 }
 
-impl<M> VirtioPciRegisterMmio<M>
+impl<M, E> VirtioPciRegisterMmio<M, E>
 where
     M: MsiSender,
+    E: IoeventFd,
 {
-    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
+    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>, E>) {
         let is_start = matches!(event, WakeEvent::Start { .. });
         if let Err(e) = self.event_tx.send(event) {
             log::error!("{}: failed to send event: {e}", self.name);
@@ -235,9 +238,10 @@ where
     }
 }
 
-impl<M> Mmio for VirtioPciRegisterMmio<M>
+impl<M, E> Mmio for VirtioPciRegisterMmio<M, E>
 where
     M: MsiSender,
+    E: IoeventFd,
 {
     fn size(&self) -> u64 {
         (size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()) as u64
@@ -405,10 +409,12 @@ where
                 let old = DevStatus::from_bits_retain(old);
                 if (old ^ status).contains(DevStatus::DRIVER_OK) {
                     let event = if status.contains(DevStatus::DRIVER_OK) {
-                        WakeEvent::Start {
+                        let param = StartParam {
                             feature: reg.driver_feature.load(Ordering::Acquire),
                             irq_sender: self.irq_sender.clone(),
-                        }
+                            ioeventfds: self.ioeventfds.clone(),
+                        };
+                        WakeEvent::Start { param }
                     } else {
                         self.reset();
                         WakeEvent::Reset
@@ -640,7 +646,7 @@ where
 {
     pub dev: VirtioDevice<PciIrqSender<M>, E>,
     pub config: EmulatedConfig,
-    pub registers: Arc<VirtioPciRegisterMmio<M>>,
+    pub registers: Arc<VirtioPciRegisterMmio<M, E>>,
 }
 
 impl<M, E> VirtioPciDevice<M, E>
@@ -810,6 +816,17 @@ where
                 .collect(),
         };
 
+        let maybe_ioeventfds = (0..num_queues)
+            .map(|_| ioeventfd_reg.create())
+            .collect::<Result<Arc<_>, _>>();
+        let ioeventfds = match maybe_ioeventfds {
+            Ok(fds) => Some(fds),
+            Err(e) => {
+                log::warn!("{}: failed to create ioeventfds: {e:?}", dev.name);
+                None
+            }
+        };
+
         let registers = Arc::new(VirtioPciRegisterMmio {
             name: dev.name.clone(),
             reg: Register {
@@ -824,15 +841,18 @@ where
                 msix_table: msix_table.clone(),
                 msi_sender,
             }),
+            ioeventfds: ioeventfds.clone(),
         });
         bar0.ranges.push(MemRange::Emulated(msix_table));
         bar0.ranges
             .push(MemRange::Span((12 << 10) - msix_table_size as u64));
         bar0.ranges.push(MemRange::Emulated(registers.clone()));
-        bar0.callbacks.lock().push(Box::new(IoeventFdCallback {
-            registry: ioeventfd_reg,
-            ioeventfds: dev.ioeventfds.clone(),
-        }));
+        if let Some(ioeventfds) = ioeventfds {
+            bar0.callbacks.lock().push(Box::new(IoeventFdCallback {
+                registry: ioeventfd_reg,
+                ioeventfds,
+            }));
+        }
         if device_config.size() > 0 {
             bar0.ranges.push(MemRange::Emulated(device_config))
         }

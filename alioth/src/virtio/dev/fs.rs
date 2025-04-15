@@ -205,16 +205,15 @@ impl Virtio for VuFs {
 
     fn spawn_worker<S, E>(
         self,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,
         E: IoeventFd,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs, fds)
+        Mio::spawn_worker(self, event_rx, memory, queue_regs)
     }
 
     fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
