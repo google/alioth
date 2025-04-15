@@ -25,7 +25,8 @@ use snafu::ResultExt;
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{
-    ActiveBackend, Backend, BackendEvent, Context, Virtio, WakeEvent, Worker, WorkerState,
+    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
+    WorkerState,
 };
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::worker::Waker;
@@ -61,39 +62,31 @@ impl BackendEvent for Event {
 
 const TOKEN_QUEUE: u64 = 1 << 62;
 
-pub struct Mio<E> {
+pub struct Mio {
     poll: Poll,
-    ioeventfds: Arc<[E]>,
 }
 
-impl<E> Mio<E>
-where
-    E: IoeventFd,
-{
-    pub fn spawn_worker<D, S>(
+impl Mio {
+    pub fn spawn_worker<D, S, E>(
         dev: D,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         D: VirtioMio,
         S: IrqSender,
+        E: IoeventFd,
     {
         let poll = Poll::new().context(error::CreatePoll)?;
-        let m = Mio {
-            poll,
-            ioeventfds: fds,
-        };
+        let m = Mio { poll };
         Worker::spawn(dev, m, event_rx, memory, queue_regs)
     }
 }
 
-impl<D, E> Backend<D> for Mio<E>
+impl<D> Backend<D> for Mio
 where
     D: VirtioMio,
-    E: IoeventFd,
 {
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
         #[cfg(target_os = "linux")]
@@ -119,36 +112,42 @@ where
         Ok(())
     }
 
-    fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn event_loop<'m, S, Q, E>(
         &mut self,
-        feature: u64,
         memory: &'m Ram,
-        context: &mut Context<D, S>,
+        context: &mut Context<D, S, E>,
         queues: &mut [Option<Q>],
-        irq_sender: &S,
-    ) -> Result<()> {
+        param: &StartParam<S, E>,
+    ) -> Result<()>
+    where
+        S: IrqSender,
+        Q: VirtQueue<'m>,
+        E: IoeventFd,
+    {
         let mut events = Events::with_capacity(128);
         let mut active_mio = ActiveMio {
             queues,
-            irq_sender,
+            irq_sender: &*param.irq_sender,
             poll: &mut self.poll,
             mem: memory,
         };
         let registry = active_mio.poll.registry();
-        for (index, fd) in self.ioeventfds.iter().enumerate() {
-            if context.dev.offload_ioeventfd(index as u16, fd)? {
-                continue;
+        if let Some(fds) = &param.ioeventfds {
+            for (index, fd) in fds.iter().enumerate() {
+                if context.dev.offload_ioeventfd(index as u16, fd)? {
+                    continue;
+                }
+                let token = index as u64 | TOKEN_QUEUE;
+                registry
+                    .register(
+                        &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                        Token(token as usize),
+                        Interest::READABLE,
+                    )
+                    .context(error::EventSource)?;
             }
-            let token = index as u64 | TOKEN_QUEUE;
-            registry
-                .register(
-                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
-                    Token(token as usize),
-                    Interest::READABLE,
-                )
-                .context(error::EventSource)?;
         }
-        context.dev.activate(feature, &mut active_mio)?;
+        context.dev.activate(param.feature, &mut active_mio)?;
         'out: loop {
             active_mio
                 .poll

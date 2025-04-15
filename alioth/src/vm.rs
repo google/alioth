@@ -249,7 +249,6 @@ where
             name.clone(),
             dev,
             self.board.memory.ram_bus(),
-            &registry,
             self.board.config.coco.is_some(),
         )?;
         let msi_sender = self.board.vm.create_msi_sender(

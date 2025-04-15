@@ -25,7 +25,8 @@ use io_uring::{SubmissionQueue, opcode, types};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{
-    ActiveBackend, Backend, BackendEvent, Context, Virtio, WakeEvent, Worker, WorkerState,
+    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
+    WorkerState,
 };
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::Waker;
@@ -63,16 +64,12 @@ pub trait VirtioIoUring: Virtio {
 const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = (1 << 62) | (1 << 61);
 
-pub struct IoUring<E> {
-    queue_ioeventfds: Arc<[E]>,
+pub struct IoUring {
     waker: Arc<Waker>,
     waker_token: u64,
 }
 
-impl<E> IoUring<E>
-where
-    E: IoeventFd,
-{
+impl IoUring {
     fn submit_waker(&self, sq: &mut SubmissionQueue) -> Result<()> {
         let fd = types::Fd(self.waker.0.as_raw_fd());
         let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _).multi(true);
@@ -81,12 +78,11 @@ where
         Ok(())
     }
 
-    pub fn spawn_worker<D, S>(
+    pub fn spawn_worker<D, S, E>(
         dev: D,
-        event_rx: Receiver<WakeEvent<S>>,
+        event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[Queue]>,
-        fds: Arc<[E]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         D: VirtioIoUring,
@@ -95,7 +91,6 @@ where
     {
         let waker = Waker::new_eventfd()?;
         let ring = IoUring {
-            queue_ioeventfds: fds,
             waker: Arc::new(waker),
             waker_token: 0,
         };
@@ -118,10 +113,9 @@ struct QueueSubmit {
     count: u16,
 }
 
-impl<D, E> Backend<D> for IoUring<E>
+impl<D> Backend<D> for IoUring
 where
     D: VirtioIoUring,
-    E: IoeventFd,
 {
     fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
         self.waker_token = token;
@@ -132,21 +126,25 @@ where
         Ok(())
     }
 
-    fn event_loop<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn event_loop<'m, S, Q, E>(
         &mut self,
-        feature: u64,
         memory: &'m Ram,
-        context: &mut Context<D, S>,
+        context: &mut Context<D, S, E>,
         queues: &mut [Option<Q>],
-        irq_sender: &S,
-    ) -> Result<()> {
+        param: &StartParam<S, E>,
+    ) -> Result<()>
+    where
+        S: IrqSender,
+        Q: VirtQueue<'m>,
+        E: IoeventFd,
+    {
         let queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
         let mut ring = io_uring::IoUring::new(RING_SIZE as u32)?;
         let mut queue_count = 0;
-        {
+        if let Some(fds) = &param.ioeventfds {
             let sq = &mut ring.submission();
             self.submit_waker(sq)?;
-            for (index, fd) in self.queue_ioeventfds.iter().enumerate() {
+            for (index, fd) in fds.iter().enumerate() {
                 if context.dev.offload_ioeventfd(index as u16, fd)? {
                     continue;
                 }
@@ -155,6 +153,8 @@ where
             }
         }
 
+        let irq_sender = &*param.irq_sender;
+        let feature = param.feature;
         context.dev.activate(feature, memory, irq_sender, queues)?;
 
         let mut active_ring = ActiveIoUring {
