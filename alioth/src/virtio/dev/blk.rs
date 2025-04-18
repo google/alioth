@@ -37,14 +37,12 @@ use snafu::ResultExt;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
-#[cfg(target_os = "linux")]
-use crate::mem::mapped::Ram;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 #[cfg(target_os = "linux")]
-use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
+use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
@@ -319,27 +317,42 @@ impl Virtio for Block {
 impl VirtioMio for Block {
     fn reset(&mut self, _registry: &Registry) {}
 
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         _feature: u64,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
@@ -399,13 +412,16 @@ impl VirtioMio for Block {
 
 #[cfg(target_os = "linux")]
 impl VirtioIoUring for Block {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         _feature: u64,
-        _memory: &Ram,
-        _irq_sender: &S,
-        _queues: &mut [Option<Q>],
-    ) -> Result<()> {
+        _ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        S: IrqSender,
+        Q: VirtQueue<'m>,
+        E: IoeventFd,
+    {
         Ok(())
     }
 
