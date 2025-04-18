@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::iter::zip;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -122,18 +121,9 @@ impl Virtio for VhostVsock {
         self.features
     }
 
-    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
-    where
-        E: crate::hv::IoeventFd,
-    {
+    fn ioeventfd_offloaded(&self, q_index: u16) -> Result<bool> {
         match q_index {
-            0 | 1 => {
-                self.vhost_dev.set_virtq_kick(&VirtqFile {
-                    index: q_index as _,
-                    fd: fd.as_fd().as_raw_fd(),
-                })?;
-                Ok(true)
-            }
+            0 | 1 => Ok(true),
             _ => Ok(false),
         }
     }
@@ -159,15 +149,25 @@ impl Virtio for VhostVsock {
 }
 
 impl VirtioMio for VhostVsock {
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         self.vhost_dev.set_features(&feature)?;
-        for (index, (queue, error_fd)) in
-            zip(active_mio.queues.iter().take(2), self.error_fds.iter_mut()).enumerate()
-        {
+        for (index, fd) in active_mio.ioeventfds.iter().take(2).enumerate() {
+            let kick = VirtqFile {
+                index: index as u32,
+                fd: fd.as_fd().as_raw_fd(),
+            };
+            self.vhost_dev.set_virtq_kick(&kick)?;
+        }
+        for (index, queue) in active_mio.queues.iter().take(2).enumerate() {
             let Some(queue) = queue else {
                 continue;
             };
@@ -176,21 +176,8 @@ impl VirtioMio for VhostVsock {
             let fd = active_mio.irq_sender.queue_irqfd(index as _)?;
             self.vhost_dev.set_virtq_call(&VirtqFile { index, fd })?;
 
-            let err_fd =
-                unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
-            self.vhost_dev.set_virtq_err(&VirtqFile {
-                index,
-                fd: err_fd.as_raw_fd(),
-            })?;
-            active_mio.poll.registry().register(
-                &mut SourceFd(&err_fd.as_raw_fd()),
-                Token(index as _),
-                Interest::READABLE,
-            )?;
-            *error_fd = Some(err_fd);
-
             self.vhost_dev.set_virtq_num(&VirtqState {
-                index: index as _,
+                index,
                 val: reg.size.load(Ordering::Acquire) as _,
             })?;
             self.vhost_dev
@@ -205,6 +192,20 @@ impl VirtioMio for VhostVsock {
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
+        }
+        for (index, fd) in self.error_fds.iter_mut().enumerate() {
+            let err_fd =
+                unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
+            self.vhost_dev.set_virtq_err(&VirtqFile {
+                index: index as u32,
+                fd: err_fd.as_raw_fd(),
+            })?;
+            active_mio.poll.registry().register(
+                &mut SourceFd(&err_fd.as_raw_fd()),
+                Token(index as _),
+                Interest::READABLE,
+            )?;
+            *fd = Some(err_fd);
         }
         self.vhost_dev.vsock_set_running(true)?;
         Ok(())
@@ -229,11 +230,16 @@ impl VirtioMio for VhostVsock {
         }
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let q_index = event.token();
         error::VhostQueueErr {
             dev: "vsock",
@@ -243,11 +249,16 @@ impl VirtioMio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         match index {
             0 | 1 => unreachable!("{}: queue 0 and 1 are offloaded to kernel", self.name),
             2 => log::info!("{}: event queue buffer available", self.name),

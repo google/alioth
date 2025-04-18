@@ -216,13 +216,8 @@ impl Virtio for VuFs {
         Mio::spawn_worker(self, event_rx, memory, queue_regs)
     }
 
-    fn offload_ioeventfd<E>(&self, q_index: u16, fd: &E) -> Result<bool>
-    where
-        E: IoeventFd,
-    {
+    fn ioeventfd_offloaded(&self, q_index: u16) -> Result<bool> {
         if q_index < self.num_queues {
-            self.vu_dev
-                .set_virtq_kick(&(q_index as u64), fd.as_fd().as_raw_fd())?;
             Ok(true)
         } else {
             error::InvalidQueueIndex { index: q_index }.fail()
@@ -245,13 +240,22 @@ impl Virtio for VuFs {
 }
 
 impl VirtioMio for VuFs {
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         self.vu_dev
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
+        for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
+            self.vu_dev
+                .set_virtq_kick(&(index as u64), fd.as_fd().as_raw_fd())?;
+        }
         for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
                 continue;
@@ -318,11 +322,16 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let q_index = event.token().0;
         if q_index < active_mio.queues.len() {
             return vu_error::QueueErr {
@@ -404,11 +413,16 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         unreachable!(
             "{}: queue {index} notification should go to vhost-user backend",
             self.name

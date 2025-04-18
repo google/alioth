@@ -60,10 +60,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
     }
-    fn offload_ioeventfd<E>(&self, _qindex: u16, _fd: &E) -> Result<bool>
-    where
-        E: IoeventFd,
-    {
+    fn ioeventfd_offloaded(&self, _q_index: u16) -> Result<bool> {
         Ok(false)
     }
     fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {

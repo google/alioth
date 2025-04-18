@@ -33,23 +33,35 @@ use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()>;
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd;
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()>;
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd;
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()>;
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd;
 
     fn reset(&mut self, registry: &Registry);
 }
@@ -128,26 +140,25 @@ where
         let mut active_mio = ActiveMio {
             queues,
             irq_sender: &*param.irq_sender,
+            ioeventfds: param.ioeventfds.as_deref().unwrap_or(&[]),
             poll: &mut self.poll,
             mem: memory,
         };
-        let registry = active_mio.poll.registry();
-        if let Some(fds) = &param.ioeventfds {
-            for (index, fd) in fds.iter().enumerate() {
-                if context.dev.offload_ioeventfd(index as u16, fd)? {
-                    continue;
-                }
-                let token = index as u64 | TOKEN_QUEUE;
-                registry
-                    .register(
-                        &mut SourceFd(&fd.as_fd().as_raw_fd()),
-                        Token(token as usize),
-                        Interest::READABLE,
-                    )
-                    .context(error::EventSource)?;
-            }
-        }
         context.dev.activate(param.feature, &mut active_mio)?;
+        let registry = active_mio.poll.registry();
+        for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
+            if context.dev.ioeventfd_offloaded(index as u16)? {
+                continue;
+            }
+            let token = index as u64 | TOKEN_QUEUE;
+            registry
+                .register(
+                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                    Token(token as usize),
+                    Interest::READABLE,
+                )
+                .context(error::EventSource)?;
+        }
         'out: loop {
             active_mio
                 .poll
@@ -163,18 +174,20 @@ where
     }
 }
 
-pub struct ActiveMio<'a, 'm, Q, S> {
+pub struct ActiveMio<'a, 'm, Q, S, E> {
     pub queues: &'a mut [Option<Q>],
     pub irq_sender: &'a S,
+    pub ioeventfds: &'a [E],
     pub poll: &'a mut Poll,
     pub mem: &'m Ram,
 }
 
-impl<'m, Q, S, D> ActiveBackend<D> for ActiveMio<'_, 'm, Q, S>
+impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveMio<'_, 'm, Q, S, E>
 where
     D: VirtioMio,
     Q: VirtQueue<'m>,
     S: IrqSender,
+    E: IoeventFd,
 {
     type Event = Event;
 
