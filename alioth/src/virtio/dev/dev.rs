@@ -123,7 +123,7 @@ where
     pub name: Arc<str>,
     pub id: DeviceId,
     pub device_config: Arc<dyn Mmio>,
-    pub reg: Arc<Register>,
+    pub device_feature: u64,
     pub queue_regs: Arc<[Queue]>,
     pub ioeventfds: Arc<[(E, bool)]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
@@ -163,16 +163,12 @@ where
         let name = name.into();
         let id = D::DEVICE_ID;
         let device_config = dev.config();
-        let mut dev_feat = dev.feature();
+        let mut device_feature = dev.feature();
         if restricted_memory {
-            dev_feat |= VirtioFeature::ACCESS_PLATFORM.bits()
+            device_feature |= VirtioFeature::ACCESS_PLATFORM.bits()
         } else {
-            dev_feat &= !VirtioFeature::ACCESS_PLATFORM.bits()
+            device_feature &= !VirtioFeature::ACCESS_PLATFORM.bits()
         }
-        let reg = Arc::new(Register {
-            device_feature: dev_feat,
-            ..Default::default()
-        });
         let num_queues = dev.num_queues();
         let queue_regs = (0..num_queues).map(|_| Queue {
             size: AtomicU16::new(QUEUE_SIZE_MAX),
@@ -195,13 +191,13 @@ where
             dev.spawn_worker(event_rx, memory, queue_regs.clone(), ioeventfds.clone())?;
         log::debug!(
             "{name}: created with {:x?} {:x?}",
-            VirtioFeature::from_bits_retain(reg.device_feature & !D::Feature::all().bits()),
-            D::Feature::from_bits_truncate(reg.device_feature)
+            VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
+            D::Feature::from_bits_truncate(device_feature)
         );
         let virtio_dev = VirtioDevice {
             name,
             id,
-            reg,
+            device_feature,
             queue_regs,
             ioeventfds,
             worker_handle: Some(handle),
