@@ -116,19 +116,29 @@ impl Virtio for Entropy {
 }
 
 impl VirtioMio for Entropy {
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         _feature: u64,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
@@ -142,11 +152,16 @@ impl VirtioMio for Entropy {
         )
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         Ok(())
     }
 

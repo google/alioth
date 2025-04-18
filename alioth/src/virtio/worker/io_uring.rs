@@ -38,13 +38,15 @@ pub enum BufferAction {
 }
 
 pub trait VirtioIoUring: Virtio {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        memory: &Ram,
-        irq_sender: &S,
-        queues: &mut [Option<Q>],
-    ) -> Result<()>;
+        ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd;
 
     fn handle_buffer(
         &mut self,
@@ -139,34 +141,29 @@ where
         E: IoeventFd,
     {
         let queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
-        let mut ring = io_uring::IoUring::new(RING_SIZE as u32)?;
-        let mut queue_count = 0;
-        {
-            let sq = &mut ring.submission();
-            self.submit_waker(sq)?;
-            if let Some(fds) = &param.ioeventfds {
-                for (index, fd) in fds.iter().enumerate() {
-                    if context.dev.offload_ioeventfd(index as u16, fd)? {
-                        continue;
-                    }
-                    submit_queue_ioeventfd(index as u16, fd, sq)?;
-                    queue_count += 1;
-                }
-            }
-        }
-
-        let irq_sender = &*param.irq_sender;
-        let feature = param.feature;
-        context.dev.activate(feature, memory, irq_sender, queues)?;
-
         let mut active_ring = ActiveIoUring {
-            ring,
+            ring: io_uring::IoUring::new(RING_SIZE as u32)?,
             submitted_buffers: HashMap::new(),
-            shared_count: RING_SIZE - 1 - queue_count * (QUEUE_RESERVE_SIZE + 1),
-            irq_sender,
+            shared_count: RING_SIZE - 1,
+            irq_sender: &*param.irq_sender,
+            ioeventfds: param.ioeventfds.as_deref().unwrap_or(&[]),
+            mem: memory,
             queues,
             queue_submits,
         };
+        self.submit_waker(&mut active_ring.ring.submission())?;
+        context.dev.activate(param.feature, &mut active_ring)?;
+
+        if let Some(fds) = &param.ioeventfds {
+            let sq = &mut active_ring.ring.submission();
+            for (index, fd) in fds.iter().enumerate() {
+                if context.dev.ioeventfd_offloaded(index as u16)? {
+                    continue;
+                }
+                submit_queue_ioeventfd(index as u16, fd, sq)?;
+                active_ring.shared_count -= QUEUE_RESERVE_SIZE + 1;
+            }
+        }
 
         'out: loop {
             active_ring.ring.submit_and_wait(1)?;
@@ -184,13 +181,12 @@ where
     }
 }
 
-struct ActiveIoUring<'a, 'm, Q, S>
-where
-    Q: VirtQueue<'m>,
-{
+pub struct ActiveIoUring<'a, 'm, Q, S, E> {
     ring: io_uring::IoUring,
-    queues: &'a mut [Option<Q>],
-    irq_sender: &'a S,
+    pub queues: &'a mut [Option<Q>],
+    pub irq_sender: &'a S,
+    pub ioeventfds: &'a [E],
+    pub mem: &'m Ram,
     submitted_buffers: HashMap<u32, Descriptor<'m>>,
     shared_count: u16,
     queue_submits: Box<[QueueSubmit]>,
@@ -209,10 +205,11 @@ where
     Ok(())
 }
 
-impl<'m, Q, S> ActiveIoUring<'_, 'm, Q, S>
+impl<'m, Q, S, E> ActiveIoUring<'_, 'm, Q, S, E>
 where
     Q: VirtQueue<'m>,
     S: IrqSender,
+    E: IoeventFd,
 {
     fn submit_buffers<D>(&mut self, dev: &mut D, index: u16) -> Result<()>
     where
@@ -265,11 +262,12 @@ where
     }
 }
 
-impl<'m, Q, S, D> ActiveBackend<D> for ActiveIoUring<'_, 'm, Q, S>
+impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveIoUring<'_, 'm, Q, S, E>
 where
     D: VirtioIoUring,
     Q: VirtQueue<'m>,
     S: IrqSender,
+    E: IoeventFd,
 {
     type Event = Cqe;
 

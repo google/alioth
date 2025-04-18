@@ -39,12 +39,12 @@ use serde_aco::Help;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
-use crate::virtio::worker::io_uring::{BufferAction, IoUring, VirtioIoUring};
+use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, error};
@@ -339,11 +339,16 @@ impl VirtioMio for Net {
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
     }
 
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         self.driver_feature = NetFeature::from_bits_retain(feature);
         let socket = &mut self.tap_sockets[0];
         enable_tap_offload(socket, self.driver_feature)?;
@@ -355,11 +360,16 @@ impl VirtioMio for Net {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let token = event.token().0;
         let irq_sender = active_mio.irq_sender;
         if event.is_readable() {
@@ -389,11 +399,16 @@ impl VirtioMio for Net {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
@@ -420,13 +435,16 @@ impl VirtioMio for Net {
 }
 
 impl VirtioIoUring for Net {
-    fn activate<'m, S: IrqSender, Q: VirtQueue<'m>>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        _memory: &Ram,
-        _irq_sender: &S,
-        _queues: &mut [Option<Q>],
-    ) -> Result<()> {
+        _ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        S: IrqSender,
+        Q: VirtQueue<'m>,
+        E: IoeventFd,
+    {
         self.driver_feature = NetFeature::from_bits_retain(feature);
         let socket = &mut self.tap_sockets[0];
         enable_tap_offload(socket, self.driver_feature)?;

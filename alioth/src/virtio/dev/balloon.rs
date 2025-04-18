@@ -226,11 +226,16 @@ impl Virtio for Balloon {
 }
 
 impl VirtioMio for Balloon {
-    fn activate<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn activate<'a, 'm, Q, S, E>(
         &mut self,
         feature: u64,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let feature = BalloonFeature::from_bits_retain(feature);
         self.queues[0] = BalloonQueue::Inflate;
         self.queues[1] = BalloonQueue::Deflate;
@@ -249,11 +254,16 @@ impl VirtioMio for Balloon {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
@@ -287,11 +297,16 @@ impl VirtioMio for Balloon {
         })
     }
 
-    fn handle_event<'a, 'm, Q: VirtQueue<'m>, S: IrqSender>(
+    fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S>,
-    ) -> Result<()> {
+        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+        E: IoeventFd,
+    {
         Ok(())
     }
 
