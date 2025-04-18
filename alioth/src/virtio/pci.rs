@@ -180,7 +180,7 @@ where
     M: MsiSender,
 {
     name: Arc<str>,
-    reg: Arc<Register>,
+    reg: Register,
     queues: Arc<[Queue]>,
     irq_sender: Arc<PciIrqSender<M>>,
     event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
@@ -244,7 +244,7 @@ where
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
-        let reg = &*self.reg;
+        let reg = &self.reg;
         let ret = match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
                 reg.device_feature_sel.load(Ordering::Acquire) as u64
@@ -368,7 +368,7 @@ where
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        let reg = &*self.reg;
+        let reg = &self.reg;
         match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
                 reg.device_feature_sel.store(val as u8, Ordering::Release);
@@ -812,7 +812,10 @@ where
 
         let registers = Arc::new(VirtioPciRegisterMmio {
             name: dev.name.clone(),
-            reg: dev.reg.clone(),
+            reg: Register {
+                device_feature: dev.device_feature,
+                ..Default::default()
+            },
             event_tx: dev.event_tx.clone(),
             waker: dev.waker.clone(),
             queues: dev.queue_regs.clone(),
@@ -879,7 +882,7 @@ where
     fn reset(&self) -> pci::Result<()> {
         self.registers.wake_up_dev(WakeEvent::Reset);
         self.registers.reset();
-        self.dev.reg.status.store(0, Ordering::Release);
+        self.registers.reg.status.store(0, Ordering::Release);
         Ok(())
     }
 }
