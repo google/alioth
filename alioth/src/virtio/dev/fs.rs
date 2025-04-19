@@ -185,7 +185,9 @@ impl Virtio for VuFs {
     type Config = FsConfig;
     type Feature = FsFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::FileSystem;
+    fn id(&self) -> DeviceId {
+        DeviceId::FileSystem
+    }
 
     fn name(&self) -> &str {
         &self.name

@@ -103,7 +103,9 @@ impl Virtio for VhostVsock {
     type Config = VsockConfig;
     type Feature = VsockFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::Socket;
+    fn id(&self) -> DeviceId {
+        DeviceId::Socket
+    }
 
     fn name(&self) -> &str {
         &self.name

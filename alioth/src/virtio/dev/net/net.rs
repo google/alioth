@@ -293,7 +293,9 @@ impl Virtio for Net {
     type Config = NetConfig;
     type Feature = NetFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::Net;
+    fn id(&self) -> DeviceId {
+        DeviceId::Net
+    }
 
     fn name(&self) -> &str {
         &self.name

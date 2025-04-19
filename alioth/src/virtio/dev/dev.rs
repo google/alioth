@@ -43,11 +43,11 @@ use crate::virtio::worker::Waker;
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 
 pub trait Virtio: Debug + Send + Sync + 'static {
-    const DEVICE_ID: DeviceId;
     type Config: Mmio;
     type Feature: Flags<Bits = u64> + Debug;
 
     fn name(&self) -> &str;
+    fn id(&self) -> DeviceId;
     fn num_queues(&self) -> u16;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u64;
@@ -167,7 +167,7 @@ where
         D: Virtio,
     {
         let name = name.into();
-        let id = D::DEVICE_ID;
+        let id = dev.id();
         let device_config = dev.config();
         let mut device_feature = dev.feature();
         if restricted_memory {

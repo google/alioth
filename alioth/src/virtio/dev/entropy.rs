@@ -83,7 +83,9 @@ impl Virtio for Entropy {
     type Config = EntropyConfig;
     type Feature = EntropyFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::Entropy;
+    fn id(&self) -> DeviceId {
+        DeviceId::Entropy
+    }
 
     fn name(&self) -> &str {
         &self.name
