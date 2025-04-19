@@ -278,7 +278,9 @@ impl Virtio for Block {
     type Config = BlockConfig;
     type Feature = BlockFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::Block;
+    fn id(&self) -> DeviceId {
+        DeviceId::Block
+    }
 
     fn name(&self) -> &str {
         &self.name

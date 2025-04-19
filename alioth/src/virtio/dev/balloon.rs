@@ -193,7 +193,9 @@ impl Virtio for Balloon {
     type Config = BalloonConfigMmio;
     type Feature = BalloonFeature;
 
-    const DEVICE_ID: DeviceId = DeviceId::Balloon;
+    fn id(&self) -> DeviceId {
+        DeviceId::Balloon
+    }
 
     fn name(&self) -> &str {
         &self.name
