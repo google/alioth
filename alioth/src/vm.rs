@@ -112,8 +112,7 @@ where
     _event_tx: Sender<u32>,
 }
 
-pub type VirtioPciDev<D, H> = VirtioPciDevice<
-    D,
+pub type VirtioPciDev<H> = VirtioPciDevice<
     <<H as Hypervisor>::Vm as Vm>::MsiSender,
     <<<H as Hypervisor>::Vm as Vm>::IoeventFdRegistry as IoeventFdRegistry>::IoeventFd,
 >;
@@ -228,7 +227,7 @@ where
         &self,
         name: impl Into<Arc<str>>,
         param: P,
-    ) -> Result<Arc<VirtioPciDev<D, H>>, Error>
+    ) -> Result<Arc<VirtioPciDev<H>>, Error>
     where
         P: DevParam<Device = D>,
         D: Virtio,

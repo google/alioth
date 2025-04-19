@@ -38,7 +38,7 @@ use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };
-use crate::virtio::dev::{Register, Virtio, VirtioDevice, WakeEvent};
+use crate::virtio::dev::{Register, VirtioDevice, WakeEvent};
 use crate::virtio::queue::Queue;
 use crate::virtio::worker::Waker;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
@@ -633,43 +633,41 @@ impl PciCap for VirtioPciNotifyCap {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciDevice<D, M, E>
+pub struct VirtioPciDevice<M, E>
 where
-    D: Virtio,
     M: MsiSender,
     E: IoeventFd,
 {
-    pub dev: VirtioDevice<D, PciIrqSender<M>, E>,
+    pub dev: VirtioDevice<PciIrqSender<M>, E>,
     pub config: EmulatedConfig,
     pub registers: Arc<VirtioPciRegisterMmio<M>>,
 }
 
-impl<D, M, E> VirtioPciDevice<D, M, E>
+impl<M, E> VirtioPciDevice<M, E>
 where
     M: MsiSender,
-    D: Virtio,
     E: IoeventFd,
 {
     pub fn new<R>(
-        dev: VirtioDevice<D, PciIrqSender<M>, E>,
+        dev: VirtioDevice<PciIrqSender<M>, E>,
         msi_sender: M,
         ioeventfd_reg: R,
     ) -> Result<Self>
     where
         R: IoeventFdRegistry<IoeventFd = E>,
     {
-        let (class, subclass) = get_class(D::DEVICE_ID);
+        let (class, subclass) = get_class(dev.id);
         let mut header = DeviceHeader {
             common: CommonHeader {
                 vendor: VIRTIO_VENDOR_ID,
-                device: VIRTIO_DEVICE_ID_BASE + D::DEVICE_ID as u16,
+                device: VIRTIO_DEVICE_ID_BASE + dev.id as u16,
                 revision: 0x1,
                 header_type: HeaderType::Device as u8,
                 class,
                 subclass,
                 ..Default::default()
             },
-            subsystem: VIRTIO_DEVICE_ID_BASE + D::DEVICE_ID as u16,
+            subsystem: VIRTIO_DEVICE_ID_BASE + dev.id as u16,
             ..Default::default()
         };
         let device_config = dev.device_config.clone();
@@ -869,10 +867,9 @@ where
     }
 }
 
-impl<D, M, E> Pci for VirtioPciDevice<D, M, E>
+impl<M, E> Pci for VirtioPciDevice<M, E>
 where
     M: MsiSender,
-    D: Virtio,
     E: IoeventFd,
 {
     fn config(&self) -> &dyn PciConfig {

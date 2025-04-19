@@ -115,14 +115,14 @@ where
 }
 
 #[derive(Debug)]
-pub struct VirtioDevice<D, S, E>
+pub struct VirtioDevice<S, E>
 where
-    D: Virtio,
     S: IrqSender,
     E: IoeventFd,
 {
     pub name: Arc<str>,
-    pub device_config: Arc<D::Config>,
+    pub id: DeviceId,
+    pub device_config: Arc<dyn Mmio>,
     pub reg: Arc<Register>,
     pub queue_regs: Arc<[Queue]>,
     pub ioeventfds: Arc<[(E, bool)]>,
@@ -132,9 +132,8 @@ where
     worker_handle: Option<JoinHandle<()>>,
 }
 
-impl<D, S, E> VirtioDevice<D, S, E>
+impl<S, E> VirtioDevice<S, E>
 where
-    D: Virtio,
     S: IrqSender,
     E: IoeventFd,
 {
@@ -150,7 +149,7 @@ where
         Ok(())
     }
 
-    pub fn new<R>(
+    pub fn new<D, R>(
         name: impl Into<Arc<str>>,
         dev: D,
         memory: Arc<RamBus>,
@@ -158,9 +157,11 @@ where
         restricted_memory: bool,
     ) -> Result<Self>
     where
+        D: Virtio,
         R: IoeventFdRegistry<IoeventFd = E>,
     {
         let name = name.into();
+        let id = D::DEVICE_ID;
         let device_config = dev.config();
         let mut dev_feat = dev.feature();
         if restricted_memory {
@@ -199,6 +200,7 @@ where
         );
         let virtio_dev = VirtioDevice {
             name,
+            id,
             reg,
             queue_regs,
             ioeventfds,
@@ -212,9 +214,8 @@ where
     }
 }
 
-impl<D, S, E> Drop for VirtioDevice<D, S, E>
+impl<S, E> Drop for VirtioDevice<S, E>
 where
-    D: Virtio,
     S: IrqSender,
     E: IoeventFd,
 {
