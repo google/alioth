@@ -38,7 +38,7 @@ use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::fs::VuFsParam;
+use alioth::virtio::dev::fs::vu::VuFsParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::net::NetTapParam;
 #[cfg(target_os = "linux")]

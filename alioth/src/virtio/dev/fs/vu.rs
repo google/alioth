@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_NONE, mmap};
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -33,6 +32,7 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
+use crate::virtio::dev::fs::{FsConfig, FsFeature};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::vu::bindings::{DeviceConfig, VuBackMsg, VuFeature};
@@ -41,24 +41,7 @@ use crate::virtio::vu::{Error, error as vu_error};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, IrqSender, Result};
-use crate::{align_up, ffi, impl_mmio_for_zerocopy};
-
-#[repr(C, align(4))]
-#[derive(Debug, FromBytes, Immutable, IntoBytes)]
-pub struct FsConfig {
-    tag: [u8; 36],
-    num_request_queues: u32,
-    notify_buf_size: u32,
-}
-
-impl_mmio_for_zerocopy!(FsConfig);
-
-bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FsFeature: u64 {
-        const NOTIFICATION = 1 << 0;
-    }
-}
+use crate::{align_up, ffi};
 
 #[derive(Debug, Clone, FromBytes, Immutable, IntoBytes)]
 #[repr(C)]
