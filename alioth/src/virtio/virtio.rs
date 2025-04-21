@@ -21,6 +21,7 @@ pub mod queue;
 #[path = "vhost/vhost.rs"]
 pub mod vhost;
 #[cfg(target_os = "linux")]
+#[path = "vu/vu.rs"]
 pub mod vu;
 #[path = "worker/worker.rs"]
 pub mod worker;

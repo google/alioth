@@ -39,9 +39,10 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::vu::{
-    DeviceConfig, Error, UpdateVuMem, VirtqAddr, VirtqState, VuDev, VuFeature, error as vu_error,
-};
+use crate::virtio::vu::bindings::{DeviceConfig, VirtqAddr, VirtqState, VuBackMsg, VuFeature};
+use crate::virtio::vu::conn::{VuChannel, VuSession};
+use crate::virtio::vu::frontend::UpdateVuMem;
+use crate::virtio::vu::{Error, error as vu_error};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
@@ -79,7 +80,8 @@ const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 #[derive(Debug)]
 pub struct VuFs {
     name: Arc<str>,
-    vu_dev: Arc<VuDev>,
+    session: Arc<VuSession>,
+    channel: Option<VuChannel>,
     config: Arc<FsConfig>,
     feature: u64,
     num_queues: u16,
@@ -90,8 +92,8 @@ pub struct VuFs {
 impl VuFs {
     pub fn new(param: VuFsParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let name = name.into();
-        let mut vu_dev = VuDev::new(param.socket)?;
-        let dev_feat = vu_dev.get_features()?;
+        let session = Arc::new(VuSession::new(param.socket)?);
+        let dev_feat = session.get_features()?;
         let virtio_feat = VirtioFeature::from_bits_retain(dev_feat);
         let need_feat = VirtioFeature::VHOST_PROTOCOL | VirtioFeature::VERSION_1;
         if !virtio_feat.contains(need_feat) {
@@ -101,7 +103,7 @@ impl VuFs {
             .fail()?;
         }
 
-        let prot_feat = VuFeature::from_bits_retain(vu_dev.get_protocol_features()?);
+        let prot_feat = VuFeature::from_bits_retain(session.get_protocol_features()?);
         log::debug!("{name}: vhost-user feat: {prot_feat:x?}");
         let mut need_feat = VuFeature::MQ | VuFeature::REPLY_ACK | VuFeature::CONFIGURE_MEM_SLOTS;
         if param.tag.is_none() {
@@ -117,10 +119,10 @@ impl VuFs {
             }
             .fail()?;
         }
-        vu_dev.set_protocol_features(&need_feat.bits())?;
+        session.set_protocol_features(&need_feat.bits())?;
 
-        vu_dev.set_owner()?;
-        let num_queues = vu_dev.get_queue_num()? as u16;
+        session.set_owner()?;
+        let num_queues = session.get_queue_num()? as u16;
         let config = if let Some(tag) = param.tag {
             assert!(tag.len() <= 36);
             assert_ne!(tag.len(), 0);
@@ -134,21 +136,23 @@ impl VuFs {
         } else {
             let mut empty_cfg = DeviceConfig::new_zeroed();
             empty_cfg.size = size_of_val(&empty_cfg.region) as _;
-            let dev_config = vu_dev.get_config(&empty_cfg)?;
+            let dev_config = session.get_config(&empty_cfg)?;
             FsConfig::read_from_prefix(&dev_config.region).unwrap().0
         };
-        let dax_region = if param.dax_window > 0 {
-            vu_dev.setup_channel()?;
+        let (dax_region, channel) = if param.dax_window > 0 {
+            let channel = session.create_channel()?;
             let size = align_up!(param.dax_window, 12);
-            Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?)
+            let region = ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?;
+            (Some(region), Some(channel))
         } else {
-            None
+            (None, None)
         };
 
         Ok(VuFs {
             num_queues,
             name,
-            vu_dev: Arc::new(vu_dev),
+            session,
+            channel,
             config: Arc::new(config),
             feature: dev_feat & !VirtioFeature::VHOST_PROTOCOL.bits(),
             error_fds: Vec::new(),
@@ -236,7 +240,8 @@ impl Virtio for VuFs {
 
     fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
         Some(Box::new(UpdateVuMem {
-            dev: self.vu_dev.clone(),
+            name: self.name.clone(),
+            session: self.session.clone(),
         }))
     }
 }
@@ -252,10 +257,10 @@ impl VirtioMio for VuFs {
         S: IrqSender,
         E: IoeventFd,
     {
-        self.vu_dev
+        self.session
             .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
         for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
-            self.vu_dev.set_virtq_kick(&(index as u64), fd.as_fd())?;
+            self.session.set_virtq_kick(&(index as u64), fd.as_fd())?;
         }
         for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
@@ -263,13 +268,13 @@ impl VirtioMio for VuFs {
             };
             let reg = queue.reg();
             active_mio.irq_sender.queue_irqfd(index as _, |fd| {
-                self.vu_dev.set_virtq_call(&(index as u64), fd)?;
+                self.session.set_virtq_call(&(index as u64), fd)?;
                 Ok(())
             })?;
 
             let err_fd =
                 unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
-            self.vu_dev
+            self.session
                 .set_virtq_err(&(index as u64), err_fd.as_fd())
                 .unwrap();
             active_mio.poll.registry().register(
@@ -283,14 +288,14 @@ impl VirtioMio for VuFs {
                 index: index as _,
                 val: reg.size.load(Ordering::Acquire) as _,
             };
-            self.vu_dev.set_virtq_num(&virtq_num).unwrap();
+            self.session.set_virtq_num(&virtq_num).unwrap();
             log::info!("set_virtq_num: {virtq_num:x?}");
 
             let virtq_base = VirtqState {
                 index: index as _,
                 val: 0,
             };
-            self.vu_dev.set_virtq_base(&virtq_base).unwrap();
+            self.session.set_virtq_base(&virtq_base).unwrap();
 
             log::info!("set_virtq_base: {virtq_base:x?}");
             let mem = active_mio.mem;
@@ -302,7 +307,7 @@ impl VirtioMio for VuFs {
                 avail_hva: mem.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
                 log_guest_addr: 0,
             };
-            self.vu_dev.set_virtq_addr(&virtq_addr).unwrap();
+            self.session.set_virtq_addr(&virtq_addr).unwrap();
             log::info!("queue: {:x?}", reg);
             log::info!("virtq_addr: {virtq_addr:x?}");
         }
@@ -311,13 +316,13 @@ impl VirtioMio for VuFs {
                 index: index as _,
                 val: 1,
             };
-            self.vu_dev.set_virtq_enable(&virtq_enable).unwrap();
+            self.session.set_virtq_enable(&virtq_enable).unwrap();
             log::info!("virtq_enable: {virtq_enable:x?}");
         }
-        if let Some(channel) = self.vu_dev.get_channel() {
-            channel.set_nonblocking(true)?;
+        if let Some(channel) = &self.channel {
+            channel.conn.set_nonblocking(true)?;
             active_mio.poll.registry().register(
-                &mut SourceFd(&channel.as_raw_fd()),
+                &mut SourceFd(&channel.conn.as_raw_fd()),
                 Token(self.num_queues as _),
                 Interest::READABLE,
             )?;
@@ -349,14 +354,19 @@ impl VirtioMio for VuFs {
             }
             .fail()?;
         };
+        let Some(channel) = &self.channel else {
+            return vu_error::ProtocolFeature {
+                feature: VuFeature::BACKEND_REQ,
+            }
+            .fail()?;
+        };
         loop {
-            let mut fs_map = VuFsMap::new_zeroed();
-            let mut fds = [None, None, None, None, None, None, None, None];
-            let ret = self
-                .vu_dev
-                .receive_from_channel(fs_map.as_mut_bytes(), &mut fds);
-            let (request, size) = match ret {
-                Ok((r, s)) => (r, s),
+            let mut fds = [const { None }; 8];
+            let msg = channel.recv_msg(&mut fds);
+            let fs_map: VuFsMap = channel.recv_payload()?;
+
+            let (request, size) = match msg {
+                Ok(m) => (m.request, m.size),
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e)?,
             };
@@ -411,7 +421,7 @@ impl VirtioMio for VuFs {
                 }
                 _ => unimplemented!("unknown request {request:#x}"),
             }
-            self.vu_dev.ack_request(request, &0u64)?;
+            channel.reply(VuBackMsg::from(request), &0u64, &[])?;
         }
         Ok(())
     }
@@ -438,14 +448,15 @@ impl VirtioMio for VuFs {
                 index: q_index as _,
                 val: 0,
             };
-            self.vu_dev.set_virtq_enable(&disable).unwrap();
+            self.session.set_virtq_enable(&disable).unwrap();
         }
         while let Some(fd) = self.error_fds.pop() {
             registry.deregister(&mut SourceFd(&fd.as_raw_fd())).unwrap();
         }
-        if let Some(channel) = self.vu_dev.get_channel() {
+        if let Some(channel) = &self.channel {
+            let channel_fd = channel.conn.as_fd();
             registry
-                .deregister(&mut SourceFd(&channel.as_raw_fd()))
+                .deregister(&mut SourceFd(&channel_fd.as_raw_fd()))
                 .unwrap();
         }
     }
