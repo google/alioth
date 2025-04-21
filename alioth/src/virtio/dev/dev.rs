@@ -15,7 +15,7 @@
 pub mod balloon;
 pub mod blk;
 pub mod entropy;
-#[cfg(target_os = "linux")]
+#[path = "fs/fs.rs"]
 pub mod fs;
 #[cfg(target_os = "linux")]
 #[path = "net/net.rs"]
