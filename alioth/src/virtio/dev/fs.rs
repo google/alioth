@@ -15,18 +15,14 @@
 use std::io::ErrorKind;
 use std::iter::zip;
 use std::mem::size_of_val;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use bitflags::bitflags;
-use libc::{
-    EFD_CLOEXEC, EFD_NONBLOCK, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED,
-    PROT_NONE, eventfd, mmap,
-};
+use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_NONE, mmap};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -39,13 +35,12 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::vu::bindings::{DeviceConfig, VirtqAddr, VirtqState, VuBackMsg, VuFeature};
-use crate::virtio::vu::conn::{VuChannel, VuSession};
-use crate::virtio::vu::frontend::UpdateVuMem;
+use crate::virtio::vu::bindings::{DeviceConfig, VuBackMsg, VuFeature};
+use crate::virtio::vu::frontend::VuFrontend;
 use crate::virtio::vu::{Error, error as vu_error};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
-use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
+use crate::virtio::{DeviceId, IrqSender, Result};
 use crate::{align_up, ffi, impl_mmio_for_zerocopy};
 
 #[repr(C, align(4))]
@@ -79,83 +74,50 @@ const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 
 #[derive(Debug)]
 pub struct VuFs {
-    name: Arc<str>,
-    session: Arc<VuSession>,
-    channel: Option<VuChannel>,
+    frontend: VuFrontend,
     config: Arc<FsConfig>,
-    feature: u64,
-    num_queues: u16,
     dax_region: Option<ArcMemPages>,
-    error_fds: Vec<OwnedFd>,
 }
 
 impl VuFs {
     pub fn new(param: VuFsParam, name: impl Into<Arc<str>>) -> Result<Self> {
-        let name = name.into();
-        let session = Arc::new(VuSession::new(param.socket)?);
-        let dev_feat = session.get_features()?;
-        let virtio_feat = VirtioFeature::from_bits_retain(dev_feat);
-        let need_feat = VirtioFeature::VHOST_PROTOCOL | VirtioFeature::VERSION_1;
-        if !virtio_feat.contains(need_feat) {
-            return vu_error::DeviceFeature {
-                feature: need_feat.bits(),
-            }
-            .fail()?;
-        }
-
-        let prot_feat = VuFeature::from_bits_retain(session.get_protocol_features()?);
-        log::debug!("{name}: vhost-user feat: {prot_feat:x?}");
-        let mut need_feat = VuFeature::MQ | VuFeature::REPLY_ACK | VuFeature::CONFIGURE_MEM_SLOTS;
-        if param.tag.is_none() {
-            need_feat |= VuFeature::CONFIG;
-        }
+        let mut extra_features = VuFeature::empty();
         if param.dax_window > 0 {
-            assert!(param.dax_window.count_ones() == 1 && param.dax_window > (4 << 10));
-            need_feat |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD;
+            extra_features |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD
+        };
+        if param.tag.is_none() {
+            extra_features |= VuFeature::CONFIG;
         }
-        if !prot_feat.contains(need_feat) {
-            return vu_error::ProtocolFeature {
-                feature: need_feat & !prot_feat,
-            }
-            .fail()?;
-        }
-        session.set_protocol_features(&need_feat.bits())?;
-
-        session.set_owner()?;
-        let num_queues = session.get_queue_num()? as u16;
+        let mut frontend =
+            VuFrontend::new(name, &param.socket, DeviceId::FileSystem, extra_features)?;
         let config = if let Some(tag) = param.tag {
             assert!(tag.len() <= 36);
             assert_ne!(tag.len(), 0);
             let mut config = FsConfig::new_zeroed();
             config.tag[0..tag.len()].copy_from_slice(tag.as_bytes());
-            config.num_request_queues = num_queues as u32 - 1;
-            if FsFeature::from_bits_retain(dev_feat).contains(FsFeature::NOTIFICATION) {
+            config.num_request_queues = frontend.num_queues() as u32 - 1;
+            if FsFeature::from_bits_retain(frontend.feature()).contains(FsFeature::NOTIFICATION) {
                 config.num_request_queues -= 1;
             }
             config
         } else {
             let mut empty_cfg = DeviceConfig::new_zeroed();
             empty_cfg.size = size_of_val(&empty_cfg.region) as _;
-            let dev_config = session.get_config(&empty_cfg)?;
+            let dev_config = frontend.session().get_config(&empty_cfg)?;
             FsConfig::read_from_prefix(&dev_config.region).unwrap().0
         };
-        let (dax_region, channel) = if param.dax_window > 0 {
-            let channel = session.create_channel()?;
+
+        let mut dax_region = None;
+        if param.dax_window > 0 {
+            let channel = frontend.session().create_channel()?;
             let size = align_up!(param.dax_window, 12);
-            let region = ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?;
-            (Some(region), Some(channel))
-        } else {
-            (None, None)
-        };
+            dax_region = Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?);
+            frontend.set_channel(channel);
+        }
 
         Ok(VuFs {
-            num_queues,
-            name,
-            session,
-            channel,
+            frontend,
             config: Arc::new(config),
-            feature: dev_feat & !VirtioFeature::VHOST_PROTOCOL.bits(),
-            error_fds: Vec::new(),
             dax_region,
         })
     }
@@ -194,7 +156,7 @@ impl Virtio for VuFs {
     }
 
     fn name(&self) -> &str {
-        &self.name
+        self.frontend.name()
     }
 
     fn config(&self) -> Arc<Self::Config> {
@@ -202,11 +164,11 @@ impl Virtio for VuFs {
     }
 
     fn feature(&self) -> u64 {
-        self.feature
+        self.frontend.feature()
     }
 
     fn num_queues(&self) -> u16 {
-        self.num_queues
+        self.frontend.num_queues()
     }
 
     fn spawn_worker<S, E>(
@@ -223,11 +185,7 @@ impl Virtio for VuFs {
     }
 
     fn ioeventfd_offloaded(&self, q_index: u16) -> Result<bool> {
-        if q_index < self.num_queues {
-            Ok(true)
-        } else {
-            error::InvalidQueueIndex { index: q_index }.fail()
-        }
+        self.frontend.ioeventfd_offloaded(q_index)
     }
 
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
@@ -239,10 +197,7 @@ impl Virtio for VuFs {
     }
 
     fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
-        Some(Box::new(UpdateVuMem {
-            name: self.name.clone(),
-            session: self.session.clone(),
-        }))
+        self.frontend.mem_change_callback()
     }
 }
 
@@ -257,73 +212,12 @@ impl VirtioMio for VuFs {
         S: IrqSender,
         E: IoeventFd,
     {
-        self.session
-            .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
-        for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
-            self.session.set_virtq_kick(&(index as u64), fd.as_fd())?;
-        }
-        for (index, queue) in active_mio.queues.iter().enumerate() {
-            let Some(queue) = queue else {
-                continue;
-            };
-            let reg = queue.reg();
-            active_mio.irq_sender.queue_irqfd(index as _, |fd| {
-                self.session.set_virtq_call(&(index as u64), fd)?;
-                Ok(())
-            })?;
-
-            let err_fd =
-                unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
-            self.session
-                .set_virtq_err(&(index as u64), err_fd.as_fd())
-                .unwrap();
-            active_mio.poll.registry().register(
-                &mut SourceFd(&err_fd.as_raw_fd()),
-                Token(index),
-                Interest::READABLE,
-            )?;
-            self.error_fds.push(err_fd);
-
-            let virtq_num = VirtqState {
-                index: index as _,
-                val: reg.size.load(Ordering::Acquire) as _,
-            };
-            self.session.set_virtq_num(&virtq_num).unwrap();
-            log::info!("set_virtq_num: {virtq_num:x?}");
-
-            let virtq_base = VirtqState {
-                index: index as _,
-                val: 0,
-            };
-            self.session.set_virtq_base(&virtq_base).unwrap();
-
-            log::info!("set_virtq_base: {virtq_base:x?}");
-            let mem = active_mio.mem;
-            let virtq_addr = VirtqAddr {
-                index: index as _,
-                flags: 0,
-                desc_hva: mem.translate(reg.desc.load(Ordering::Acquire) as _)? as _,
-                used_hva: mem.translate(reg.device.load(Ordering::Acquire) as _)? as _,
-                avail_hva: mem.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
-                log_guest_addr: 0,
-            };
-            self.session.set_virtq_addr(&virtq_addr).unwrap();
-            log::info!("queue: {:x?}", reg);
-            log::info!("virtq_addr: {virtq_addr:x?}");
-        }
-        for index in 0..active_mio.queues.len() {
-            let virtq_enable = VirtqState {
-                index: index as _,
-                val: 1,
-            };
-            self.session.set_virtq_enable(&virtq_enable).unwrap();
-            log::info!("virtq_enable: {virtq_enable:x?}");
-        }
-        if let Some(channel) = &self.channel {
+        self.frontend.activate(feature, active_mio)?;
+        if let Some(channel) = self.frontend.channel() {
             channel.conn.set_nonblocking(true)?;
             active_mio.poll.registry().register(
                 &mut SourceFd(&channel.conn.as_raw_fd()),
-                Token(self.num_queues as _),
+                Token(self.frontend.num_queues() as _),
                 Interest::READABLE,
             )?;
         }
@@ -354,7 +248,7 @@ impl VirtioMio for VuFs {
             }
             .fail()?;
         };
-        let Some(channel) = &self.channel else {
+        let Some(channel) = self.frontend.channel() else {
             return vu_error::ProtocolFeature {
                 feature: VuFeature::BACKEND_REQ,
             }
@@ -387,7 +281,7 @@ impl VirtioMio for VuFs {
                         let map_addr = dax_region.addr() + fs_map.cache_offset[index] as usize;
                         log::trace!(
                             "{}: mapping fd {raw_fd} to offset {:#x}",
-                            self.name,
+                            self.name(),
                             fs_map.cache_offset[index]
                         );
                         ffi!(
@@ -410,7 +304,10 @@ impl VirtioMio for VuFs {
                         if len == 0 {
                             continue;
                         }
-                        log::trace!("{}: unmapping offset {offset:#x}, size {len:#x}", self.name);
+                        log::trace!(
+                            "{}: unmapping offset {offset:#x}, size {len:#x}",
+                            self.name()
+                        );
                         let map_addr = dax_region.addr() + offset as usize;
                         let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED;
                         ffi!(
@@ -419,7 +316,7 @@ impl VirtioMio for VuFs {
                         )?;
                     }
                 }
-                _ => unimplemented!("unknown request {request:#x}"),
+                _ => unimplemented!("{}: unknown request {request:#x}", self.name()),
             }
             channel.reply(VuBackMsg::from(request), &0u64, &[])?;
         }
@@ -429,35 +326,17 @@ impl VirtioMio for VuFs {
     fn handle_queue<'a, 'm, Q, S, E>(
         &mut self,
         index: u16,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
         E: IoeventFd,
     {
-        unreachable!(
-            "{}: queue {index} notification should go to vhost-user backend",
-            self.name
-        )
+        self.frontend.handle_queue(index, active_mio)
     }
 
     fn reset(&mut self, registry: &Registry) {
-        for q_index in 0..self.num_queues {
-            let disable = VirtqState {
-                index: q_index as _,
-                val: 0,
-            };
-            self.session.set_virtq_enable(&disable).unwrap();
-        }
-        while let Some(fd) = self.error_fds.pop() {
-            registry.deregister(&mut SourceFd(&fd.as_raw_fd())).unwrap();
-        }
-        if let Some(channel) = &self.channel {
-            let channel_fd = channel.conn.as_fd();
-            registry
-                .deregister(&mut SourceFd(&channel_fd.as_raw_fd()))
-                .unwrap();
-        }
+        self.frontend.reset(registry)
     }
 }
