@@ -21,6 +21,8 @@ pub mod device;
 pub mod errors;
 #[path = "firmware/firmware.rs"]
 pub mod firmware;
+#[path = "fuse/fuse.rs"]
+pub mod fuse;
 #[path = "hv/hv.rs"]
 pub mod hv;
 #[path = "loader/loader.rs"]
