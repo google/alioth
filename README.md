@@ -1,9 +1,9 @@
 # Alioth
 
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/google/alioth/rust.yml)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/google/alioth/rust.yml)](https://github.com/google/alioth/actions/workflows/rust.yml)
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/google/alioth)
-![Crates.io Version](https://img.shields.io/crates/v/alioth)
-![Crates.io License](https://img.shields.io/crates/l/alioth)
+[![Crates.io Version](https://img.shields.io/crates/v/alioth)](https://crates.io/crates/alioth)
+[![Crates.io License](https://img.shields.io/crates/l/alioth)](LICENSE)
 
 Alioth /AL-lee-oth/ is an experimental
 [KVM](https://docs.kernel.org/virt/kvm/api.html)-based type-2 hypervisor
