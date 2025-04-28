@@ -4,6 +4,7 @@
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/google/alioth)
 [![Crates.io Version](https://img.shields.io/crates/v/alioth)](https://crates.io/crates/alioth)
 [![Crates.io License](https://img.shields.io/crates/l/alioth)](LICENSE)
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-google%2Falioth-blue.svg)](https://deepwiki.com/google/alioth)
 
 Alioth /AL-lee-oth/ is an experimental
 [KVM](https://docs.kernel.org/virt/kvm/api.html)-based type-2 hypervisor
