@@ -441,7 +441,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub(super) fn remove(&self, gpa: u64) -> Result<ArcMemPages, Error> {
+    pub(crate) fn remove(&self, gpa: u64) -> Result<ArcMemPages, Error> {
         let mut ram = self.ram.write();
         ram.inner.remove(gpa)
     }
