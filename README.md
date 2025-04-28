@@ -29,7 +29,7 @@ Alioth /AL-lee-oth/ is an experimental
 
     ```sh
     alioth -l info --log-to-file \
-        run \
+        boot \
         --kernel /path/to/vmlinuz \
         --cmd-line "console=ttyS0" \
         --initramfs /path/to/initramfs \
