@@ -155,7 +155,7 @@ pub struct Net {
     api: WorkerApi,
 }
 
-#[derive(Deserialize, Help)]
+#[derive(Deserialize, Debug, Clone, Help)]
 pub struct NetParam {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
