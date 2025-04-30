@@ -14,11 +14,22 @@
 
 mod boot;
 mod objects;
+#[cfg(target_os = "linux")]
+mod vu;
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Create and boot a virtual machine.
+    Boot(Box<boot::BootArgs>),
+    #[cfg(target_os = "linux")]
+    /// Start a vhost-user backend device.
+    Vu(Box<vu::VuArgs>),
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -39,12 +50,6 @@ struct Cli {
 
     #[command(subcommand)]
     pub cmd: Command,
-}
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Create and boot a virtual machine.
-    Boot(boot::BootArgs),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,7 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     match cli.cmd {
-        Command::Boot(args) => boot::boot(args)?,
+        Command::Boot(args) => boot::boot(*args)?,
+        #[cfg(target_os = "linux")]
+        Command::Vu(args) => vu::start(*args)?,
     }
     Ok(())
 }
