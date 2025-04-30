@@ -20,8 +20,8 @@ use std::thread::spawn;
 
 use alioth::errors::{DebugTrace, trace_error};
 use alioth::mem::mapped::RamBus;
-use alioth::virtio::dev::blk::BlockParam;
-use alioth::virtio::dev::net::NetParam;
+use alioth::virtio::dev::blk::BlkFileParam;
+use alioth::virtio::dev::net::NetTapParam;
 use alioth::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
 use clap::{Args, Subcommand};
@@ -81,9 +81,9 @@ where
 #[derive(Subcommand, Debug, Clone)]
 pub enum DevType {
     /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
-    Net(DevArgs<NetParam>),
+    Net(DevArgs<NetTapParam>),
     /// VirtIO block device backed by a file.
-    Blk(DevArgs<BlockParam>),
+    Blk(DevArgs<BlkFileParam>),
 }
 
 #[derive(Args, Debug, Clone)]

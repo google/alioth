@@ -141,7 +141,7 @@ pub struct BlockConfig {
 impl_mmio_for_zerocopy!(BlockConfig);
 
 #[derive(Debug, Clone, Deserialize, Help, Default)]
-pub struct BlockParam {
+pub struct BlkFileParam {
     /// Path to a raw-formatted disk image.
     pub path: PathBuf,
     /// Set the device as readonly. [default: false]
@@ -152,7 +152,7 @@ pub struct BlockParam {
     pub api: WorkerApi,
 }
 
-impl DevParam for BlockParam {
+impl DevParam for BlkFileParam {
     type Device = Block;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Block> {
@@ -189,7 +189,7 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(param: BlockParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(param: BlkFileParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let access_disk = error::AccessFile {
             path: param.path.as_path(),
         };

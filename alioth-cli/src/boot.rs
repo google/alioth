@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 #[cfg(target_arch = "x86_64")]
 use std::ffi::CString;
 #[cfg(target_arch = "x86_64")]
@@ -22,24 +23,28 @@ use alioth::board::BoardConfig;
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::FwCfgItemParam;
 use alioth::errors::{DebugTrace, trace_error};
-use alioth::hv::Coco;
 #[cfg(target_os = "macos")]
 use alioth::hv::Hvf;
+use alioth::hv::{self, Coco};
 #[cfg(target_os = "linux")]
 use alioth::hv::{Kvm, KvmConfig};
 use alioth::loader::{ExecType, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
 use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
+#[cfg(target_os = "linux")]
+use alioth::virtio::DeviceId;
 use alioth::virtio::dev::balloon::BalloonParam;
-use alioth::virtio::dev::blk::BlockParam;
+use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::entropy::EntropyParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::fs::VuFsParam;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::net::NetParam;
+use alioth::virtio::dev::net::NetTapParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::vsock::VhostVsockParam;
+#[cfg(target_os = "linux")]
+use alioth::virtio::vu::frontend::VuFrontendParam;
 use alioth::vm::Machine;
 use clap::Args;
 use serde::Deserialize;
@@ -121,6 +126,34 @@ enum VsockParam {
     Vhost(VhostVsockParam),
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Deserialize, Help)]
+struct VuSocket {
+    socket: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize, Help)]
+enum NetParam {
+    /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
+    #[serde(alias = "tap")]
+    Tap(NetTapParam),
+    /// vhost-user net device over a Unix domain socket.
+    #[serde(alias = "vu")]
+    Vu(VuSocket),
+}
+
+#[derive(Deserialize, Help)]
+enum BlkParam {
+    /// VirtIO block device backed a disk image file.
+    #[serde(alias = "file")]
+    File(BlkFileParam),
+    #[cfg(target_os = "linux")]
+    #[serde(alias = "vu")]
+    /// vhost-user block device over a Unix domain socket.
+    Vu(VuSocket),
+}
+
 #[derive(Args, Debug, Clone)]
 #[command(arg_required_else_help = true, alias("run"))]
 pub struct BootArgs {
@@ -179,12 +212,12 @@ pub struct BootArgs {
 
     #[cfg(target_os = "linux")]
     #[arg(long, help(
-        help_text::<NetParam>("Add a VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.")
+        help_text::<NetParam>("Add a VirtIO net device.")
     ))]
     net: Vec<String>,
 
     #[arg(long, help(
-        help_text::<BlockParam>("Add a VirtIO block device.")
+        help_text::<BlkParam>("Add a VirtIO block device.")
     ))]
     blk: Vec<String>,
 
@@ -231,6 +264,78 @@ pub struct BootArgs {
 
     #[arg(short, long("object"), help = DOC_OBJECTS, value_name = "OBJECT")]
     objects: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn add_net<H>(
+    vm: &Machine<H>,
+    args: Vec<String>,
+    objects: &HashMap<&str, &str>,
+) -> Result<(), Error>
+where
+    H: hv::Hypervisor + 'static,
+{
+    for (index, net_opt) in args.into_iter().enumerate() {
+        let net_param: NetParam = match serde_aco::from_args(&net_opt, objects) {
+            Ok(p) => p,
+            Err(_) => {
+                let tap_param = serde_aco::from_args::<NetTapParam>(&net_opt, objects)
+                    .context(error::ParseArg { arg: net_opt })?;
+                NetParam::Tap(tap_param)
+            }
+        };
+        match net_param {
+            NetParam::Tap(tap_param) => vm.add_virtio_dev(format!("virtio-net-{index}"), tap_param),
+            #[cfg(target_os = "linux")]
+            NetParam::Vu(sock) => {
+                let param = VuFrontendParam {
+                    id: DeviceId::Net,
+                    socket: sock.socket,
+                };
+                vm.add_virtio_dev(format!("vu-net-{index}"), param)
+            }
+        }
+        .context(error::CreateDevice)?;
+    }
+    Ok(())
+}
+
+fn add_blk<H>(
+    vm: &Machine<H>,
+    args: Vec<String>,
+    objects: &HashMap<&str, &str>,
+) -> Result<(), Error>
+where
+    H: hv::Hypervisor + 'static,
+{
+    for (index, opt) in args.into_iter().enumerate() {
+        let param: BlkParam = match serde_aco::from_args(&opt, objects) {
+            Ok(param) => param,
+            Err(_) => match serde_aco::from_args(&opt, objects) {
+                Ok(param) => BlkParam::File(param),
+                Err(_) => {
+                    eprintln!("Please update the cmd line to --blk file,path={opt}");
+                    BlkParam::File(BlkFileParam {
+                        path: opt.into(),
+                        ..Default::default()
+                    })
+                }
+            },
+        };
+        match param {
+            BlkParam::File(p) => vm.add_virtio_dev(format!("virtio-blk-{index}"), p),
+            #[cfg(target_os = "linux")]
+            BlkParam::Vu(s) => {
+                let p = VuFrontendParam {
+                    id: DeviceId::Block,
+                    socket: s.socket,
+                };
+                vm.add_virtio_dev(format!("vu-net-{index}"), p)
+            }
+        }
+        .context(error::CreateDevice)?;
+    }
+    Ok(())
 }
 
 pub fn boot(args: BootArgs) -> Result<(), Error> {
@@ -322,30 +427,8 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             .context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]
-    for (index, net_opt) in args.net.into_iter().enumerate() {
-        let net_param: NetParam =
-            serde_aco::from_args(&net_opt, &objects).context(error::ParseArg { arg: net_opt })?;
-        vm.add_virtio_dev(format!("virtio-net-{index}"), net_param)
-            .context(error::CreateDevice)?;
-    }
-    for (index, blk) in args.blk.into_iter().enumerate() {
-        let param = match serde_aco::from_args(&blk, &objects) {
-            Ok(param) => param,
-            Err(serde_aco::Error::ExpectedMapEq) => {
-                eprintln!(
-                    "Please update the cmd line to --blk path={blk}, see https://github.com/google/alioth/pull/72 for details"
-                );
-                BlockParam {
-                    path: blk.into(),
-                    ..Default::default()
-                }
-            }
-            Err(e) => return Err(e).context(error::ParseArg { arg: blk })?,
-        };
-
-        vm.add_virtio_dev(format!("virtio-blk-{index}"), param)
-            .context(error::CreateDevice)?;
-    }
+    add_net(&vm, args.net, &objects)?;
+    add_blk(&vm, args.blk, &objects)?;
     #[cfg(target_os = "linux")]
     for (index, fs) in args.fs.into_iter().enumerate() {
         let param: FsParam =
