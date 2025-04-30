@@ -155,8 +155,8 @@ pub struct Net {
     api: WorkerApi,
 }
 
-#[derive(Deserialize, Debug, Clone, Help)]
-pub struct NetParam {
+#[derive(Debug, Deserialize, Clone, Help)]
+pub struct NetTapParam {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
     /// Maximum transmission unit.
@@ -179,7 +179,7 @@ pub struct NetParam {
     pub api: WorkerApi,
 }
 
-impl DevParam for NetParam {
+impl DevParam for NetTapParam {
     type Device = Net;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Net> {
@@ -199,7 +199,7 @@ fn new_socket(dev_tap: Option<&Path>, blocking: bool) -> Result<File> {
 }
 
 impl Net {
-    pub fn new(param: NetParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(param: NetTapParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let mut socket = new_socket(
             param.tap.as_deref(),
             matches!(param.api, WorkerApi::IoUring),
