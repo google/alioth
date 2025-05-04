@@ -101,10 +101,15 @@ impl VuFs {
             }
             config
         } else {
-            let mut empty_cfg = DeviceConfig::new_zeroed();
-            empty_cfg.size = size_of_val(&empty_cfg.region) as _;
-            let dev_config = frontend.session().get_config(&empty_cfg)?;
-            FsConfig::read_from_prefix(&dev_config.region).unwrap().0
+            let cfg = DeviceConfig {
+                offset: 0,
+                size: size_of::<FsConfig>() as u32,
+                flags: 0,
+            };
+            let mut config = FsConfig::new_zeroed();
+            frontend.session().get_config(&cfg, config.as_mut_bytes())?;
+            log::info!("{}: get config: {config:?}", frontend.name());
+            config
         };
 
         let mut dax_region = None;

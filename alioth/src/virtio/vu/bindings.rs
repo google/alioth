@@ -180,13 +180,14 @@ pub struct MemoryMultipleRegion {
     pub regions: [MemoryRegion; 8],
 }
 
+pub const MAX_CONFIG_SIZE: usize = 256;
+
 #[derive(Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct DeviceConfig {
     pub offset: u32,
     pub size: u32,
     pub flags: u32,
-    pub region: [u8; 256],
 }
 
 #[derive(Debug, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
