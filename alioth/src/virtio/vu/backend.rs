@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering;
 
 use macros::trace_error;
 use snafu::Snafu;
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::IntoBytes;
 
 use crate::errors::DebugTrace;
 use crate::hv::IoeventFd;
@@ -31,7 +31,7 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::dev::{StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::vu::Error as VuError;
 use crate::virtio::vu::bindings::{
-    DeviceConfig, MemoryRegion, MemorySingleRegion, Message, VirtqAddr, VirtqState, VuFeature,
+    MAX_CONFIG_SIZE, MemoryRegion, MemorySingleRegion, Message, VirtqAddr, VirtqState, VuFeature,
     VuFrontMsg,
 };
 use crate::virtio::vu::conn::{VuChannel, VuSession};
@@ -446,33 +446,31 @@ impl VuBackend {
                     self.wake_up_dev(event);
                 }
             }
-            (VuFrontMsg::GET_CONFIG, 268) => {
-                let dev_config: DeviceConfig = self.session.recv_payload()?;
+            (VuFrontMsg::GET_CONFIG, 12..) => {
+                let mut region = [0u8; MAX_CONFIG_SIZE];
+                let dev_config = self.session.recv_config(&mut region)?;
                 let mut done = 0;
-                let mut resp = DeviceConfig::new_zeroed();
                 while let Some(n) = (dev_config.size as usize - done).checked_ilog2() {
                     let size = min(1 << n, 8) as u8;
                     let offset = dev_config.offset as u64 + done as u64;
                     let v = self.dev.device_config.read(offset, size)?;
-                    resp.region[done..(done + size as usize)]
+                    region[done..(done + size as usize)]
                         .copy_from_slice(&v.as_bytes()[..size as usize]);
                     done += size as usize;
                 }
-                resp.offset = dev_config.offset;
-                resp.size = dev_config.size;
-                resp.flags = dev_config.flags;
-                self.session.reply(req, &resp, &[])?;
+                self.session.reply_config(&dev_config, &region[..done])?;
                 log::debug!("{name}: get config: {dev_config:?}");
                 msg.flag.set_need_reply(false);
             }
-            (VuFrontMsg::SET_CONFIG, 268) => {
-                let dev_config: DeviceConfig = self.session.recv_payload()?;
+            (VuFrontMsg::SET_CONFIG, 12..) => {
+                let mut region = [0u8; MAX_CONFIG_SIZE];
+                let dev_config = self.session.recv_config(&mut region)?;
                 let mut done = 0;
                 while let Some(n) = (dev_config.size as usize - done).checked_ilog2() {
                     let size = min(1 << n, 8) as u8;
                     let mut v = 0;
                     v.as_mut_bytes()[..size as usize]
-                        .copy_from_slice(&dev_config.region[done..(done + size as usize)]);
+                        .copy_from_slice(&region[done..(done + size as usize)]);
                     let offset = dev_config.offset as u64 + done as u64;
                     self.dev.device_config.write(offset, size, v)?;
                     done += size as usize;

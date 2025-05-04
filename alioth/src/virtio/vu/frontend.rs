@@ -108,24 +108,25 @@ impl Mmio for VuDevConfig {
             offset: offset as u32,
             size: size as u32,
             flags: 0,
-            region: [0u8; 256],
         };
-        let resp = self.session.get_config(&req).unwrap();
         let mut ret = 0u64;
-        ret.as_mut_bytes().copy_from_slice(&resp.region[0..8]);
-        ret &= u64::MAX >> (64 - (size << 3));
+        let buf = &mut ret.as_mut_bytes()[..size as usize];
+        self.session
+            .get_config(&req, buf)
+            .box_trace(mem::error::Mmio)?;
         Ok(ret)
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        let mut req = DeviceConfig {
+        let req = DeviceConfig {
             offset: offset as u32,
             size: size as u32,
             flags: 0,
-            region: [0u8; 256],
         };
-        req.region[0..8].copy_from_slice(val.as_bytes());
-        self.session.set_config(&req).unwrap();
+        let buf = &val.as_bytes()[..size as usize];
+        self.session
+            .set_config(&req, buf)
+            .box_trace(mem::error::Mmio)?;
         Ok(Action::None)
     }
 }
