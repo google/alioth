@@ -15,6 +15,8 @@
 use std::error::Error;
 use std::fmt;
 
+use snafu::{ErrorCompat, IntoError, ResultExt};
+
 pub use macros::{DebugTrace, trace_error};
 
 pub trait DebugTrace: Error {
@@ -27,8 +29,22 @@ impl Error for Box<dyn DebugTrace + Send + Sync + 'static> {
     }
 }
 
-pub fn boxed_debug_trace<E: DebugTrace + Send + Sync + 'static>(
-    e: E,
-) -> Box<dyn DebugTrace + Send + Sync + 'static> {
-    Box::new(e)
+pub trait BoxTrace<'a, T> {
+    fn box_trace<C, E>(self, context: C) -> Result<T, E>
+    where
+        C: IntoError<E, Source = Box<dyn DebugTrace + Send + Sync + 'a>>,
+        E: Error + ErrorCompat;
+}
+
+impl<'a, T, E1> BoxTrace<'a, T> for Result<T, E1>
+where
+    E1: DebugTrace + Send + Sync + 'a,
+{
+    fn box_trace<C, E>(self, context: C) -> Result<T, E>
+    where
+        C: IntoError<E, Source = Box<dyn DebugTrace + Send + Sync + 'a>>,
+        E: Error + ErrorCompat,
+    {
+        self.map_err(|e| Box::new(e) as _).context(context)
+    }
 }

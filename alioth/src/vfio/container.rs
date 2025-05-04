@@ -20,7 +20,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::errors::boxed_debug_trace;
+use crate::errors::BoxTrace;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged};
 use crate::vfio::bindings::{
@@ -110,15 +110,13 @@ pub struct UpdateContainerMapping {
 impl LayoutChanged for UpdateContainerMapping {
     fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
         let ret = self.container.map(pages.addr(), gpa, pages.size());
-        ret.map_err(boxed_debug_trace)
-            .context(mem::error::ChangeLayout)?;
+        ret.box_trace(mem::error::ChangeLayout)?;
         Ok(())
     }
 
     fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
         let ret = self.container.unmap(gpa, pages.size());
-        ret.map_err(boxed_debug_trace)
-            .context(mem::error::ChangeLayout)?;
+        ret.box_trace(mem::error::ChangeLayout)?;
         Ok(())
     }
 }

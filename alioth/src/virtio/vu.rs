@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
-use crate::errors::{DebugTrace, boxed_debug_trace, trace_error};
+use crate::errors::{BoxTrace, DebugTrace, trace_error};
 use crate::mem::LayoutChanged;
 use crate::mem::mapped::ArcMemPages;
 use crate::{ffi, mem};
@@ -542,8 +542,7 @@ impl LayoutChanged for UpdateVuMem {
             },
         };
         let ret = self.dev.add_mem_region(&region, fd.as_raw_fd());
-        ret.map_err(boxed_debug_trace)
-            .context(mem::error::ChangeLayout)?;
+        ret.box_trace(mem::error::ChangeLayout)?;
         log::trace!(
             "vu-{}: added memory region {:x?}",
             self.dev.conn.lock().as_raw_fd(),
@@ -566,8 +565,7 @@ impl LayoutChanged for UpdateVuMem {
             },
         };
         let ret = self.dev.remove_mem_region(&region);
-        ret.map_err(boxed_debug_trace)
-            .context(mem::error::ChangeLayout)?;
+        ret.box_trace(mem::error::ChangeLayout)?;
         log::trace!(
             "vu-{}: removed memory region {:x?}",
             self.dev.conn.lock().as_raw_fd(),
