@@ -25,10 +25,9 @@ use std::sync::atomic::AtomicU64;
 use libc::{PROT_READ, PROT_WRITE};
 use macros::Layout;
 use parking_lot::{Mutex, RwLock};
-use snafu::ResultExt;
 use zerocopy::{FromBytes, Immutable, IntoBytes, transmute};
 
-use crate::errors::boxed_debug_trace;
+use crate::errors::BoxTrace;
 use crate::hv::{IrqFd, MsiSender};
 use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::mem::mapped::ArcMemPages;
@@ -341,7 +340,7 @@ where
 
     fn reset(&self) -> pci::Result<()> {
         let ret = VfioPciDev::reset(self);
-        ret.map_err(boxed_debug_trace).context(pci::error::Reset)?;
+        ret.box_trace(pci::error::Reset)?;
         Ok(())
     }
 }
@@ -696,8 +695,7 @@ where
             let offset = offset - self.table_range.start;
             if self.table.write_val(offset as u64, size, val)? {
                 self.enable_irqfd(offset / size_of::<MsixTableEntry>())
-                    .map_err(boxed_debug_trace)
-                    .context(mem::error::Mmio)?;
+                    .box_trace(mem::error::Mmio)?;
             }
         } else if self.pba_range.contains(&offset) {
             log::error!(
@@ -825,9 +823,7 @@ where
         }
         drop(cap);
         if need_update {
-            self.update_msi()
-                .map_err(boxed_debug_trace)
-                .context(mem::error::Mmio)?;
+            self.update_msi().box_trace(mem::error::Mmio)?;
         }
         Ok(Action::None)
     }

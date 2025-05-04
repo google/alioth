@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use snafu::{ResultExt, Snafu};
 
-use crate::errors::{DebugTrace, boxed_debug_trace, trace_error};
+use crate::errors::{BoxTrace, DebugTrace, trace_error};
 use crate::mem::mapped::Ram;
 use crate::mem::{self, LayoutUpdated};
 
@@ -158,8 +158,7 @@ impl LayoutUpdated for UpdateVsockMem {
             table.regions[index].size = user_mem.size();
         }
         let ret = self.dev.set_mem_table(&table);
-        ret.map_err(boxed_debug_trace)
-            .context(mem::error::ChangeLayout)?;
+        ret.box_trace(mem::error::ChangeLayout)?;
         log::trace!(
             "vhost-{}: updated mem table to {:x?}",
             self.dev.fd.as_raw_fd(),
