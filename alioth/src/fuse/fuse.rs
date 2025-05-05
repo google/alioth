@@ -13,7 +13,9 @@
 // limitations under the License.
 
 pub mod bindings;
+pub mod passthrough;
 
+use std::ffi::FromBytesUntilNulError;
 use std::io::{Error as IoError, IoSliceMut};
 
 use macros::trace_error;
@@ -23,8 +25,8 @@ use crate::errors::DebugTrace;
 
 use self::bindings::{
     FuseAttrOut, FuseEntryOut, FuseFlushIn, FuseForgetIn, FuseGetattrIn, FuseInHeader, FuseInitIn,
-    FuseInitOut, FuseIoctlIn, FuseIoctlOut, FuseOpenIn, FuseOpenOut, FusePollIn, FusePollOut,
-    FuseReadIn, FuseReleaseIn, FuseSyncfsIn,
+    FuseInitOut, FuseIoctlIn, FuseIoctlOut, FuseOpcode, FuseOpenIn, FuseOpenOut, FusePollIn,
+    FusePollOut, FuseReadIn, FuseReleaseIn, FuseSyncfsIn,
 };
 
 #[trace_error]
@@ -33,12 +35,31 @@ use self::bindings::{
 pub enum Error {
     #[snafu(display("Error from OS"), context(false))]
     System { error: std::io::Error },
+    #[snafu(display("Node id {id:#x} does not exist"))]
+    NodeId { id: u64 },
+    #[snafu(display("Invalid C String "), context(false))]
+    InvalidCString { error: FromBytesUntilNulError },
+    #[snafu(display("Unsupported flag {flag:#x} of {op:?}"))]
+    Unsupported { op: FuseOpcode, flag: u32 },
+    #[snafu(display("Directory was not opened"))]
+    DirNotOpened,
+}
+
+impl From<&IoError> for Error {
+    fn from(e: &IoError) -> Self {
+        let code = e.raw_os_error().unwrap_or(libc::EINVAL);
+        IoError::from_raw_os_error(code).into()
+    }
 }
 
 impl Error {
     pub fn error_code(&self) -> i32 {
         match self {
             Error::System { error, .. } => error.raw_os_error().unwrap_or(libc::EINVAL),
+            Error::NodeId { .. } => libc::ENOENT,
+            Error::InvalidCString { .. } => libc::EINVAL,
+            Error::Unsupported { .. } => libc::EOPNOTSUPP,
+            Error::DirNotOpened { .. } => libc::EBADF,
         }
     }
 }

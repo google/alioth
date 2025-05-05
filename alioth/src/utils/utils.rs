@@ -33,6 +33,14 @@ macro_rules! align_up {
 }
 
 #[macro_export]
+macro_rules! align_up_ty {
+    ($num:expr, $ty:ty) => {{
+        let mask = ::core::mem::align_of::<$ty>() - 1;
+        ($num.wrapping_add(mask)) & !mask
+    }};
+}
+
+#[macro_export]
 macro_rules! align_down {
     ($num:expr, $bits:expr) => {{
         let mask = (1 << $bits) - 1;
