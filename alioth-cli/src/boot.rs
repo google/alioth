@@ -37,6 +37,7 @@ use alioth::virtio::DeviceId;
 use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::entropy::EntropyParam;
+use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::fs::vu::VuFsParam;
 #[cfg(target_os = "linux")]
@@ -110,11 +111,14 @@ impl Default for Hypervisor {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize, Clone, Help)]
 enum FsParam {
+    /// VirtIO FS device backed by a shared directory.
+    #[serde(alias = "dir")]
+    Dir(SharedDirParam),
+    #[cfg(target_os = "linux")]
+    /// VirtIO FS device backed by a vhost-user process, e.g. virtiofsd.
     #[serde(alias = "vu")]
-    /// VirtIO device backed by a vhost-user process, e.g. virtiofsd.
     Vu(VuFsParam),
 }
 
@@ -226,7 +230,6 @@ pub struct BootArgs {
     ))]
     coco: Option<String>,
 
-    #[cfg(target_os = "linux")]
     #[arg(long, help(
         help_text::<FsParam>("Add a VirtIO filesystem device.")
     ))]
@@ -429,15 +432,15 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
     #[cfg(target_os = "linux")]
     add_net(&vm, args.net, &objects)?;
     add_blk(&vm, args.blk, &objects)?;
-    #[cfg(target_os = "linux")]
     for (index, fs) in args.fs.into_iter().enumerate() {
         let param: FsParam =
             serde_aco::from_args(&fs, &objects).context(error::ParseArg { arg: fs })?;
         match param {
-            FsParam::Vu(p) => vm
-                .add_virtio_dev(format!("vu-fs-{index}"), p)
-                .context(error::CreateDevice)?,
-        };
+            FsParam::Dir(p) => vm.add_virtio_dev(format!("virtio-fs-{index}"), p),
+            #[cfg(target_os = "linux")]
+            FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p),
+        }
+        .context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]
     if let Some(vsock) = args.vsock {
