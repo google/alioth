@@ -76,6 +76,8 @@ pub enum Error {
     #[cfg(target_os = "linux")]
     #[snafu(display("vhost error"), context(false))]
     Vhost { source: Box<vhost::Error> },
+    #[snafu(display("fuse error"), context(false))]
+    Fuse { source: Box<crate::fuse::Error> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
