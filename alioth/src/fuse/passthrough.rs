@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
 use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir};
-use std::io::{IoSliceMut, Read, Seek, SeekFrom};
+use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
@@ -28,9 +28,9 @@ use zerocopy::IntoBytes;
 use crate::align_up_ty;
 use crate::fuse::bindings::{
     FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseAttr, FuseAttrOut,
-    FuseDirent, FuseDirentType, FuseEntryOut, FuseFlushIn, FuseForgetIn, FuseGetattrFlag,
-    FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut, FuseOpenIn, FuseOpenOut, FuseReadIn,
-    FuseReleaseIn, FuseSyncfsIn,
+    FuseCreateIn, FuseCreateOut, FuseDirent, FuseDirentType, FuseEntryOut, FuseFlushIn,
+    FuseForgetIn, FuseGetattrFlag, FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut,
+    FuseOpenIn, FuseOpenOut, FuseReadIn, FuseReleaseIn, FuseSyncfsIn, FuseWriteIn, FuseWriteOut,
 };
 use crate::fuse::{Fuse, Result, error};
 
@@ -364,5 +364,62 @@ impl Fuse for Passthrough {
     fn syncfs(&mut self, hdr: &FuseInHeader, in_: &FuseSyncfsIn) -> Result<()> {
         log::error!("syncfs: {hdr:?} {in_:?}");
         Ok(())
+    }
+
+    fn create(
+        &mut self,
+        hdr: &FuseInHeader,
+        in_: &FuseCreateIn,
+        buf: &[u8],
+    ) -> Result<FuseCreateOut> {
+        let parent = self.get_node_mut(hdr.nodeid)?;
+        let opts = convert_o_flags(in_.flags as i32)?;
+        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(buf)?.to_bytes());
+        let path = parent.path.join(p).into_boxed_path();
+        let nodeid = path.as_os_str().as_bytes().as_ptr() as u64;
+        let f = opts.open(&path)?;
+        let meta = f.metadata()?;
+        let handle = Handle::File(f);
+        let fh = handle.fh();
+        let node = Node {
+            lookup_count: 1,
+            path,
+            handle: Some(handle),
+        };
+        self.nodes.insert(nodeid, node);
+        Ok(FuseCreateOut {
+            entry: FuseEntryOut {
+                nodeid,
+                generation: 0,
+                entry_valid: 0,
+                attr_valid: 0,
+                entry_valid_nsec: 0,
+                attr_valid_nsec: 0,
+                attr: self.convert_meta(&meta),
+            },
+            open: FuseOpenOut {
+                fh,
+                open_flags: 0,
+                backing_id: 0,
+            },
+        })
+    }
+
+    fn write(
+        &mut self,
+        hdr: &FuseInHeader,
+        in_: &FuseWriteIn,
+        buf: &[IoSlice],
+    ) -> Result<FuseWriteOut> {
+        let node = self.get_node(hdr.nodeid)?;
+        let Some(Handle::File(f)) = &node.handle else {
+            return error::FileNotOpened.fail();
+        };
+        let mut file = f;
+        // TODO: use `write_vectored_at`
+        // https://github.com/rust-lang/rust/issues/89517
+        file.seek(SeekFrom::Start(in_.offset))?;
+        let size = file.write_vectored(buf)? as u32;
+        Ok(FuseWriteOut { size, padding: 0 })
     }
 }
