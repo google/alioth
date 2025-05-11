@@ -47,6 +47,8 @@ pub enum Error {
     InvalidAccMode { mode: i32 },
     #[snafu(display("File was not opened"))]
     FileNotOpened,
+    #[snafu(display("Invalid file handle"))]
+    InvalidFileHandle,
 }
 
 impl From<&IoError> for Error {
@@ -66,6 +68,7 @@ impl Error {
             Error::DirNotOpened { .. } => libc::EBADF,
             Error::InvalidAccMode { .. } => libc::EINVAL,
             Error::FileNotOpened { .. } => libc::EBADF,
+            Error::InvalidFileHandle { .. } => libc::EBADF,
         }
     }
 }
