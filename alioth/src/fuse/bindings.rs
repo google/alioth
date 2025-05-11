@@ -126,7 +126,7 @@ bitflags! {
     #[repr(transparent)]
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct FuseGetattrFlag: u32 {
-        const FN = 1 << 0;
+        const FH = 1 << 0;
     }
 }
 

@@ -157,10 +157,10 @@ impl Fuse for Passthrough {
 
     fn get_attr(&mut self, hdr: &FuseInHeader, in_: &FuseGetattrIn) -> Result<FuseAttrOut> {
         let flag = FuseGetattrFlag::from_bits_retain(in_.getattr_flags);
-        if flag.contains(FuseGetattrFlag::FN) {
+        if flag.contains(FuseGetattrFlag::FH) {
             return error::Unsupported {
                 op: FuseOpcode::GETATTR,
-                flag: FuseGetattrFlag::FN.bits(),
+                flag: FuseGetattrFlag::FH.bits(),
             }
             .fail();
         }
