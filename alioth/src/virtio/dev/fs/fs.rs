@@ -242,7 +242,7 @@ impl<F> Fs<F> {
                     hdr_out.len = (size + size_of::<FuseOutHeader>()) as u32;
                 }
                 Err(e) => {
-                    hdr_out.error = e.error_code();
+                    hdr_out.error = -e.error_code();
                     hdr_out.len = size_of::<FuseOutHeader>() as u32;
                 }
             }
