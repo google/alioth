@@ -18,6 +18,7 @@ use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir};
 use std::io::{IoSliceMut, Read, Seek, SeekFrom};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirEntryExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -28,8 +29,8 @@ use crate::align_up_ty;
 use crate::fuse::bindings::{
     FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseAttr, FuseAttrOut,
     FuseDirent, FuseDirentType, FuseEntryOut, FuseFlushIn, FuseForgetIn, FuseGetattrFlag,
-    FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut, FuseOpcode, FuseOpenIn, FuseOpenOut,
-    FuseReadIn, FuseReleaseIn, FuseSyncfsIn,
+    FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut, FuseOpenIn, FuseOpenOut, FuseReadIn,
+    FuseReleaseIn, FuseSyncfsIn,
 };
 use crate::fuse::{Fuse, Result, error};
 
@@ -76,6 +77,15 @@ fn convert_o_flags(flags: i32) -> Result<OpenOptions> {
 enum Handle {
     ReadDir(Box<Peekable<Enumerate<ReadDir>>>),
     File(File),
+}
+
+impl Handle {
+    fn fh(&self) -> u64 {
+        match self {
+            Handle::File(f) => f.as_raw_fd() as u64,
+            Handle::ReadDir(rd) => rd.as_ref() as *const Peekable<_> as u64,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -156,17 +166,19 @@ impl Fuse for Passthrough {
     }
 
     fn get_attr(&mut self, hdr: &FuseInHeader, in_: &FuseGetattrIn) -> Result<FuseAttrOut> {
+        let node = self.get_node(hdr.nodeid)?;
+        log::trace!("get_attr: {in_:?} {:?}", node.path);
+
         let flag = FuseGetattrFlag::from_bits_retain(in_.getattr_flags);
         if flag.contains(FuseGetattrFlag::FH) {
-            return error::Unsupported {
-                op: FuseOpcode::GETATTR,
-                flag: FuseGetattrFlag::FH.bits(),
+            let Some(handle) = &node.handle else {
+                return error::InvalidFileHandle.fail();
+            };
+            let fh = handle.fh();
+            if in_.fh != fh {
+                return error::InvalidFileHandle.fail();
             }
-            .fail();
         }
-        let node = self.get_node(hdr.nodeid)?;
-
-        log::trace!("get_attr: {in_:?} {:?}", node.path);
 
         let file = OpenOptions::new()
             .read(true)
@@ -184,10 +196,11 @@ impl Fuse for Passthrough {
     fn open_dir(&mut self, hdr: &FuseInHeader, in_: &FuseOpenIn) -> Result<FuseOpenOut> {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("open_dir: {in_:?} {:?}", node.path);
-        let read_dir = read_dir(&node.path)?.enumerate().peekable();
-        node.handle = Some(Handle::ReadDir(Box::new(read_dir)));
+        let handle = Handle::ReadDir(Box::new(read_dir(&node.path)?.enumerate().peekable()));
+        let fh = handle.fh();
+        node.handle = Some(handle);
         Ok(FuseOpenOut {
-            fh: 0,
+            fh,
             open_flags: 0,
             backing_id: 0,
         })
@@ -314,10 +327,11 @@ impl Fuse for Passthrough {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("open: {:?} {in_:?}", node.path);
         let opts = convert_o_flags(in_.flags as i32)?;
-        let f = opts.open(&node.path)?;
-        node.handle = Some(Handle::File(f));
+        let handle = Handle::File(opts.open(&node.path)?);
+        let fh = handle.fh();
+        node.handle = Some(handle);
         Ok(FuseOpenOut {
-            fh: 0,
+            fh,
             open_flags: 0,
             backing_id: 0,
         })
