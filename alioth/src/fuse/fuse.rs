@@ -43,6 +43,10 @@ pub enum Error {
     Unsupported { op: FuseOpcode, flag: u32 },
     #[snafu(display("Directory was not opened"))]
     DirNotOpened,
+    #[snafu(display("Invalid access mode {mode:#x}"))]
+    InvalidAccMode { mode: i32 },
+    #[snafu(display("File was not opened"))]
+    FileNotOpened,
 }
 
 impl From<&IoError> for Error {
@@ -60,6 +64,8 @@ impl Error {
             Error::InvalidCString { .. } => libc::EINVAL,
             Error::Unsupported { .. } => libc::EOPNOTSUPP,
             Error::DirNotOpened { .. } => libc::EBADF,
+            Error::InvalidAccMode { .. } => libc::EINVAL,
+            Error::FileNotOpened { .. } => libc::EBADF,
         }
     }
 }
