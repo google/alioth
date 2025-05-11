@@ -20,7 +20,7 @@ use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirEntryExt, FileTypeExt, MetadataExt, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use zerocopy::IntoBytes;
 
@@ -58,7 +58,7 @@ fn fuse_dir_type(e: FileType) -> FuseDirentType {
 #[derive(Debug)]
 struct Node {
     lookup_count: u64,
-    path: PathBuf,
+    path: Box<Path>,
     read_dir: Option<Peekable<Enumerate<ReadDir>>>,
 }
 
@@ -71,7 +71,7 @@ impl Passthrough {
     pub fn new(path: PathBuf) -> Result<Self> {
         let node = Node {
             lookup_count: 1,
-            path,
+            path: path.into(),
             read_dir: None,
         };
         let nodes = HashMap::from([(FUSE_ROOT_ID, node)]);
@@ -236,8 +236,8 @@ impl Fuse for Passthrough {
 
     fn lookup(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<FuseEntryOut> {
         let parent = self.get_node(hdr.nodeid)?;
-        let path_c = CStr::from_bytes_until_nul(in_)?;
-        let path = parent.path.join(OsStr::from_bytes(path_c.to_bytes()));
+        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(in_)?.to_bytes());
+        let path = parent.path.join(p).into_boxed_path();
 
         log::trace!("lookup: {path:?}");
         let mut entry;
