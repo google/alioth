@@ -492,6 +492,13 @@ pub struct FuseCreateIn {
 
 #[repr(C)]
 #[derive(Debug, Default, FromBytes, KnownLayout, Immutable, IntoBytes)]
+pub struct FuseCreateOut {
+    pub entry: FuseEntryOut,
+    pub open: FuseOpenOut,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, FromBytes, KnownLayout, Immutable, IntoBytes)]
 pub struct FuseOpenOut {
     pub fh: u64,
     pub open_flags: u32,
