@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
 use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir};
-use std::io::{IoSliceMut, Read};
+use std::io::{IoSliceMut, Read, Seek, SeekFrom};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
 use std::os::unix::ffi::OsStrExt;
@@ -335,6 +335,9 @@ impl Fuse for Passthrough {
             return error::FileNotOpened.fail();
         };
         let mut file = f;
+        // TODO: use `read_vectored_at`
+        // https://github.com/rust-lang/rust/issues/89517
+        file.seek(SeekFrom::Start(in_.offset))?;
         let size = file.read_vectored(iov)?;
         Ok(size)
     }
