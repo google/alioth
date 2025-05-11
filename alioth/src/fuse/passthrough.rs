@@ -55,11 +55,34 @@ fn fuse_dir_type(e: FileType) -> FuseDirentType {
     }
 }
 
+fn convert_o_flags(flags: i32) -> Result<OpenOptions> {
+    let mut opts = OpenOptions::new();
+    match flags & libc::O_ACCMODE {
+        libc::O_RDONLY => opts.read(true),
+        libc::O_WRONLY => opts.write(true),
+        libc::O_RDWR => opts.read(true).write(true),
+        mode => return error::InvalidAccMode { mode }.fail(),
+    };
+    opts.append(flags & libc::O_APPEND == libc::O_APPEND);
+    opts.truncate(flags & libc::O_TRUNC == libc::O_TRUNC);
+    opts.create(flags & libc::O_CREAT == libc::O_CREAT);
+    opts.create_new(flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL);
+    let all = libc::O_ACCMODE | libc::O_APPEND | libc::O_TRUNC | libc::O_CREAT | libc::O_EXCL;
+    opts.custom_flags(flags & !all);
+    Ok(opts)
+}
+
+#[derive(Debug)]
+enum Handle {
+    ReadDir(Box<Peekable<Enumerate<ReadDir>>>),
+    File(File),
+}
+
 #[derive(Debug)]
 struct Node {
     lookup_count: u64,
     path: Box<Path>,
-    read_dir: Option<Peekable<Enumerate<ReadDir>>>,
+    handle: Option<Handle>,
 }
 
 #[derive(Debug)]
@@ -72,7 +95,7 @@ impl Passthrough {
         let node = Node {
             lookup_count: 1,
             path: path.into(),
-            read_dir: None,
+            handle: None,
         };
         let nodes = HashMap::from([(FUSE_ROOT_ID, node)]);
         Ok(Passthrough { nodes })
@@ -162,7 +185,7 @@ impl Fuse for Passthrough {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("open_dir: {in_:?} {:?}", node.path);
         let read_dir = read_dir(&node.path)?.enumerate().peekable();
-        node.read_dir = Some(read_dir);
+        node.handle = Some(Handle::ReadDir(Box::new(read_dir)));
         Ok(FuseOpenOut {
             fh: 0,
             open_flags: 0,
@@ -179,7 +202,7 @@ impl Fuse for Passthrough {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("read_dir: {:?}", node.path);
 
-        let Some(read_dir) = &mut node.read_dir else {
+        let Some(Handle::ReadDir(read_dir)) = &mut node.handle else {
             return error::DirNotOpened.fail();
         };
         let Some((index, _)) = read_dir.peek() else {
@@ -223,13 +246,14 @@ impl Fuse for Passthrough {
 
     fn release_dir(&mut self, hdr: &FuseInHeader, in_: &FuseReleaseIn) -> Result<()> {
         let node = self.get_node_mut(hdr.nodeid)?;
-        node.read_dir = None;
+        node.handle = None;
         log::trace!("release_dir: {in_:?} {:?}", node.path);
         Ok(())
     }
 
     fn release(&mut self, hdr: &FuseInHeader, in_: &FuseReleaseIn) -> Result<()> {
-        let node = self.get_node(hdr.nodeid)?;
+        let node = self.get_node_mut(hdr.nodeid)?;
+        node.handle = None;
         log::trace!("release: {in_:?} {:?}", node.path);
         Ok(())
     }
@@ -250,7 +274,7 @@ impl Fuse for Passthrough {
                 let node = Node {
                     lookup_count: 1,
                     path,
-                    read_dir: None,
+                    handle: None,
                 };
                 entry = self.nodes.entry(nodeid).insert_entry(node);
                 (nodeid, entry.get_mut())
@@ -287,8 +311,11 @@ impl Fuse for Passthrough {
     }
 
     fn open(&mut self, hdr: &FuseInHeader, in_: &FuseOpenIn) -> Result<FuseOpenOut> {
-        let node = self.get_node(hdr.nodeid)?;
+        let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("open: {:?} {in_:?}", node.path);
+        let opts = convert_o_flags(in_.flags as i32)?;
+        let f = opts.open(&node.path)?;
+        node.handle = Some(Handle::File(f));
         Ok(FuseOpenOut {
             fh: 0,
             open_flags: 0,
@@ -304,7 +331,10 @@ impl Fuse for Passthrough {
     ) -> Result<usize> {
         let node = self.get_node(hdr.nodeid)?;
         log::trace!("read: {hdr:?} {in_:?} {:?}", node.path);
-        let mut file = File::open(&node.path)?;
+        let Some(Handle::File(f)) = &node.handle else {
+            return error::FileNotOpened.fail();
+        };
+        let mut file = f;
         let size = file.read_vectored(iov)?;
         Ok(size)
     }
