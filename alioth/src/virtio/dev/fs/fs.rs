@@ -17,7 +17,7 @@ pub mod shared_dir;
 pub mod vu;
 
 use std::fmt::Debug;
-use std::io::{self, IoSlice, IoSliceMut};
+use std::io::{self, IoSlice, IoSliceMut, Read};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -83,7 +83,7 @@ impl<F> Fs<F> {
     fn handle_msg(
         &mut self,
         hdr: &FuseInHeader,
-        in_: &IoSlice,
+        in_: &[IoSlice],
         out: &mut [IoSliceMut],
     ) -> fuse::Result<usize>
     where
@@ -92,42 +92,45 @@ impl<F> Fs<F> {
         let name = &*self.name;
         let opcode = hdr.opcode;
 
-        fn parse_in<T>(buf: &[u8]) -> fuse::Result<&T>
+        fn parse_in<'a, T>(bufs: &'a [IoSlice<'a>]) -> fuse::Result<(&'a T, &'a [u8])>
         where
             T: FromBytes + KnownLayout + Immutable,
         {
-            match T::ref_from_bytes(buf) {
-                Ok(r) => Ok(r),
+            let [buf] = bufs else {
+                return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
+            };
+            match T::ref_from_prefix(buf) {
+                Ok((r, buf)) => Ok((r, buf)),
                 Err(_) => Err(io::Error::from_raw_os_error(libc::EINVAL))?,
             }
         }
 
-        fn write_out<T>(out: &T, buf: &mut [IoSliceMut]) -> fuse::Result<()>
+        fn parse_in_iov<'a, T>(bufs: &'a [IoSlice<'a>]) -> fuse::Result<(&'a T, &'a [IoSlice<'a>])>
         where
-            T: FromBytes + KnownLayout + Immutable + IntoBytes,
+            T: FromBytes + KnownLayout + Immutable,
         {
-            if size_of::<T>() == 0 {
-                return Ok(());
-            }
-            let [b] = buf else {
+            let [h, bufs @ ..] = bufs else {
                 return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
             };
-            match out.write_to(b) {
-                Ok(r) => Ok(r),
+            match T::ref_from_bytes(h) {
+                Ok(r) => Ok((r, bufs)),
                 Err(_) => Err(io::Error::from_raw_os_error(libc::EINVAL))?,
             }
         }
 
         macro_rules! opcode_branch {
-            ($func:ident,[],_) => {{
+            ($func:ident, &[u8],_) => {{
+                let [in_] = in_ else {
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
+                };
                 let ret = self.fuse.$func(hdr, in_)?;
-                write_out(&ret, out)?;
+                let size = ret.as_bytes().read_vectored(out)?;
                 let in_s = String::from_utf8_lossy(in_);
-                log::trace!("{name}: {opcode:?}\n{in_s:?}\n{ret:?}");
-                Ok(size_of_val(&ret))
+                log::trace!("{name}: {opcode:?}\n{in_s:?}\n{ret:x?}");
+                Ok(size)
             }};
-            ($func:ident,[],[]) => {{
-                let [out] = out else {
+            ($func:ident, &[u8], &mut[u8]) => {{
+                let ([in_], [out]) = (in_, out) else {
                     return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
                 };
                 let size = self.fuse.$func(hdr, in_, out)?;
@@ -135,47 +138,62 @@ impl<F> Fs<F> {
                 log::trace!("{name}: {opcode:?}\n{in_s:?}\nsize = {size:?}",);
                 Ok(size)
             }};
-            ($func:ident,_,[]) => {{
+            ($func:ident, &_, &mut[u8]) => {{
                 let [out] = out else {
                     return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
                 };
-                let in_ = parse_in(in_)?;
+                let (in_, _) = parse_in(in_)?;
                 let size = self.fuse.$func(hdr, in_, out)?;
-                log::trace!("{name}: {opcode:?}\n{in_:?}\nsize = {size}");
+                log::trace!("{name}: {opcode:?}\n{in_:x?}\nsize = {size}");
                 Ok(size)
             }};
-            ($func:ident,_,[[]]) => {{
-                let in_ = parse_in(in_)?;
+            ($func:ident, &_, &mut[IoSliceMut]) => {{
+                let (in_, _) = parse_in(in_)?;
                 let size = self.fuse.$func(hdr, in_, out)?;
-                log::trace!("{name}: {opcode:?}\n{in_:?}\nsize = {size}");
+                log::trace!("{name}: {opcode:?}\n{in_:x?}\nsize = {size}");
                 Ok(size)
             }};
-            ($func:ident,_,_) => {{
-                let in_ = parse_in(in_)?;
+            ($func:ident, &_,_) => {{
+                let (in_, _) = parse_in(in_)?;
                 let ret = self.fuse.$func(hdr, in_)?;
-                write_out(&ret, out)?;
-                log::trace!("{name}: {opcode:?}\n{in_:?}\n{ret:?}");
-                Ok(size_of_val(&ret))
+                let size = ret.as_bytes().read_vectored(out)?;
+                log::trace!("{name}: {opcode:?}\n{in_:x?}\n{ret:x?}");
+                Ok(size)
+            }};
+            ($func:ident, &_, &[u8],_) => {{
+                let (in_, buf) = parse_in(in_)?;
+                let ret = self.fuse.$func(hdr, in_, buf)?;
+                let size = ret.as_bytes().read_vectored(out)?;
+                log::trace!("{name}: {opcode:?}\n{in_:x?}\n{ret:x?}");
+                Ok(size)
+            }};
+            ($func:ident, &_, &[IoSlice],_) => {{
+                let (in_, bufs) = parse_in_iov(in_)?;
+                let ret = self.fuse.$func(hdr, in_, bufs)?;
+                let size = ret.as_bytes().read_vectored(out)?;
+                log::trace!("{name}: {opcode:?}\n{in_:x?}\n{ret:x?}");
+                Ok(size)
             }};
         }
-
         match opcode {
-            FuseOpcode::INIT => opcode_branch!(init, _, _),
-            FuseOpcode::GETATTR => opcode_branch!(get_attr, _, _),
-            FuseOpcode::OPEN => opcode_branch!(open, _, _),
-            FuseOpcode::OPENDIR => opcode_branch!(open_dir, _, _),
-            FuseOpcode::READDIR => opcode_branch!(read_dir, _, []),
-            FuseOpcode::RELEASEDIR => opcode_branch!(release_dir, _, _),
-            FuseOpcode::LOOKUP => opcode_branch!(lookup, [], _),
-            FuseOpcode::FORGET => opcode_branch!(forget, _, _),
-            FuseOpcode::POLL => opcode_branch!(poll, _, _),
-            FuseOpcode::READ => opcode_branch!(read, _, [[]]),
-            FuseOpcode::FLUSH => opcode_branch!(flush, _, _),
-            FuseOpcode::RELEASE => opcode_branch!(release, _, _),
-            FuseOpcode::SYNCFS => opcode_branch!(syncfs, _, _),
-            FuseOpcode::IOCTL => opcode_branch!(ioctl, _, _),
-            FuseOpcode::GETXATTR => opcode_branch!(get_xattr, [], []),
-            FuseOpcode::SETXATTR => opcode_branch!(set_xattr, [], _),
+            FuseOpcode::INIT => opcode_branch!(init, &_, _),
+            FuseOpcode::GETATTR => opcode_branch!(get_attr, &_, _),
+            FuseOpcode::OPEN => opcode_branch!(open, &_, _),
+            FuseOpcode::OPENDIR => opcode_branch!(open_dir, &_, _),
+            FuseOpcode::READDIR => opcode_branch!(read_dir, &_, &mut [u8]),
+            FuseOpcode::RELEASEDIR => opcode_branch!(release_dir, &_, _),
+            FuseOpcode::LOOKUP => opcode_branch!(lookup, &[u8], _),
+            FuseOpcode::FORGET => opcode_branch!(forget, &_, _),
+            FuseOpcode::POLL => opcode_branch!(poll, &_, _),
+            FuseOpcode::READ => opcode_branch!(read, &_, &mut [IoSliceMut]),
+            FuseOpcode::FLUSH => opcode_branch!(flush, &_, _),
+            FuseOpcode::RELEASE => opcode_branch!(release, &_, _),
+            FuseOpcode::SYNCFS => opcode_branch!(syncfs, &_, _),
+            FuseOpcode::IOCTL => opcode_branch!(ioctl, &_, _),
+            FuseOpcode::GETXATTR => opcode_branch!(get_xattr, &[u8], &mut [u8]),
+            FuseOpcode::SETXATTR => opcode_branch!(set_xattr, &[u8], _),
+            FuseOpcode::CREATE => opcode_branch!(create, &_, &[u8], _),
+            FuseOpcode::WRITE => opcode_branch!(write, &_, &[IoSlice], _),
             _ => Err(io::Error::from_raw_os_error(libc::ENOSYS))?,
         }
     }
@@ -188,7 +206,6 @@ impl<F> Fs<F> {
 
         let (hdr_out, out): (_, &mut [IoSliceMut]) = match &mut desc.writable[..] {
             [] => (None, &mut []),
-            [hdr] => (Some(hdr), &mut []),
             [hdr, out @ ..] => (Some(hdr), out),
         };
         let hdr_out = match hdr_out {
@@ -202,24 +219,21 @@ impl<F> Fs<F> {
             None => None,
         };
 
-        let (hdr_in, mut in_) = match &desc.readable[..] {
-            [hdr] => (hdr, &IoSlice::new(&[])),
-            [hdr, in_] => (hdr, in_),
-            _ => {
-                let len = desc.readable.len();
-                log::error!("{name}: cannot handle {len} readable buffers");
-                return Ok(0);
-            }
+        let [hdr_in, in_ @ ..] = &desc.readable[..] else {
+            let len = desc.readable.len();
+            log::error!("{name}: cannot handle {len} readable buffers");
+            return Ok(0);
         };
+        let mut in_ = in_;
 
         let Ok((hdr_in, remain)) = FuseInHeader::ref_from_prefix(hdr_in) else {
             log::error!("{name}: cannot parse FuseInHeader");
             return Ok(0);
         };
-        let remain = IoSlice::new(remain);
+        let in_remain = [IoSlice::new(remain)];
         if !remain.is_empty() {
             if in_.is_empty() {
-                in_ = &remain;
+                in_ = &in_remain;
             } else {
                 log::error!("{name}: cannot handle {} bytes after header", remain.len());
                 return Ok(0);
