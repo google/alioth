@@ -65,6 +65,8 @@ pub enum Error {
     Convert { hva: u64 },
     #[snafu(display("invalid message {req:?} with payload size {size}"))]
     InvalidMsg { req: VuFrontMsg, size: u32 },
+    #[snafu(display("Cannot change memory layout at runtime"))]
+    ChangeMemoryLayout,
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -391,6 +393,9 @@ impl VuBackend {
                     return error::MissingFd { req: msg.request }.fail();
                 };
                 let region = &single.region;
+                if self.status.contains(DevStatus::DRIVER_OK) {
+                    return error::ChangeMemoryLayout.fail();
+                }
                 log::debug!("{name}: add mem: {region:x?}, fd: {}", fd.as_raw_fd());
                 let user_mem = ArcMemPages::from_file(
                     File::from(fd),
@@ -404,6 +409,9 @@ impl VuBackend {
             (VuFrontMsg::REM_MEM_REG, 40) => {
                 let single: MemorySingleRegion = self.session.recv_payload()?;
                 let region = &single.region;
+                if self.status.contains(DevStatus::DRIVER_OK) {
+                    return error::ChangeMemoryLayout.fail();
+                }
                 for (index, r) in self.init.regions.iter().enumerate() {
                     if r.gpa == region.gpa && r.hva == region.hva && r.size == region.size {
                         log::info!("{name}: remove mem: {r:x?}");
