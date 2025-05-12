@@ -142,7 +142,7 @@ struct VuQueueInit {
 struct VuInit {
     drv_feat: u64,
     queues: Box<[VuQueueInit]>,
-    regions: Vec<(MemoryRegion, Option<OwnedFd>)>,
+    regions: Vec<MemoryRegion>,
 }
 
 pub struct VuBackend {
@@ -191,8 +191,7 @@ impl VuBackend {
     }
 
     fn convert_frontend_hva(&self, hva: u64) -> Result<u64> {
-        for region in &self.init.regions {
-            let (r, _) = &region;
+        for r in &self.init.regions {
             if hva >= r.hva && hva < r.hva + r.size {
                 return Ok(r.gpa + (hva - r.hva));
             }
@@ -225,20 +224,6 @@ impl VuBackend {
 
             let drv_gpa = self.convert_frontend_hva(addr.avail_hva)?;
             queue.driver.store(drv_gpa, Ordering::Release);
-        }
-
-        self.init.regions.sort_by_key(|(r, _)| r.gpa);
-        for (region, fd) in self.init.regions.iter_mut() {
-            let Some(fd) = fd.take() else {
-                continue;
-            };
-            let user_mem = ArcMemPages::from_file(
-                File::from(fd),
-                region.mmap_offset as i64,
-                region.size as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-            )?;
-            self.memory.add(region.gpa, user_mem)?;
         }
 
         let queues = &mut self.init.queues;
@@ -407,22 +392,26 @@ impl VuBackend {
                 };
                 let region = &single.region;
                 log::debug!("{name}: add mem: {region:x?}, fd: {}", fd.as_raw_fd());
-                self.init.regions.push((single.region.clone(), Some(fd)));
+                let user_mem = ArcMemPages::from_file(
+                    File::from(fd),
+                    region.mmap_offset as i64,
+                    region.size as usize,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                )?;
+                self.memory.add(region.gpa, user_mem)?;
+                self.init.regions.push(single.region);
             }
             (VuFrontMsg::REM_MEM_REG, 40) => {
                 let single: MemorySingleRegion = self.session.recv_payload()?;
                 let region = &single.region;
-                let mut indexes = vec![];
-                for (index, (r, _)) in self.init.regions.iter().enumerate() {
+                for (index, r) in self.init.regions.iter().enumerate() {
                     if r.gpa == region.gpa && r.hva == region.hva && r.size == region.size {
                         log::info!("{name}: remove mem: {r:x?}");
-                        indexes.push(index);
+                        self.init.regions.remove(index);
+                        let _ = self.memory.remove(region.gpa);
+                        break;
                     }
                 }
-                for index in indexes.iter().rev() {
-                    self.init.regions.remove(*index);
-                }
-                let _ = self.memory.remove(region.gpa);
             }
             (VuFrontMsg::GET_STATUS, 0) => {
                 let status = self.status.bits() as u64;
