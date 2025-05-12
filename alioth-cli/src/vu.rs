@@ -21,6 +21,7 @@ use std::thread::spawn;
 use alioth::errors::{DebugTrace, trace_error};
 use alioth::mem::mapped::RamBus;
 use alioth::virtio::dev::blk::BlkFileParam;
+use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 use alioth::virtio::dev::net::NetTapParam;
 use alioth::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
@@ -84,6 +85,8 @@ pub enum DevType {
     Net(DevArgs<NetTapParam>),
     /// VirtIO block device backed by a file.
     Blk(DevArgs<BlkFileParam>),
+    /// VirtIO filesystem device backed by a shared host directory.
+    Fs(DevArgs<SharedDirParam>),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -120,6 +123,7 @@ fn serve_conn(index: u32, conn: UnixStream, args: &VuArgs) -> Result<(), Error> 
     let dev = match &args.ty {
         DevType::Net(args) => create_dev(format!("net-{index}"), args, memory.clone()),
         DevType::Blk(args) => create_dev(format!("blk-{index}"), args, memory.clone()),
+        DevType::Fs(args) => create_dev(format!("fs-{index}"), args, memory.clone()),
     }?;
     let mut backend = VuBackend::new(conn, dev, memory).context(error::CreateVu)?;
     backend.run().context(error::Runtime)
