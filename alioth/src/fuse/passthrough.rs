@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
-use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir};
+use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_file};
 use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
@@ -420,5 +420,14 @@ impl Fuse for Passthrough {
         file.seek(SeekFrom::Start(in_.offset))?;
         let size = file.write_vectored(buf)? as u32;
         Ok(FuseWriteOut { size, padding: 0 })
+    }
+
+    fn unlink(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<()> {
+        let parent = self.get_node(hdr.nodeid)?;
+        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(in_)?.to_bytes());
+        let path = parent.path.join(p);
+        remove_file(&path)?;
+        log::trace!("unlink: {path:?}");
+        Ok(())
     }
 }

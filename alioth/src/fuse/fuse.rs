@@ -126,4 +126,5 @@ pub trait Fuse {
     fuse_method!(set_xattr, &[u8], ());
     fuse_method!(create, &FuseCreateIn, &[u8], FuseCreateOut);
     fuse_method!(write, &FuseWriteIn, &[IoSlice], FuseWriteOut);
+    fuse_method!(unlink, &[u8], ());
 }
