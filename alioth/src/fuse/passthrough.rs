@@ -277,11 +277,15 @@ impl Fuse for Passthrough {
         let path = parent.path.join(p).into_boxed_path();
 
         log::trace!("lookup: {path:?}");
-        let mut entry;
-        let (nodeid, node) =
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
+        let meta = file.metadata()?;
+        let nodeid =
             if let Some((nodeid, node)) = self.nodes.iter_mut().find(|(_, n)| n.path == path) {
                 node.lookup_count += 1;
-                (*nodeid, node)
+                *nodeid
             } else {
                 let nodeid = path.as_os_str().as_bytes().as_ptr() as u64;
                 let node = Node {
@@ -289,14 +293,9 @@ impl Fuse for Passthrough {
                     path,
                     handle: None,
                 };
-                entry = self.nodes.entry(nodeid).insert_entry(node);
-                (nodeid, entry.get_mut())
+                self.nodes.insert(nodeid, node);
+                nodeid
             };
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&node.path)?;
-        let meta = file.metadata()?;
         Ok(FuseEntryOut {
             nodeid,
             generation: 0,
