@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
-use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_file};
+use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_dir, remove_file};
 use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
@@ -123,6 +123,12 @@ impl Passthrough {
             Some(node) => Ok(node),
             None => error::NodeId { id }.fail(),
         }
+    }
+
+    fn join_path(&self, parent: u64, name: &[u8]) -> Result<Box<Path>> {
+        let parent = self.get_node(parent)?;
+        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(name)?.to_bytes());
+        Ok(parent.path.join(p).into_boxed_path())
     }
 
     fn convert_meta(&self, meta: &Metadata) -> FuseAttr {
@@ -272,9 +278,7 @@ impl Fuse for Passthrough {
     }
 
     fn lookup(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<FuseEntryOut> {
-        let parent = self.get_node(hdr.nodeid)?;
-        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(in_)?.to_bytes());
-        let path = parent.path.join(p).into_boxed_path();
+        let path = self.join_path(hdr.nodeid, in_)?;
 
         log::trace!("lookup: {path:?}");
         let file = OpenOptions::new()
@@ -371,10 +375,8 @@ impl Fuse for Passthrough {
         in_: &FuseCreateIn,
         buf: &[u8],
     ) -> Result<FuseCreateOut> {
-        let parent = self.get_node_mut(hdr.nodeid)?;
         let opts = convert_o_flags(in_.flags as i32)?;
-        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(buf)?.to_bytes());
-        let path = parent.path.join(p).into_boxed_path();
+        let path = self.join_path(hdr.nodeid, buf)?;
         let nodeid = path.as_os_str().as_bytes().as_ptr() as u64;
         let f = opts.open(&path)?;
         let meta = f.metadata()?;
@@ -423,11 +425,15 @@ impl Fuse for Passthrough {
     }
 
     fn unlink(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<()> {
-        let parent = self.get_node(hdr.nodeid)?;
-        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(in_)?.to_bytes());
-        let path = parent.path.join(p);
+        let path = self.join_path(hdr.nodeid, in_)?;
         remove_file(&path)?;
         log::trace!("unlink: {path:?}");
+        Ok(())
+    }
+
+    fn rmdir(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<()> {
+        let path = self.join_path(hdr.nodeid, in_)?;
+        remove_dir(path)?;
         Ok(())
     }
 }
