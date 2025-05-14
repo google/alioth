@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
-use std::fs::{File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_dir, remove_file};
+use std::fs::{
+    File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_dir, remove_file, rename,
+};
 use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
 use std::iter::{Enumerate, Peekable};
 use std::marker::PhantomData;
@@ -30,7 +32,8 @@ use crate::fuse::bindings::{
     FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseAttr, FuseAttrOut,
     FuseCreateIn, FuseCreateOut, FuseDirent, FuseDirentType, FuseEntryOut, FuseFlushIn,
     FuseForgetIn, FuseGetattrFlag, FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut,
-    FuseOpenIn, FuseOpenOut, FuseReadIn, FuseReleaseIn, FuseSyncfsIn, FuseWriteIn, FuseWriteOut,
+    FuseOpcode, FuseOpenIn, FuseOpenOut, FuseReadIn, FuseReleaseIn, FuseRename2In, FuseRenameIn,
+    FuseSyncfsIn, FuseWriteIn, FuseWriteOut, RenameFlag,
 };
 use crate::fuse::{Fuse, Result, error};
 
@@ -434,6 +437,39 @@ impl Fuse for Passthrough {
     fn rmdir(&mut self, hdr: &FuseInHeader, in_: &[u8]) -> Result<()> {
         let path = self.join_path(hdr.nodeid, in_)?;
         remove_dir(path)?;
+        Ok(())
+    }
+
+    fn rename(&mut self, hdr: &FuseInHeader, in_: &FuseRenameIn, buf: &[u8]) -> Result<()> {
+        let in2 = FuseRename2In {
+            newdir: in_.newdir,
+            flags: 0,
+            padding: 0,
+        };
+        self.rename2(hdr, &in2, buf)
+    }
+
+    fn rename2(&mut self, hdr: &FuseInHeader, in_: &FuseRename2In, buf: &[u8]) -> Result<()> {
+        // TODO: use split_once
+        // https://github.com/rust-lang/rust/issues/112811
+        let mut paths = buf.split_inclusive(|b| *b == b'\0');
+        let Some(p1) = paths.next() else {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL))?;
+        };
+        let Some(p2) = paths.next() else {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL))?;
+        };
+        let flag = RenameFlag::from_bits_retain(in_.flags);
+        if !flag.is_empty() {
+            return error::Unsupported {
+                op: FuseOpcode::RENAME2,
+                flag: flag.bits(),
+            }
+            .fail();
+        }
+        let src = self.join_path(hdr.nodeid, p1)?;
+        let dst = self.join_path(in_.newdir, p2)?;
+        rename(src, dst)?;
         Ok(())
     }
 }

@@ -26,8 +26,8 @@ use crate::errors::DebugTrace;
 use self::bindings::{
     FuseAttrOut, FuseCreateIn, FuseCreateOut, FuseEntryOut, FuseFlushIn, FuseForgetIn,
     FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut, FuseIoctlIn, FuseIoctlOut, FuseOpcode,
-    FuseOpenIn, FuseOpenOut, FusePollIn, FusePollOut, FuseReadIn, FuseReleaseIn, FuseSyncfsIn,
-    FuseWriteIn, FuseWriteOut,
+    FuseOpenIn, FuseOpenOut, FusePollIn, FusePollOut, FuseReadIn, FuseReleaseIn, FuseRename2In,
+    FuseRenameIn, FuseSyncfsIn, FuseWriteIn, FuseWriteOut,
 };
 
 #[trace_error]
@@ -128,4 +128,6 @@ pub trait Fuse {
     fuse_method!(write, &FuseWriteIn, &[IoSlice], FuseWriteOut);
     fuse_method!(unlink, &[u8], ());
     fuse_method!(rmdir, &[u8], ());
+    fuse_method!(rename, &FuseRenameIn, &[u8], ());
+    fuse_method!(rename2, &FuseRename2In, &[u8], ());
 }

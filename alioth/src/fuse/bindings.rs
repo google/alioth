@@ -439,6 +439,16 @@ pub struct FuseRenameIn {
     pub newdir: u64,
 }
 
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct RenameFlag: u32 {
+        const NOREPLACE = 1 << 0;
+        const EXCHANGE = 1 << 1;
+        const WHITEOUT = 1 << 2;
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default, FromBytes, KnownLayout, Immutable, IntoBytes)]
 pub struct FuseRename2In {
