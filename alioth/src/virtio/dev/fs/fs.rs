@@ -195,7 +195,9 @@ impl<F> Fs<F> {
             FuseOpcode::CREATE => opcode_branch!(create, &_, &[u8], _),
             FuseOpcode::UNLINK => opcode_branch!(unlink, &[u8], _),
             FuseOpcode::RMDIR => opcode_branch!(rmdir, &[u8], _),
+            FuseOpcode::RENAME => opcode_branch!(rename, &_, &[u8], _),
             FuseOpcode::WRITE => opcode_branch!(write, &_, &[IoSlice], _),
+            FuseOpcode::RENAME2 => opcode_branch!(rename2, &_, &[u8], _),
             _ => Err(io::Error::from_raw_os_error(libc::ENOSYS))?,
         }
     }
