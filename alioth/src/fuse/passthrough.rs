@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, OsStr};
+use std::fmt::Debug;
 use std::fs::{
     File, FileType, Metadata, OpenOptions, ReadDir, read_dir, remove_dir, remove_file, rename,
 };
@@ -25,17 +26,18 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirEntryExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use zerocopy::IntoBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::align_up_ty;
 use crate::fuse::bindings::{
     FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION, FUSE_ROOT_ID, FuseAttr, FuseAttrOut,
     FuseCreateIn, FuseCreateOut, FuseDirent, FuseDirentType, FuseEntryOut, FuseFlushIn,
     FuseForgetIn, FuseGetattrFlag, FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut,
-    FuseOpcode, FuseOpenIn, FuseOpenOut, FuseReadIn, FuseReleaseIn, FuseRename2In, FuseRenameIn,
+    FuseOpcode, FuseOpenIn, FuseOpenOut, FuseReadIn, FuseReleaseIn, FuseRemovemappingIn,
+    FuseRemovemappingOne, FuseRename2In, FuseRenameIn, FuseSetupmappingFlag, FuseSetupmappingIn,
     FuseSyncfsIn, FuseWriteIn, FuseWriteOut, RenameFlag,
 };
-use crate::fuse::{Fuse, Result, error};
+use crate::fuse::{DaxRegion, Fuse, Result, error};
 
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 
@@ -101,6 +103,7 @@ struct Node {
 #[derive(Debug)]
 pub struct Passthrough {
     nodes: HashMap<u64, Node>,
+    dax_region: Option<Box<dyn DaxRegion>>,
 }
 
 impl Passthrough {
@@ -111,7 +114,10 @@ impl Passthrough {
             handle: None,
         };
         let nodes = HashMap::from([(FUSE_ROOT_ID, node)]);
-        Ok(Passthrough { nodes })
+        Ok(Passthrough {
+            nodes,
+            dax_region: None,
+        })
     }
 
     fn get_node(&self, id: u64) -> Result<&Node> {
@@ -172,6 +178,10 @@ impl Fuse for Passthrough {
             flags2: 0,
             ..Default::default()
         })
+    }
+
+    fn set_dax_region(&mut self, dax_window: Box<dyn DaxRegion>) {
+        self.dax_region = Some(dax_window)
     }
 
     fn get_attr(&mut self, hdr: &FuseInHeader, in_: &FuseGetattrIn) -> Result<FuseAttrOut> {
@@ -470,6 +480,54 @@ impl Fuse for Passthrough {
         let src = self.join_path(hdr.nodeid, p1)?;
         let dst = self.join_path(in_.newdir, p2)?;
         rename(src, dst)?;
+        Ok(())
+    }
+
+    fn setup_mapping(&mut self, hdr: &FuseInHeader, in_: &FuseSetupmappingIn) -> Result<()> {
+        let Some(dax_region) = &self.dax_region else {
+            return Err(std::io::Error::from_raw_os_error(libc::ENOSYS))?;
+        };
+
+        let node = self.get_node(hdr.nodeid)?;
+        let Some(Handle::File(fd)) = &node.handle else {
+            return error::FileNotOpened.fail();
+        };
+
+        let flag = FuseSetupmappingFlag::from_bits_retain(in_.flags);
+        dax_region.map(in_.moffset, fd, in_.foffset, in_.len, flag)?;
+
+        log::trace!(
+            "setup_mapping: offset = {:#x}, file = {:?}",
+            in_.moffset,
+            node.path
+        );
+
+        Ok(())
+    }
+
+    fn remove_mapping(&mut self, _hdr: &FuseInHeader, in_: &[u8]) -> Result<()> {
+        let Some(dax_region) = &self.dax_region else {
+            return Err(std::io::Error::from_raw_os_error(libc::ENOSYS))?;
+        };
+
+        let Ok((h, mut remain)) = FuseRemovemappingIn::ref_from_prefix(in_) else {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL))?;
+        };
+
+        for _ in 0..h.count {
+            let Ok((one, r)) = FuseRemovemappingOne::read_from_prefix(remain) else {
+                return Err(std::io::Error::from_raw_os_error(libc::EINVAL))?;
+            };
+            dax_region.unmap(one.moffset, one.len)?;
+            log::trace!(
+                "remove_mapping: offset = {:#x}, size = {:#x}",
+                one.moffset,
+                one.len
+            );
+
+            remain = r;
+        }
+
         Ok(())
     }
 }

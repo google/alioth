@@ -119,7 +119,7 @@ macro_rules! ffi {
             Ok(ret)
         }
     }};
-    ($f:expr, $failure:ident) => {{
+    ($f:expr, $failure:expr) => {{
         let ret = $f;
         if ret == $failure {
             Err(::std::io::Error::last_os_error())

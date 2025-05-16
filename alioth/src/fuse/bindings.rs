@@ -888,7 +888,7 @@ pub struct FuseCopyFileRangeIn {
 bitflags! {
     #[repr(transparent)]
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseSetupmappingFlag: u32 {
+    pub struct FuseSetupmappingFlag: u64 {
         const WRITE = 1 << 0;
         const READ = 1 << 1;
     }
