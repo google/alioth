@@ -17,7 +17,9 @@ pub mod shared_dir;
 pub mod vu;
 
 use std::fmt::Debug;
+use std::fs::File;
 use std::io::{self, IoSlice, IoSliceMut, Read};
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -27,17 +29,68 @@ use mio::Registry;
 use mio::event::Event;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::fuse::bindings::{FuseInHeader, FuseOpcode, FuseOutHeader};
-use crate::fuse::{self, Fuse};
+use crate::fuse::bindings::{FuseInHeader, FuseOpcode, FuseOutHeader, FuseSetupmappingFlag};
+use crate::fuse::{self, DaxRegion, Fuse};
 use crate::hv::IoeventFd;
-use crate::impl_mmio_for_zerocopy;
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::{MemRegion, MemRegionType};
 use crate::virtio::dev::{Result, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender};
+use crate::{ffi, impl_mmio_for_zerocopy};
+
+impl DaxRegion for ArcMemPages {
+    fn map(
+        &self,
+        m_offset: u64,
+        fd: &File,
+        f_offset: u64,
+        len: u64,
+        flag: FuseSetupmappingFlag,
+    ) -> fuse::Result<()> {
+        let fd = fd.as_raw_fd();
+
+        let map_addr = self.addr() + m_offset as usize;
+
+        let mut prot = 0;
+        if flag.contains(FuseSetupmappingFlag::READ) {
+            prot |= libc::PROT_READ;
+        };
+        if flag.contains(FuseSetupmappingFlag::WRITE) {
+            prot |= libc::PROT_WRITE;
+        }
+
+        ffi!(
+            unsafe {
+                libc::mmap(
+                    map_addr as _,
+                    len as usize,
+                    prot,
+                    libc::MAP_SHARED | libc::MAP_FIXED,
+                    fd,
+                    f_offset as _,
+                )
+            },
+            libc::MAP_FAILED
+        )?;
+
+        Ok(())
+    }
+
+    fn unmap(&self, m_offset: u64, len: u64) -> fuse::Result<()> {
+        let map_addr = self.addr() + m_offset as usize;
+        let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED;
+        ffi!(
+            unsafe { libc::mmap(map_addr as _, len as _, libc::PROT_NONE, flags, -1, 0) },
+            libc::MAP_FAILED
+        )?;
+
+        Ok(())
+    }
+}
 
 #[repr(C, align(4))]
 #[derive(Debug, FromBytes, Immutable, IntoBytes)]
@@ -63,21 +116,38 @@ pub struct Fs<F> {
     fuse: F,
     feature: FsFeature,
     driver_feature: FsFeature,
+    dax_region: Option<ArcMemPages>,
 }
 
-impl<F> Fs<F> {
-    pub fn new(name: impl Into<Arc<str>>, fuse: F, config: FsConfig) -> Self {
+impl<F> Fs<F>
+where
+    F: Fuse,
+{
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        mut fuse: F,
+        config: FsConfig,
+        dax_window: usize,
+    ) -> Result<Self> {
         let mut feature = FsFeature::empty();
         if config.notify_buf_size > 0 {
             feature |= FsFeature::NOTIFICATION;
         }
-        Fs {
+        let mut dax_region = None;
+        if dax_window > 0 {
+            let prot = Some(libc::PROT_NONE);
+            let region = ArcMemPages::from_anonymous(dax_window, prot, None)?;
+            fuse.set_dax_region(Box::new(region.clone()));
+            dax_region = Some(region);
+        };
+        Ok(Fs {
             name: name.into(),
             config: Arc::new(config),
             fuse,
             feature,
             driver_feature: FsFeature::empty(),
-        }
+            dax_region,
+        })
     }
 
     fn handle_msg(
@@ -85,10 +155,7 @@ impl<F> Fs<F> {
         hdr: &FuseInHeader,
         in_: &[IoSlice],
         out: &mut [IoSliceMut],
-    ) -> fuse::Result<usize>
-    where
-        F: Fuse,
-    {
+    ) -> fuse::Result<usize> {
         let name = &*self.name;
         let opcode = hdr.opcode;
 
@@ -198,14 +265,13 @@ impl<F> Fs<F> {
             FuseOpcode::RENAME => opcode_branch!(rename, &_, &[u8], _),
             FuseOpcode::WRITE => opcode_branch!(write, &_, &[IoSlice], _),
             FuseOpcode::RENAME2 => opcode_branch!(rename2, &_, &[u8], _),
+            FuseOpcode::SETUPMAPPING => opcode_branch!(setup_mapping, &_, _),
+            FuseOpcode::REMOVEMAPPING => opcode_branch!(remove_mapping, &[u8], _),
             _ => Err(io::Error::from_raw_os_error(libc::ENOSYS))?,
         }
     }
 
-    fn handle_desc(&mut self, desc: &mut Descriptor, _registry: &Registry) -> Result<usize>
-    where
-        F: Fuse,
-    {
+    fn handle_desc(&mut self, desc: &mut Descriptor, _registry: &Registry) -> Result<usize> {
         let name = &*self.name;
 
         let (hdr_out, out) = match &mut desc.writable[..] {
@@ -367,5 +433,13 @@ where
         E: IoeventFd,
     {
         Mio::spawn_worker(self, event_rx, memory, queue_regs)
+    }
+
+    fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
+        let dax_region = self.dax_region.as_ref()?;
+        Some(Arc::new(MemRegion::with_dev_mem(
+            dax_region.clone(),
+            MemRegionType::Hidden,
+        )))
     }
 }

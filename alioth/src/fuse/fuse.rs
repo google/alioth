@@ -16,6 +16,8 @@ pub mod bindings;
 pub mod passthrough;
 
 use std::ffi::FromBytesUntilNulError;
+use std::fmt::Debug;
+use std::fs::File;
 use std::io::{Error as IoError, IoSlice, IoSliceMut};
 
 use macros::trace_error;
@@ -27,7 +29,8 @@ use self::bindings::{
     FuseAttrOut, FuseCreateIn, FuseCreateOut, FuseEntryOut, FuseFlushIn, FuseForgetIn,
     FuseGetattrIn, FuseInHeader, FuseInitIn, FuseInitOut, FuseIoctlIn, FuseIoctlOut, FuseOpcode,
     FuseOpenIn, FuseOpenOut, FusePollIn, FusePollOut, FuseReadIn, FuseReleaseIn, FuseRename2In,
-    FuseRenameIn, FuseSyncfsIn, FuseWriteIn, FuseWriteOut,
+    FuseRenameIn, FuseSetupmappingFlag, FuseSetupmappingIn, FuseSyncfsIn, FuseWriteIn,
+    FuseWriteOut,
 };
 
 #[trace_error]
@@ -107,6 +110,19 @@ macro_rules! fuse_method {
     };
 }
 
+pub trait DaxRegion: Debug + Send + Sync + 'static {
+    fn map(
+        &self,
+        m_offset: u64,
+        fd: &File,
+        f_offset: u64,
+        len: u64,
+        flag: FuseSetupmappingFlag,
+    ) -> Result<()>;
+
+    fn unmap(&self, m_offset: u64, len: u64) -> Result<()>;
+}
+
 pub trait Fuse {
     fuse_method!(init, &FuseInitIn, FuseInitOut);
     fuse_method!(get_attr, &FuseGetattrIn, FuseAttrOut);
@@ -130,4 +146,7 @@ pub trait Fuse {
     fuse_method!(rmdir, &[u8], ());
     fuse_method!(rename, &FuseRenameIn, &[u8], ());
     fuse_method!(rename2, &FuseRename2In, &[u8], ());
+    fuse_method!(setup_mapping, &FuseSetupmappingIn, ());
+    fuse_method!(remove_mapping, &[u8], ());
+    fn set_dax_region(&mut self, dax_region: Box<dyn DaxRegion>);
 }

@@ -30,6 +30,10 @@ pub struct SharedDirParam {
     pub tag: String,
     /// Path to the shared dir.
     pub path: PathBuf,
+    /// Size of memory region for DAX in bytes.
+    /// 0 means no DAX. [default: 0]
+    #[serde(default)]
+    pub dax_window: usize,
 }
 
 impl DevParam for SharedDirParam {
@@ -44,6 +48,6 @@ impl DevParam for SharedDirParam {
         };
         let tag_size = min(config.tag.len(), self.tag.len());
         config.tag[0..tag_size].copy_from_slice(&self.tag.as_bytes()[0..tag_size]);
-        Ok(Fs::new(name, passthrough, config))
+        Fs::new(name, passthrough, config, self.dax_window)
     }
 }
