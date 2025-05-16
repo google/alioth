@@ -204,67 +204,60 @@ impl<F> Fs<F> {
     {
         let name = &*self.name;
 
-        let (hdr_out, out): (_, &mut [IoSliceMut]) = match &mut desc.writable[..] {
-            [] => (None, &mut []),
-            [hdr, out @ ..] => (Some(hdr), out),
-        };
-        let hdr_out = match hdr_out {
-            Some(b) => match FuseOutHeader::mut_from_bytes(b) {
-                Ok(h) => Some(h),
-                Err(_) => {
+        let (hdr_out, out) = match &mut desc.writable[..] {
+            [] => (None, &mut [] as &mut _),
+            [hdr, out @ ..] => {
+                let Ok(hdr) = FuseOutHeader::mut_from_bytes(hdr) else {
                     log::error!("{name}: cannot parse FuseOutHeader");
                     return Ok(0);
-                }
-            },
-            None => None,
+                };
+                (Some(hdr), out)
+            }
         };
 
-        let [hdr_in, in_ @ ..] = &desc.readable[..] else {
-            let len = desc.readable.len();
-            log::error!("{name}: cannot handle {len} readable buffers");
+        let Some((hdr_in, mut in_)) = desc.readable.split_first() else {
+            log::error!("{name}: cannot find opcode");
             return Ok(0);
         };
-        let mut in_ = in_;
 
-        let Ok((hdr_in, remain)) = FuseInHeader::ref_from_prefix(hdr_in) else {
+        let Ok((hdr_in, tail)) = FuseInHeader::ref_from_prefix(hdr_in) else {
             log::error!("{name}: cannot parse FuseInHeader");
             return Ok(0);
         };
-        let in_remain = [IoSlice::new(remain)];
-        if !remain.is_empty() {
-            if in_.is_empty() {
-                in_ = &in_remain;
-            } else {
-                log::error!("{name}: cannot handle {} bytes after header", remain.len());
+        let opcode = hdr_in.opcode;
+
+        let tails = [IoSlice::new(tail)];
+        if !tail.is_empty() {
+            if !in_.is_empty() {
+                let len = tail.len();
+                log::error!("{name}: {opcode:?}: cannot handle {len} bytes after header");
                 return Ok(0);
             }
+            in_ = &tails;
         }
 
-        let opcode = hdr_in.opcode;
-        log::trace!("{name}: opcode = {opcode:?}, nodeid = {:#x}", hdr_in.nodeid);
+        log::trace!("{name}: {opcode:?}, nodeid = {:#x}", hdr_in.nodeid);
 
         let ret = self.handle_msg(hdr_in, in_, out);
         if let Err(e) = &ret {
-            log::error!("{}: opcode = {opcode:?}, err = {e:?}", self.name);
+            log::error!("{}: {opcode:?}: {e:?}", self.name);
         };
 
-        let w_size = if let Some(hdr_out) = hdr_out {
-            hdr_out.unique = hdr_in.unique;
-            match ret {
-                Ok(size) => {
-                    hdr_out.error = 0;
-                    hdr_out.len = (size + size_of::<FuseOutHeader>()) as u32;
-                }
-                Err(e) => {
-                    hdr_out.error = -e.error_code();
-                    hdr_out.len = size_of::<FuseOutHeader>() as u32;
-                }
-            }
-            hdr_out.len as usize
-        } else {
-            0
+        let Some(hdr_out) = hdr_out else {
+            return Ok(0);
         };
-        Ok(w_size)
+        hdr_out.unique = hdr_in.unique;
+        match ret {
+            Ok(size) => {
+                hdr_out.error = 0;
+                hdr_out.len = (size + size_of_val(hdr_out)) as u32;
+            }
+            Err(e) => {
+                hdr_out.error = -e.error_code();
+                hdr_out.len = size_of_val(hdr_out) as u32;
+            }
+        }
+        Ok(hdr_out.len as usize)
     }
 }
 
