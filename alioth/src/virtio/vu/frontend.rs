@@ -188,6 +188,12 @@ impl VuFrontend {
         let num_queues = session.get_queue_num()? as u16;
         log::trace!("{name}: get queue number: {num_queues}");
 
+        let channel = if vu_feature.contains(VuFeature::BACKEND_REQ) {
+            Some(session.create_channel()?)
+        } else {
+            None
+        };
+
         let mut err_fds = vec![];
         for index in 0..num_queues {
             let raw_fd = ffi!(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
@@ -203,7 +209,7 @@ impl VuFrontend {
         Ok(VuFrontend {
             name,
             session,
-            channel: None,
+            channel,
             id,
             vu_feature,
             device_feature,
@@ -218,10 +224,6 @@ impl VuFrontend {
 
     pub fn channel(&self) -> Option<&VuChannel> {
         self.channel.as_ref()
-    }
-
-    pub fn set_channel(&mut self, channel: VuChannel) {
-        self.channel = Some(channel)
     }
 }
 
