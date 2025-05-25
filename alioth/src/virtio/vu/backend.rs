@@ -178,6 +178,10 @@ impl VuBackend {
         })
     }
 
+    pub fn name(&self) -> &str {
+        self.dev.name.as_ref()
+    }
+
     fn wake_up_dev(&self, event: WakeEvent<VuIrqSender, VuEventfd>) {
         let is_start = matches!(event, WakeEvent::Start { .. });
         if let Err(e) = self.dev.event_tx.send(event) {
