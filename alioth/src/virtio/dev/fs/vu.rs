@@ -71,8 +71,7 @@ impl VuFs {
         if param.tag.is_none() {
             extra_features |= VuFeature::CONFIG;
         }
-        let mut frontend =
-            VuFrontend::new(name, &param.socket, DeviceId::FileSystem, extra_features)?;
+        let frontend = VuFrontend::new(name, &param.socket, DeviceId::FileSystem, extra_features)?;
         let config = if let Some(tag) = param.tag {
             assert!(tag.len() <= 36);
             assert_ne!(tag.len(), 0);
@@ -95,13 +94,12 @@ impl VuFs {
             config
         };
 
-        let mut dax_region = None;
-        if param.dax_window > 0 {
-            let channel = frontend.session().create_channel()?;
+        let dax_region = if param.dax_window > 0 {
             let size = align_up!(param.dax_window, 12);
-            dax_region = Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?);
-            frontend.set_channel(channel);
-        }
+            Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?)
+        } else {
+            None
+        };
 
         Ok(VuFs {
             frontend,
