@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::marker::PhantomData;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::spawn;
@@ -48,6 +48,8 @@ pub enum Error {
         socket: PathBuf,
         error: std::io::Error,
     },
+    #[snafu(display("Failed to accept connections"))]
+    Accept { error: std::io::Error },
     #[snafu(display("Failed to create a VirtIO device"))]
     CreateVirtio { source: alioth::virtio::Error },
     #[snafu(display("Failed to create a vhost-user backend"))]
@@ -118,41 +120,29 @@ where
     Ok(dev)
 }
 
-fn serve_conn(index: u32, conn: UnixStream, args: &VuArgs) -> Result<(), Error> {
-    let memory = Arc::new(RamBus::new());
-    let dev = match &args.ty {
-        DevType::Net(args) => create_dev(format!("net-{index}"), args, memory.clone()),
-        DevType::Blk(args) => create_dev(format!("blk-{index}"), args, memory.clone()),
-        DevType::Fs(args) => create_dev(format!("fs-{index}"), args, memory.clone()),
-    }?;
-    let mut backend = VuBackend::new(conn, dev, memory).context(error::CreateVu)?;
-    backend.run().context(error::Runtime)
-}
-
-fn serve(index: u32, conn: UnixStream, args: &VuArgs) {
-    match serve_conn(index, conn, args) {
-        Ok(()) => log::info!("Serve {index}: done"),
-        Err(e) => log::error!("Serve {index}: {e:?}"),
+fn run_backend(mut backend: VuBackend) {
+    let r = backend.run().context(error::Runtime);
+    let name = backend.name();
+    match r {
+        Ok(()) => log::info!("{name}: done"),
+        Err(e) => log::error!("{name}: {e:?}"),
     }
 }
 
 pub fn start(args: VuArgs) -> Result<(), Error> {
-    let listener = UnixListener::bind(&args.socket).context(error::Bind {
-        socket: &args.socket,
-    })?;
-    let args = Arc::new(args);
-    let mut index = 0;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(conn) => {
-                let args = args.clone();
-                spawn(move || serve(index, conn, &args));
-                index = index.wrapping_add(1);
-            }
-            Err(e) => {
-                log::error!("Accept: {e:?}");
-            }
-        }
+    let VuArgs { socket, ty } = args;
+    let listener = UnixListener::bind(&socket).context(error::Bind { socket })?;
+    let mut index = 0i32;
+    loop {
+        let memory = Arc::new(RamBus::new());
+        let dev = match &ty {
+            DevType::Net(args) => create_dev(format!("net-{index}"), args, memory.clone()),
+            DevType::Blk(args) => create_dev(format!("blk-{index}"), args, memory.clone()),
+            DevType::Fs(args) => create_dev(format!("fs-{index}"), args, memory.clone()),
+        }?;
+        let (conn, _) = listener.accept().context(error::Accept)?;
+        let backend = VuBackend::new(conn, dev, memory).context(error::CreateVu)?;
+        spawn(move || run_backend(backend));
+        index = index.wrapping_add(1);
     }
-    Ok(())
 }
