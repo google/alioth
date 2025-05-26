@@ -245,13 +245,13 @@ impl VirtioMio for VuFs {
         loop {
             let mut fds = [const { None }; 8];
             let msg = channel.recv_msg(&mut fds);
-            let fs_map: VuFsMap = channel.recv_payload()?;
-
             let (request, size) = match msg {
                 Ok(m) => (m.request, m.size),
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e)?,
             };
+            let fs_map: VuFsMap = channel.recv_payload()?;
+
             if size as usize != size_of_val(&fs_map) {
                 return vu_error::PayloadSize {
                     want: size_of_val(&fs_map),
