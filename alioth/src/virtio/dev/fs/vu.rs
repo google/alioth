@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::fs::File;
 use std::io::ErrorKind;
 use std::iter::zip;
 use std::mem::size_of_val;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -27,33 +28,25 @@ use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use serde_aco::Help;
-use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
+use zerocopy::{FromZeros, IntoBytes};
 
+use crate::errors::BoxTrace;
+use crate::fuse::bindings::FuseSetupmappingFlag;
+use crate::fuse::{self, DaxRegion};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::virtio::dev::fs::{FsConfig, FsFeature};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::vu::bindings::{DeviceConfig, VuBackMsg, VuFeature};
+use crate::virtio::vu::bindings::{DeviceConfig, FsMap, VuBackMsg, VuFeature};
+use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::vu::frontend::VuFrontend;
 use crate::virtio::vu::{Error, error as vu_error};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, IrqSender, Result};
 use crate::{align_up, ffi};
-
-#[derive(Debug, Clone, FromBytes, Immutable, IntoBytes)]
-#[repr(C)]
-struct VuFsMap {
-    pub fd_offset: [u64; 8],
-    pub cache_offset: [u64; 8],
-    pub len: [u64; 8],
-    pub flags: [u64; 8],
-}
-
-const VHOST_USER_BACKEND_FS_MAP: u32 = 6;
-const VHOST_USER_BACKEND_FS_UNMAP: u32 = 7;
 
 #[derive(Debug)]
 pub struct VuFs {
@@ -248,7 +241,7 @@ impl VirtioMio for VuFs {
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e)?,
             };
-            let fs_map: VuFsMap = channel.recv_payload()?;
+            let fs_map: FsMap = channel.recv_payload()?;
 
             if size as usize != size_of_val(&fs_map) {
                 return vu_error::PayloadSize {
@@ -257,8 +250,8 @@ impl VirtioMio for VuFs {
                 }
                 .fail()?;
             }
-            match request {
-                VHOST_USER_BACKEND_FS_MAP => {
+            match VuBackMsg::from(request) {
+                VuBackMsg::SHARED_OBJECT_ADD => {
                     for (index, fd) in fds.iter().enumerate() {
                         let Some(fd) = fd else {
                             break;
@@ -285,7 +278,7 @@ impl VirtioMio for VuFs {
                         )?;
                     }
                 }
-                VHOST_USER_BACKEND_FS_UNMAP => {
+                VuBackMsg::SHARED_OBJECT_REMOVE => {
                     for (len, offset) in zip(fs_map.len, fs_map.cache_offset) {
                         if len == 0 {
                             continue;
@@ -324,5 +317,49 @@ impl VirtioMio for VuFs {
 
     fn reset(&mut self, registry: &Registry) {
         self.frontend.reset(registry)
+    }
+}
+
+#[derive(Debug)]
+pub struct VuDaxRegion {
+    pub channel: Arc<VuChannel>,
+}
+
+impl DaxRegion for VuDaxRegion {
+    fn map(
+        &self,
+        m_offset: u64,
+        fd: &File,
+        f_offset: u64,
+        len: u64,
+        flag: FuseSetupmappingFlag,
+    ) -> fuse::Result<()> {
+        let mut fs_map = FsMap::new_zeroed();
+        fs_map.fd_offset[0] = f_offset;
+        fs_map.cache_offset[0] = m_offset;
+
+        let mut prot = 0;
+        if flag.contains(FuseSetupmappingFlag::READ) {
+            prot |= libc::PROT_READ;
+        };
+        if flag.contains(FuseSetupmappingFlag::WRITE) {
+            prot |= libc::PROT_WRITE;
+        }
+        fs_map.flags[0] = prot as _;
+
+        fs_map.len[0] = len;
+        let fds = [fd.as_fd()];
+        self.channel
+            .fs_map(&fs_map, &fds)
+            .box_trace(fuse::error::DaxMapping)
+    }
+
+    fn unmap(&self, m_offset: u64, len: u64) -> fuse::Result<()> {
+        let mut fs_map = FsMap::new_zeroed();
+        fs_map.cache_offset[0] = m_offset;
+        fs_map.len[0] = len;
+        self.channel
+            .fs_unmap(&fs_map)
+            .box_trace(fuse::error::DaxMapping)
     }
 }
