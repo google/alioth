@@ -39,6 +39,8 @@ use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
+#[cfg(target_os = "linux")]
+use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::Waker;
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 
@@ -69,6 +71,8 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn mem_change_callback(&self) -> Option<Box<dyn LayoutChanged>> {
         None
     }
+    #[cfg(target_os = "linux")]
+    fn set_vu_channel(&mut self, _channel: Arc<VuChannel>) {}
 }
 
 #[derive(Debug, Default)]
@@ -100,9 +104,17 @@ where
     S: IrqSender,
     E: IoeventFd,
 {
-    Notify { q_index: u16 },
+    Notify {
+        q_index: u16,
+    },
     Shutdown,
-    Start { param: StartParam<S, E> },
+    #[cfg(target_os = "linux")]
+    VuChannel {
+        channel: Arc<VuChannel>,
+    },
+    Start {
+        param: StartParam<S, E>,
+    },
     Reset,
 }
 
@@ -276,6 +288,8 @@ where
                 WakeEvent::Start { .. } => {
                     log::error!("{}: device has already started", self.dev.name())
                 }
+                #[cfg(target_os = "linux")]
+                WakeEvent::VuChannel { channel } => self.dev.set_vu_channel(channel),
                 WakeEvent::Reset => {
                     log::info!("{}: guest requested reset", self.dev.name());
                     self.state = WorkerState::Pending;
@@ -294,6 +308,8 @@ where
                     self.state = WorkerState::Running;
                     return Some(param);
                 }
+                #[cfg(target_os = "linux")]
+                WakeEvent::VuChannel { channel } => self.dev.set_vu_channel(channel),
                 WakeEvent::Shutdown => break,
                 WakeEvent::Notify { q_index } => {
                     log::error!(

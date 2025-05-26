@@ -67,6 +67,8 @@ pub enum Error {
     InvalidMsg { req: VuFrontMsg, size: u32 },
     #[snafu(display("Cannot change memory layout at runtime"))]
     ChangeMemoryLayout,
+    #[snafu(display("Failed to send backend request channel to device"))]
+    SendChannel,
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -303,9 +305,16 @@ impl VuBackend {
                     return error::MissingFd { req }.fail()?;
                 };
                 log::trace!("{name}: set backend request fd: {}", fd.as_raw_fd());
-                self.channel = Some(Arc::new(VuChannel {
+                let channel = Arc::new(VuChannel {
                     conn: UnixStream::from(fd),
-                }));
+                });
+                let r = self.dev.event_tx.send(WakeEvent::VuChannel {
+                    channel: channel.clone(),
+                });
+                if r.is_err() {
+                    return error::SendChannel.fail();
+                }
+                self.channel = Some(channel);
             }
             (VuFrontMsg::SET_VIRTQ_ERR, 8) => {
                 let index = self.session.recv_payload::<u64>()? as u16;

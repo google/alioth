@@ -34,9 +34,13 @@ use crate::fuse::{self, DaxRegion, Fuse};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{MemRegion, MemRegionType};
+#[cfg(target_os = "linux")]
+use crate::virtio::dev::fs::vu::VuDaxRegion;
 use crate::virtio::dev::{Result, Virtio, WakeEvent};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+#[cfg(target_os = "linux")]
+use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender};
@@ -441,5 +445,11 @@ where
             dax_region.clone(),
             MemRegionType::Hidden,
         )))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_vu_channel(&mut self, channel: Arc<VuChannel>) {
+        let vu_dax_region = VuDaxRegion { channel };
+        self.fuse.set_dax_region(Box::new(vu_dax_region));
     }
 }

@@ -35,7 +35,7 @@ use self::bindings::{
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
-#[snafu(module, context(suffix(false)))]
+#[snafu(module, visibility(pub), context(suffix(false)))]
 pub enum Error {
     #[snafu(display("Error from OS"), context(false))]
     System { error: std::io::Error },
@@ -53,6 +53,10 @@ pub enum Error {
     FileNotOpened,
     #[snafu(display("Invalid file handle"))]
     InvalidFileHandle,
+    #[snafu(display("Failed to setup DAX mappings"))]
+    DaxMapping {
+        source: Box<dyn DebugTrace + Send + Sync + 'static>,
+    },
 }
 
 impl From<&IoError> for Error {
@@ -73,6 +77,7 @@ impl Error {
             Error::InvalidAccMode { .. } => libc::EINVAL,
             Error::FileNotOpened { .. } => libc::EBADF,
             Error::InvalidFileHandle { .. } => libc::EBADF,
+            Error::DaxMapping { .. } => libc::EINVAL,
         }
     }
 }
