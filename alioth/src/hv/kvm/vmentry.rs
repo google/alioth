@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::kvm::bindings::{KvmExit, KvmExitIo};
+use crate::hv::VmExit;
+use crate::hv::kvm::bindings::{KvmExit, KvmRunExitIo};
 use crate::hv::kvm::vcpu::KvmVcpu;
 
 impl KvmVcpu {
@@ -30,23 +31,35 @@ impl KvmVcpu {
         self.kvm_run.immediate_exit = enable as u8;
     }
 
-    pub(super) fn entry_io(&mut self, data: u32) {
-        assert_eq!(self.kvm_run.exit_reason, KvmExit::IO);
-        let kvm_io = unsafe { &self.kvm_run.exit.io };
-        assert_eq!(kvm_io.direction, KvmExitIo::IN);
+    fn entry_io_in(&mut self, data: u32, kvm_io: KvmRunExitIo) {
         let offset = kvm_io.data_offset as usize;
         let count = kvm_io.count as usize;
+        let index = self.io_index;
         match kvm_io.size {
             1 => unsafe {
-                self.kvm_run.data_slice_mut(offset, count)[0] = data as u8;
+                self.kvm_run.data_slice_mut(offset, count)[index] = data as u8;
             },
             2 => unsafe {
-                self.kvm_run.data_slice_mut(offset, count)[0] = data as u16;
+                self.kvm_run.data_slice_mut(offset, count)[index] = data as u16;
             },
             4 => unsafe {
-                self.kvm_run.data_slice_mut(offset, count)[0] = data;
+                self.kvm_run.data_slice_mut(offset, count)[index] = data;
             },
             _ => unreachable!("kvm_io.size = {}", kvm_io.size),
         }
+    }
+
+    pub(super) fn entry_io(&mut self, data: Option<u32>) -> Option<VmExit> {
+        assert_eq!(self.kvm_run.exit_reason, KvmExit::IO);
+        let kvm_io = unsafe { self.kvm_run.exit.io };
+        if let Some(data) = data {
+            self.entry_io_in(data, kvm_io);
+        }
+        self.io_index += 1;
+        if self.io_index == kvm_io.count as usize {
+            self.io_index = 0;
+            return None;
+        }
+        Some(self.handle_io())
     }
 }

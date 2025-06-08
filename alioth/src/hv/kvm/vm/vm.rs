@@ -616,6 +616,7 @@ impl Vm for KvmVm {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
             kvm_run,
             vm: self.vm.clone(),
+            io_index: 0,
         })
     }
 

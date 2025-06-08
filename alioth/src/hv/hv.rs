@@ -369,6 +369,6 @@ pub enum VmEntry {
     None,
     Shutdown,
     Reboot,
-    Io { data: u32 },
+    Io { data: Option<u32> },
     Mmio { data: u64 },
 }

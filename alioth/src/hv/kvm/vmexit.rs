@@ -34,32 +34,27 @@ impl KvmVcpu {
         Ok(exit)
     }
 
-    pub(super) fn handle_io(&mut self) -> Result<VmExit, Error> {
-        let kvm_io = unsafe { &self.kvm_run.exit.io };
+    pub(super) fn handle_io(&mut self) -> VmExit {
+        let kvm_io = unsafe { self.kvm_run.exit.io };
         let offset = kvm_io.data_offset as usize;
         let count = kvm_io.count as usize;
-        assert_eq!(count, 1);
-        let write = match (kvm_io.direction, kvm_io.size) {
-            (KvmExitIo::IN, _) => None,
-            (KvmExitIo::OUT, 1) => {
-                Some(unsafe { self.kvm_run.data_slice::<u8>(offset, count) }[0] as u32)
-            }
-            (KvmExitIo::OUT, 2) => {
-                Some(unsafe { self.kvm_run.data_slice::<u16>(offset, count) }[0] as u32)
-            }
-            (KvmExitIo::OUT, 4) => {
-                Some(unsafe { self.kvm_run.data_slice::<u32>(offset, count) }[0])
-            }
-            _ => unreachable!(
-                "kvm_io.direction = {:?}, kvm_io.size = {}",
-                kvm_io.direction, kvm_io.size
-            ),
+        let index = self.io_index;
+        let write = if kvm_io.direction == KvmExitIo::IN {
+            None
+        } else {
+            let data = match kvm_io.size {
+                1 => unsafe { self.kvm_run.data_slice::<u8>(offset, count)[index] as u32 },
+                2 => unsafe { self.kvm_run.data_slice::<u16>(offset, count)[index] as u32 },
+                4 => unsafe { self.kvm_run.data_slice::<u32>(offset, count)[index] },
+                _ => unreachable!("kvm_io.size = {}", kvm_io.size),
+            };
+            Some(data)
         };
-        Ok(VmExit::Io {
+        VmExit::Io {
             port: kvm_io.port,
             write,
             size: kvm_io.size,
-        })
+        }
     }
 
     pub(super) fn handle_hypercall(&mut self) -> Result<VmExit, Error> {
