@@ -537,14 +537,14 @@ impl Drop for Memory {
 }
 
 impl Memory {
-    fn handle_action(&self, action: Action) -> Result<VmEntry> {
+    fn handle_action(&self, action: Action, none: VmEntry) -> Result<VmEntry> {
         match action {
-            Action::None => Ok(VmEntry::None),
+            Action::None => Ok(none),
             Action::Shutdown => Ok(VmEntry::Shutdown),
             Action::Reset => Ok(VmEntry::Reboot),
             Action::ChangeLayout { callback } => {
                 callback.change(self)?;
-                Ok(VmEntry::None)
+                Ok(none)
             }
         }
     }
@@ -554,7 +554,7 @@ impl Memory {
         if let Some(val) = write {
             let action = mmio_bus.write(gpa, size, val)?;
             drop(mmio_bus);
-            self.handle_action(action)
+            self.handle_action(action, VmEntry::None)
         } else {
             let data = mmio_bus.read(gpa, size)?;
             Ok(VmEntry::Mmio { data })
@@ -566,10 +566,10 @@ impl Memory {
         if let Some(val) = write {
             let action = io_bus.write(port as u64, size, val as u64)?;
             drop(io_bus);
-            self.handle_action(action)
+            self.handle_action(action, VmEntry::Io { data: None })
         } else {
             let data = io_bus.read(port as u64, size)? as u32;
-            Ok(VmEntry::Io { data })
+            Ok(VmEntry::Io { data: Some(data) })
         }
     }
 }

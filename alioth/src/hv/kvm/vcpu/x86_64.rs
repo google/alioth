@@ -627,7 +627,7 @@ mod test {
             })
         );
         assert_matches!(
-            vcpu.run(VmEntry::Io { data: 0x10 }),
+            vcpu.run(VmEntry::Io { data: Some(0x10) }),
             Ok(VmExit::Io {
                 port: 0x3f8,
                 write: Some(0x11),

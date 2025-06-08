@@ -95,6 +95,7 @@ impl Drop for KvmRunBlock {
 pub struct KvmVcpu {
     pub(super) kvm_run: KvmRunBlock,
     pub(super) fd: OwnedFd,
+    pub(super) io_index: usize,
     #[allow(dead_code)]
     pub(super) vm: Arc<VmInner>,
 }
@@ -145,7 +146,12 @@ impl Vcpu for KvmVcpu {
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
         match entry {
             VmEntry::None => {}
-            VmEntry::Io { data } => self.entry_io(data),
+            VmEntry::Io { data } => {
+                let r = self.entry_io(data);
+                if let Some(exit) = r {
+                    return Ok(exit);
+                }
+            }
             VmEntry::Mmio { data } => self.entry_mmio(data),
             VmEntry::Shutdown | VmEntry::Reboot => self.set_immediate_exit(true),
         };
@@ -165,7 +171,7 @@ impl Vcpu for KvmVcpu {
                 _ => Err(e).context(error::RunVcpu),
             },
             Ok(_) => match self.kvm_run.exit_reason {
-                KvmExit::IO => self.handle_io(),
+                KvmExit::IO => Ok(self.handle_io()),
                 KvmExit::HYPERCALL => self.handle_hypercall(),
                 KvmExit::MMIO => self.handle_mmio(),
                 KvmExit::SHUTDOWN => Ok(VmExit::Shutdown),
