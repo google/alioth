@@ -1,6 +1,6 @@
 [package]
 name = "alioth-cli"
-version.workspace = true
+version = "0.8.0"
 edition.workspace = true
 description = "Experimental KVM-based type-2 hypervisor/VMM"
 repository.workspace = true
