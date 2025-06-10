@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use alioth_macros::Layout;
 use bitflags::bitflags;
 use libc::{_SC_PAGESIZE, sysconf};
-use macros::Layout;
 use mio::Registry;
 use mio::event::Event;
 use parking_lot::RwLock;

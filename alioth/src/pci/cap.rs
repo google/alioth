@@ -15,8 +15,8 @@
 use std::fmt::Debug;
 use std::mem::size_of;
 
+use alioth_macros::Layout;
 use bitfield::bitfield;
-use macros::Layout;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

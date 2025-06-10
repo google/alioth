@@ -20,7 +20,7 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io::{Error as IoError, IoSlice, IoSliceMut};
 
-use macros::trace_error;
+use alioth_macros::trace_error;
 use snafu::Snafu;
 
 use crate::errors::DebugTrace;

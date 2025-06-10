@@ -15,8 +15,8 @@
 use std::mem::size_of;
 use std::sync::atomic::{Ordering, fence};
 
+use alioth_macros::Layout;
 use bitflags::bitflags;
-use macros::Layout;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;

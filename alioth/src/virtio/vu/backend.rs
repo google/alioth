@@ -21,7 +21,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use macros::trace_error;
+use alioth_macros::trace_error;
 use snafu::Snafu;
 use zerocopy::IntoBytes;
 

@@ -18,7 +18,7 @@ log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
 libc = "0.2.172"
 parking_lot.workspace = true
-macros.workspace = true
+alioth-macros.workspace = true
 serde.workspace = true
 serde-aco.workspace = true
 snafu.workspace = true
