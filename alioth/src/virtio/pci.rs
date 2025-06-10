@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 
-use macros::Layout;
+use alioth_macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 

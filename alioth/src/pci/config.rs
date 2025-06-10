@@ -16,8 +16,8 @@ use std::iter::zip;
 use std::mem::size_of;
 use std::sync::Arc;
 
+use alioth_macros::Layout;
 use bitflags::bitflags;
-use macros::Layout;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

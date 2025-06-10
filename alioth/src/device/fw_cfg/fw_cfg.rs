@@ -26,8 +26,8 @@ use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use alioth_macros::Layout;
 use bitfield::bitfield;
-use macros::Layout;
 use parking_lot::Mutex;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};

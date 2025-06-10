@@ -22,8 +22,8 @@ use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use alioth_macros::Layout;
 use libc::{PROT_READ, PROT_WRITE};
-use macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromBytes, Immutable, IntoBytes, transmute};
 
