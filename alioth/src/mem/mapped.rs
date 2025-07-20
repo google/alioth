@@ -158,36 +158,6 @@ impl ArcMemPages {
         Ok((self.addr + offset, valid_len))
     }
 
-    pub fn read<T>(&self, offset: usize) -> Result<T, Error>
-    where
-        T: FromBytes,
-    {
-        let s = self.get_partial_slice(offset, size_of::<T>())?;
-        match FromBytes::read_from_bytes(s) {
-            Err(_) => error::ExceedsLimit {
-                addr: offset as u64,
-                size: size_of::<T>() as u64,
-            }
-            .fail(),
-            Ok(v) => Ok(v),
-        }
-    }
-
-    pub fn write<T>(&self, offset: usize, val: &T) -> Result<(), Error>
-    where
-        T: IntoBytes + Immutable,
-    {
-        let s = self.get_partial_slice_mut(offset, size_of::<T>())?;
-        match IntoBytes::write_to(val, s) {
-            Err(_) => error::ExceedsLimit {
-                addr: offset as u64,
-                size: size_of::<T>() as u64,
-            }
-            .fail(),
-            Ok(()) => Ok(()),
-        }
-    }
-
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.addr as *mut u8, self.size) }
     }
