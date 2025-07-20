@@ -203,6 +203,7 @@ impl ArcMemPages {
     }
 
     /// Given offset and len, return a mutable slice, len might be truncated.
+    #[allow(clippy::mut_from_ref)]
     fn get_partial_slice_mut(&self, offset: usize, len: usize) -> Result<&mut [u8], Error> {
         let (addr, len) = self.get_valid_range(offset, len)?;
         Ok(unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, len) })
