@@ -69,11 +69,11 @@ where
     fn send(&self, vector: u16) {
         let entries = self.msix_table.entries.read();
         let Some(entry) = entries.get(vector as usize) else {
-            log::error!("invalid config vector: {:x}", vector);
+            log::error!("invalid config vector: {vector:x}");
             return;
         };
         if entry.get_masked() {
-            log::info!("{} is masked", vector);
+            log::info!("{vector} is masked");
             return;
         }
         let data = entry.get_data();

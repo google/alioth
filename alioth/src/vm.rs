@@ -140,7 +140,7 @@ where
             let event_tx = event_tx.clone();
             let board = board.clone();
             let handle = thread::Builder::new()
-                .name(format!("vcpu_{}", vcpu_id))
+                .name(format!("vcpu_{vcpu_id}"))
                 .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))
                 .context(error::VcpuThread { id: vcpu_id })?;
             if event_rx.recv_timeout(Duration::from_secs(2)).is_err() {

@@ -185,7 +185,7 @@ pub fn load<P: AsRef<Path>>(
     let Some(entry_point) = pvh_entry else {
         return error::NoEntryPoint.fail();
     };
-    log::info!("PVH entry = {:#x?}", entry_point);
+    log::info!("PVH entry = {entry_point:#x?}");
 
     let mut start_info_page = StartInfoPage {
         start_info: HvmStartInfo {
