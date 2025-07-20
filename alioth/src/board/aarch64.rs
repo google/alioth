@@ -164,7 +164,7 @@ where
         }
         node.props.insert(
             "stdout-path",
-            PropVal::String(format!("/pl011@{:x}", PL011_START)),
+            PropVal::String(format!("/pl011@{PL011_START:x}")),
         );
         root.nodes.insert("chosen".to_owned(), node);
     }
@@ -279,7 +279,7 @@ where
             ]),
             nodes: HashMap::new(),
         };
-        root.nodes.insert(format!("pl011@{:x}", PL011_START), node);
+        root.nodes.insert(format!("pl011@{PL011_START:x}"), node);
     }
 
     // Documentation/devicetree/bindings/timer/arm,arch_timer.yaml
@@ -466,7 +466,7 @@ where
         self.create_clock_node(root);
         self.create_timer_node(root);
         self.create_psci_node(root);
-        log::debug!("device tree: {:#x?}", device_tree);
+        log::debug!("device tree: {device_tree:#x?}");
         let blob = device_tree.to_blob();
         let ram = self.memory.ram_bus();
         assert!(blob.len() as u64 <= DEVICE_TREE_LIMIT);

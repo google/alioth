@@ -87,7 +87,7 @@ impl DerefMut for KvmRunBlock {
 impl Drop for KvmRunBlock {
     fn drop(&mut self) {
         if let Err(e) = ffi!(unsafe { munmap(self.addr as _, self.size) }) {
-            log::error!("unmap kvm_run: {}", e)
+            log::error!("unmap kvm_run: {e}")
         }
     }
 }
@@ -176,7 +176,7 @@ impl Vcpu for KvmVcpu {
                 KvmExit::MMIO => self.handle_mmio(),
                 KvmExit::SHUTDOWN => Ok(VmExit::Shutdown),
                 KvmExit::SYSTEM_EVENT => self.handle_system_event(),
-                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {:#x?}", reason))),
+                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {reason:#x?}"))),
             },
         }
     }

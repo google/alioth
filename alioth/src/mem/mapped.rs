@@ -584,7 +584,7 @@ mod test {
 
         let locked_bus = bus.lock_layout();
         let bufs = locked_bus.translate_iov(&guest_iov).unwrap();
-        println!("{:?}", bufs);
+        println!("{bufs:?}");
         drop(locked_bus);
         bus.remove(0x0).unwrap();
     }
