@@ -42,6 +42,7 @@ use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 use alioth::virtio::dev::fs::vu::VuFsParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::net::NetTapParam;
+use alioth::virtio::dev::vsock::UdsVsockParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::vsock::VhostVsockParam;
 #[cfg(target_os = "linux")]
@@ -122,12 +123,15 @@ enum FsParam {
     Vu(VuFsParam),
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Debug, Deserialize, Clone, Help)]
 enum VsockParam {
+    #[cfg(target_os = "linux")]
     /// Vsock device backed by host kernel vhost-vsock module.
     #[serde(alias = "vhost")]
     Vhost(VhostVsockParam),
+    /// Vsock device mapped to a Unix domain socket.
+    #[serde(alias = "uds")]
+    Uds(UdsVsockParam),
 }
 
 #[cfg(target_os = "linux")]
@@ -235,7 +239,6 @@ pub struct BootArgs {
     ))]
     fs: Vec<String>,
 
-    #[cfg(target_os = "linux")]
     #[arg(long, help(
         help_text::<VsockParam>("Add a VirtIO vsock device.")
     ))]
@@ -442,13 +445,16 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
         }
         .context(error::CreateDevice)?;
     }
-    #[cfg(target_os = "linux")]
     if let Some(vsock) = args.vsock {
         let param =
             serde_aco::from_args(&vsock, &objects).context(error::ParseArg { arg: vsock })?;
         match param {
+            #[cfg(target_os = "linux")]
             VsockParam::Vhost(p) => vm
                 .add_virtio_dev("vhost-vsock", p)
+                .context(error::CreateDevice)?,
+            VsockParam::Uds(p) => vm
+                .add_virtio_dev("uds-vsock", p)
                 .context(error::CreateDevice)?,
         };
     }

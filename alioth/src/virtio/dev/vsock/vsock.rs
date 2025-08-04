@@ -12,14 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod uds_vsock;
+#[cfg(target_os = "linux")]
 mod vhost_vsock;
 
+use std::num::Wrapping;
+
 use bitflags::bitflags;
-use zerocopy::{FromZeros, Immutable, IntoBytes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-use crate::impl_mmio_for_zerocopy;
+use crate::{c_enum, impl_mmio_for_zerocopy};
 
+pub use self::uds_vsock::{UdsVsock, UdsVsockParam};
+#[cfg(target_os = "linux")]
 pub use self::vhost_vsock::{VhostVsock, VhostVsockParam};
+
+c_enum! {
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
+    pub struct VsockVirtq(u16);
+    {
+        RX = 0;
+        TX = 1;
+        EVENT = 2;
+    }
+}
+
+pub const VSOCK_CID_HOST: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default, FromZeros, Immutable, IntoBytes)]
 #[repr(C)]
@@ -35,5 +53,54 @@ bitflags! {
     pub struct VsockFeature: u128 {
         const STREAM = 1 << 0;
         const SEQPACKET = 1 << 1;
+    }
+}
+
+c_enum! {
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
+    pub struct VsockOp(u16);
+    {
+        INVALID = 0;
+        REQUEST = 1;
+        RESPONSE = 2;
+        RST = 3;
+        SHUTDOWN = 4;
+        RW = 5;
+        CREDIT_UPDATE = 6;
+        CREDIT_REQUEST = 7;
+    }
+}
+
+c_enum! {
+    #[derive(Default, FromBytes, Immutable, IntoBytes)]
+    pub struct VsockType(u16);
+    {
+        STREAM = 1;
+        SEQPACKET = 2;
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C, align(4))]
+pub struct VsockHeader {
+    src_cid: u32,
+    src_cid_hi: u32,
+    dst_cid: u32,
+    dst_cid_hi: u32,
+    src_port: u32,
+    dst_port: u32,
+    len: u32,
+    type_: VsockType,
+    op: VsockOp,
+    flags: u32,
+    buf_alloc: u32,
+    fwd_cnt: Wrapping<u32>,
+}
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct ShutdownFlag: u32 {
+        const RECEIVE = 1 << 0;
+        const SEND = 1 << 1;
     }
 }

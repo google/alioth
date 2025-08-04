@@ -20,7 +20,6 @@ pub mod fs;
 #[cfg(target_os = "linux")]
 #[path = "net/net.rs"]
 pub mod net;
-#[cfg(target_os = "linux")]
 #[path = "vsock/vsock.rs"]
 pub mod vsock;
 
