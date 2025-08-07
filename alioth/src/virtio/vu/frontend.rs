@@ -412,10 +412,10 @@ impl VirtioMio for VuFrontend {
                 log::error!("{name}: failed to disable queue-{index}: {e:?}")
             }
         }
-        if self.vu_feature.contains(VuFeature::STATUS) {
-            if let Err(e) = self.session.set_status(&0) {
-                log::error!("{name}: failed to reset device status: {e:?}");
-            }
+        if self.vu_feature.contains(VuFeature::STATUS)
+            && let Err(e) = self.session.set_status(&0)
+        {
+            log::error!("{name}: failed to reset device status: {e:?}");
         }
         for (index, fd) in self.err_fds.iter().enumerate() {
             if let Err(e) = registry.deregister(&mut SourceFd(&fd.as_raw_fd())) {

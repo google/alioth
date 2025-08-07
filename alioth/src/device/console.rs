@@ -53,15 +53,15 @@ impl StdinBackup {
 
 impl Drop for StdinBackup {
     fn drop(&mut self) {
-        if let Some(t) = self.termios.take() {
-            if let Err(e) = ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, &t) }) {
-                log::error!("Restoring termios: {e:?}");
-            }
+        if let Some(t) = self.termios.take()
+            && let Err(e) = ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, &t) })
+        {
+            log::error!("Restoring termios: {e:?}");
         }
-        if let Some(f) = self.flag.take() {
-            if let Err(e) = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, f) }) {
-                log::error!("Restoring stdin flag to {f:#x}: {e:?}")
-            }
+        if let Some(f) = self.flag.take()
+            && let Err(e) = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, f) })
+        {
+            log::error!("Restoring stdin flag to {f:#x}: {e:?}")
         }
     }
 }
