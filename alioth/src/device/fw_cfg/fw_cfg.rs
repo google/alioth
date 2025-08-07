@@ -149,7 +149,7 @@ impl FwCfgContent {
         u32::try_from(ret).map_err(|_| std::io::ErrorKind::InvalidInput.into())
     }
 
-    fn access(&self, offset: u32) -> FwCfgContentAccess {
+    fn access(&self, offset: u32) -> FwCfgContentAccess<'_> {
         FwCfgContentAccess {
             content: self,
             offset,
