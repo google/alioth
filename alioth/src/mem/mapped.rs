@@ -85,7 +85,7 @@ impl ArcMemPages {
         self.size as u64
     }
 
-    pub fn fd(&self) -> Option<(BorrowedFd, u64)> {
+    pub fn fd(&self) -> Option<(BorrowedFd<'_>, u64)> {
         self._inner
             .fd
             .as_ref()
@@ -235,7 +235,7 @@ impl<'m> Iterator for IterMut<'m> {
 }
 
 impl Ram {
-    fn slice_iter(&self, gpa: u64, len: u64) -> Iter {
+    fn slice_iter(&self, gpa: u64, len: u64) -> Iter<'_> {
         Iter {
             ram: self,
             gpa,
@@ -243,7 +243,7 @@ impl Ram {
         }
     }
 
-    fn slice_iter_mut(&self, gpa: u64, len: u64) -> IterMut {
+    fn slice_iter_mut(&self, gpa: u64, len: u64) -> IterMut<'_> {
         IterMut {
             ram: self,
             gpa,

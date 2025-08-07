@@ -125,7 +125,7 @@ pub struct VuEventfd {
 }
 
 impl AsFd for VuEventfd {
-    fn as_fd(&self) -> BorrowedFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
 }
