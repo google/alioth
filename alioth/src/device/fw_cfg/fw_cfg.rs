@@ -367,7 +367,7 @@ impl FwCfg {
 
     fn do_dma(&mut self) {
         let dma_address = self.dma_address;
-        let dma_access = match self.memory.read::<FwCfgDmaAccess>(dma_address) {
+        let dma_access: FwCfgDmaAccess = match self.memory.read_t(dma_address) {
             Ok(access) => access,
             Err(e) => {
                 log::error!("fw_cfg: invalid address of dma access {dma_address:#x}: {e:?}");
@@ -397,7 +397,7 @@ impl FwCfg {
         }
         if let Err(e) = self.memory.write(
             dma_address + FwCfgDmaAccess::OFFSET_CONTROL_BE as u64,
-            &access_resp.0.to_be(),
+            &access_resp.0.to_be_bytes(),
         ) {
             log::error!("fw_cfg: finishing dma: {e:?}")
         }
