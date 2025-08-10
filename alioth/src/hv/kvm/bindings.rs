@@ -48,6 +48,7 @@ bitflags! {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmCpuidEntry2 {
@@ -140,6 +141,7 @@ pub struct KvmMemoryAttributes {
     pub flags: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmCreateGuestMemfd {
@@ -172,6 +174,7 @@ pub struct KvmRegs {
     pub rflags: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSegment {
@@ -190,6 +193,7 @@ pub struct KvmSegment {
     pub padding: u8,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmDtable {
@@ -198,6 +202,7 @@ pub struct KvmDtable {
     pub padding: [u16; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSregs {
@@ -221,6 +226,7 @@ pub struct KvmSregs {
     pub interrupt_bitmap: [u64; 4],
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSregs2 {
