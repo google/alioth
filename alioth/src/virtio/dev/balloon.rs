@@ -32,7 +32,6 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -285,7 +284,7 @@ impl VirtioMio for Balloon {
             }
             _ => {}
         };
-        handle_desc(&self.name, index, queue, active_mio.irq_sender, |desc| {
+        queue.handle_desc(index, &self.name, active_mio.irq_sender, |desc| {
             match ballon_q {
                 BalloonQueue::Inflate => self.inflate(&desc.readable, active_mio.mem),
                 BalloonQueue::Deflate => {
