@@ -19,16 +19,13 @@ jobs:
           - name: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - name: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
           - name: aarch64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.target.os }}
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Get stable rust version
-        id: rust-version
-        run: echo RUST_VERSION=$(cargo +stable --version | cut -d ' ' -f 2) >> "$GITHUB_OUTPUT"
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
@@ -36,22 +33,26 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/settings.toml
+            ~/.rustup/toolchains/
+            ~/.rustup/update-hashes/
             target/
-          key: ${{ matrix.target.name }}-cargo-${{ steps.rust-version.outputs.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-      - name: Add target
-        run: rustup target add ${{ matrix.target.name }}
+          key: ${{ matrix.target.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+        if: matrix.target.name == 'x86_64-unknown-linux-gnu'
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Build
-        run: cargo build --verbose --target ${{ matrix.target.name }}
-        if: matrix.target.name != 'aarch64-unknown-linux-gnu'
+        run: cargo build --verbose
       - name: Format
-        run: >
-          rustup toolchain install nightly &&
-          rustup component add --toolchain nightly rustfmt &&
-          cargo +nightly fmt --check
+        run: cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
       - name: Run tests
-        run: cargo test --target ${{ matrix.target.name }}
-        if: matrix.target.name != 'aarch64-unknown-linux-gnu'
+        run: cargo test --verbose
       - name: Clippy
-        run: cargo clippy --target ${{ matrix.target.name }} -- -D warnings
+        run: cargo clippy -- -D warnings
