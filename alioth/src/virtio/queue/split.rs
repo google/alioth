@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "split_test.rs"]
+#[cfg(test)]
+mod tests;
+
 use std::mem::size_of;
 use std::sync::atomic::{Ordering, fence};
 
@@ -49,7 +53,7 @@ bitflags! {
 }
 
 #[repr(C, align(2))]
-#[derive(Debug, Clone, Layout)]
+#[derive(Debug, Clone, Layout, Immutable, FromBytes, IntoBytes)]
 pub struct AvailHeader {
     flags: u16,
     idx: u16,
