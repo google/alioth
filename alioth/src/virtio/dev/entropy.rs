@@ -30,7 +30,6 @@ use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::handlers::reader_to_queue;
 use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -145,13 +144,7 @@ impl VirtioMio for Entropy {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        reader_to_queue(
-            &self.name,
-            &mut self.source,
-            index,
-            queue,
-            active_mio.irq_sender,
-        )
+        queue.copy_from_reader(index, &self.name, active_mio.irq_sender, &self.source)
     }
 
     fn handle_event<'a, 'm, Q, S, E>(

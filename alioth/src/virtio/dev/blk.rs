@@ -39,7 +39,6 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
-use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
@@ -360,7 +359,7 @@ impl VirtioMio for Block {
             return Ok(());
         };
         let mut disk = &self.disk;
-        handle_desc(&self.name, index, queue, active_mio.irq_sender, |desc| {
+        queue.handle_desc(index, &self.name, active_mio.irq_sender, |desc| {
             let written_len = match self.handle_desc(desc) {
                 Err(e) => {
                     log::error!("{}: handle descriptor: {e}", self.name);

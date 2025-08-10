@@ -42,7 +42,6 @@ use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
-use crate::virtio::queue::handlers::{handle_desc, queue_to_writer, reader_to_queue};
 use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -384,7 +383,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            reader_to_queue(&self.name, socket, rx_queue_index as u16, queue, irq_sender)?;
+            queue.copy_from_reader(rx_queue_index as u16, &self.name, irq_sender, socket)?;
         }
         if event.is_writable() {
             let tx_queue_index = (token << 1) + 1;
@@ -396,7 +395,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue_to_writer(&self.name, socket, tx_queue_index as u16, queue, irq_sender)?;
+            queue.copy_to_writer(tx_queue_index as u16, &self.name, irq_sender, socket)?;
         }
         Ok(())
     }
@@ -419,7 +418,7 @@ impl VirtioMio for Net {
         let registry = active_mio.poll.registry();
         if index == self.config.max_queue_pairs * 2 {
             let name = self.name.clone();
-            return handle_desc(&name, index, queue, irq_sender, |desc| {
+            return queue.handle_desc(index, &name, irq_sender, |desc| {
                 let len = self.handle_ctrl_queue(desc, Some(registry))?;
                 Ok(Some(len))
             });
@@ -429,9 +428,9 @@ impl VirtioMio for Net {
             return Ok(());
         };
         if index & 1 == 0 {
-            reader_to_queue(&self.name, socket, index, queue, irq_sender)
+            queue.copy_from_reader(index, &self.name, irq_sender, socket)
         } else {
-            queue_to_writer(&self.name, socket, index, queue, irq_sender)
+            queue.copy_to_writer(index, &self.name, irq_sender, socket)
         }
     }
 }
