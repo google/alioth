@@ -306,40 +306,40 @@ impl Ram {
         }
     }
 
-    pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
-    where
-        T: FromBytes + IntoBytes,
-    {
-        let mut val = T::new_zeroed();
-        let buf = val.as_mut_bytes();
-        let host_ref = self.get_partial_slice(gpa, size_of::<T>() as u64)?;
+    pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<()> {
+        let host_ref = self.get_partial_slice(gpa, buf.len() as u64)?;
         if host_ref.len() == buf.len() {
             buf.copy_from_slice(host_ref);
-            Ok(val)
         } else {
             let mut cur = 0;
-            for r in self.slice_iter(gpa, size_of::<T>() as u64) {
+            for r in self.slice_iter(gpa, buf.len() as u64) {
                 let s = r?;
                 let s_len = s.len();
                 buf[cur..(cur + s_len)].copy_from_slice(s);
                 cur += s_len;
             }
-            Ok(val)
         }
+        Ok(())
     }
 
-    pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
+    pub fn read_t<T>(&self, gpa: u64) -> Result<T>
     where
-        T: IntoBytes + Immutable,
+        T: FromBytes + IntoBytes,
     {
-        let buf = val.as_bytes();
-        let host_ref = self.get_partial_slice_mut(gpa, size_of::<T>() as u64)?;
+        let mut v = T::new_zeroed();
+        self.read(gpa, v.as_mut_bytes())?;
+        Ok(v)
+    }
+
+    pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<()> {
+        let len = buf.len() as u64;
+        let host_ref = self.get_partial_slice_mut(gpa, len)?;
         if host_ref.len() == buf.len() {
             host_ref.copy_from_slice(buf);
             Ok(())
         } else {
             let mut cur = 0;
-            for r in self.slice_iter_mut(gpa, size_of::<T>() as u64) {
+            for r in self.slice_iter_mut(gpa, len) {
                 let s = r?;
                 let s_len = s.len();
                 s.copy_from_slice(&buf[cur..(cur + s_len)]);
@@ -347,6 +347,13 @@ impl Ram {
             }
             Ok(())
         }
+    }
+
+    pub fn write_t<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
+    where
+        T: IntoBytes + Immutable,
+    {
+        self.write(gpa, val.as_bytes())
     }
 
     pub fn translate(&self, gpa: u64) -> Result<*const u8> {
@@ -417,20 +424,30 @@ impl RamBus {
         ram.inner.remove(gpa)
     }
 
-    pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
+    pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<()> {
+        let ram = self.ram.read();
+        ram.read(gpa, buf)
+    }
+
+    pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<()> {
+        let ram = self.ram.read();
+        ram.write(gpa, buf)
+    }
+
+    pub fn read_t<T>(&self, gpa: u64) -> Result<T, Error>
     where
         T: FromBytes + IntoBytes,
     {
         let ram = self.ram.read();
-        ram.read(gpa)
+        ram.read_t(gpa)
     }
 
-    pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
+    pub fn write_t<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
         T: IntoBytes + Immutable,
     {
         let ram = self.ram.read();
-        ram.write(gpa, val)
+        ram.write_t(gpa, val)
     }
 
     pub fn read_range(&self, gpa: u64, len: u64, dst: &mut impl Write) -> Result<()> {
@@ -517,19 +534,19 @@ mod test {
         };
         let data_size = size_of::<MyStruct>() as u64;
         for gpa in (PAGE_SIZE - data_size)..=PAGE_SIZE {
-            bus.write(gpa, &data).unwrap();
-            let r: MyStruct = bus.read(gpa).unwrap();
+            bus.write_t(gpa, &data).unwrap();
+            let r: MyStruct = bus.read_t(gpa).unwrap();
             assert_eq!(r, data)
         }
         let memory_end = PAGE_SIZE * 2;
         for gpa in (memory_end - data_size - 10)..=(memory_end - data_size) {
-            bus.write(gpa, &data).unwrap();
-            let r: MyStruct = bus.read(gpa).unwrap();
+            bus.write_t(gpa, &data).unwrap();
+            let r: MyStruct = bus.read_t(gpa).unwrap();
             assert_eq!(r, data)
         }
         for gpa in (memory_end - data_size + 1)..memory_end {
-            assert_matches!(bus.write(gpa, &data), Err(_));
-            assert_matches!(bus.read::<MyStruct>(gpa), Err(_));
+            assert_matches!(bus.write_t(gpa, &data), Err(_));
+            assert_matches!(bus.read_t::<MyStruct>(gpa), Err(_));
         }
 
         let data: Vec<u8> = (0..64).collect();

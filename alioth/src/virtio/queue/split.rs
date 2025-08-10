@@ -150,7 +150,7 @@ impl<'m> SplitQueue<'_, 'm> {
     ) -> Result<()> {
         let mut id = 0;
         loop {
-            let desc: Desc = self.ram.read(addr + id * size_of::<Desc>() as u64)?;
+            let desc: Desc = self.ram.read_t(addr + id * size_of::<Desc>() as u64)?;
             let flag = DescFlag::from_bits_retain(desc.flag);
             assert!(!flag.contains(DescFlag::INDIRECT));
             if flag.contains(DescFlag::WRITE) {

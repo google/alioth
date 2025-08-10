@@ -139,7 +139,7 @@ where
                 assert!(cpuid_table.entries.len() >= self.arch.cpuids.len());
                 cpuid_table.count = self.arch.cpuids.len() as u32;
                 self.fill_snp_cpuid(&mut cpuid_table.entries);
-                ram.write(desc.base as _, &cpuid_table)?;
+                ram.write_t(desc.base as _, &cpuid_table)?;
                 SnpPageType::Cpuid
             }
             _ => unimplemented!(),
@@ -153,13 +153,13 @@ where
             .vm
             .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
         if ret.is_err() && desc.type_ == SEV_DESC_TYPE_CPUID {
-            let updated_cpuid = ram.read::<SnpCpuidInfo>(desc.base as _)?;
+            let updated_cpuid: SnpCpuidInfo = ram.read_t(desc.base as _)?;
             for (set, got) in zip(cpuid_table.entries.iter(), updated_cpuid.entries.iter()) {
                 if set != got {
                     log::error!("set {set:#x?}, but firmware expects {got:#x?}");
                 }
             }
-            ram.write(desc.base as _, &updated_cpuid)?;
+            ram.write_t(desc.base as _, &updated_cpuid)?;
             ret = self
                 .vm
                 .snp_launch_update(range_bytes, desc.base as _, snp_page_type);

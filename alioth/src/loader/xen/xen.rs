@@ -263,7 +263,7 @@ pub fn load<P: AsRef<Path>>(
     start_info_page.start_info.memmap_paddr =
         HVM_START_INFO_START + offset_of!(StartInfoPage, memory_map) as u64;
 
-    memory.write(HVM_START_INFO_START, &start_info_page)?;
+    memory.write_t(HVM_START_INFO_START, &start_info_page)?;
 
     // set up gdt
     let boot_cs = SegRegVal {
@@ -302,7 +302,7 @@ pub fn load<P: AsRef<Path>>(
         base: BOOT_GDT_START,
         limit: size_of_val(&gdt) as u16 - 1,
     };
-    memory.write(BOOT_GDT_START, &gdt)?;
+    memory.write_t(BOOT_GDT_START, &gdt)?;
 
     let idtr = DtRegVal { base: 0, limit: 0 };
 

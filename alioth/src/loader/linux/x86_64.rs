@@ -179,13 +179,13 @@ pub fn load<P: AsRef<Path>>(
 
     boot_params.acpi_rsdp_addr = EBDA_START;
 
-    memory.write(LINUX_BOOT_PARAMS_START, &boot_params)?;
+    memory.write_t(LINUX_BOOT_PARAMS_START, &boot_params)?;
 
     // set up identity paging
     let pml4_start = BOOT_PAGING_START;
     let pdpt_start = pml4_start + 0x1000;
     let pml4e = (Entry::P | Entry::RW).bits() as u64 | pdpt_start;
-    memory.write(pml4_start, &pml4e)?;
+    memory.write_t(pml4_start, &pml4e)?;
     let alignment = boot_params.hdr.kernel_alignment as u64;
     let runtime_start = (KERNEL_IMAGE_START + alignment - 1) & !(alignment - 1);
     let max_addr = std::cmp::max(
@@ -198,7 +198,7 @@ pub fn load<P: AsRef<Path>>(
     let num_page = (max_addr + (1 << 30) - 1) >> 30;
     for i in 0..num_page {
         let pdpte = (i << 30) | (Entry::P | Entry::RW | Entry::PS).bits() as u64;
-        memory.write(pdpt_start + i * size_of::<u64>() as u64, &pdpte)?;
+        memory.write_t(pdpt_start + i * size_of::<u64>() as u64, &pdpte)?;
     }
 
     // set up gdt
@@ -239,7 +239,7 @@ pub fn load<P: AsRef<Path>>(
         limit: size_of_val(&gdt) as u16 - 1,
     };
     let idtr = DtRegVal { base: 0, limit: 0 };
-    memory.write(BOOT_GDT_START, &gdt)?;
+    memory.write_t(BOOT_GDT_START, &gdt)?;
 
     Ok(InitState {
         regs: vec![
