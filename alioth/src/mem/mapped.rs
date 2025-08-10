@@ -28,8 +28,8 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use libc::{MADV_HUGEPAGE, MFD_CLOEXEC};
 use libc::{
-    MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC, PROT_EXEC, PROT_READ, PROT_WRITE,
-    c_void, madvise, mmap, msync, munmap,
+    MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC, PROT_READ, PROT_WRITE, c_void,
+    madvise, mmap, msync, munmap,
 };
 use parking_lot::{RwLock, RwLockReadGuard};
 use snafu::ResultExt;
@@ -123,7 +123,7 @@ impl ArcMemPages {
     #[cfg(target_os = "linux")]
     pub fn from_memfd(name: &CStr, size: usize, prot: Option<i32>) -> Result<Self> {
         let fd = ffi!(unsafe { libc::memfd_create(name.as_ptr(), MFD_CLOEXEC) })?;
-        let prot = prot.unwrap_or(PROT_WRITE | PROT_READ | PROT_EXEC);
+        let prot = prot.unwrap_or(PROT_WRITE | PROT_READ);
         let addr = ffi!(
             unsafe { mmap(null_mut(), size, prot, MAP_SHARED, fd, 0) },
             MAP_FAILED
@@ -134,7 +134,7 @@ impl ArcMemPages {
     }
 
     pub fn from_anonymous(size: usize, prot: Option<i32>, flags: Option<i32>) -> Result<Self> {
-        let prot = prot.unwrap_or(PROT_WRITE | PROT_READ | PROT_EXEC);
+        let prot = prot.unwrap_or(PROT_WRITE | PROT_READ);
         let flags = flags.unwrap_or(MAP_PRIVATE) | MAP_ANONYMOUS;
         let addr = ffi!(
             unsafe { mmap(null_mut(), size, prot, flags, -1, 0) },
