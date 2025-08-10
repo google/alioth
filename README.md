@@ -1,6 +1,7 @@
 # Alioth
 
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/google/alioth/rust.yml)](https://github.com/google/alioth/actions/workflows/rust.yml)
+[![Coverage Status](https://coveralls.io/repos/github/google/alioth/badge.svg?branch=main)](https://coveralls.io/github/google/alioth?branch=main)
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/google/alioth)
 [![Crates.io Version](https://img.shields.io/crates/v/alioth)](https://crates.io/crates/alioth)
 [![Crates.io License](https://img.shields.io/crates/l/alioth)](LICENSE)
