@@ -13,53 +13,55 @@
 // limitations under the License.
 
 use std::ptr::eq as ptr_eq;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
-use rstest::{fixture, rstest};
+use rstest::rstest;
 
-use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::virtio::VirtioFeature;
-use crate::virtio::queue::split::{AvailHeader, Desc, DescFlag, SplitQueue};
-use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
+use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
+use crate::virtio::queue::{Queue, VirtQueue};
 
-const MEM_SIZE: usize = 2 << 20;
-const QUEUE_SIZE: u16 = QUEUE_SIZE_MAX;
-const DESC_ADDR: u64 = 0x1000;
-const AVAIL_ADDR: u64 = 0x2000;
-const USED_ADDR: u64 = 0x3000;
-const DATA_ADDR: u64 = 0x4000;
+use crate::virtio::queue::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
 
-#[fixture]
-fn fixutre_ram_bus() -> RamBus {
-    let host_pages = ArcMemPages::from_anonymous(MEM_SIZE, None, None).unwrap();
-    let ram_bus = RamBus::new();
-    ram_bus.add(0, host_pages).unwrap();
-    ram_bus
-}
-
-#[fixture]
-fn fixture_queue() -> Queue {
-    Queue {
-        size: AtomicU16::new(QUEUE_SIZE),
-        desc: AtomicU64::new(DESC_ADDR),
-        driver: AtomicU64::new(AVAIL_ADDR),
-        device: AtomicU64::new(USED_ADDR),
-        enabled: AtomicBool::new(true),
+impl<'q, 'm> SplitQueue<'q, 'm> {
+    pub fn add_desc(&mut self, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
+        let readable_count = readable.len();
+        let total_count = readable.len() + writable.len();
+        for (i, (addr, len)) in readable.iter().chain(writable.iter()).enumerate() {
+            let mut flag = DescFlag::empty();
+            if i < total_count - 1 {
+                flag |= DescFlag::NEXT;
+            }
+            if i >= readable_count {
+                flag |= DescFlag::WRITE;
+            }
+            let desc = Desc {
+                addr: *addr,
+                len: *len,
+                flag: flag.bits(),
+                next: id + i as u16 + 1,
+            };
+            *unsafe { &mut *self.desc.offset((id + i as u16) as isize) } = desc;
+        }
+        let avail_idx = self.avail_index();
+        *unsafe { &mut *self.avail_ring.offset((avail_idx % self.size) as isize) } = id;
+        unsafe { &mut *self.avail_hdr }.idx = avail_idx.wrapping_add(1);
     }
 }
 
 #[rstest]
-fn disabled_queue(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
-    let ram = fixutre_ram_bus.lock_layout();
+fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+    let ram = fixture_ram_bus.lock_layout();
     fixture_queue.enabled.store(false, Ordering::Relaxed);
     let split_queue = SplitQueue::new(&fixture_queue, &*ram, 0);
     assert_matches!(split_queue, Ok(None));
 }
 
 #[rstest]
-fn enabled_queue(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
-    let ram = fixutre_ram_bus.lock_layout();
+fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+    let ram = fixture_ram_bus.lock_layout();
     let mut q = SplitQueue::new(&fixture_queue, &*ram, 0).unwrap().unwrap();
     assert!(ptr_eq(q.reg(), &fixture_queue));
     assert_eq!(q.size(), QUEUE_SIZE);
@@ -72,36 +74,12 @@ fn enabled_queue(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
     let addr_2 = addr_1 + str_1.len() as u64;
     ram.write(addr_0, str_0.as_bytes()).unwrap();
     ram.write(addr_1, str_1.as_bytes()).unwrap();
-    let descs = [
-        Desc {
-            addr: addr_0,
-            len: str_0.len() as u32,
-            flag: DescFlag::NEXT.bits(),
-            next: 1,
-        },
-        Desc {
-            addr: addr_1,
-            len: str_1.len() as u32,
-            flag: 0,
-            next: 0,
-        },
-        Desc {
-            addr: addr_2,
-            len: str_2.len() as u32,
-            flag: DescFlag::WRITE.bits(),
-            next: 0,
-        },
-    ];
-    for (idx, desc) in descs.iter().enumerate() {
-        ram.write_t(DESC_ADDR + (idx * size_of::<Desc>()) as u64, desc)
-            .unwrap();
-    }
-    for (idx, id) in [0u16, 2u16].iter().enumerate() {
-        let addr = AVAIL_ADDR + (size_of::<AvailHeader>() + idx * size_of::<u16>()) as u64;
-        ram.write_t(addr, id).unwrap();
-    }
-    let avail_header = AvailHeader { flags: 0, idx: 1 };
-    ram.write_t(AVAIL_ADDR, &avail_header).unwrap();
+
+    q.add_desc(
+        0,
+        &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
+        &[],
+    );
 
     assert_eq!(q.avail_index(), 1);
     assert_eq!(q.read_avail(0), 0);
@@ -114,8 +92,7 @@ fn enabled_queue(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
     q.push_used(desc, 0);
     assert!(!q.has_next_desc());
 
-    let avail_header = AvailHeader { flags: 0, idx: 2 };
-    ram.write_t(AVAIL_ADDR, &avail_header).unwrap();
+    q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
     let mut desc = q.next_desc().unwrap().unwrap();
     assert_eq!(desc.id, 2);
     assert_eq!(desc.readable.len(), 0);
@@ -128,8 +105,8 @@ fn enabled_queue(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
 }
 
 #[rstest]
-fn event_idx_enabled(fixutre_ram_bus: RamBus, fixture_queue: Queue) {
-    let ram = fixutre_ram_bus.lock_layout();
+fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+    let ram = fixture_ram_bus.lock_layout();
     let q = SplitQueue::new(&fixture_queue, &*ram, VirtioFeature::EVENT_IDX.bits())
         .unwrap()
         .unwrap();
