@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::mpsc::{self, TryRecvError};
 
@@ -51,6 +51,64 @@ pub fn fixture_queue() -> Queue {
     }
 }
 
+#[derive(Debug)]
+enum ReaderData<'a> {
+    Buf(&'a [u8]),
+    Err(ErrorKind),
+}
+
+#[derive(Debug)]
+struct Reader<'a> {
+    data: &'a [ReaderData<'a>],
+    index: usize,
+    pos: usize,
+}
+
+impl<'a> Read for Reader<'a> {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        unreachable!()
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize> {
+        let mut count = 0;
+        let mut buf_iter = bufs.iter_mut();
+        let Some(s) = buf_iter.next() else {
+            return Ok(0);
+        };
+        let mut buf = s.as_mut();
+        loop {
+            let Some(data) = self.data.get(self.index) else {
+                break;
+            };
+            match data {
+                ReaderData::Buf(data) => {
+                    let c = buf.write(&data[self.pos..]).unwrap();
+                    self.pos += c;
+                    if self.pos == data.len() {
+                        self.index += 1;
+                        self.pos = 0;
+                    }
+                    count += c;
+                    if buf.len() == 0 {
+                        let Some(s) = buf_iter.next() else {
+                            break;
+                        };
+                        buf = s.as_mut();
+                    }
+                }
+                ReaderData::Err(kind) => {
+                    if count > 0 {
+                        break;
+                    }
+                    self.index += 1;
+                    return Err((*kind).into());
+                }
+            }
+        }
+        Ok(count)
+    }
+}
+
 #[rstest]
 fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     let ram = fixture_ram_bus.lock_layout();
@@ -67,9 +125,19 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     let addr_2 = addr_1 + str_1.len() as u64;
     let addr_3 = addr_2 + str_2.len() as u64;
 
-    let s = format!("{str_0}{str_1}{str_2}");
-    let mut reader = s.as_bytes();
+    let mut reader = Reader {
+        data: &[
+            ReaderData::Buf(str_0.as_bytes()),
+            ReaderData::Buf(str_1.as_bytes()),
+            ReaderData::Err(ErrorKind::WouldBlock),
+            ReaderData::Buf(str_2.as_bytes()),
+            ReaderData::Err(ErrorKind::Interrupted),
+        ],
+        pos: 0,
+        index: 0,
+    };
 
+    // no writable descriptors
     q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
@@ -81,14 +149,26 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
+    // no writable descriptors
     q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
+    // will hit ErrorKind::WouldBlock
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
+
     q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[], &[(addr_3, 12)]);
+
+    // will hit ErrorKind::Interrupted
+    assert_matches!(
+        q.copy_from_reader(0, &irq_sender, &mut reader),
+        Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
+    );
+
     assert_matches!(
         q.copy_from_reader(0, &irq_sender, &mut reader),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::UnexpectedEof
@@ -99,6 +179,68 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         let mut buf = vec![0u8; s.len()];
         ram.read(addr, &mut buf).unwrap();
         assert_eq!(String::from_utf8_lossy(buf.as_slice()), s);
+    }
+}
+
+#[derive(Debug)]
+enum WriterData<'a> {
+    Buf(&'a mut [u8]),
+    Err(ErrorKind),
+}
+
+#[derive(Debug)]
+struct Writer<'a> {
+    data: &'a mut [WriterData<'a>],
+    index: usize,
+    pos: usize,
+}
+
+impl<'a> Write for Writer<'a> {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        unreachable!()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        let mut count = 0;
+        let mut buf_iter = bufs.iter();
+        let Some(s) = buf_iter.next() else {
+            return Ok(0);
+        };
+        let mut buf = s.as_ref();
+        loop {
+            let Some(data) = self.data.get_mut(self.index) else {
+                break;
+            };
+            match data {
+                WriterData::Buf(data) => {
+                    let c = buf.read(&mut data[self.pos..]).unwrap();
+                    self.pos += c;
+                    if self.pos == data.len() {
+                        self.index += 1;
+                        self.pos = 0;
+                    }
+                    count += c;
+                    if buf.len() == 0 {
+                        let Some(s) = buf_iter.next() else {
+                            break;
+                        };
+                        buf = s.as_ref();
+                    }
+                }
+                WriterData::Err(kind) => {
+                    if count > 0 {
+                        break;
+                    }
+                    self.index += 1;
+                    return Err((*kind).into());
+                }
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -121,9 +263,22 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         ram.write(addr, s.as_bytes()).unwrap();
     }
 
-    let mut b = vec![0u8; str_0.len() + str_1.len() + str_2.len()];
-    let mut writer = b.as_mut_slice();
+    let mut buf_0 = vec![0u8; str_0.len()];
+    let mut buf_1 = vec![0u8; str_1.len()];
+    let mut buf_2 = vec![0u8; str_2.len()];
+    let mut writer = Writer {
+        data: &mut [
+            WriterData::Buf(buf_0.as_mut_slice()),
+            WriterData::Buf(buf_1.as_mut_slice()),
+            WriterData::Err(ErrorKind::WouldBlock),
+            WriterData::Buf(buf_2.as_mut_slice()),
+            WriterData::Err(ErrorKind::Interrupted),
+        ],
+        pos: 0,
+        index: 0,
+    };
 
+    // no readable descriptors
     q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
@@ -135,22 +290,33 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
+    // no readable descriptors
     q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
+    // will hit ErrorKind::WouldBlock
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
+
     q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[(addr_3, 12)], &[]);
+
+    // will hit ErrorKind::Interrupted
+    assert_matches!(
+        q.copy_to_writer(0, &irq_sender, &mut writer),
+        Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
+    );
+
     assert_matches!(
         q.copy_to_writer(0, &irq_sender, &mut writer),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::WriteZero
     );
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    assert_eq!(
-        String::from_utf8_lossy(b.as_slice()),
-        format!("{str_0}{str_1}{str_2}")
-    )
+    for (buf, s) in [(buf_0, str_0), (buf_1, str_1), (buf_2, str_2)] {
+        assert_eq!(String::from_utf8_lossy(buf.as_slice()), s)
+    }
 }
