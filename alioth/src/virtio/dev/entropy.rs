@@ -144,7 +144,7 @@ impl VirtioMio for Entropy {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        queue.copy_from_reader(index, &self.name, active_mio.irq_sender, &self.source)
+        queue.copy_from_reader(index, active_mio.irq_sender, &self.source)
     }
 
     fn handle_event<'a, 'm, Q, S, E>(

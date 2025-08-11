@@ -383,7 +383,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.copy_from_reader(rx_queue_index as u16, &self.name, irq_sender, socket)?;
+            queue.copy_from_reader(rx_queue_index as u16, irq_sender, socket)?;
         }
         if event.is_writable() {
             let tx_queue_index = (token << 1) + 1;
@@ -395,7 +395,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.copy_to_writer(tx_queue_index as u16, &self.name, irq_sender, socket)?;
+            queue.copy_to_writer(tx_queue_index as u16, irq_sender, socket)?;
         }
         Ok(())
     }
@@ -417,8 +417,7 @@ impl VirtioMio for Net {
         let irq_sender = active_mio.irq_sender;
         let registry = active_mio.poll.registry();
         if index == self.config.max_queue_pairs * 2 {
-            let name = self.name.clone();
-            return queue.handle_desc(index, &name, irq_sender, |desc| {
+            return queue.handle_desc(index, irq_sender, |desc| {
                 let len = self.handle_ctrl_queue(desc, Some(registry))?;
                 Ok(Some(len))
             });
@@ -428,9 +427,9 @@ impl VirtioMio for Net {
             return Ok(());
         };
         if index & 1 == 0 {
-            queue.copy_from_reader(index, &self.name, irq_sender, socket)
+            queue.copy_from_reader(index, irq_sender, socket)
         } else {
-            queue.copy_to_writer(index, &self.name, irq_sender, socket)
+            queue.copy_to_writer(index, irq_sender, socket)
         }
     }
 }
