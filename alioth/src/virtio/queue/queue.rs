@@ -98,7 +98,10 @@ pub trait VirtQueue<'m> {
         self.handle_desc(q_index, irq_sender, |desc| {
             let ret = reader.read_vectored(&mut desc.writable);
             match ret {
-                Ok(0) => Err(std::io::Error::from(ErrorKind::UnexpectedEof))?,
+                Ok(0) => {
+                    let size: usize = desc.writable.iter().map(|s| s.len()).sum();
+                    if size == 0 { Ok(Some(0)) } else { Ok(None) }
+                }
                 Ok(len) => Ok(Some(len)),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
                 Err(e) => Err(e)?,
@@ -115,7 +118,10 @@ pub trait VirtQueue<'m> {
         self.handle_desc(q_index, irq_sender, |desc| {
             let ret = writer.write_vectored(&desc.readable);
             match ret {
-                Ok(0) => Err(std::io::Error::from(ErrorKind::WriteZero))?,
+                Ok(0) => {
+                    let size: usize = desc.readable.iter().map(|s| s.len()).sum();
+                    if size == 0 { Ok(Some(0)) } else { Ok(None) }
+                }
                 Ok(len) => Ok(Some(len)),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
                 Err(e) => Err(e)?,
