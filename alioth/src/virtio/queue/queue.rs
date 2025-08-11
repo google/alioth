@@ -13,6 +13,9 @@
 // limitations under the License.
 
 pub mod split;
+#[cfg(test)]
+#[path = "queue_test.rs"]
+mod tests;
 
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
