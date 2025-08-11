@@ -141,6 +141,11 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
+    // empty writable descripter
+    q.add_desc(0, &[], &[(addr_0, 0)]);
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    assert_eq!(irq_rx.try_recv(), Ok(0));
+
     q.add_desc(
         0,
         &[],
@@ -169,10 +174,7 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    assert_matches!(
-        q.copy_from_reader(0, &irq_sender, &mut reader),
-        Err(Error::System { error, .. }) if error.kind() == ErrorKind::UnexpectedEof
-    );
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     for (s, addr) in [(str_0, addr_0), (str_1, addr_1), (str_2, addr_2)] {
@@ -282,6 +284,11 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
+    // empty readble descripter
+    q.add_desc(0, &[(addr_0, 0)], &[]);
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    assert_eq!(irq_rx.try_recv(), Ok(0));
+
     q.add_desc(
         0,
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
@@ -310,10 +317,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    assert_matches!(
-        q.copy_to_writer(0, &irq_sender, &mut writer),
-        Err(Error::System { error, .. }) if error.kind() == ErrorKind::WriteZero
-    );
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     for (buf, s) in [(buf_0, str_0), (buf_1, str_1), (buf_2, str_2)] {
