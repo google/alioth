@@ -284,7 +284,7 @@ impl VirtioMio for Balloon {
             }
             _ => {}
         };
-        queue.handle_desc(index, &self.name, active_mio.irq_sender, |desc| {
+        queue.handle_desc(index, active_mio.irq_sender, |desc| {
             match ballon_q {
                 BalloonQueue::Inflate => self.inflate(&desc.readable, active_mio.mem),
                 BalloonQueue::Deflate => {

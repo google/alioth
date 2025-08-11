@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::mpsc::{self, TryRecvError};
 
+use assert_matches::assert_matches;
 use rstest::{fixture, rstest};
 
 use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::virtio::Error;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
 use crate::virtio::tests::FakeIrqSender;
@@ -67,8 +70,7 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     let s = format!("{str_0}{str_1}{str_2}");
     let mut reader = s.as_bytes();
 
-    q.copy_from_reader(0, "test", &irq_sender, &mut reader)
-        .unwrap();
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(
@@ -76,22 +78,21 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         &[],
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
     );
-    q.copy_from_reader(0, "test", &irq_sender, &mut reader)
-        .unwrap();
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.copy_from_reader(0, "test", &irq_sender, &mut reader)
-        .unwrap();
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
-    q.copy_from_reader(0, "test", &irq_sender, &mut reader)
-        .unwrap();
+    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[], &[(addr_3, 12)]);
-    q.copy_from_reader(0, "test", &irq_sender, &mut reader)
-        .unwrap();
+    assert_matches!(
+        q.copy_from_reader(0, &irq_sender, &mut reader),
+        Err(Error::System { error, .. }) if error.kind() == ErrorKind::UnexpectedEof
+    );
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     for (s, addr) in [(str_0, addr_0), (str_1, addr_1), (str_2, addr_2)] {
@@ -123,8 +124,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     let mut b = vec![0u8; str_0.len() + str_1.len() + str_2.len()];
     let mut writer = b.as_mut_slice();
 
-    q.copy_to_writer(0, "test", &irq_sender, &mut writer)
-        .unwrap();
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(
@@ -132,22 +132,21 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
-    q.copy_to_writer(0, "test", &irq_sender, &mut writer)
-        .unwrap();
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.copy_to_writer(0, "test", &irq_sender, &mut writer)
-        .unwrap();
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
-    q.copy_to_writer(0, "test", &irq_sender, &mut writer)
-        .unwrap();
+    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[(addr_3, 12)], &[]);
-    q.copy_to_writer(0, "test", &irq_sender, &mut writer)
-        .unwrap();
+    assert_matches!(
+        q.copy_to_writer(0, &irq_sender, &mut writer),
+        Err(Error::System { error, .. }) if error.kind() == ErrorKind::WriteZero
+    );
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     assert_eq!(

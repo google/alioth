@@ -384,8 +384,7 @@ where
         }
         let irq_sender = active_mio.irq_sender;
         let registry = active_mio.poll.registry();
-        let name = self.name.clone();
-        queue.handle_desc(index, &name, irq_sender, |desc| {
+        queue.handle_desc(index, irq_sender, |desc| {
             let len = self.handle_desc(desc, registry)?;
             Ok(Some(len))
         })

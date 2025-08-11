@@ -54,11 +54,11 @@ pub trait VirtQueue<'m> {
     fn handle_desc(
         &mut self,
         q_index: u16,
-        dev_name: &str,
         irq_sender: &impl IrqSender,
         mut op: impl FnMut(&mut Descriptor) -> Result<Option<usize>>,
     ) -> Result<()> {
         let mut send_irq = false;
+        let mut ret = Ok(());
         'out: loop {
             if !self.has_next_desc() {
                 break;
@@ -68,7 +68,7 @@ pub trait VirtQueue<'m> {
                 let mut desc = desc?;
                 match op(&mut desc) {
                     Err(e) => {
-                        log::error!("{dev_name}: queue {q_index}: {e}");
+                        ret = Err(e);
                         self.enable_notification(true);
                         break 'out;
                     }
@@ -86,17 +86,16 @@ pub trait VirtQueue<'m> {
             fence(Ordering::SeqCst);
             irq_sender.queue_irq(q_index)
         }
-        Ok(())
+        ret
     }
 
     fn copy_from_reader(
         &mut self,
         q_index: u16,
-        dev_name: &str,
         irq_sender: &impl IrqSender,
         mut reader: impl Read,
     ) -> Result<()> {
-        self.handle_desc(q_index, dev_name, irq_sender, |desc| {
+        self.handle_desc(q_index, irq_sender, |desc| {
             let ret = reader.read_vectored(&mut desc.writable);
             match ret {
                 Ok(0) => Err(std::io::Error::from(ErrorKind::UnexpectedEof))?,
@@ -110,11 +109,10 @@ pub trait VirtQueue<'m> {
     fn copy_to_writer(
         &mut self,
         q_index: u16,
-        dev_name: &str,
         irq_sender: &impl IrqSender,
         mut writer: impl Write,
     ) -> Result<()> {
-        self.handle_desc(q_index, dev_name, irq_sender, |desc| {
+        self.handle_desc(q_index, irq_sender, |desc| {
             let ret = writer.write_vectored(&desc.readable);
             match ret {
                 Ok(0) => Err(std::io::Error::from(ErrorKind::WriteZero))?,
