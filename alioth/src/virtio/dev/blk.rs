@@ -161,7 +161,7 @@ impl DevParam for BlkFileParam {
 
 enum BlkRequest<'d, 'm> {
     Done {
-        written: usize,
+        written: u32,
     },
     In {
         data: &'d mut IoSliceMut<'m>,
@@ -260,7 +260,7 @@ impl Block {
             RequestType::FLUSH => Ok(BlkRequest::Flush { status }),
             RequestType::GET_ID => {
                 let mut name_bytes = self.name.as_bytes();
-                let count = name_bytes.read_vectored(data_in)?;
+                let count = name_bytes.read_vectored(data_in)? as u32;
                 *status = Status::OK.into();
                 Ok(BlkRequest::Done { written: 1 + count })
             }
@@ -373,7 +373,7 @@ impl VirtioMio for Block {
                 }) => match disk.read_exact_at(data, offset) {
                     Ok(_) => {
                         *status = Status::OK.into();
-                        data.len() + 1
+                        data.len() as u32 + 1
                     }
                     Err(e) => {
                         log::error!("{}: read: {e}", self.name);
@@ -455,7 +455,7 @@ impl VirtioIoUring for Block {
         Ok(action)
     }
 
-    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<usize> {
+    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32> {
         let result = cqe.result();
         let status_code = if result >= 0 {
             Status::OK
@@ -472,7 +472,7 @@ impl VirtioIoUring for Block {
             }
             BlkRequest::In { data, status, .. } => {
                 *status = status_code.into();
-                Ok(data.len() + 1)
+                Ok(data.len() as u32 + 1)
             }
             BlkRequest::Out { status, .. } => {
                 *status = status_code.into();

@@ -98,7 +98,7 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     assert_eq!(chain.readable.len(), 0);
     let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
-    q.push_used(chain, str_2.len());
+    q.push_used(chain, str_2.len() as u32);
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());

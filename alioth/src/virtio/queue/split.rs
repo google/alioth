@@ -286,11 +286,11 @@ impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
         })
     }
 
-    fn push_used(&mut self, chain: DescChain, len: usize) -> u16 {
+    fn push_used(&mut self, chain: DescChain, len: u32) -> u16 {
         let used_index = self.used_index;
         let used_elem = UsedElem {
             id: chain.id as u32,
-            len: len as u32,
+            len,
         };
         let wrapped_index = used_index & (self.size - 1);
         unsafe { *self.used_ring.offset(wrapped_index as isize) = used_elem };

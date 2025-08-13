@@ -274,7 +274,7 @@ where
         }
     }
 
-    fn handle_desc(&mut self, desc: &mut DescChain, _registry: &Registry) -> Result<usize> {
+    fn handle_desc(&mut self, desc: &mut DescChain, _registry: &Registry) -> Result<u32> {
         let name = &*self.name;
 
         let (hdr_out, out) = match &mut desc.writable[..] {
@@ -330,7 +330,7 @@ where
                 hdr_out.len = size_of_val(hdr_out) as u32;
             }
         }
-        Ok(hdr_out.len as usize)
+        Ok(hdr_out.len)
     }
 }
 

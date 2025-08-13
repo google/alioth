@@ -34,7 +34,7 @@ use crate::virtio::{IrqSender, Result};
 
 pub enum BufferAction {
     Sqe(Sqe),
-    Written(usize),
+    Written(u32),
 }
 
 pub trait VirtioIoUring: Virtio {
@@ -55,7 +55,7 @@ pub trait VirtioIoUring: Virtio {
         irq_sender: &impl IrqSender,
     ) -> Result<BufferAction>;
 
-    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<usize>;
+    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32>;
 }
 
 const TOKEN_QUEUE: u64 = 1 << 62;

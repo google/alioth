@@ -240,7 +240,7 @@ impl Net {
         &mut self,
         desc: &mut DescChain,
         registry: Option<&Registry>,
-    ) -> Result<usize> {
+    ) -> Result<u32> {
         let Some(header) = desc
             .readable
             .first()
@@ -485,7 +485,7 @@ impl VirtioIoUring for Net {
         Ok(BufferAction::Sqe(entry))
     }
 
-    fn complete_desc(&mut self, q_index: u16, _chain: &mut DescChain, cqe: &Cqe) -> Result<usize> {
+    fn complete_desc(&mut self, q_index: u16, _chain: &mut DescChain, cqe: &Cqe) -> Result<u32> {
         let ret = cqe.result();
         if ret < 0 {
             let err = std::io::Error::from_raw_os_error(-ret);
@@ -493,7 +493,7 @@ impl VirtioIoUring for Net {
             return Ok(0);
         }
         if q_index & 1 == 0 {
-            Ok(ret as usize)
+            Ok(ret as u32)
         } else {
             Ok(0)
         }

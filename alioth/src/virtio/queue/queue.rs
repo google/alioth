@@ -47,7 +47,7 @@ pub trait VirtQueue<'m> {
     fn avail_index(&self) -> u16;
     fn get_desc_chain(&self, index: u16) -> Result<DescChain<'m>>;
     fn has_next_desc(&self) -> bool;
-    fn push_used(&mut self, desc: DescChain, len: usize) -> u16;
+    fn push_used(&mut self, desc: DescChain, len: u32) -> u16;
     fn enable_notification(&self, enabled: bool);
     fn interrupt_enabled(&self) -> bool;
 
@@ -55,7 +55,7 @@ pub trait VirtQueue<'m> {
         &mut self,
         q_index: u16,
         irq_sender: &impl IrqSender,
-        mut op: impl FnMut(&mut DescChain) -> Result<Option<usize>>,
+        mut op: impl FnMut(&mut DescChain) -> Result<Option<u32>>,
     ) -> Result<()> {
         let mut send_irq = false;
         let mut ret = Ok(());
@@ -92,7 +92,7 @@ pub trait VirtQueue<'m> {
 
 pub fn copy_from_reader(
     mut reader: impl Read,
-) -> impl FnMut(&mut DescChain) -> Result<Option<usize>> {
+) -> impl FnMut(&mut DescChain) -> Result<Option<u32>> {
     move |chain| {
         let ret = reader.read_vectored(&mut chain.writable);
         match ret {
@@ -100,16 +100,14 @@ pub fn copy_from_reader(
                 let size: usize = chain.writable.iter().map(|s| s.len()).sum();
                 if size == 0 { Ok(Some(0)) } else { Ok(None) }
             }
-            Ok(len) => Ok(Some(len)),
+            Ok(len) => Ok(Some(len as u32)),
             Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(e)?,
         }
     }
 }
 
-pub fn copy_to_writer(
-    mut writer: impl Write,
-) -> impl FnMut(&mut DescChain) -> Result<Option<usize>> {
+pub fn copy_to_writer(mut writer: impl Write) -> impl FnMut(&mut DescChain) -> Result<Option<u32>> {
     move |chain| {
         let ret = writer.write_vectored(&chain.readable);
         match ret {
