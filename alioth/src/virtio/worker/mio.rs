@@ -184,7 +184,10 @@ where
     }
 }
 
-pub struct ActiveMio<'a, 'm, Q, S, E> {
+pub struct ActiveMio<'a, 'm, Q, S, E>
+where
+    Q: VirtQueue<'m>,
+{
     pub queues: &'a mut [Option<Queue<'m, Q>>],
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],

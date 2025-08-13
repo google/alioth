@@ -164,7 +164,10 @@ where
     }
 }
 
-pub struct ActiveIoUring<'a, 'm, Q, S, E> {
+pub struct ActiveIoUring<'a, 'm, Q, S, E>
+where
+    Q: VirtQueue<'m>,
+{
     ring: io_uring::IoUring,
     pub queues: &'a mut [Option<Queue<'m, Q>>],
     pub irq_sender: &'a S,

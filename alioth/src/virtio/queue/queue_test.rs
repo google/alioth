@@ -358,6 +358,7 @@ fn test_written_bytes() {
     let mut chain = DescChain {
         index: 0,
         id: 0,
+        count: 1,
         readable: vec![],
         writable: vec![IoSliceMut::new(buf.as_mut_slice())],
     };
@@ -372,6 +373,7 @@ fn test_written_bytes() {
     let mut chain = DescChain {
         index: 0,
         id: 1,
+        count: 1,
         readable: vec![IoSlice::new(str_1.as_bytes())],
         writable: vec![],
     };

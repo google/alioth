@@ -25,7 +25,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;
 use crate::virtio::queue::private::VirtQueuePrivate;
-use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
+use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
 #[repr(C, align(16))]
@@ -35,15 +35,6 @@ pub struct Desc {
     pub len: u32,
     pub flag: u16,
     pub next: u16,
-}
-
-bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct DescFlag: u16 {
-        const NEXT = 1;
-        const WRITE = 2;
-        const INDIRECT = 4;
-    }
 }
 
 bitflags! {
@@ -229,6 +220,10 @@ impl<'r, 'm> SplitQueue<'r, 'm> {
 }
 
 impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
+    type Index = u16;
+
+    const INIT_INDEX: u16 = 0;
+
     fn desc_avail(&self, index: u16) -> bool {
         let avail_index = self.avail_index();
         index < avail_index || index - avail_index >= !(self.size - 1)
@@ -246,6 +241,7 @@ impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
         Ok(Some(DescChain {
             id: desc_id,
             index,
+            count: 1,
             readable,
             writable,
         }))
@@ -285,7 +281,7 @@ impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
         }
     }
 
-    fn interrupt_enabled(&self) -> bool {
+    fn interrupt_enabled(&self, _: u16) -> bool {
         match self.used_event() {
             Some(used_event) => used_event == self.used_index.wrapping_sub(1),
             None => self.flag_interrupt_enabled(),

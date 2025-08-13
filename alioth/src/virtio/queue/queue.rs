@@ -16,15 +16,31 @@
 #[path = "queue_test.rs"]
 mod tests;
 
+pub mod packed;
 pub mod split;
 
 use std::collections::HashMap;
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
+
+use bitflags::bitflags;
 
 use crate::virtio::{IrqSender, Result, error};
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct DescFlag: u16 {
+        const NEXT = 1;
+        const WRITE = 2;
+        const INDIRECT = 4;
+        const AVAIL = 1 << 7;
+        const USED = 1 << 15;
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct QueueReg {
@@ -39,6 +55,7 @@ pub struct QueueReg {
 pub struct DescChain<'m> {
     id: u16,
     index: u16,
+    count: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
 }
@@ -54,12 +71,14 @@ mod private {
     use crate::virtio::queue::DescChain;
 
     pub trait VirtQueuePrivate<'m> {
-        fn desc_avail(&self, index: u16) -> bool;
-        fn get_desc_chain(&self, index: u16) -> Result<Option<DescChain<'m>>>;
+        type Index: Clone + Copy;
+        const INIT_INDEX: Self::Index;
+        fn desc_avail(&self, index: Self::Index) -> bool;
+        fn get_desc_chain(&self, index: Self::Index) -> Result<Option<DescChain<'m>>>;
         fn push_used(&mut self, chain: DescChain, len: u32);
         fn enable_notification(&self, enabled: bool);
-        fn interrupt_enabled(&self) -> bool;
-        fn next_index(&self, chain: &DescChain) -> u16;
+        fn interrupt_enabled(&self, count: u16) -> bool;
+        fn next_index(&self, chain: &DescChain) -> Self::Index;
     }
 }
 
@@ -74,9 +93,12 @@ pub enum Status {
     Break,
 }
 
-pub struct Queue<'m, Q> {
+pub struct Queue<'m, Q>
+where
+    Q: VirtQueue<'m>,
+{
     q: Q,
-    iter: u16,
+    iter: Q::Index,
     deferred: HashMap<u16, DescChain<'m>>,
 }
 
@@ -85,10 +107,9 @@ where
     Q: VirtQueue<'m>,
 {
     pub fn new(q: Q) -> Self {
-        q.enable_notification(true);
         Self {
             q,
-            iter: 0,
+            iter: Q::INIT_INDEX,
             deferred: HashMap::new(),
         }
     }
@@ -108,8 +129,9 @@ where
             return error::InvalidDescriptor { id }.fail();
         };
         let len = op(&mut chain)?;
+        let count = chain.count;
         self.q.push_used(chain, len);
-        if self.q.interrupt_enabled() {
+        if self.q.interrupt_enabled(count) {
             irq_sender.queue_irq(q_index);
         }
         Ok(())
@@ -130,6 +152,7 @@ where
             self.q.enable_notification(false);
             while let Some(mut chain) = self.q.get_desc_chain(self.iter)? {
                 let next_iter = self.q.next_index(&chain);
+                let count = chain.count;
                 match op(&mut chain) {
                     Err(e) => {
                         ret = Err(e);
@@ -139,7 +162,7 @@ where
                     Ok(Status::Break) => break 'out,
                     Ok(Status::Done { len }) => {
                         self.q.push_used(chain, len);
-                        send_irq = send_irq || self.q.interrupt_enabled();
+                        send_irq = send_irq || self.q.interrupt_enabled(count);
                     }
                     Ok(Status::Deferred) => {
                         self.deferred.insert(chain.id(), chain);
