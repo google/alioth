@@ -28,7 +28,7 @@ use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
     WorkerState,
 };
-use crate::virtio::queue::{QueueReg, VirtQueue};
+use crate::virtio::queue::{Queue, QueueReg, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, error};
 
@@ -128,7 +128,7 @@ where
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Q>],
+        queues: &mut [Option<Queue<'m, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -185,7 +185,7 @@ where
 }
 
 pub struct ActiveMio<'a, 'm, Q, S, E> {
-    pub queues: &'a mut [Option<Q>],
+    pub queues: &'a mut [Option<Queue<'m, Q>>],
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],
     pub poll: &'a mut Poll,

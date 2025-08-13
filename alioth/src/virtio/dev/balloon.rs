@@ -32,7 +32,7 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::{QueueReg, VirtQueue};
+use crate::virtio::queue::{QueueReg, Status, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
@@ -294,7 +294,7 @@ impl VirtioMio for Balloon {
                 BalloonQueue::Stats | BalloonQueue::FreePage => todo!(),
                 BalloonQueue::NotExist => log::error!("{}: invalid queue index {index}", self.name),
             }
-            Ok(Some(0))
+            Ok(Status::Done { len: 0 })
         })
     }
 

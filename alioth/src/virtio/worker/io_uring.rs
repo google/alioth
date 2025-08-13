@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::iter;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -28,7 +28,7 @@ use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
     WorkerState,
 };
-use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
+use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result};
 
@@ -48,12 +48,7 @@ pub trait VirtioIoUring: Virtio {
         S: IrqSender,
         E: IoeventFd;
 
-    fn handle_desc(
-        &mut self,
-        q_index: u16,
-        chain: &mut DescChain,
-        irq_sender: &impl IrqSender,
-    ) -> Result<BufferAction>;
+    fn handle_desc(&mut self, q_index: u16, chain: &mut DescChain) -> Result<BufferAction>;
 
     fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32>;
 }
@@ -104,12 +99,6 @@ impl BackendEvent for Cqe {
 const RING_SIZE: u16 = 256;
 const QUEUE_RESERVE_SIZE: u16 = 1;
 
-#[derive(Debug, Clone, Default)]
-struct QueueSubmit {
-    index: u16,
-    count: u16,
-}
-
 impl<D> Backend<D> for IoUring
 where
     D: VirtioIoUring,
@@ -127,7 +116,7 @@ where
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Q>],
+        queues: &mut [Option<Queue<'m, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -135,16 +124,15 @@ where
         Q: VirtQueue<'m>,
         E: IoeventFd,
     {
-        let queue_submits = queues.iter().map(|_| QueueSubmit::default()).collect();
+        let submit_counts = iter::repeat_n(0, queues.len()).collect();
         let mut active_ring = ActiveIoUring {
             ring: io_uring::IoUring::new(RING_SIZE as u32)?,
-            submitted_buffers: HashMap::new(),
             shared_count: RING_SIZE - 1,
             irq_sender: &*param.irq_sender,
             ioeventfds: param.ioeventfds.as_deref().unwrap_or(&[]),
             mem: memory,
             queues,
-            queue_submits,
+            submit_counts,
         };
         self.submit_waker(&mut active_ring.ring.submission())?;
         context.dev.activate(param.feature, &mut active_ring)?;
@@ -178,13 +166,12 @@ where
 
 pub struct ActiveIoUring<'a, 'm, Q, S, E> {
     ring: io_uring::IoUring,
-    pub queues: &'a mut [Option<Q>],
+    pub queues: &'a mut [Option<Queue<'m, Q>>],
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],
     pub mem: &'m Ram,
-    submitted_buffers: HashMap<u32, DescChain<'m>>,
     shared_count: u16,
-    queue_submits: Box<[QueueSubmit]>,
+    submit_counts: Box<[u16]>,
 }
 
 fn submit_queue_ioeventfd<E>(index: u16, fd: &E, sq: &mut SubmissionQueue) -> Result<()>
@@ -206,54 +193,38 @@ where
     S: IrqSender,
     E: IoeventFd,
 {
-    fn submit_buffers<D>(&mut self, dev: &mut D, index: u16) -> Result<()>
+    fn submit_buffers<D>(&mut self, dev: &mut D, q_index: u16) -> Result<()>
     where
         D: VirtioIoUring,
     {
-        let Some(Some(q)) = self.queues.get_mut(index as usize) else {
-            log::error!("{}: invalid queue index {index}", dev.name());
+        let Some(Some(q)) = self.queues.get_mut(q_index as usize) else {
+            log::error!("{}: invalid queue index {q_index}", dev.name());
             return Ok(());
         };
+        let submit_count = self.submit_counts.get_mut(q_index as usize).unwrap();
 
-        let queue_submit = self.queue_submits.get_mut(index as usize).unwrap();
-        'out: loop {
-            if q.avail_index() == queue_submit.index {
-                break;
-            }
-            q.enable_notification(false);
-            while q.avail_index() != queue_submit.index {
-                if queue_submit.count >= QUEUE_RESERVE_SIZE && self.shared_count == 0 {
-                    log::debug!("{}: queue-{index}: no more free entries", dev.name());
-                    break 'out;
-                }
-                let mut chain = q.get_desc_chain(queue_submit.index)?;
-                match dev.handle_desc(index, &mut chain, self.irq_sender)? {
-                    BufferAction::Sqe(sqe) => {
-                        let buffer_key = ((queue_submit.index as u32) << 16) | index as u32;
-                        let sqe = sqe.user_data(buffer_key as u64 | TOKEN_DESCRIPTOR);
-                        if unsafe { self.ring.submission().push(&sqe) }.is_err() {
-                            log::error!("{}: queue-{index}: unexpected full queue", dev.name());
-                            break 'out;
-                        }
-                        self.submitted_buffers.insert(buffer_key, chain);
-
-                        queue_submit.count += 1;
-                        if queue_submit.count > QUEUE_RESERVE_SIZE {
-                            self.shared_count -= 1;
-                        }
+        q.handle_desc(q_index, self.irq_sender, |chain| {
+            if *submit_count >= QUEUE_RESERVE_SIZE && self.shared_count == 0 {
+                log::debug!("{}: queue-{q_index}: no more free entries", dev.name());
+                return Ok(Status::Break);
+            };
+            match dev.handle_desc(q_index, chain)? {
+                BufferAction::Sqe(sqe) => {
+                    let buffer_key = ((chain.id() as u64) << 16) | q_index as u64;
+                    let sqe = sqe.user_data(buffer_key | TOKEN_DESCRIPTOR);
+                    if unsafe { self.ring.submission().push(&sqe) }.is_err() {
+                        log::error!("{}: queue-{q_index}: unexpected full queue", dev.name());
+                        return Ok(Status::Break);
                     }
-                    BufferAction::Written(len) => {
-                        q.push_used(chain, len);
-                        if q.interrupt_enabled() {
-                            self.irq_sender.queue_irq(index);
-                        }
+                    *submit_count += 1;
+                    if *submit_count > QUEUE_RESERVE_SIZE {
+                        self.shared_count -= 1;
                     }
+                    Ok(Status::Deferred)
                 }
-                queue_submit.index = queue_submit.index.wrapping_add(1);
+                BufferAction::Written(len) => Ok(Status::Done { len }),
             }
-            q.enable_notification(true);
-        }
-        Ok(())
+        })
     }
 }
 
@@ -270,28 +241,22 @@ where
         let token = event.user_data();
         if token & TOKEN_DESCRIPTOR == TOKEN_DESCRIPTOR {
             let buffer_key = token as u32;
-            let index = buffer_key as u16;
-            let Some(Some(queue)) = self.queues.get_mut(index as usize) else {
-                log::error!("{}: invalid queue index {index}", dev.name());
+            let q_index = buffer_key as u16;
+            let chain_id = (buffer_key >> 16) as u16;
+            let Some(Some(queue)) = self.queues.get_mut(q_index as usize) else {
+                log::error!("{}: invalid queue index {q_index}", dev.name());
                 return Ok(());
             };
-            let Some(mut chain) = self.submitted_buffers.remove(&buffer_key) else {
-                log::error!("{}: unexpected buffer key {buffer_key:#x}", dev.name());
-                return Ok(());
-            };
-
-            let queue_submit = self.queue_submits.get_mut(index as usize).unwrap();
-            if queue_submit.count > QUEUE_RESERVE_SIZE {
+            let submit_count = self.submit_counts.get_mut(q_index as usize).unwrap();
+            if *submit_count > QUEUE_RESERVE_SIZE {
                 self.shared_count += 1;
             }
-            queue_submit.count -= 1;
+            *submit_count -= 1;
+            queue.handle_deferred(chain_id, q_index, self.irq_sender, |chain| {
+                dev.complete_desc(q_index, chain, event)
+            })?;
 
-            let written_len = dev.complete_desc(index, &mut chain, event)?;
-            queue.push_used(chain, written_len);
-            if queue.interrupt_enabled() {
-                self.irq_sender.queue_irq(index);
-            }
-            self.submit_buffers(dev, index)
+            self.submit_buffers(dev, q_index)
         } else if token & TOKEN_QUEUE == TOKEN_QUEUE {
             let index = token as u16;
             self.submit_buffers(dev, index)

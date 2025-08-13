@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod split;
 #[cfg(test)]
 #[path = "queue_test.rs"]
 mod tests;
 
+pub mod split;
+
+use std::collections::HashMap;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
 
-use crate::virtio::{IrqSender, Result};
+use crate::virtio::{IrqSender, Result, error};
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
 
@@ -35,89 +37,161 @@ pub struct QueueReg {
 
 #[derive(Debug)]
 pub struct DescChain<'m> {
-    pub id: u16,
+    id: u16,
+    index: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
 }
 
-pub trait VirtQueue<'m> {
-    fn reg(&self) -> &QueueReg;
-    fn size(&self) -> u16;
-    fn next_desc_chain(&self) -> Option<Result<DescChain<'m>>>;
-    fn avail_index(&self) -> u16;
-    fn get_desc_chain(&self, index: u16) -> Result<DescChain<'m>>;
-    fn has_next_desc(&self) -> bool;
-    fn push_used(&mut self, desc: DescChain, len: u32) -> u16;
-    fn enable_notification(&self, enabled: bool);
-    fn interrupt_enabled(&self) -> bool;
+impl DescChain<'_> {
+    pub fn id(&self) -> u16 {
+        self.id
+    }
+}
 
-    fn handle_desc(
+mod private {
+    use crate::virtio::Result;
+    use crate::virtio::queue::DescChain;
+
+    pub trait VirtQueuePrivate<'m> {
+        fn desc_avail(&self, index: u16) -> bool;
+        fn get_desc_chain(&self, index: u16) -> Result<Option<DescChain<'m>>>;
+        fn push_used(&mut self, chain: DescChain, len: u32);
+        fn enable_notification(&self, enabled: bool);
+        fn interrupt_enabled(&self) -> bool;
+        fn next_index(&self, chain: &DescChain) -> u16;
+    }
+}
+
+pub trait VirtQueue<'m>: private::VirtQueuePrivate<'m> {
+    fn reg(&self) -> &QueueReg;
+}
+
+#[derive(Debug)]
+pub enum Status {
+    Done { len: u32 },
+    Deferred,
+    Break,
+}
+
+pub struct Queue<'m, Q> {
+    q: Q,
+    iter: u16,
+    deferred: HashMap<u16, DescChain<'m>>,
+}
+
+impl<'m, Q> Queue<'m, Q>
+where
+    Q: VirtQueue<'m>,
+{
+    pub fn new(q: Q) -> Self {
+        q.enable_notification(true);
+        Self {
+            q,
+            iter: 0,
+            deferred: HashMap::new(),
+        }
+    }
+
+    pub fn reg(&self) -> &QueueReg {
+        self.q.reg()
+    }
+
+    pub fn handle_deferred(
+        &mut self,
+        id: u16,
+        q_index: u16,
+        irq_sender: &impl IrqSender,
+        mut op: impl FnMut(&mut DescChain) -> Result<u32>,
+    ) -> Result<()> {
+        let Some(mut chain) = self.deferred.remove(&id) else {
+            return error::InvalidDescriptor { id }.fail();
+        };
+        let len = op(&mut chain)?;
+        self.q.push_used(chain, len);
+        if self.q.interrupt_enabled() {
+            irq_sender.queue_irq(q_index);
+        }
+        Ok(())
+    }
+
+    pub fn handle_desc(
         &mut self,
         q_index: u16,
         irq_sender: &impl IrqSender,
-        mut op: impl FnMut(&mut DescChain) -> Result<Option<u32>>,
+        mut op: impl FnMut(&mut DescChain) -> Result<Status>,
     ) -> Result<()> {
         let mut send_irq = false;
         let mut ret = Ok(());
         'out: loop {
-            if !self.has_next_desc() {
+            if !self.q.desc_avail(self.iter) {
                 break;
             }
-            self.enable_notification(false);
-            while let Some(chain) = self.next_desc_chain() {
-                let mut chain = chain?;
+            self.q.enable_notification(false);
+            while let Some(mut chain) = self.q.get_desc_chain(self.iter)? {
+                let next_iter = self.q.next_index(&chain);
                 match op(&mut chain) {
                     Err(e) => {
                         ret = Err(e);
-                        self.enable_notification(true);
+                        self.q.enable_notification(true);
                         break 'out;
                     }
-                    Ok(None) => break 'out,
-                    Ok(Some(len)) => {
-                        self.push_used(chain, len);
-                        send_irq = send_irq || self.interrupt_enabled();
+                    Ok(Status::Break) => break 'out,
+                    Ok(Status::Done { len }) => {
+                        self.q.push_used(chain, len);
+                        send_irq = send_irq || self.q.interrupt_enabled();
+                    }
+                    Ok(Status::Deferred) => {
+                        self.deferred.insert(chain.id(), chain);
                     }
                 }
+                self.iter = next_iter;
             }
-            self.enable_notification(true);
+            self.q.enable_notification(true);
             fence(Ordering::SeqCst);
         }
         if send_irq {
             fence(Ordering::SeqCst);
-            irq_sender.queue_irq(q_index)
+            irq_sender.queue_irq(q_index);
         }
         ret
     }
 }
 
-pub fn copy_from_reader(
-    mut reader: impl Read,
-) -> impl FnMut(&mut DescChain) -> Result<Option<u32>> {
+pub fn copy_from_reader(mut reader: impl Read) -> impl FnMut(&mut DescChain) -> Result<Status> {
     move |chain| {
         let ret = reader.read_vectored(&mut chain.writable);
         match ret {
             Ok(0) => {
                 let size: usize = chain.writable.iter().map(|s| s.len()).sum();
-                if size == 0 { Ok(Some(0)) } else { Ok(None) }
+                if size == 0 {
+                    Ok(Status::Done { len: 0 })
+                } else {
+                    Ok(Status::Break)
+                }
             }
-            Ok(len) => Ok(Some(len as u32)),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e)?,
+            Ok(len) => Ok(Status::Done { len: len as u32 }),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(Status::Break),
+            Err(e) => Err(e.into()),
         }
     }
 }
 
-pub fn copy_to_writer(mut writer: impl Write) -> impl FnMut(&mut DescChain) -> Result<Option<u32>> {
+pub fn copy_to_writer(mut writer: impl Write) -> impl FnMut(&mut DescChain) -> Result<Status> {
     move |chain| {
         let ret = writer.write_vectored(&chain.readable);
         match ret {
             Ok(0) => {
                 let size: usize = chain.readable.iter().map(|s| s.len()).sum();
-                if size == 0 { Ok(Some(0)) } else { Ok(None) }
+                if size == 0 {
+                    Ok(Status::Done { len: 0 })
+                } else {
+                    Ok(Status::Break)
+                }
             }
-            Ok(_) => Ok(Some(0)),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e)?,
+            Ok(_) => Ok(Status::Done { len: 0 }),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(Status::Break),
+            Err(e) => Err(e.into()),
         }
     }
 }

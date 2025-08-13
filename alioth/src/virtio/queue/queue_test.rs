@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
+use std::ptr::eq as ptr_eq;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::mpsc::{self, TryRecvError};
 
@@ -23,7 +24,7 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::Error;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
-    DescChain, QUEUE_SIZE_MAX, QueueReg, VirtQueue, copy_from_reader, copy_to_writer,
+    DescChain, QUEUE_SIZE_MAX, Queue, QueueReg, Status, copy_from_reader, copy_to_writer,
 };
 use crate::virtio::tests::FakeIrqSender;
 
@@ -114,7 +115,12 @@ impl<'a> Read for Reader<'a> {
 #[rstest]
 fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let mut q = SplitQueue::new(&fixture_queue, &*ram, 0).unwrap().unwrap();
+    let mut q = Queue::new(
+        SplitQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+    );
+    assert!(ptr_eq(q.reg(), &fixture_queue));
 
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -258,8 +264,10 @@ impl<'a> Write for Writer<'a> {
 #[rstest]
 fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let mut q = SplitQueue::new(&fixture_queue, &*ram, 0).unwrap().unwrap();
-
+    let q = SplitQueue::new(&fixture_queue, &*ram, false)
+        .unwrap()
+        .unwrap();
+    let mut q = Queue::new(q);
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -348,20 +356,28 @@ fn test_written_bytes() {
 
     let mut buf = vec![0u8; str_0.len()];
     let mut chain = DescChain {
+        index: 0,
         id: 0,
         readable: vec![],
         writable: vec![IoSliceMut::new(buf.as_mut_slice())],
     };
     let reader = str_0.as_bytes();
-    assert_matches!(copy_from_reader(reader)(&mut chain), Ok(Some(13)));
+    assert_matches!(
+        copy_from_reader(reader)(&mut chain),
+        Ok(Status::Done { len: 13 })
+    );
     assert_eq!(buf.as_slice(), str_0.as_bytes());
 
     let mut buf = vec![];
     let mut chain = DescChain {
+        index: 0,
         id: 1,
         readable: vec![IoSlice::new(str_1.as_bytes())],
         writable: vec![],
     };
-    assert_matches!(copy_to_writer(&mut buf)(&mut chain), Ok(Some(0)));
+    assert_matches!(
+        copy_to_writer(&mut buf)(&mut chain),
+        Ok(Status::Done { len: 0 })
+    );
     assert_eq!(buf.as_slice(), str_1.as_bytes());
 }

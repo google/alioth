@@ -38,7 +38,7 @@ use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg, VirtQueue};
+use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::Waker;
@@ -236,7 +236,7 @@ pub trait Backend<D: Virtio>: Send + 'static {
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Q>],
+        queues: &mut [Option<Queue<'m, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -370,7 +370,7 @@ where
 
     fn event_loop<'m, Q>(
         &mut self,
-        queues: &mut [Option<Q>],
+        queues: &mut [Option<Queue<'m, Q>>],
         ram: &'m Ram,
         param: &StartParam<S, E>,
     ) -> Result<()>
@@ -396,10 +396,17 @@ where
         let ram = memory.lock_layout();
         let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
         let queue_regs = self.context.queue_regs.clone();
-        if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+        let feature = VirtioFeature::from_bits_retain(feature);
+        let event_idx = feature.contains(VirtioFeature::EVENT_IDX);
+        if feature.contains(VirtioFeature::RING_PACKED) {
             todo!()
         } else {
-            let new_queue = |reg| SplitQueue::new(reg, &ram, feature);
+            let new_queue = |reg| {
+                let Some(split_queue) = SplitQueue::new(reg, &ram, event_idx)? else {
+                    return Ok(None);
+                };
+                Ok(Some(Queue::new(split_queue)))
+            };
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
             self.event_loop(&mut (queues?), &ram, &param)?;
         };
