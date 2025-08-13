@@ -32,7 +32,7 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::{Queue, VirtQueue};
+use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
@@ -204,7 +204,7 @@ impl Virtio for Balloon {
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,
@@ -284,13 +284,13 @@ impl VirtioMio for Balloon {
             }
             _ => {}
         };
-        queue.handle_desc(index, active_mio.irq_sender, |desc| {
+        queue.handle_desc(index, active_mio.irq_sender, |chain| {
             match ballon_q {
-                BalloonQueue::Inflate => self.inflate(&desc.readable, active_mio.mem),
+                BalloonQueue::Inflate => self.inflate(&chain.readable, active_mio.mem),
                 BalloonQueue::Deflate => {
                     log::info!("{}: VQ_DEFLATE available", self.name);
                 }
-                BalloonQueue::Reporting => self.free_reporting(&mut desc.writable),
+                BalloonQueue::Reporting => self.free_reporting(&mut chain.writable),
                 BalloonQueue::Stats | BalloonQueue::FreePage => todo!(),
                 BalloonQueue::NotExist => log::error!("{}: invalid queue index {index}", self.name),
             }

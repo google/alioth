@@ -39,7 +39,7 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -217,7 +217,7 @@ impl Block {
         })
     }
 
-    fn handle_desc<'d, 'm>(&self, desc: &'d mut Descriptor<'m>) -> Result<BlkRequest<'d, 'm>> {
+    fn handle_desc<'d, 'm>(&self, desc: &'d mut DescChain<'m>) -> Result<BlkRequest<'d, 'm>> {
         let [hdr, data_out @ ..] = &desc.readable[..] else {
             return error::InvalidBuffer.fail();
         };
@@ -301,7 +301,7 @@ impl Virtio for Block {
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,
@@ -359,8 +359,8 @@ impl VirtioMio for Block {
             return Ok(());
         };
         let mut disk = &self.disk;
-        queue.handle_desc(index, active_mio.irq_sender, |desc| {
-            let written_len = match self.handle_desc(desc) {
+        queue.handle_desc(index, active_mio.irq_sender, |chain| {
+            let written_len = match Block::handle_desc(self, chain) {
                 Err(e) => {
                     log::error!("{}: handle descriptor: {e}", self.name);
                     0
@@ -426,14 +426,14 @@ impl VirtioIoUring for Block {
         Ok(())
     }
 
-    fn handle_buffer(
+    fn handle_desc(
         &mut self,
         _q_index: u16,
-        buffer: &mut Descriptor,
+        chain: &mut DescChain,
         _irq_sender: &impl IrqSender,
     ) -> Result<BufferAction> {
         let fd = Fd(self.disk.as_raw_fd());
-        let action = match Block::handle_desc(self, buffer)? {
+        let action = match Block::handle_desc(self, chain)? {
             BlkRequest::Done { written } => BufferAction::Written(written),
             BlkRequest::In { data, offset, .. } => {
                 let read = opcode::Read::new(fd, data.as_mut_ptr(), data.len() as u32)
@@ -455,12 +455,7 @@ impl VirtioIoUring for Block {
         Ok(action)
     }
 
-    fn complete_buffer(
-        &mut self,
-        q_index: u16,
-        buffer: &mut Descriptor,
-        cqe: &Cqe,
-    ) -> Result<usize> {
+    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<usize> {
         let result = cqe.result();
         let status_code = if result >= 0 {
             Status::OK
@@ -469,7 +464,7 @@ impl VirtioIoUring for Block {
             log::error!("{}: queue-{q_index} io error: {err}", self.name,);
             Status::IOERR
         };
-        match Block::handle_desc(self, buffer)? {
+        match Block::handle_desc(self, chain)? {
             BlkRequest::Done { .. } => unreachable!(),
             BlkRequest::Flush { status } => {
                 *status = status_code.into();

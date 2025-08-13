@@ -37,7 +37,7 @@ use crate::mem::{MemRegion, MemRegionType};
 #[cfg(target_os = "linux")]
 use crate::virtio::dev::fs::vu::VuDaxRegion;
 use crate::virtio::dev::{Result, Virtio, WakeEvent};
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::Waker;
@@ -274,7 +274,7 @@ where
         }
     }
 
-    fn handle_desc(&mut self, desc: &mut Descriptor, _registry: &Registry) -> Result<usize> {
+    fn handle_desc(&mut self, desc: &mut DescChain, _registry: &Registry) -> Result<usize> {
         let name = &*self.name;
 
         let (hdr_out, out) = match &mut desc.writable[..] {
@@ -384,8 +384,8 @@ where
         }
         let irq_sender = active_mio.irq_sender;
         let registry = active_mio.poll.registry();
-        queue.handle_desc(index, irq_sender, |desc| {
-            let len = self.handle_desc(desc, registry)?;
+        queue.handle_desc(index, irq_sender, |chain| {
+            let len = self.handle_desc(chain, registry)?;
             Ok(Some(len))
         })
     }
@@ -428,7 +428,7 @@ where
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,

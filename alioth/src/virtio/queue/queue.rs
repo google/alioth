@@ -25,7 +25,7 @@ use crate::virtio::{IrqSender, Result};
 pub const QUEUE_SIZE_MAX: u16 = 256;
 
 #[derive(Debug, Default)]
-pub struct Queue {
+pub struct QueueReg {
     pub size: AtomicU16,
     pub desc: AtomicU64,
     pub driver: AtomicU64,
@@ -34,20 +34,20 @@ pub struct Queue {
 }
 
 #[derive(Debug)]
-pub struct Descriptor<'m> {
+pub struct DescChain<'m> {
     pub id: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
 }
 
 pub trait VirtQueue<'m> {
-    fn reg(&self) -> &Queue;
+    fn reg(&self) -> &QueueReg;
     fn size(&self) -> u16;
-    fn next_desc(&self) -> Option<Result<Descriptor<'m>>>;
+    fn next_desc_chain(&self) -> Option<Result<DescChain<'m>>>;
     fn avail_index(&self) -> u16;
-    fn get_descriptor(&self, index: u16) -> Result<Descriptor<'m>>;
+    fn get_desc_chain(&self, index: u16) -> Result<DescChain<'m>>;
     fn has_next_desc(&self) -> bool;
-    fn push_used(&mut self, desc: Descriptor, len: usize) -> u16;
+    fn push_used(&mut self, desc: DescChain, len: usize) -> u16;
     fn enable_notification(&self, enabled: bool);
     fn interrupt_enabled(&self) -> bool;
 
@@ -55,7 +55,7 @@ pub trait VirtQueue<'m> {
         &mut self,
         q_index: u16,
         irq_sender: &impl IrqSender,
-        mut op: impl FnMut(&mut Descriptor) -> Result<Option<usize>>,
+        mut op: impl FnMut(&mut DescChain) -> Result<Option<usize>>,
     ) -> Result<()> {
         let mut send_irq = false;
         let mut ret = Ok(());
@@ -64,9 +64,9 @@ pub trait VirtQueue<'m> {
                 break;
             }
             self.enable_notification(false);
-            while let Some(desc) = self.next_desc() {
-                let mut desc = desc?;
-                match op(&mut desc) {
+            while let Some(chain) = self.next_desc_chain() {
+                let mut chain = chain?;
+                match op(&mut chain) {
                     Err(e) => {
                         ret = Err(e);
                         self.enable_notification(true);
@@ -74,7 +74,7 @@ pub trait VirtQueue<'m> {
                     }
                     Ok(None) => break 'out,
                     Ok(Some(len)) => {
-                        self.push_used(desc, len);
+                        self.push_used(chain, len);
                         send_irq = send_irq || self.interrupt_enabled();
                     }
                 }
@@ -92,12 +92,12 @@ pub trait VirtQueue<'m> {
 
 pub fn copy_from_reader(
     mut reader: impl Read,
-) -> impl FnMut(&mut Descriptor) -> Result<Option<usize>> {
-    move |desc| {
-        let ret = reader.read_vectored(&mut desc.writable);
+) -> impl FnMut(&mut DescChain) -> Result<Option<usize>> {
+    move |chain| {
+        let ret = reader.read_vectored(&mut chain.writable);
         match ret {
             Ok(0) => {
-                let size: usize = desc.writable.iter().map(|s| s.len()).sum();
+                let size: usize = chain.writable.iter().map(|s| s.len()).sum();
                 if size == 0 { Ok(Some(0)) } else { Ok(None) }
             }
             Ok(len) => Ok(Some(len)),
@@ -109,12 +109,12 @@ pub fn copy_from_reader(
 
 pub fn copy_to_writer(
     mut writer: impl Write,
-) -> impl FnMut(&mut Descriptor) -> Result<Option<usize>> {
-    move |desc| {
-        let ret = writer.write_vectored(&desc.readable);
+) -> impl FnMut(&mut DescChain) -> Result<Option<usize>> {
+    move |chain| {
+        let ret = writer.write_vectored(&chain.readable);
         match ret {
             Ok(0) => {
-                let size: usize = desc.readable.iter().map(|s| s.len()).sum();
+                let size: usize = chain.readable.iter().map(|s| s.len()).sum();
                 if size == 0 { Ok(Some(0)) } else { Ok(None) }
             }
             Ok(_) => Ok(Some(0)),

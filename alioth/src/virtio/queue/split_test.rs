@@ -21,11 +21,11 @@ use rstest::rstest;
 use crate::mem::mapped::RamBus;
 use crate::virtio::VirtioFeature;
 use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
-use crate::virtio::queue::{Queue, VirtQueue};
+use crate::virtio::queue::{QueueReg, VirtQueue};
 
 use crate::virtio::queue::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
 
-impl<'q, 'm> SplitQueue<'q, 'm> {
+impl<'r, 'm> SplitQueue<'r, 'm> {
     pub fn add_desc(&mut self, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
         let readable_count = readable.len();
         let total_count = readable.len() + writable.len();
@@ -52,7 +52,7 @@ impl<'q, 'm> SplitQueue<'q, 'm> {
 }
 
 #[rstest]
-fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
     fixture_queue.enabled.store(false, Ordering::Relaxed);
     let split_queue = SplitQueue::new(&fixture_queue, &*ram, 0);
@@ -60,7 +60,7 @@ fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
 }
 
 #[rstest]
-fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
     let mut q = SplitQueue::new(&fixture_queue, &*ram, 0).unwrap().unwrap();
     assert!(ptr_eq(q.reg(), &fixture_queue));
@@ -84,28 +84,28 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     assert_eq!(q.avail_index(), 1);
     assert_eq!(q.read_avail(0), 0);
     assert!(q.has_next_desc());
-    let desc = q.next_desc().unwrap().unwrap();
-    assert_eq!(desc.id, 0);
-    assert_eq!(&*desc.readable[0], str_0.as_bytes());
-    assert_eq!(&*desc.readable[1], str_1.as_bytes());
-    assert_eq!(desc.writable.len(), 0);
-    q.push_used(desc, 0);
+    let chain = q.next_desc_chain().unwrap().unwrap();
+    assert_eq!(chain.id, 0);
+    assert_eq!(&*chain.readable[0], str_0.as_bytes());
+    assert_eq!(&*chain.readable[1], str_1.as_bytes());
+    assert_eq!(chain.writable.len(), 0);
+    q.push_used(chain, 0);
     assert!(!q.has_next_desc());
 
     q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
-    let mut desc = q.next_desc().unwrap().unwrap();
-    assert_eq!(desc.id, 2);
-    assert_eq!(desc.readable.len(), 0);
-    let buffer = desc.writable[0].as_mut();
+    let mut chain = q.next_desc_chain().unwrap().unwrap();
+    assert_eq!(chain.id, 2);
+    assert_eq!(chain.readable.len(), 0);
+    let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
-    q.push_used(desc, str_2.len());
+    q.push_used(chain, str_2.len());
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());
 }
 
 #[rstest]
-fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queue: Queue) {
+fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
     let q = SplitQueue::new(&fixture_queue, &*ram, VirtioFeature::EVENT_IDX.bits())
         .unwrap()

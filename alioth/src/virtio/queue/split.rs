@@ -24,7 +24,7 @@ use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
 use crate::virtio::{Result, VirtioFeature, error};
 
 #[repr(C, align(16))]
@@ -81,8 +81,8 @@ pub struct UsedElem {
 }
 
 #[derive(Debug)]
-pub struct SplitQueue<'q, 'm> {
-    reg: &'q Queue,
+pub struct SplitQueue<'r, 'm> {
+    reg: &'r QueueReg,
 
     ram: &'m Ram,
 
@@ -193,7 +193,7 @@ impl<'m> SplitQueue<'_, 'm> {
         Ok((readable, writeable))
     }
 
-    fn get_next_desc(&self) -> Result<Option<Descriptor<'m>>> {
+    fn get_next_desc_chain(&self) -> Result<Option<DescChain<'m>>> {
         if self.used_index == self.avail_index() {
             return Ok(None);
         }
@@ -201,7 +201,7 @@ impl<'m> SplitQueue<'_, 'm> {
         let (readable, writable) = self.get_desc_iov(desc_id)?;
         let readable = self.ram.translate_iov(&readable)?;
         let writable = self.ram.translate_iov_mut(&writable)?;
-        Ok(Some(Descriptor {
+        Ok(Some(DescChain {
             id: desc_id,
             readable,
             writable,
@@ -209,8 +209,12 @@ impl<'m> SplitQueue<'_, 'm> {
     }
 }
 
-impl<'q, 'm> SplitQueue<'q, 'm> {
-    pub fn new(reg: &'q Queue, ram: &'m Ram, feature: u128) -> Result<Option<SplitQueue<'q, 'm>>> {
+impl<'r, 'm> SplitQueue<'r, 'm> {
+    pub fn new(
+        reg: &'r QueueReg,
+        ram: &'m Ram,
+        feature: u128,
+    ) -> Result<Option<SplitQueue<'r, 'm>>> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }
@@ -250,7 +254,7 @@ impl<'q, 'm> SplitQueue<'q, 'm> {
 }
 
 impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
-    fn reg(&self) -> &Queue {
+    fn reg(&self) -> &QueueReg {
         self.reg
     }
 
@@ -258,8 +262,8 @@ impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
         self.size
     }
 
-    fn next_desc(&self) -> Option<Result<Descriptor<'m>>> {
-        self.get_next_desc().transpose()
+    fn next_desc_chain(&self) -> Option<Result<DescChain<'m>>> {
+        self.get_next_desc_chain().transpose()
     }
 
     fn has_next_desc(&self) -> bool {
@@ -270,22 +274,22 @@ impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
         self.avail_index()
     }
 
-    fn get_descriptor(&self, index: u16) -> Result<Descriptor<'m>> {
+    fn get_desc_chain(&self, index: u16) -> Result<DescChain<'m>> {
         let desc_id = self.read_avail(index);
         let (readable, writable) = self.get_desc_iov(desc_id)?;
         let readable = self.ram.translate_iov(&readable)?;
         let writable = self.ram.translate_iov_mut(&writable)?;
-        Ok(Descriptor {
+        Ok(DescChain {
             id: desc_id,
             readable,
             writable,
         })
     }
 
-    fn push_used(&mut self, desc: Descriptor, len: usize) -> u16 {
+    fn push_used(&mut self, chain: DescChain, len: usize) -> u16 {
         let used_index = self.used_index;
         let used_elem = UsedElem {
-            id: desc.id as u32,
+            id: chain.id as u32,
             len: len as u32,
         };
         let wrapped_index = used_index & (self.size - 1);

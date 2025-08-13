@@ -38,7 +38,7 @@ use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
+use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::Waker;
@@ -57,7 +57,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
@@ -145,7 +145,7 @@ where
     pub id: DeviceId,
     pub device_config: Arc<dyn Mmio>,
     pub device_feature: u128,
-    pub queue_regs: Arc<[Queue]>,
+    pub queue_regs: Arc<[QueueReg]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
     pub event_tx: Sender<WakeEvent<S, E>>,
@@ -188,7 +188,7 @@ where
             device_feature &= !VirtioFeature::ACCESS_PLATFORM.bits()
         }
         let num_queues = dev.num_queues();
-        let queue_regs = (0..num_queues).map(|_| Queue {
+        let queue_regs = (0..num_queues).map(|_| QueueReg {
             size: AtomicU16::new(QUEUE_SIZE_MAX),
             ..Default::default()
         });
@@ -264,7 +264,7 @@ where
     pub dev: D,
     memory: Arc<RamBus>,
     event_rx: Receiver<WakeEvent<S, E>>,
-    queue_regs: Arc<[Queue]>,
+    queue_regs: Arc<[QueueReg]>,
     pub state: WorkerState,
 }
 
@@ -347,7 +347,7 @@ where
         mut backend: B,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)> {
         let waker = backend.register_waker(TOKEN_WARKER)?;
         let worker = Worker {

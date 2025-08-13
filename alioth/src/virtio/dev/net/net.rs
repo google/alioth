@@ -42,7 +42,7 @@ use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue, copy_from_reader, copy_to_writer};
+use crate::virtio::queue::{DescChain, QueueReg, VirtQueue, copy_from_reader, copy_to_writer};
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
@@ -238,7 +238,7 @@ impl Net {
 
     fn handle_ctrl_queue(
         &mut self,
-        desc: &mut Descriptor,
+        desc: &mut DescChain,
         registry: Option<&Registry>,
     ) -> Result<usize> {
         let Some(header) = desc
@@ -321,7 +321,7 @@ impl Virtio for Net {
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,
@@ -417,8 +417,8 @@ impl VirtioMio for Net {
         let irq_sender = active_mio.irq_sender;
         let registry = active_mio.poll.registry();
         if index == self.config.max_queue_pairs * 2 {
-            return queue.handle_desc(index, irq_sender, |desc| {
-                let len = self.handle_ctrl_queue(desc, Some(registry))?;
+            return queue.handle_desc(index, irq_sender, |chain| {
+                let len = self.handle_ctrl_queue(chain, Some(registry))?;
                 Ok(Some(len))
             });
         }
@@ -451,14 +451,14 @@ impl VirtioIoUring for Net {
         Ok(())
     }
 
-    fn handle_buffer(
+    fn handle_desc(
         &mut self,
         q_index: u16,
-        buffer: &mut Descriptor,
+        chain: &mut DescChain,
         _irq_sender: &impl IrqSender,
     ) -> Result<BufferAction> {
         if q_index == self.config.max_queue_pairs * 2 {
-            let len = self.handle_ctrl_queue(buffer, None)?;
+            let len = self.handle_ctrl_queue(chain, None)?;
             return Ok(BufferAction::Written(len));
         }
         let Some(socket) = self.tap_sockets.get(q_index as usize >> 1) else {
@@ -466,7 +466,7 @@ impl VirtioIoUring for Net {
             return Ok(BufferAction::Written(0));
         };
         let entry = if q_index & 1 == 0 {
-            let writable = &buffer.writable;
+            let writable = &chain.writable;
             opcode::Readv::new(
                 Fd(socket.as_raw_fd()),
                 writable.as_ptr() as *const _,
@@ -474,7 +474,7 @@ impl VirtioIoUring for Net {
             )
             .build()
         } else {
-            let readable = &buffer.readable;
+            let readable = &chain.readable;
             opcode::Writev::new(
                 Fd(socket.as_raw_fd()),
                 readable.as_ptr() as *const _,
@@ -485,12 +485,7 @@ impl VirtioIoUring for Net {
         Ok(BufferAction::Sqe(entry))
     }
 
-    fn complete_buffer(
-        &mut self,
-        q_index: u16,
-        _buffer: &mut Descriptor,
-        cqe: &Cqe,
-    ) -> Result<usize> {
+    fn complete_desc(&mut self, q_index: u16, _chain: &mut DescChain, cqe: &Cqe) -> Result<usize> {
         let ret = cqe.result();
         if ret < 0 {
             let err = std::io::Error::from_raw_os_error(-ret);

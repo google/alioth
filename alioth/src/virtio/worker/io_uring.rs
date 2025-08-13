@@ -28,7 +28,7 @@ use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
     WorkerState,
 };
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::queue::{DescChain, QueueReg, VirtQueue};
 use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result};
 
@@ -48,19 +48,14 @@ pub trait VirtioIoUring: Virtio {
         S: IrqSender,
         E: IoeventFd;
 
-    fn handle_buffer(
+    fn handle_desc(
         &mut self,
         q_index: u16,
-        buffer: &mut Descriptor,
+        chain: &mut DescChain,
         irq_sender: &impl IrqSender,
     ) -> Result<BufferAction>;
 
-    fn complete_buffer(
-        &mut self,
-        q_index: u16,
-        buffer: &mut Descriptor,
-        cqe: &Cqe,
-    ) -> Result<usize>;
+    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<usize>;
 }
 
 const TOKEN_QUEUE: u64 = 1 << 62;
@@ -84,7 +79,7 @@ impl IoUring {
         dev: D,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         D: VirtioIoUring,
@@ -187,7 +182,7 @@ pub struct ActiveIoUring<'a, 'm, Q, S, E> {
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],
     pub mem: &'m Ram,
-    submitted_buffers: HashMap<u32, Descriptor<'m>>,
+    submitted_buffers: HashMap<u32, DescChain<'m>>,
     shared_count: u16,
     queue_submits: Box<[QueueSubmit]>,
 }
@@ -231,8 +226,8 @@ where
                     log::debug!("{}: queue-{index}: no more free entries", dev.name());
                     break 'out;
                 }
-                let mut buffer = q.get_descriptor(queue_submit.index)?;
-                match dev.handle_buffer(index, &mut buffer, self.irq_sender)? {
+                let mut chain = q.get_desc_chain(queue_submit.index)?;
+                match dev.handle_desc(index, &mut chain, self.irq_sender)? {
                     BufferAction::Sqe(sqe) => {
                         let buffer_key = ((queue_submit.index as u32) << 16) | index as u32;
                         let sqe = sqe.user_data(buffer_key as u64 | TOKEN_DESCRIPTOR);
@@ -240,7 +235,7 @@ where
                             log::error!("{}: queue-{index}: unexpected full queue", dev.name());
                             break 'out;
                         }
-                        self.submitted_buffers.insert(buffer_key, buffer);
+                        self.submitted_buffers.insert(buffer_key, chain);
 
                         queue_submit.count += 1;
                         if queue_submit.count > QUEUE_RESERVE_SIZE {
@@ -248,7 +243,7 @@ where
                         }
                     }
                     BufferAction::Written(len) => {
-                        q.push_used(buffer, len);
+                        q.push_used(chain, len);
                         if q.interrupt_enabled() {
                             self.irq_sender.queue_irq(index);
                         }
@@ -280,7 +275,7 @@ where
                 log::error!("{}: invalid queue index {index}", dev.name());
                 return Ok(());
             };
-            let Some(mut buffer) = self.submitted_buffers.remove(&buffer_key) else {
+            let Some(mut chain) = self.submitted_buffers.remove(&buffer_key) else {
                 log::error!("{}: unexpected buffer key {buffer_key:#x}", dev.name());
                 return Ok(());
             };
@@ -291,8 +286,8 @@ where
             }
             queue_submit.count -= 1;
 
-            let written_len = dev.complete_buffer(index, &mut buffer, event)?;
-            queue.push_used(buffer, written_len);
+            let written_len = dev.complete_desc(index, &mut chain, event)?;
+            queue.push_used(chain, written_len);
             if queue.interrupt_enabled() {
                 self.irq_sender.queue_irq(index);
             }

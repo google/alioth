@@ -31,7 +31,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
-use crate::virtio::queue::{Queue, VirtQueue};
+use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vu::bindings::{
     DeviceConfig, MemoryRegion, MemorySingleRegion, VirtqAddr, VirtqState, VuFeature,
 };
@@ -258,7 +258,7 @@ impl Virtio for VuFrontend {
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
-        queue_regs: Arc<[Queue]>,
+        queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Waker>)>
     where
         S: IrqSender,

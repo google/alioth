@@ -37,7 +37,7 @@ use crate::pci::config::{
 use crate::pci::{self, Pci, PciBar};
 use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
 use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
-use crate::virtio::queue::Queue;
+use crate::virtio::queue::QueueReg;
 use crate::virtio::worker::Waker;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
 use crate::{impl_mmio_for_zerocopy, mem};
@@ -189,7 +189,7 @@ where
 {
     name: Arc<str>,
     reg: Register,
-    queues: Arc<[Queue]>,
+    queues: Arc<[QueueReg]>,
     irq_sender: Arc<PciIrqSender<M>>,
     ioeventfds: Option<Arc<[E]>>,
     event_tx: Sender<WakeEvent<PciIrqSender<M>, E>>,
