@@ -22,7 +22,9 @@ use rstest::{fixture, rstest};
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::Error;
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
+use crate::virtio::queue::{
+    Descriptor, QUEUE_SIZE_MAX, Queue, VirtQueue, copy_from_reader, copy_to_writer,
+};
 use crate::virtio::tests::FakeIrqSender;
 
 pub const MEM_SIZE: usize = 2 << 20;
@@ -138,12 +140,14 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     };
 
     // no writable descriptors
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty writable descripter
     q.add_desc(0, &[], &[(addr_0, 0)]);
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(
@@ -151,30 +155,35 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         &[],
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
     );
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     // no writable descriptors
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
     // will hit ErrorKind::WouldBlock
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[], &[(addr_3, 12)]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
-        q.copy_from_reader(0, &irq_sender, &mut reader),
+        q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    q.copy_from_reader(0, &irq_sender, &mut reader).unwrap();
+    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     for (s, addr) in [(str_0, addr_0), (str_1, addr_1), (str_2, addr_2)] {
@@ -281,12 +290,14 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
     };
 
     // no readable descriptors
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty readble descripter
     q.add_desc(0, &[(addr_0, 0)], &[]);
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(
@@ -294,33 +305,63 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: Queue) {
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     // no readable descriptors
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
     // will hit ErrorKind::WouldBlock
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(3, &[(addr_3, 12)], &[]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
-        q.copy_to_writer(0, &irq_sender, &mut writer),
+        q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    q.copy_to_writer(0, &irq_sender, &mut writer).unwrap();
+    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+        .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     for (buf, s) in [(buf_0, str_0), (buf_1, str_1), (buf_2, str_2)] {
         assert_eq!(String::from_utf8_lossy(buf.as_slice()), s)
     }
+}
+
+#[test]
+fn test_written_bytes() {
+    let str_0 = "Hello, World!";
+    let str_1 = "Goodbye, World!";
+
+    let mut buf = vec![0u8; str_0.len()];
+    let mut desc = Descriptor {
+        id: 0,
+        readable: vec![],
+        writable: vec![IoSliceMut::new(buf.as_mut_slice())],
+    };
+    let reader = str_0.as_bytes();
+    assert_matches!(copy_from_reader(reader)(&mut desc), Ok(Some(13)));
+    assert_eq!(buf.as_slice(), str_0.as_bytes());
+
+    let mut buf = vec![];
+    let mut desc = Descriptor {
+        id: 1,
+        readable: vec![IoSlice::new(str_1.as_bytes())],
+        writable: vec![],
+    };
+    assert_matches!(copy_to_writer(&mut buf)(&mut desc), Ok(Some(0)));
+    assert_eq!(buf.as_slice(), str_1.as_bytes());
 }

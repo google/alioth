@@ -42,7 +42,7 @@ use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::net::MacAddr;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
-use crate::virtio::queue::{Descriptor, Queue, VirtQueue};
+use crate::virtio::queue::{Descriptor, Queue, VirtQueue, copy_from_reader, copy_to_writer};
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::worker::{Waker, WorkerApi};
@@ -383,7 +383,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.copy_from_reader(rx_queue_index as u16, irq_sender, socket)?;
+            queue.handle_desc(rx_queue_index as u16, irq_sender, copy_from_reader(socket))?;
         }
         if event.is_writable() {
             let tx_queue_index = (token << 1) + 1;
@@ -395,7 +395,7 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.copy_to_writer(tx_queue_index as u16, irq_sender, socket)?;
+            queue.handle_desc(tx_queue_index as u16, irq_sender, copy_to_writer(socket))?;
         }
         Ok(())
     }
@@ -427,9 +427,9 @@ impl VirtioMio for Net {
             return Ok(());
         };
         if index & 1 == 0 {
-            queue.copy_from_reader(index, irq_sender, socket)
+            queue.handle_desc(index, irq_sender, copy_from_reader(socket))
         } else {
-            queue.copy_to_writer(index, irq_sender, socket)
+            queue.handle_desc(index, irq_sender, copy_to_writer(socket))
         }
     }
 }
