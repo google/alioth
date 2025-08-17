@@ -77,7 +77,7 @@ impl VhostVsock {
             log::debug!("{name}: vhost-vsock backend feature: {backend_feature:x?}");
             vhost_dev.set_backend_features(&backend_feature)?;
         }
-        let dev_feat = vhost_dev.get_features()?;
+        let dev_feat = vhost_dev.get_features()? as u128;
         let known_feat = VirtioFeature::from_bits_truncate(dev_feat).bits()
             | VsockFeature::from_bits_truncate(dev_feat).bits();
         if !VirtioFeature::from_bits_retain(known_feat).contains(VirtioFeature::VERSION_1) {
@@ -93,7 +93,7 @@ impl VhostVsock {
                 guest_cid: param.cid,
                 ..Default::default()
             },
-            features: known_feat,
+            features: known_feat as u64,
             error_fds: [None, None],
         })
     }
@@ -119,8 +119,8 @@ impl Virtio for VhostVsock {
         Arc::new(self.config)
     }
 
-    fn feature(&self) -> u64 {
-        self.features
+    fn feature(&self) -> u128 {
+        self.features as u128
     }
 
     fn ioeventfd_offloaded(&self, q_index: u16) -> Result<bool> {
@@ -153,7 +153,7 @@ impl Virtio for VhostVsock {
 impl VirtioMio for VhostVsock {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where
@@ -161,7 +161,7 @@ impl VirtioMio for VhostVsock {
         S: IrqSender,
         E: IoeventFd,
     {
-        self.vhost_dev.set_features(&feature)?;
+        self.vhost_dev.set_features(&(feature as u64))?;
         for (index, fd) in active_mio.ioeventfds.iter().take(2).enumerate() {
             let kick = VirtqFile {
                 index: index as u32,

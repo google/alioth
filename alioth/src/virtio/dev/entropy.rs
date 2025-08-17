@@ -54,7 +54,7 @@ impl Mmio for EntropyConfig {
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct EntropyFeature: u64 { }
+    pub struct EntropyFeature: u128 { }
 }
 
 #[derive(Debug)]
@@ -111,7 +111,7 @@ impl Virtio for Entropy {
         self.config.clone()
     }
 
-    fn feature(&self) -> u64 {
+    fn feature(&self) -> u128 {
         FEATURE_BUILT_IN
     }
 }
@@ -119,7 +119,7 @@ impl Virtio for Entropy {
 impl VirtioMio for Entropy {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        _feature: u64,
+        _feature: u128,
         _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

@@ -71,14 +71,6 @@ where
     data.into_iter().fold(0u8, |accu, e| accu.wrapping_add(*e))
 }
 
-pub fn get_low32(num: u64) -> u32 {
-    num as u32
-}
-
-pub fn get_high32(num: u64) -> u32 {
-    (num >> 32) as u32
-}
-
 pub fn get_atomic_low32(num: &AtomicU64) -> u32 {
     num.load(Ordering::Acquire) as u32
 }

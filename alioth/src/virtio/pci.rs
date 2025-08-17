@@ -35,9 +35,7 @@ use crate::pci::config::{
     PciConfig, PciConfigArea,
 };
 use crate::pci::{self, Pci, PciBar};
-use crate::utils::{
-    get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
-};
+use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
 use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::queue::Queue;
 use crate::virtio::worker::Waker;
@@ -263,20 +261,22 @@ where
                 reg.device_feature_sel.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE => {
-                if reg.device_feature_sel.load(Ordering::Acquire) > 0 {
-                    get_high32(reg.device_feature) as u64
+                let sel = reg.device_feature_sel.load(Ordering::Acquire);
+                if let Some(feature) = reg.device_feature.get(sel as usize) {
+                    *feature as u64
                 } else {
-                    get_low32(reg.device_feature) as u64
+                    0
                 }
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT => {
                 reg.driver_feature_sel.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
-                if reg.driver_feature_sel.load(Ordering::Acquire) > 0 {
-                    get_atomic_high32(&reg.driver_feature) as u64
+                let sel = reg.driver_feature_sel.load(Ordering::Acquire);
+                if let Some(feature) = reg.driver_feature.get(sel as usize) {
+                    feature.load(Ordering::Acquire) as u64
                 } else {
-                    get_atomic_low32(&reg.driver_feature) as u64
+                    0
                 }
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
@@ -390,10 +390,11 @@ where
                 reg.driver_feature_sel.store(val as u8, Ordering::Release);
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
-                if reg.driver_feature_sel.load(Ordering::Relaxed) > 0 {
-                    set_atomic_high32(&reg.driver_feature, val as u32)
-                } else {
-                    set_atomic_low32(&reg.driver_feature, val as u32)
+                let sel = reg.driver_feature_sel.load(Ordering::Acquire);
+                if let Some(feature) = reg.driver_feature.get(sel as usize) {
+                    feature.store(val as u32, Ordering::Release);
+                } else if val != 0 {
+                    log::error!("{}: unknown feature {val:#x} for sel {sel}", self.name);
                 }
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
@@ -418,8 +419,12 @@ where
                 let old = DevStatus::from_bits_retain(old);
                 if (old ^ status).contains(DevStatus::DRIVER_OK) {
                     let event = if status.contains(DevStatus::DRIVER_OK) {
+                        let mut feature = 0;
+                        for (i, v) in reg.driver_feature.iter().enumerate() {
+                            feature |= (v.load(Ordering::Acquire) as u128) << (i << 5);
+                        }
                         let param = StartParam {
-                            feature: reg.driver_feature.load(Ordering::Acquire),
+                            feature,
                             irq_sender: self.irq_sender.clone(),
                             ioeventfds: self.ioeventfds.clone(),
                         };
@@ -836,10 +841,14 @@ where
             }
         };
 
+        let mut device_feature = [0u32; 4];
+        for (i, v) in device_feature.iter_mut().enumerate() {
+            *v = (dev.device_feature >> (i << 5)) as u32;
+        }
         let registers = Arc::new(VirtioPciRegisterMmio {
             name: dev.name.clone(),
             reg: Register {
-                device_feature: dev.device_feature,
+                device_feature,
                 ..Default::default()
             },
             event_tx: dev.event_tx.clone(),

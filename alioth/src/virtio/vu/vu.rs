@@ -50,7 +50,7 @@ pub enum Error {
     #[snafu(display("vhost-user backend signaled an error of queue {index:#x}"))]
     QueueErr { index: u16 },
     #[snafu(display("vhost-user backend is missing device feature {feature:#x}"))]
-    DeviceFeature { feature: u64 },
+    DeviceFeature { feature: u128 },
     #[snafu(display("vhost-user backend is missing protocol feature {feature:x?}"))]
     ProtocolFeature { feature: VuFeature },
 }

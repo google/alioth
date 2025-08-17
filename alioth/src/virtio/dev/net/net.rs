@@ -107,7 +107,7 @@ struct CtrlHdr {
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct NetFeature: u64 {
+    pub struct NetFeature: u128 {
         const CSUM = 1 << 0;
         const GUEST_CSUM = 1 << 1;
         const CTRL_GUEST_OFFLOADS = 1 << 2;
@@ -313,7 +313,7 @@ impl Virtio for Net {
         self.config.clone()
     }
 
-    fn feature(&self) -> u64 {
+    fn feature(&self) -> u128 {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
@@ -342,7 +342,7 @@ impl VirtioMio for Net {
 
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where
@@ -437,7 +437,7 @@ impl VirtioMio for Net {
 impl VirtioIoUring for Net {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         _ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

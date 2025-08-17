@@ -210,7 +210,7 @@ impl<'m> SplitQueue<'_, 'm> {
 }
 
 impl<'q, 'm> SplitQueue<'q, 'm> {
-    pub fn new(reg: &'q Queue, ram: &'m Ram, feature: u64) -> Result<Option<SplitQueue<'q, 'm>>> {
+    pub fn new(reg: &'q Queue, ram: &'m Ram, feature: u128) -> Result<Option<SplitQueue<'q, 'm>>> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }

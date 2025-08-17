@@ -107,7 +107,7 @@ impl_mmio_for_zerocopy!(FsConfig);
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FsFeature: u64 {
+    pub struct FsFeature: u128 {
         const NOTIFICATION = 1 << 0;
     }
 }
@@ -340,7 +340,7 @@ where
 {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where
@@ -408,7 +408,7 @@ where
         &self.name
     }
 
-    fn feature(&self) -> u64 {
+    fn feature(&self) -> u128 {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 

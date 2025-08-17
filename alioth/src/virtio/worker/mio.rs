@@ -35,7 +35,7 @@ use crate::virtio::{IrqSender, Result, error};
 pub trait VirtioMio: Virtio {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

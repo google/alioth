@@ -142,7 +142,7 @@ impl Virtio for VuFs {
         self.config.clone()
     }
 
-    fn feature(&self) -> u64 {
+    fn feature(&self) -> u128 {
         self.frontend.feature()
     }
 
@@ -183,7 +183,7 @@ impl Virtio for VuFs {
 impl VirtioMio for VuFs {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

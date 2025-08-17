@@ -44,7 +44,7 @@ use crate::{ffi, mem};
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VuDevFeature: u64 { }
+    pub struct VuDevFeature: u128 { }
 }
 
 #[derive(Debug)]
@@ -157,7 +157,7 @@ impl VuFrontend {
         let session = Arc::new(VuSession::new(socket)?);
 
         let device_feature = session.get_features()?;
-        let feat = VirtioFeature::from_bits_retain(device_feature);
+        let feat = VirtioFeature::from_bits_retain(device_feature as u128);
         log::trace!("{name}: get device feature: {feat:x?}");
         let need_feat = VirtioFeature::VHOST_PROTOCOL | VirtioFeature::VERSION_1;
         if !feat.contains(need_feat) {
@@ -250,8 +250,8 @@ impl Virtio for VuFrontend {
         })
     }
 
-    fn feature(&self) -> u64 {
-        self.device_feature
+    fn feature(&self) -> u128 {
+        self.device_feature as u128
     }
 
     fn spawn_worker<S, E>(
@@ -290,7 +290,7 @@ impl Virtio for VuFrontend {
 impl VirtioMio for VuFrontend {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where
@@ -300,7 +300,7 @@ impl VirtioMio for VuFrontend {
     {
         let name = &*self.name;
         self.session
-            .set_features(&(feature | VirtioFeature::VHOST_PROTOCOL.bits()))?;
+            .set_features(&((feature | VirtioFeature::VHOST_PROTOCOL.bits()) as u64))?;
         log::trace!("{name}: set driver feature: {feature:x?}");
 
         for (index, fd) in active_mio.ioeventfds.iter().enumerate() {

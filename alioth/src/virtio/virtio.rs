@@ -88,7 +88,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VirtioFeature: u64 {
+    pub struct VirtioFeature: u128 {
         const INDIRECT_DESC = 1 << 28;
         const EVENT_IDX = 1 << 29;
         const VHOST_PROTOCOL = 1 << 30;
@@ -98,7 +98,7 @@ bitflags! {
     }
 }
 
-const FEATURE_BUILT_IN: u64 = VirtioFeature::EVENT_IDX.bits() | VirtioFeature::VERSION_1.bits();
+const FEATURE_BUILT_IN: u128 = VirtioFeature::EVENT_IDX.bits() | VirtioFeature::VERSION_1.bits();
 
 #[derive(Debug, Clone, Copy)]
 pub enum DeviceId {

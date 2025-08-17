@@ -84,7 +84,7 @@ impl Mmio for BalloonConfigMmio {
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct BalloonFeature: u64 {
+    pub struct BalloonFeature: u128 {
         const MUST_TELL_HOST = 1 << 0;
         const STATS_VQ = 1 << 1;
         const DEFLATE_ON_OOM = 1 << 2;
@@ -221,7 +221,7 @@ impl Virtio for Balloon {
         self.config.clone()
     }
 
-    fn feature(&self) -> u64 {
+    fn feature(&self) -> u128 {
         FEATURE_BUILT_IN | self.feature.bits()
     }
 }
@@ -229,7 +229,7 @@ impl Virtio for Balloon {
 impl VirtioMio for Balloon {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

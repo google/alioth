@@ -32,7 +32,7 @@ impl_mmio_for_zerocopy!(VsockConfig);
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VsockFeature: u64 {
+    pub struct VsockFeature: u128 {
         const STREAM = 1 << 0;
         const SEQPACKET = 1 << 1;
     }

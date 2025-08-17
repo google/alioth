@@ -26,7 +26,7 @@ pub mod vsock;
 
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
@@ -46,13 +46,13 @@ use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 
 pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
-    type Feature: Flags<Bits = u64> + Debug;
+    type Feature: Flags<Bits = u128> + Debug;
 
     fn name(&self) -> &str;
     fn id(&self) -> DeviceId;
     fn num_queues(&self) -> u16;
     fn config(&self) -> Arc<Self::Config>;
-    fn feature(&self) -> u64;
+    fn feature(&self) -> u128;
     fn spawn_worker<S: IrqSender, E: IoeventFd>(
         self,
         event_rx: Receiver<WakeEvent<S, E>>,
@@ -77,8 +77,8 @@ pub trait Virtio: Debug + Send + Sync + 'static {
 
 #[derive(Debug, Default)]
 pub struct Register {
-    pub device_feature: u64,
-    pub driver_feature: AtomicU64,
+    pub device_feature: [u32; 4],
+    pub driver_feature: [AtomicU32; 4],
     pub device_feature_sel: AtomicU8,
     pub driver_feature_sel: AtomicU8,
     pub queue_sel: AtomicU16,
@@ -93,7 +93,7 @@ where
     S: IrqSender,
     E: IoeventFd,
 {
-    pub(crate) feature: u64,
+    pub(crate) feature: u128,
     pub(crate) irq_sender: Arc<S>,
     pub(crate) ioeventfds: Option<Arc<[E]>>,
 }
@@ -144,7 +144,7 @@ where
     pub name: Arc<str>,
     pub id: DeviceId,
     pub device_config: Arc<dyn Mmio>,
-    pub device_feature: u64,
+    pub device_feature: u128,
     pub queue_regs: Arc<[Queue]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,

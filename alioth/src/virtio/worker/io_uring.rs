@@ -40,7 +40,7 @@ pub enum BufferAction {
 pub trait VirtioIoUring: Virtio {
     fn activate<'a, 'm, Q, S, E>(
         &mut self,
-        feature: u64,
+        feature: u128,
         ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
     ) -> Result<()>
     where

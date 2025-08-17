@@ -253,7 +253,7 @@ impl VuBackend {
         }
 
         Ok(StartParam {
-            feature: self.init.drv_feat,
+            feature: self.init.drv_feat as u128,
             irq_sender: Arc::new(irq_sender),
             ioeventfds: Some(ioeventfds.into()),
         })

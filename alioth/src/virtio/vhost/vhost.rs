@@ -48,7 +48,7 @@ pub enum Error {
         error: std::io::Error,
     },
     #[snafu(display("vhost backend is missing device feature {feature:#x}"))]
-    VhostMissingDeviceFeature { feature: u64 },
+    VhostMissingDeviceFeature { feature: u128 },
     #[snafu(display("vhost-{dev} signals an error of queue {index:#x}"))]
     VhostQueueErr { dev: &'static str, index: u16 },
 }
