@@ -381,3 +381,63 @@ fn test_written_bytes() {
     );
     assert_eq!(buf.as_slice(), str_1.as_bytes());
 }
+
+#[rstest]
+fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+    let ram = fixture_ram_bus.lock_layout();
+    let q = SplitQueue::new(&fixture_queue, &*ram, false)
+        .unwrap()
+        .unwrap();
+    let mut q = Queue::new(q);
+    let (irq_tx, irq_rx) = mpsc::channel();
+    let irq_sender = FakeIrqSender { q_tx: irq_tx };
+
+    let str_0 = "Hello, World!";
+    let str_1 = "Goodbye, World!";
+    let str_2 = "Bose-Einstein condensate";
+    let addr_0 = DATA_ADDR;
+    let addr_1 = addr_0 + str_0.len() as u64;
+    let addr_2 = addr_1 + str_1.len() as u64;
+    for (s, addr) in [(str_0, addr_0), (str_1, addr_1), (str_2, addr_2)] {
+        ram.write(addr, s.as_bytes()).unwrap();
+    }
+
+    q.add_desc(
+        0,
+        &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
+        &[],
+    );
+    q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
+
+    let mut ids = vec![];
+    q.handle_desc(0, &irq_sender, |chain| {
+        ids.push(chain.id());
+        Ok(Status::Deferred)
+    })
+    .unwrap();
+
+    assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(ids, [0, 2]);
+
+    q.handle_deferred(0, 0, &irq_sender, |chain| {
+        assert_eq!(chain.id, 0);
+        assert_eq!(&*chain.readable[0], str_0.as_bytes());
+        assert_eq!(&*chain.readable[1], str_1.as_bytes());
+        assert_eq!(chain.writable.len(), 0);
+        Ok(0)
+    })
+    .unwrap();
+
+    assert_matches!(
+        q.handle_deferred(1, 0, &irq_sender, |_| Ok(0)),
+        Err(Error::InvalidDescriptor { id: 1, .. })
+    );
+
+    q.handle_deferred(2, 0, &irq_sender, |chain| {
+        assert_eq!(chain.id, 2);
+        assert_eq!(&*chain.readable[0], str_2.as_bytes());
+        assert_eq!(chain.writable.len(), 0);
+        Ok(0)
+    })
+    .unwrap();
+}
