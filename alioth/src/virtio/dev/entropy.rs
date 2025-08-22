@@ -12,9 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "entropy_test.rs"]
+mod tests;
+
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -23,6 +28,8 @@ use bitflags::bitflags;
 use libc::O_NONBLOCK;
 use mio::Registry;
 use mio::event::Event;
+use serde::Deserialize;
+use serde_aco::Help;
 use snafu::ResultExt;
 
 use crate::hv::IoeventFd;
@@ -65,13 +72,14 @@ pub struct Entropy {
 }
 
 impl Entropy {
-    pub fn new(name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(param: EntropyParam, name: impl Into<Arc<str>>) -> Result<Self> {
+        let name = name.into();
         let mut options = OpenOptions::new();
         options.custom_flags(O_NONBLOCK).read(true);
-        let path = "/dev/urandom";
+        let path = param.source.as_deref().unwrap_or(Path::new("/dev/urandom"));
         let file = options.open(path).context(error::AccessFile { path })?;
         Ok(Entropy {
-            name: name.into(),
+            name,
             source: file,
             config: Arc::new(EntropyConfig),
         })
@@ -163,12 +171,16 @@ impl VirtioMio for Entropy {
     fn reset(&mut self, _registry: &Registry) {}
 }
 
-pub struct EntropyParam;
+#[derive(Debug, Default, Deserialize, Clone, Help)]
+pub struct EntropyParam {
+    /// Source of entropy [default: /dev/urandom]
+    pub source: Option<PathBuf>,
+}
 
 impl DevParam for EntropyParam {
     type Device = Entropy;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
-        Entropy::new(name)
+        Entropy::new(self, name)
     }
 }

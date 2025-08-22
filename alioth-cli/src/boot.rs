@@ -426,7 +426,7 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
     };
 
     if args.entropy {
-        vm.add_virtio_dev("virtio-entropy", EntropyParam)
+        vm.add_virtio_dev("virtio-entropy", EntropyParam::default())
             .context(error::CreateDevice)?;
     }
     #[cfg(target_os = "linux")]

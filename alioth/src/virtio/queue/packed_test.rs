@@ -21,8 +21,9 @@ use rstest::rstest;
 use crate::mem::mapped::RamBus;
 use crate::virtio::queue::packed::{Desc, DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::private::VirtQueuePrivate;
-use crate::virtio::queue::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
-use crate::virtio::queue::{DescFlag, Queue, QueueReg, VirtQueue};
+use crate::virtio::queue::tests::VirtQueueGuest;
+use crate::virtio::queue::{DescFlag, QueueReg, VirtQueue};
+use crate::virtio::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
 
 const WRAP_COUNTER: u16 = 1 << 15;
 
@@ -60,8 +61,8 @@ fn index_wrapping_sub(
     );
 }
 
-impl<'r, 'm> PackedQueue<'r, 'm> {
-    pub fn add_desc(
+impl<'r, 'm> VirtQueueGuest<'m> for PackedQueue<'r, 'm> {
+    fn add_desc(
         &mut self,
         index: WrappedIndex,
         id: u16,
@@ -90,18 +91,6 @@ impl<'r, 'm> PackedQueue<'r, 'm> {
             };
             *unsafe { &mut *self.desc.offset((index.offset() + i as u16) as isize) } = desc;
         }
-    }
-}
-
-impl<'r, 'm> Queue<'m, PackedQueue<'r, 'm>> {
-    pub fn add_desc(
-        &mut self,
-        index: WrappedIndex,
-        id: u16,
-        readable: &[(u64, u32)],
-        writable: &[(u64, u32)],
-    ) {
-        self.q.add_desc(index, id, readable, writable);
     }
 }
 

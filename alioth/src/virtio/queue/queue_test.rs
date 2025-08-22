@@ -14,43 +14,41 @@
 
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::ptr::eq as ptr_eq;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::mpsc::{self, TryRecvError};
 
 use assert_matches::assert_matches;
-use rstest::{fixture, rstest};
+use rstest::rstest;
 
-use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::virtio::Error;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
-    DescChain, QUEUE_SIZE_MAX, Queue, QueueReg, Status, copy_from_reader, copy_to_writer,
+    DescChain, Queue, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
 };
-use crate::virtio::tests::FakeIrqSender;
+use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queue, fixture_ram_bus};
 
-pub const MEM_SIZE: usize = 2 << 20;
-pub const QUEUE_SIZE: u16 = QUEUE_SIZE_MAX;
-pub const DESC_ADDR: u64 = 0x1000;
-pub const AVAIL_ADDR: u64 = 0x2000;
-pub const USED_ADDR: u64 = 0x3000;
-pub const DATA_ADDR: u64 = 0x4000;
-
-#[fixture]
-pub fn fixture_ram_bus() -> RamBus {
-    let host_pages = ArcMemPages::from_anonymous(MEM_SIZE, None, None).unwrap();
-    let ram_bus = RamBus::new();
-    ram_bus.add(0, host_pages).unwrap();
-    ram_bus
+pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
+    fn add_desc(
+        &mut self,
+        index: Self::Index,
+        id: u16,
+        readable: &[(u64, u32)],
+        writable: &[(u64, u32)],
+    );
 }
 
-#[fixture]
-pub fn fixture_queue() -> QueueReg {
-    QueueReg {
-        size: AtomicU16::new(QUEUE_SIZE),
-        desc: AtomicU64::new(DESC_ADDR),
-        driver: AtomicU64::new(AVAIL_ADDR),
-        device: AtomicU64::new(USED_ADDR),
-        enabled: AtomicBool::new(true),
+impl<'m, Q> Queue<'m, Q>
+where
+    Q: VirtQueueGuest<'m>,
+{
+    pub fn add_desc(
+        &mut self,
+        index: Q::Index,
+        id: u16,
+        readable: &[(u64, u32)],
+        writable: &[(u64, u32)],
+    ) {
+        self.q.add_desc(index, id, readable, writable);
     }
 }
 
@@ -151,12 +149,13 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty writable descripter
-    q.add_desc(0, &[], &[(addr_0, 0)]);
+    q.add_desc(0, 0, &[], &[(addr_0, 0)]);
     q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(
+        1,
         0,
         &[],
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
@@ -170,7 +169,7 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
+    q.add_desc(2, 2, &[], &[(addr_2, str_2.len() as u32)]);
     // will hit ErrorKind::WouldBlock
     q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
@@ -180,7 +179,7 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(3, &[], &[(addr_3, 12)]);
+    q.add_desc(3, 3, &[], &[(addr_3, 12)]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
@@ -303,12 +302,13 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty readble descripter
-    q.add_desc(0, &[(addr_0, 0)], &[]);
+    q.add_desc(0, 0, &[(addr_0, 0)], &[]);
     q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     q.add_desc(
+        1,
         0,
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
@@ -322,7 +322,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
+    q.add_desc(2, 2, &[(addr_2, str_2.len() as u32)], &[]);
     // will hit ErrorKind::WouldBlock
     q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
@@ -332,7 +332,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(3, &[(addr_3, 12)], &[]);
+    q.add_desc(3, 3, &[(addr_3, 12)], &[]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
@@ -406,10 +406,11 @@ fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 
     q.add_desc(
         0,
+        0,
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
-    q.add_desc(2, &[(addr_2, str_2.len() as u32)], &[]);
+    q.add_desc(1, 2, &[(addr_2, str_2.len() as u32)], &[]);
 
     let mut ids = vec![];
     q.handle_desc(0, &irq_sender, |chain| {

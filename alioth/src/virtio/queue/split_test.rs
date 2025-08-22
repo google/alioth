@@ -21,11 +21,12 @@ use rstest::rstest;
 use crate::mem::mapped::RamBus;
 use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
-use crate::virtio::queue::tests::{DATA_ADDR, fixture_queue, fixture_ram_bus};
-use crate::virtio::queue::{Queue, QueueReg, VirtQueue};
+use crate::virtio::queue::tests::VirtQueueGuest;
+use crate::virtio::queue::{QueueReg, VirtQueue};
+use crate::virtio::tests::{DATA_ADDR, fixture_queue, fixture_ram_bus};
 
-impl<'r, 'm> SplitQueue<'r, 'm> {
-    pub fn add_desc(&mut self, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
+impl<'r, 'm> VirtQueueGuest<'m> for SplitQueue<'r, 'm> {
+    fn add_desc(&mut self, index: u16, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
         let readable_count = readable.len();
         let total_count = readable.len() + writable.len();
         for (i, (addr, len)) in readable.iter().chain(writable.iter()).enumerate() {
@@ -45,14 +46,9 @@ impl<'r, 'm> SplitQueue<'r, 'm> {
             *unsafe { &mut *self.desc.offset((id + i as u16) as isize) } = desc;
         }
         let avail_idx = self.avail_index();
+        assert_eq!(index, avail_idx);
         *unsafe { &mut *self.avail_ring.offset((avail_idx % self.size) as isize) } = id;
         unsafe { &mut *self.avail_hdr }.idx = avail_idx.wrapping_add(1);
-    }
-}
-
-impl<'r, 'm> Queue<'m, SplitQueue<'r, 'm>> {
-    pub fn add_desc(&mut self, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
-        self.q.add_desc(id, readable, writable);
     }
 }
 
@@ -83,6 +79,7 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 
     q.add_desc(
         0,
+        0,
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
@@ -97,7 +94,7 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     q.push_used(chain, 0);
     assert!(!q.desc_avail(1));
 
-    q.add_desc(2, &[], &[(addr_2, str_2.len() as u32)]);
+    q.add_desc(1, 2, &[], &[(addr_2, str_2.len() as u32)]);
     let mut chain = q.get_desc_chain(1).unwrap().unwrap();
     assert_eq!(chain.id, 2);
     assert_eq!(chain.readable.len(), 0);
