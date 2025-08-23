@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 #[path = "queue_test.rs"]
-mod tests;
+pub(in crate::virtio) mod tests;
 
 pub mod packed;
 pub mod split;

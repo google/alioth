@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
@@ -19,7 +20,7 @@ use rstest::rstest;
 
 use crate::mem::mapped::RamBus;
 use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
-use crate::virtio::queue::tests::VirtQueueGuest;
+use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
 use crate::virtio::queue::{DescFlag, QueueReg, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
 
@@ -59,16 +60,24 @@ fn index_wrapping_sub(
     );
 }
 
+impl<'m> PackedQueue<'m> {
+    fn flag_is_used(&self, flag: DescFlag, wrap_counter: bool) -> bool {
+        flag.contains(DescFlag::AVAIL) == wrap_counter
+            && flag.contains(DescFlag::USED) == wrap_counter
+    }
+}
+
 impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
     fn add_desc(
         &mut self,
         index: WrappedIndex,
-        id: u16,
+        ids: &[u16],
         readable: &[(u64, u32)],
         writable: &[(u64, u32)],
-    ) {
+    ) -> u16 {
         let writable_count = writable.len();
         let total_count = readable.len() + writable.len();
+        let id = ids[0];
         for (i, (addr, len)) in readable.iter().chain(writable).rev().enumerate() {
             let index = index.wrapping_add((total_count - 1 - i) as u16, self.size);
             let mut flag = if index.wrap_counter() {
@@ -88,6 +97,24 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
             desc.id = id;
             desc.flag = flag.bits();
         }
+        ids.len() as u16
+    }
+
+    fn get_used(
+        &mut self,
+        index: Self::Index,
+        chains: &HashMap<u16, Vec<u16>>,
+    ) -> Option<UsedDesc> {
+        let desc = unsafe { &mut *self.desc.offset(index.offset() as isize) };
+        let flag = DescFlag::from_bits_retain(desc.flag);
+        if !self.flag_is_used(flag, index.wrap_counter()) {
+            return None;
+        }
+        Some(UsedDesc {
+            id: desc.id,
+            len: desc.len,
+            delta: chains[&desc.id].len() as u16,
+        })
     }
 }
 
@@ -102,9 +129,15 @@ fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 #[rstest]
 fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let mut q = PackedQueue::new(&fixture_queue, &*ram, false)
+    let q = PackedQueue::new(&fixture_queue, &*ram, false)
         .unwrap()
         .unwrap();
+    let mut guest_q = GuestQueue::new(
+        PackedQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+    );
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -117,33 +150,42 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 
     let mut avail_index = WrappedIndex::INIT;
     let mut used_index = WrappedIndex::INIT;
-    q.add_desc(
-        avail_index,
-        0,
+
+    let id = guest_q.add_desc(
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
     assert!(q.desc_avail(avail_index));
-
     let chain = q.get_avail(avail_index, &ram).unwrap().unwrap();
     avail_index = q.index_add(avail_index, chain.delta);
     assert_eq!(chain.id, 0);
     assert_eq!(&*chain.readable[0], str_0.as_bytes());
     assert_eq!(&*chain.readable[1], str_1.as_bytes());
     assert_eq!(chain.writable.len(), 0);
+
     q.set_used(used_index, chain.id, 0);
     used_index = q.index_add(used_index, chain.delta);
 
     assert_eq!(avail_index, WrappedIndex(WRAP_COUNTER | 2));
     assert_matches!(q.get_avail(avail_index, &ram), Ok(None));
+    let used = guest_q.get_used().unwrap();
+    assert_eq!(used.id, id);
+    assert_eq!(used.delta, 2);
+    assert_eq!(used.len, 0);
 
-    q.add_desc(avail_index, 1, &[], &[(addr_2, str_2.len() as u32)]);
+    let id = guest_q.add_desc(&[], &[(addr_2, str_2.len() as u32)]);
     let mut chain = q.get_avail(avail_index, &ram).unwrap().unwrap();
-    assert_eq!(chain.id, 1);
+    assert_eq!(chain.id, 2);
     assert_eq!(chain.readable.len(), 0);
     let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
     q.set_used(used_index, chain.id, str_2.len() as u32);
+
+    let used = guest_q.get_used().unwrap();
+    assert_eq!(used.id, id);
+    assert_eq!(used.delta, 1);
+    assert_eq!(used.len, str_2.len() as u32);
+
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());

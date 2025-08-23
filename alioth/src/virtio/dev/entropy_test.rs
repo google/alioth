@@ -29,8 +29,9 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyParam};
 use crate::virtio::dev::{DevParam, StartParam, Virtio, WakeEvent};
+use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{Queue, QueueReg};
+use crate::virtio::queue::tests::GuestQueue;
 use crate::virtio::tests::{
     DATA_ADDR, FakeIoeventFd, FakeIrqSender, fixture_queue, fixture_ram_bus,
 };
@@ -51,8 +52,10 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = ram_bus.lock_layout();
     let queues = Arc::new([fixture_queue]);
 
-    let q = SplitQueue::new(&queues[0], &*ram, false).unwrap().unwrap();
-    let mut q = Queue::new(q, &queues[0], &ram);
+    let mut guest_q = GuestQueue::new(
+        SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap(),
+        &queues[0],
+    );
 
     let buf0_addr = DATA_ADDR;
     let buf1_addr = buf0_addr + (4 << 10);
@@ -95,7 +98,7 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         .open(&pipe_path)
         .unwrap();
 
-    q.add_desc(0, 0, &[], &[(buf0_addr, 4 << 10)]);
+    let id0 = guest_q.add_desc(&[], &[(buf0_addr, 4 << 10)]);
     tx.send(WakeEvent::Notify { q_index: 0 }).unwrap();
     waker.wake().unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
@@ -105,13 +108,20 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     tx.send(WakeEvent::Notify { q_index: 0 }).unwrap();
     waker.wake().unwrap();
     assert_eq!(irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 0);
+    let used0 = guest_q.get_used().unwrap();
+    assert_eq!(used0.id, id0);
+    assert_eq!(used0.len, s0.len() as u32);
 
     writer.write_all(s1.as_bytes()).unwrap();
     writer.flush().unwrap();
-    q.add_desc(1, 1, &[], &[(buf1_addr, 4 << 10)]);
+    let id1 = guest_q.add_desc(&[], &[(buf1_addr, 4 << 10)]);
     tx.send(WakeEvent::Notify { q_index: 0 }).unwrap();
     waker.wake().unwrap();
     assert_eq!(irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 0);
+
+    let used1 = guest_q.get_used().unwrap();
+    assert_eq!(used1.id, id1);
+    assert_eq!(used1.len, s1.len() as u32);
 
     tx.send(WakeEvent::Shutdown).unwrap();
     waker.wake().unwrap();

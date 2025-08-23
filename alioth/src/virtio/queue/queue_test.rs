@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::ptr::eq as ptr_eq;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, TryRecvError};
 
 use assert_matches::assert_matches;
@@ -27,28 +29,87 @@ use crate::virtio::queue::{
 };
 use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queue, fixture_ram_bus};
 
+pub struct UsedDesc {
+    pub id: u16,
+    pub delta: u16,
+    pub len: u32,
+}
+
 pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
     fn add_desc(
         &mut self,
         index: Self::Index,
-        id: u16,
+        ids: &[u16],
         readable: &[(u64, u32)],
         writable: &[(u64, u32)],
-    );
+    ) -> u16;
+
+    fn get_used(&mut self, index: Self::Index, chains: &HashMap<u16, Vec<u16>>)
+    -> Option<UsedDesc>;
 }
 
-impl<'m, Q> Queue<'_, 'm, Q>
+pub struct GuestQueue<'m, Q>
 where
     Q: VirtQueueGuest<'m>,
 {
-    pub fn add_desc(
-        &mut self,
-        index: Q::Index,
-        id: u16,
-        readable: &[(u64, u32)],
-        writable: &[(u64, u32)],
-    ) {
-        self.q.add_desc(index, id, readable, writable);
+    q: Q,
+    avail: Q::Index,
+    used: Q::Index,
+    ids: Vec<bool>,
+    chains: HashMap<u16, Vec<u16>>,
+    next_id: u16,
+}
+
+impl<'m, Q> GuestQueue<'m, Q>
+where
+    Q: VirtQueueGuest<'m>,
+{
+    pub fn new(q: Q, reg: &QueueReg) -> Self {
+        let size = reg.size.load(Ordering::Acquire);
+        Self {
+            q,
+            avail: Q::INIT_INDEX,
+            used: Q::INIT_INDEX,
+            ids: vec![false; size as usize],
+            chains: HashMap::new(),
+            next_id: 0,
+        }
+    }
+}
+
+impl<'m, Q> GuestQueue<'m, Q>
+where
+    Q: VirtQueueGuest<'m>,
+{
+    pub fn add_desc(&mut self, readable: &[(u64, u32)], writable: &[(u64, u32)]) -> u16 {
+        let mut ids = vec![];
+        let total = readable.len() + writable.len();
+        for _ in 0..self.ids.len() {
+            if !self.ids[self.next_id as usize] {
+                ids.push(self.next_id);
+                self.ids[self.next_id as usize] = true;
+            }
+            self.next_id = self.next_id.wrapping_add(1) % self.ids.len() as u16;
+            if ids.len() == total {
+                break;
+            }
+        }
+        assert_eq!(ids.len(), total);
+        let delta = self.q.add_desc(self.avail, &ids, readable, writable);
+        self.avail = self.q.index_add(self.avail, delta);
+        let head_id = ids[0];
+        self.chains.insert(head_id, ids);
+        head_id
+    }
+
+    pub fn get_used(&mut self) -> Option<UsedDesc> {
+        let used = self.q.get_used(self.used, &self.chains)?;
+        let ids = self.chains.remove(&used.id).unwrap();
+        for id in ids {
+            self.ids[id as usize] = false;
+        }
+        self.used = self.q.index_add(self.used, used.delta);
+        Some(used)
     }
 }
 
@@ -113,11 +174,20 @@ impl<'a> Read for Reader<'a> {
 #[rstest]
 fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let q = SplitQueue::new(&fixture_queue, &*ram, false)
-        .unwrap()
-        .unwrap();
-    let mut q = Queue::new(q, &fixture_queue, &ram);
-    assert!(ptr_eq(q.reg(), &fixture_queue));
+    let mut host_q = Queue::new(
+        SplitQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+        &ram,
+    );
+    let mut guest_q = GuestQueue::new(
+        SplitQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+    );
+    assert!(ptr_eq(host_q.reg(), &fixture_queue));
 
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -143,50 +213,55 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     };
 
     // no writable descriptors
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty writable descripter
-    q.add_desc(0, 0, &[], &[(addr_0, 0)]);
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    guest_q.add_desc(&[], &[(addr_0, 0)]);
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(
-        1,
-        0,
+    guest_q.add_desc(
         &[],
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
     );
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     // no writable descriptors
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.add_desc(2, 2, &[], &[(addr_2, str_2.len() as u32)]);
+    guest_q.add_desc(&[], &[(addr_2, str_2.len() as u32)]);
     // will hit ErrorKind::WouldBlock
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(3, 3, &[], &[(addr_3, 12)]);
+    guest_q.add_desc(&[], &[(addr_3, 12)]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
-        q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader)),
+        host_q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
+    host_q
+        .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
@@ -262,10 +337,19 @@ impl<'a> Write for Writer<'a> {
 #[rstest]
 fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let q = SplitQueue::new(&fixture_queue, &*ram, false)
-        .unwrap()
-        .unwrap();
-    let mut q = Queue::new(q, &fixture_queue, &ram);
+    let mut host_q = Queue::new(
+        SplitQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+        &ram,
+    );
+    let mut guest_q = GuestQueue::new(
+        SplitQueue::new(&fixture_queue, &*ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+    );
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -296,50 +380,55 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     };
 
     // no readable descriptors
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     // empty readble descripter
-    q.add_desc(0, 0, &[(addr_0, 0)], &[]);
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    guest_q.add_desc(&[(addr_0, 0)], &[]);
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(
-        1,
-        0,
+    guest_q.add_desc(
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     // no readable descriptors
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.add_desc(2, 2, &[(addr_2, str_2.len() as u32)], &[]);
+    guest_q.add_desc(&[(addr_2, str_2.len() as u32)], &[]);
     // will hit ErrorKind::WouldBlock
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
-    q.add_desc(3, 3, &[(addr_3, 12)], &[]);
+    guest_q.add_desc(&[(addr_3, 12)], &[]);
 
     // will hit ErrorKind::Interrupted
     assert_matches!(
-        q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer)),
+        host_q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
 
-    q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
+    host_q
+        .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
@@ -384,10 +473,19 @@ fn test_written_bytes() {
 #[rstest]
 fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let q = SplitQueue::new(&fixture_queue, &*ram, false)
-        .unwrap()
-        .unwrap();
-    let mut q = Queue::new(q, &fixture_queue, &ram);
+    let mut host_q = Queue::new(
+        SplitQueue::new(&fixture_queue, &ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+        &ram,
+    );
+    let mut guest_q = GuestQueue::new(
+        SplitQueue::new(&fixture_queue, &ram, false)
+            .unwrap()
+            .unwrap(),
+        &fixture_queue,
+    );
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -401,43 +499,44 @@ fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
         ram.write(addr, s.as_bytes()).unwrap();
     }
 
-    q.add_desc(
-        0,
-        0,
+    guest_q.add_desc(
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
     );
-    q.add_desc(1, 2, &[(addr_2, str_2.len() as u32)], &[]);
+    guest_q.add_desc(&[(addr_2, str_2.len() as u32)], &[]);
 
     let mut ids = vec![];
-    q.handle_desc(0, &irq_sender, |chain| {
-        ids.push(chain.id());
-        Ok(Status::Deferred)
-    })
-    .unwrap();
+    host_q
+        .handle_desc(0, &irq_sender, |chain| {
+            ids.push(chain.id());
+            Ok(Status::Deferred)
+        })
+        .unwrap();
 
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(ids, [0, 2]);
 
-    q.handle_deferred(0, 0, &irq_sender, |chain| {
-        assert_eq!(chain.id, 0);
-        assert_eq!(&*chain.readable[0], str_0.as_bytes());
-        assert_eq!(&*chain.readable[1], str_1.as_bytes());
-        assert_eq!(chain.writable.len(), 0);
-        Ok(0)
-    })
-    .unwrap();
+    host_q
+        .handle_deferred(0, 0, &irq_sender, |chain| {
+            assert_eq!(chain.id, 0);
+            assert_eq!(&*chain.readable[0], str_0.as_bytes());
+            assert_eq!(&*chain.readable[1], str_1.as_bytes());
+            assert_eq!(chain.writable.len(), 0);
+            Ok(0)
+        })
+        .unwrap();
 
     assert_matches!(
-        q.handle_deferred(1, 0, &irq_sender, |_| Ok(0)),
+        host_q.handle_deferred(1, 0, &irq_sender, |_| Ok(0)),
         Err(Error::InvalidDescriptor { id: 1, .. })
     );
 
-    q.handle_deferred(2, 0, &irq_sender, |chain| {
-        assert_eq!(chain.id, 2);
-        assert_eq!(&*chain.readable[0], str_2.as_bytes());
-        assert_eq!(chain.writable.len(), 0);
-        Ok(0)
-    })
-    .unwrap();
+    host_q
+        .handle_deferred(2, 0, &irq_sender, |chain| {
+            assert_eq!(chain.id, 2);
+            assert_eq!(&*chain.readable[0], str_2.as_bytes());
+            assert_eq!(chain.writable.len(), 0);
+            Ok(0)
+        })
+        .unwrap();
 }
