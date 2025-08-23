@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
 
 use bitflags::bitflags;
 
+use crate::mem::mapped::Ram;
 use crate::virtio::{IrqSender, Result, error};
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
@@ -54,7 +55,6 @@ pub struct QueueReg {
 #[derive(Debug)]
 pub struct DescChain<'m> {
     id: u16,
-    index: u16,
     delta: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
@@ -66,24 +66,15 @@ impl DescChain<'_> {
     }
 }
 
-mod private {
-    use crate::virtio::Result;
-    use crate::virtio::queue::DescChain;
-
-    pub trait VirtQueuePrivate<'m> {
-        type Index: Clone + Copy;
-        const INIT_INDEX: Self::Index;
-        fn desc_avail(&self, index: Self::Index) -> bool;
-        fn get_desc_chain(&self, index: Self::Index) -> Result<Option<DescChain<'m>>>;
-        fn push_used(&mut self, chain: DescChain, len: u32);
-        fn enable_notification(&self, enabled: bool);
-        fn interrupt_enabled(&self, delta: u16) -> bool;
-        fn next_index(&self, chain: &DescChain) -> Self::Index;
-    }
-}
-
-pub trait VirtQueue<'m>: private::VirtQueuePrivate<'m> {
-    fn reg(&self) -> &QueueReg;
+pub trait VirtQueue<'m> {
+    type Index: Clone + Copy;
+    const INIT_INDEX: Self::Index;
+    fn desc_avail(&self, index: Self::Index) -> bool;
+    fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>>;
+    fn set_used(&self, index: Self::Index, id: u16, len: u32);
+    fn enable_notification(&self, enabled: bool);
+    fn interrupt_enabled(&self, index: Self::Index, delta: u16) -> bool;
+    fn index_add(&self, index: Self::Index, delta: u16) -> Self::Index;
 }
 
 #[derive(Debug)]
@@ -93,29 +84,40 @@ pub enum Status {
     Break,
 }
 
-pub struct Queue<'m, Q>
+pub struct Queue<'r, 'm, Q>
 where
     Q: VirtQueue<'m>,
 {
     q: Q,
-    iter: Q::Index,
+    avail: Q::Index,
+    used: Q::Index,
+    reg: &'r QueueReg,
+    ram: &'m Ram,
     deferred: HashMap<u16, DescChain<'m>>,
 }
 
-impl<'m, Q> Queue<'m, Q>
+impl<'r, 'm, Q> Queue<'r, 'm, Q>
 where
     Q: VirtQueue<'m>,
 {
-    pub fn new(q: Q) -> Self {
+    pub fn new(q: Q, reg: &'r QueueReg, ram: &'m Ram) -> Self {
         Self {
             q,
-            iter: Q::INIT_INDEX,
+            avail: Q::INIT_INDEX,
+            used: Q::INIT_INDEX,
+            reg,
+            ram,
             deferred: HashMap::new(),
         }
     }
 
     pub fn reg(&self) -> &QueueReg {
-        self.q.reg()
+        self.reg
+    }
+
+    fn push_used(&mut self, chain: DescChain, len: u32) {
+        self.q.set_used(self.used, chain.id, len);
+        self.used = self.q.index_add(self.used, chain.delta);
     }
 
     pub fn handle_deferred(
@@ -130,8 +132,8 @@ where
         };
         let len = op(&mut chain)?;
         let delta = chain.delta;
-        self.q.push_used(chain, len);
-        if self.q.interrupt_enabled(delta) {
+        self.push_used(chain, len);
+        if self.q.interrupt_enabled(self.used, delta) {
             irq_sender.queue_irq(q_index);
         }
         Ok(())
@@ -146,12 +148,11 @@ where
         let mut send_irq = false;
         let mut ret = Ok(());
         'out: loop {
-            if !self.q.desc_avail(self.iter) {
+            if !self.q.desc_avail(self.avail) {
                 break;
             }
             self.q.enable_notification(false);
-            while let Some(mut chain) = self.q.get_desc_chain(self.iter)? {
-                let next_iter = self.q.next_index(&chain);
+            while let Some(mut chain) = self.q.get_avail(self.avail, self.ram)? {
                 let delta = chain.delta;
                 match op(&mut chain) {
                     Err(e) => {
@@ -161,14 +162,14 @@ where
                     }
                     Ok(Status::Break) => break 'out,
                     Ok(Status::Done { len }) => {
-                        self.q.push_used(chain, len);
-                        send_irq = send_irq || self.q.interrupt_enabled(delta);
+                        self.push_used(chain, len);
+                        send_irq = send_irq || self.q.interrupt_enabled(self.used, delta);
                     }
                     Ok(Status::Deferred) => {
-                        self.deferred.insert(chain.id(), chain);
+                        self.deferred.insert(chain.id, chain);
                     }
                 }
-                self.iter = next_iter;
+                self.avail = self.q.index_add(self.avail, delta);
             }
             self.q.enable_notification(true);
             fence(Ordering::SeqCst);

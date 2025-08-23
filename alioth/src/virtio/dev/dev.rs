@@ -237,7 +237,7 @@ pub trait Backend<D: Virtio>: Send + 'static {
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Queue<'m, Q>>],
+        queues: &mut [Option<Queue<'_, 'm, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -371,7 +371,7 @@ where
 
     fn event_loop<'m, Q>(
         &mut self,
-        queues: &mut [Option<Queue<'m, Q>>],
+        queues: &mut [Option<Queue<'_, 'm, Q>>],
         ram: &'m Ram,
         param: &StartParam<S, E>,
     ) -> Result<()>
@@ -404,7 +404,7 @@ where
                 let Some(split_queue) = PackedQueue::new(reg, &ram, event_idx)? else {
                     return Ok(None);
                 };
-                Ok(Some(Queue::new(split_queue)))
+                Ok(Some(Queue::new(split_queue, reg, &ram)))
             };
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
             self.event_loop(&mut (queues?), &ram, &param)?;
@@ -413,7 +413,7 @@ where
                 let Some(split_queue) = SplitQueue::new(reg, &ram, event_idx)? else {
                     return Ok(None);
                 };
-                Ok(Some(Queue::new(split_queue)))
+                Ok(Some(Queue::new(split_queue, reg, &ram)))
             };
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
             self.event_loop(&mut (queues?), &ram, &param)?;

@@ -288,10 +288,10 @@ impl Virtio for VuFrontend {
 }
 
 impl VirtioMio for VuFrontend {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -375,7 +375,7 @@ impl VirtioMio for VuFrontend {
     fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _: &Event,
-        _: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -385,10 +385,10 @@ impl VirtioMio for VuFrontend {
         unreachable!()
     }
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        _: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,

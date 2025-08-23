@@ -338,10 +338,10 @@ impl<F> VirtioMio for Fs<F>
 where
     F: Fuse + Debug + Send + Sync + 'static,
 {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -355,7 +355,7 @@ where
     fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -365,10 +365,10 @@ where
         unreachable!()
     }
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,

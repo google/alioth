@@ -318,10 +318,10 @@ impl Virtio for Block {
 impl VirtioMio for Block {
     fn reset(&mut self, _registry: &Registry) {}
 
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         _feature: u128,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -334,7 +334,7 @@ impl VirtioMio for Block {
     fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -344,10 +344,10 @@ impl VirtioMio for Block {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -413,10 +413,10 @@ impl VirtioMio for Block {
 
 #[cfg(target_os = "linux")]
 impl VirtioIoUring for Block {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         _feature: u128,
-        _ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+        _ring: &mut ActiveIoUring<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         S: IrqSender,

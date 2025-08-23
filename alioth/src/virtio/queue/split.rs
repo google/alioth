@@ -16,6 +16,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::atomic::{Ordering, fence};
 
@@ -24,7 +25,6 @@ use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::mapped::Ram;
-use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
@@ -73,9 +73,7 @@ pub struct UsedElem {
 }
 
 #[derive(Debug)]
-pub struct SplitQueue<'r, 'm> {
-    reg: &'r QueueReg,
-    ram: &'m Ram,
+pub struct SplitQueue<'m> {
     size: u16,
     avail_hdr: *mut AvailHeader,
     avail_ring: *mut u16,
@@ -83,13 +81,11 @@ pub struct SplitQueue<'r, 'm> {
     used_hdr: *mut UsedHeader,
     used_ring: *mut UsedElem,
     avail_event: Option<*mut u16>,
-    used_index: u16,
     desc: *mut Desc,
+    _phantom: PhantomData<&'m ()>,
 }
 
-type DescIov = (Vec<(u64, u64)>, Vec<(u64, u64)>);
-
-impl<'m> SplitQueue<'_, 'm> {
+impl SplitQueue<'_> {
     pub fn avail_index(&self) -> u16 {
         unsafe { &*self.avail_hdr }.idx
     }
@@ -127,61 +123,10 @@ impl<'m> SplitQueue<'_, 'm> {
             error::InvalidDescriptor { id }.fail()
         }
     }
-
-    fn get_indirect(
-        &self,
-        addr: u64,
-        readable: &mut Vec<(u64, u64)>,
-        writeable: &mut Vec<(u64, u64)>,
-    ) -> Result<()> {
-        let mut id = 0;
-        loop {
-            let desc: Desc = self.ram.read_t(addr + id * size_of::<Desc>() as u64)?;
-            let flag = DescFlag::from_bits_retain(desc.flag);
-            assert!(!flag.contains(DescFlag::INDIRECT));
-            if flag.contains(DescFlag::WRITE) {
-                writeable.push((desc.addr, desc.len as u64));
-            } else {
-                readable.push((desc.addr, desc.len as u64));
-            }
-            if flag.contains(DescFlag::NEXT) {
-                id = desc.next as u64;
-            } else {
-                return Ok(());
-            }
-        }
-    }
-
-    pub fn get_desc_iov(&self, mut id: u16) -> Result<DescIov> {
-        let mut readable = Vec::new();
-        let mut writeable = Vec::new();
-        loop {
-            let desc = self.get_desc(id)?;
-            let flag = DescFlag::from_bits_retain(desc.flag);
-            if flag.contains(DescFlag::INDIRECT) {
-                assert_eq!(desc.len & 0xf, 0);
-                self.get_indirect(desc.addr, &mut readable, &mut writeable)?;
-            } else if flag.contains(DescFlag::WRITE) {
-                writeable.push((desc.addr, desc.len as u64));
-            } else {
-                readable.push((desc.addr, desc.len as u64));
-            }
-            if flag.contains(DescFlag::NEXT) {
-                id = desc.next;
-            } else {
-                break;
-            }
-        }
-        Ok((readable, writeable))
-    }
 }
 
-impl<'r, 'm> SplitQueue<'r, 'm> {
-    pub fn new(
-        reg: &'r QueueReg,
-        ram: &'m Ram,
-        event_idx: bool,
-    ) -> Result<Option<SplitQueue<'r, 'm>>> {
+impl<'m> SplitQueue<'m> {
+    pub fn new(reg: &QueueReg, ram: &'m Ram, event_idx: bool) -> Result<Option<SplitQueue<'m>>> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }
@@ -199,13 +144,10 @@ impl<'r, 'm> SplitQueue<'r, 'm> {
             used_event = Some(ram.get_ptr(used_event_gpa)?);
         }
         let used_hdr = ram.get_ptr::<UsedHeader>(used)?;
-        let used_index = unsafe { &*used_hdr }.idx;
         let avail_ring_gpa = avail + size_of::<AvailHeader>() as u64;
         let used_ring_gpa = used + size_of::<UsedHeader>() as u64;
         let desc = reg.desc.load(Ordering::Acquire);
         Ok(Some(SplitQueue {
-            reg,
-            ram,
             size: size as u16,
             avail_hdr: ram.get_ptr(avail)?,
             avail_ring: ram.get_ptr(avail_ring_gpa)?,
@@ -213,13 +155,13 @@ impl<'r, 'm> SplitQueue<'r, 'm> {
             used_hdr,
             used_ring: ram.get_ptr(used_ring_gpa)?,
             avail_event,
-            used_index,
             desc: ram.get_ptr(desc)?,
+            _phantom: PhantomData,
         }))
     }
 }
 
-impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
+impl<'m> VirtQueue<'m> for SplitQueue<'m> {
     type Index = u16;
 
     const INIT_INDEX: u16 = 0;
@@ -229,34 +171,64 @@ impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
         index < avail_index || index - avail_index >= !(self.size - 1)
     }
 
-    fn get_desc_chain(&self, index: u16) -> Result<Option<DescChain<'m>>> {
+    fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>> {
         if !self.desc_avail(index) {
             return Ok(None);
         }
+        let mut readable = Vec::new();
+        let mut writable = Vec::new();
         let wrapped_index = index & (self.size - 1);
-        let desc_id = unsafe { *self.avail_ring.offset(wrapped_index as isize) };
-        let (readable, writable) = self.get_desc_iov(desc_id)?;
-        let readable = self.ram.translate_iov(&readable)?;
-        let writable = self.ram.translate_iov_mut(&writable)?;
+        let head_id = unsafe { *self.avail_ring.offset(wrapped_index as isize) };
+        let mut id = head_id;
+        loop {
+            let desc = self.get_desc(id)?;
+            let flag = DescFlag::from_bits_retain(desc.flag);
+            if flag.contains(DescFlag::INDIRECT) {
+                let mut id = 0;
+                loop {
+                    let addr = desc.addr + id as u64 * size_of::<Desc>() as u64;
+                    let desc: Desc = ram.read_t(addr)?;
+                    let flag = DescFlag::from_bits_retain(desc.flag);
+                    assert!(!flag.contains(DescFlag::INDIRECT));
+                    if flag.contains(DescFlag::WRITE) {
+                        writable.push((desc.addr, desc.len as u64));
+                    } else {
+                        readable.push((desc.addr, desc.len as u64));
+                    }
+                    if flag.contains(DescFlag::NEXT) {
+                        id = desc.next;
+                    } else {
+                        break;
+                    }
+                }
+            } else if flag.contains(DescFlag::WRITE) {
+                writable.push((desc.addr, desc.len as u64));
+            } else {
+                readable.push((desc.addr, desc.len as u64));
+            }
+            if flag.contains(DescFlag::NEXT) {
+                id = desc.next;
+            } else {
+                break;
+            }
+        }
+        let readable = ram.translate_iov(&readable)?;
+        let writable = ram.translate_iov_mut(&writable)?;
         Ok(Some(DescChain {
-            id: desc_id,
-            index,
+            id: head_id,
             delta: 1,
             readable,
             writable,
         }))
     }
 
-    fn push_used(&mut self, chain: DescChain, len: u32) {
-        let used_elem = UsedElem {
-            id: chain.id as u32,
-            len,
-        };
-        let wrapped_index = self.used_index & (self.size - 1);
+    fn set_used(&self, index: Self::Index, id: u16, len: u32) {
+        let used_elem = UsedElem { id: id as u32, len };
+        log::info!("used_elem: {used_elem:x?}");
+        let wrapped_index = index & (self.size - 1);
         unsafe { *self.used_ring.offset(wrapped_index as isize) = used_elem };
         fence(Ordering::SeqCst);
-        self.used_index = self.used_index.wrapping_add(1);
-        self.set_used_index(self.used_index);
+        self.set_used_index(index.wrapping_add(1));
     }
 
     fn enable_notification(&self, enabled: bool) {
@@ -281,20 +253,14 @@ impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
         }
     }
 
-    fn interrupt_enabled(&self, _: u16) -> bool {
+    fn interrupt_enabled(&self, index: Self::Index, _: u16) -> bool {
         match self.used_event() {
-            Some(used_event) => used_event == self.used_index.wrapping_sub(1),
+            Some(used_event) => used_event == index.wrapping_sub(1),
             None => self.flag_interrupt_enabled(),
         }
     }
 
-    fn next_index(&self, chain: &DescChain) -> u16 {
-        chain.index.wrapping_add(1)
-    }
-}
-
-impl<'m> VirtQueue<'m> for SplitQueue<'_, 'm> {
-    fn reg(&self) -> &QueueReg {
-        self.reg
+    fn index_add(&self, index: Self::Index, _: u16) -> Self::Index {
+        index.wrapping_add(1)
     }
 }

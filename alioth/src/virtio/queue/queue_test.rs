@@ -37,7 +37,7 @@ pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
     );
 }
 
-impl<'m, Q> Queue<'m, Q>
+impl<'m, Q> Queue<'_, 'm, Q>
 where
     Q: VirtQueueGuest<'m>,
 {
@@ -113,11 +113,10 @@ impl<'a> Read for Reader<'a> {
 #[rstest]
 fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let ram = fixture_ram_bus.lock_layout();
-    let mut q = Queue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-    );
+    let q = SplitQueue::new(&fixture_queue, &*ram, false)
+        .unwrap()
+        .unwrap();
+    let mut q = Queue::new(q, &fixture_queue, &ram);
     assert!(ptr_eq(q.reg(), &fixture_queue));
 
     let (irq_tx, irq_rx) = mpsc::channel();
@@ -266,7 +265,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let q = SplitQueue::new(&fixture_queue, &*ram, false)
         .unwrap()
         .unwrap();
-    let mut q = Queue::new(q);
+    let mut q = Queue::new(q, &fixture_queue, &ram);
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -356,7 +355,6 @@ fn test_written_bytes() {
 
     let mut buf = vec![0u8; str_0.len()];
     let mut chain = DescChain {
-        index: 0,
         id: 0,
         delta: 1,
         readable: vec![],
@@ -371,7 +369,6 @@ fn test_written_bytes() {
 
     let mut buf = vec![];
     let mut chain = DescChain {
-        index: 0,
         id: 1,
         delta: 1,
         readable: vec![IoSlice::new(str_1.as_bytes())],
@@ -390,7 +387,7 @@ fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let q = SplitQueue::new(&fixture_queue, &*ram, false)
         .unwrap()
         .unwrap();
-    let mut q = Queue::new(q);
+    let mut q = Queue::new(q, &fixture_queue, &ram);
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 

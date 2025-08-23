@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ptr::eq as ptr_eq;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
@@ -20,7 +19,6 @@ use rstest::rstest;
 
 use crate::mem::mapped::RamBus;
 use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
-use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::tests::VirtQueueGuest;
 use crate::virtio::queue::{DescFlag, QueueReg, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queue, fixture_ram_bus};
@@ -61,7 +59,7 @@ fn index_wrapping_sub(
     );
 }
 
-impl<'r, 'm> VirtQueueGuest<'m> for PackedQueue<'r, 'm> {
+impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
     fn add_desc(
         &mut self,
         index: WrappedIndex,
@@ -107,7 +105,6 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let mut q = PackedQueue::new(&fixture_queue, &*ram, false)
         .unwrap()
         .unwrap();
-    assert!(ptr_eq(q.reg(), &fixture_queue));
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -119,6 +116,7 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     ram.write(addr_1, str_1.as_bytes()).unwrap();
 
     let mut avail_index = WrappedIndex::INIT;
+    let mut used_index = WrappedIndex::INIT;
     q.add_desc(
         avail_index,
         0,
@@ -127,25 +125,25 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     );
     assert!(q.desc_avail(avail_index));
 
-    let chain = q.get_desc_chain(avail_index).unwrap().unwrap();
+    let chain = q.get_avail(avail_index, &ram).unwrap().unwrap();
+    avail_index = q.index_add(avail_index, chain.delta);
     assert_eq!(chain.id, 0);
     assert_eq!(&*chain.readable[0], str_0.as_bytes());
     assert_eq!(&*chain.readable[1], str_1.as_bytes());
     assert_eq!(chain.writable.len(), 0);
-    let next_avail_index = q.next_index(&chain);
-    q.push_used(chain, 0);
+    q.set_used(used_index, chain.id, 0);
+    used_index = q.index_add(used_index, chain.delta);
 
-    assert_eq!(next_avail_index, WrappedIndex(WRAP_COUNTER | 2));
-    avail_index = next_avail_index;
-    assert_matches!(q.get_desc_chain(avail_index), Ok(None));
+    assert_eq!(avail_index, WrappedIndex(WRAP_COUNTER | 2));
+    assert_matches!(q.get_avail(avail_index, &ram), Ok(None));
 
     q.add_desc(avail_index, 1, &[], &[(addr_2, str_2.len() as u32)]);
-    let mut chain = q.get_desc_chain(avail_index).unwrap().unwrap();
+    let mut chain = q.get_avail(avail_index, &ram).unwrap().unwrap();
     assert_eq!(chain.id, 1);
     assert_eq!(chain.readable.len(), 0);
     let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
-    q.push_used(chain, str_2.len() as u32);
+    q.set_used(used_index, chain.id, str_2.len() as u32);
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());
@@ -189,15 +187,17 @@ fn is_interrupt_enabled(
     #[case] expected: bool,
 ) {
     let ram = fixture_ram_bus.lock_layout();
-    let mut q = PackedQueue::new(&fixture_queue, &*ram, enable_event_idx)
+    let q = PackedQueue::new(&fixture_queue, &*ram, enable_event_idx)
         .unwrap()
         .unwrap();
-    q.used_index = WrappedIndex(used_index);
 
     *unsafe { &mut *q.interrupt } = DescEvent {
         index: WrappedIndex(event_index),
         flag: event_flag,
     };
 
-    assert_eq!(q.interrupt_enabled(delta), expected);
+    assert_eq!(
+        q.interrupt_enabled(WrappedIndex(used_index), delta),
+        expected
+    );
 }

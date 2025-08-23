@@ -342,10 +342,10 @@ impl VirtioMio for Net {
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
     }
 
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -366,7 +366,7 @@ impl VirtioMio for Net {
     fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -402,10 +402,10 @@ impl VirtioMio for Net {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -437,10 +437,10 @@ impl VirtioMio for Net {
 }
 
 impl VirtioIoUring for Net {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        _ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+        _ring: &mut ActiveIoUring<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         S: IrqSender,

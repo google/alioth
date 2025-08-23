@@ -52,7 +52,7 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let queues = Arc::new([fixture_queue]);
 
     let q = SplitQueue::new(&queues[0], &*ram, false).unwrap().unwrap();
-    let mut q = Queue::new(q);
+    let mut q = Queue::new(q, &queues[0], &ram);
 
     let buf0_addr = DATA_ADDR;
     let buf1_addr = buf0_addr + (4 << 10);

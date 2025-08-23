@@ -12,20 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ptr::eq as ptr_eq;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 use rstest::rstest;
 
 use crate::mem::mapped::RamBus;
-use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
 use crate::virtio::queue::tests::VirtQueueGuest;
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, fixture_queue, fixture_ram_bus};
 
-impl<'r, 'm> VirtQueueGuest<'m> for SplitQueue<'r, 'm> {
+impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
     fn add_desc(&mut self, index: u16, id: u16, readable: &[(u64, u32)], writable: &[(u64, u32)]) {
         let readable_count = readable.len();
         let total_count = readable.len() + writable.len();
@@ -66,7 +64,6 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     let mut q = SplitQueue::new(&fixture_queue, &*ram, false)
         .unwrap()
         .unwrap();
-    assert!(ptr_eq(q.reg(), &fixture_queue));
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -86,21 +83,21 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 
     assert_eq!(q.avail_index(), 1);
     assert!(q.desc_avail(0));
-    let chain = q.get_desc_chain(0).unwrap().unwrap();
+    let chain = q.get_avail(0, &ram).unwrap().unwrap();
     assert_eq!(chain.id, 0);
     assert_eq!(&*chain.readable[0], str_0.as_bytes());
     assert_eq!(&*chain.readable[1], str_1.as_bytes());
     assert_eq!(chain.writable.len(), 0);
-    q.push_used(chain, 0);
+    q.set_used(0, chain.id, 0);
     assert!(!q.desc_avail(1));
 
     q.add_desc(1, 2, &[], &[(addr_2, str_2.len() as u32)]);
-    let mut chain = q.get_desc_chain(1).unwrap().unwrap();
+    let mut chain = q.get_avail(1, &ram).unwrap().unwrap();
     assert_eq!(chain.id, 2);
     assert_eq!(chain.readable.len(), 0);
     let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
-    q.push_used(chain, str_2.len() as u32);
+    q.set_used(1, chain.id, str_2.len() as u32);
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());

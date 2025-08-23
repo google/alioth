@@ -125,10 +125,10 @@ impl Virtio for Entropy {
 }
 
 impl VirtioMio for Entropy {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         _feature: u128,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -138,10 +138,10 @@ impl VirtioMio for Entropy {
         Ok(())
     }
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -158,7 +158,7 @@ impl VirtioMio for Entropy {
     fn handle_event<'a, 'm, Q, S, E>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,

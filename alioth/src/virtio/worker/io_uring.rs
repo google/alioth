@@ -38,10 +38,10 @@ pub enum BufferAction {
 }
 
 pub trait VirtioIoUring: Virtio {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        ring: &mut ActiveIoUring<'a, 'm, Q, S, E>,
+        ring: &mut ActiveIoUring<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -116,7 +116,7 @@ where
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Queue<'m, Q>>],
+        queues: &mut [Option<Queue<'_, 'm, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -164,12 +164,12 @@ where
     }
 }
 
-pub struct ActiveIoUring<'a, 'm, Q, S, E>
+pub struct ActiveIoUring<'a, 'r, 'm, Q, S, E>
 where
     Q: VirtQueue<'m>,
 {
     ring: io_uring::IoUring,
-    pub queues: &'a mut [Option<Queue<'m, Q>>],
+    pub queues: &'a mut [Option<Queue<'r, 'm, Q>>],
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],
     pub mem: &'m Ram,
@@ -190,7 +190,7 @@ where
     Ok(())
 }
 
-impl<'m, Q, S, E> ActiveIoUring<'_, 'm, Q, S, E>
+impl<'m, Q, S, E> ActiveIoUring<'_, '_, 'm, Q, S, E>
 where
     Q: VirtQueue<'m>,
     S: IrqSender,
@@ -231,7 +231,7 @@ where
     }
 }
 
-impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveIoUring<'_, 'm, Q, S, E>
+impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveIoUring<'_, '_, 'm, Q, S, E>
 where
     D: VirtioIoUring,
     Q: VirtQueue<'m>,

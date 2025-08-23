@@ -33,30 +33,30 @@ use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
-    fn activate<'a, 'm, Q, S, E>(
+    fn activate<'m, Q, S, E>(
         &mut self,
         feature: u128,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
         E: IoeventFd;
 
-    fn handle_queue<'a, 'm, Q, S, E>(
+    fn handle_queue<'m, Q, S, E>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
         E: IoeventFd;
 
-    fn handle_event<'a, 'm, Q, S, E>(
+    fn handle_event<'m, Q, S, E>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'a, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
@@ -128,7 +128,7 @@ where
         &mut self,
         memory: &'m Ram,
         context: &mut Context<D, S, E>,
-        queues: &mut [Option<Queue<'m, Q>>],
+        queues: &mut [Option<Queue<'_, 'm, Q>>],
         param: &StartParam<S, E>,
     ) -> Result<()>
     where
@@ -184,18 +184,18 @@ where
     }
 }
 
-pub struct ActiveMio<'a, 'm, Q, S, E>
+pub struct ActiveMio<'a, 'r, 'm, Q, S, E>
 where
     Q: VirtQueue<'m>,
 {
-    pub queues: &'a mut [Option<Queue<'m, Q>>],
+    pub queues: &'a mut [Option<Queue<'r, 'm, Q>>],
     pub irq_sender: &'a S,
     pub ioeventfds: &'a [E],
     pub poll: &'a mut Poll,
     pub mem: &'m Ram,
 }
 
-impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveMio<'_, 'm, Q, S, E>
+impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveMio<'_, '_, 'm, Q, S, E>
 where
     D: VirtioMio,
     Q: VirtQueue<'m>,

@@ -16,6 +16,7 @@
 #[path = "packed_test.rs"]
 mod tests;
 
+use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 
 use bitfield::bitfield;
@@ -24,7 +25,6 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::c_enum;
 use crate::mem::mapped::Ram;
 use crate::virtio::Result;
-use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 
 #[repr(C, align(16))]
@@ -89,23 +89,17 @@ struct DescEvent {
 }
 
 #[derive(Debug)]
-pub struct PackedQueue<'q, 'm> {
-    reg: &'q QueueReg,
-    ram: &'m Ram,
+pub struct PackedQueue<'m> {
     size: u16,
-    used_index: WrappedIndex,
     desc: *mut Desc,
     enable_event_idx: bool,
     notification: *mut DescEvent,
     interrupt: *mut DescEvent,
+    _phantom: PhantomData<&'m ()>,
 }
 
-impl<'q, 'm> PackedQueue<'q, 'm> {
-    pub fn new(
-        reg: &'q QueueReg,
-        ram: &'m Ram,
-        event_idx: bool,
-    ) -> Result<Option<PackedQueue<'q, 'm>>> {
+impl<'m> PackedQueue<'m> {
+    pub fn new(reg: &QueueReg, ram: &'m Ram, event_idx: bool) -> Result<Option<PackedQueue<'m>>> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }
@@ -113,14 +107,12 @@ impl<'q, 'm> PackedQueue<'q, 'm> {
         let desc = reg.desc.load(Ordering::Acquire);
         let notification: *mut DescEvent = ram.get_ptr(reg.device.load(Ordering::Acquire))?;
         Ok(Some(PackedQueue {
-            reg,
-            ram,
             size,
-            used_index: WrappedIndex::INIT,
             desc: ram.get_ptr(desc)?,
             enable_event_idx: event_idx,
             notification,
             interrupt: ram.get_ptr(reg.driver.load(Ordering::Acquire))?,
+            _phantom: PhantomData,
         }))
     }
 
@@ -138,7 +130,7 @@ impl<'q, 'm> PackedQueue<'q, 'm> {
     }
 }
 
-impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
+impl<'m> VirtQueue<'m> for PackedQueue<'m> {
     type Index = WrappedIndex;
 
     const INIT_INDEX: WrappedIndex = WrappedIndex::INIT;
@@ -150,7 +142,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         )
     }
 
-    fn get_desc_chain(&self, index: WrappedIndex) -> Result<Option<DescChain<'m>>> {
+    fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>> {
         if !self.desc_avail(index) {
             return Ok(None);
         }
@@ -164,7 +156,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
             if flag.contains(DescFlag::INDIRECT) {
                 for i in 0..(desc.len as usize / size_of::<Desc>()) {
                     let addr = desc.addr + (i * size_of::<Desc>()) as u64;
-                    let desc: Desc = self.ram.read_t(addr)?;
+                    let desc: Desc = ram.read_t(addr)?;
                     let flag = DescFlag::from_bits_retain(desc.flag);
                     if flag.contains(DescFlag::WRITE) {
                         writeable.push((desc.addr, desc.len as u64));
@@ -185,21 +177,19 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         };
         Ok(Some(DescChain {
             id,
-            index: index.0,
             delta,
-            readable: self.ram.translate_iov(&readable)?,
-            writable: self.ram.translate_iov_mut(&writeable)?,
+            readable: ram.translate_iov(&readable)?,
+            writable: ram.translate_iov_mut(&writeable)?,
         }))
     }
 
-    fn push_used(&mut self, chain: DescChain, len: u32) {
-        let first = unsafe { &mut *self.desc.offset(self.used_index.offset() as isize) };
-        first.id = chain.id;
+    fn set_used(&self, index: Self::Index, id: u16, len: u32) {
+        let first = unsafe { &mut *self.desc.offset(index.offset() as isize) };
+        first.id = id;
         first.len = len;
         let mut flag = DescFlag::from_bits_retain(first.flag);
-        self.set_flag_used(&mut flag, self.used_index.wrap_counter());
+        self.set_flag_used(&mut flag, index.wrap_counter());
         first.flag = flag.bits();
-        self.used_index = self.used_index.wrapping_add(chain.delta, self.size);
     }
 
     fn enable_notification(&self, enabled: bool) {
@@ -212,10 +202,10 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         }
     }
 
-    fn interrupt_enabled(&self, delta: u16) -> bool {
+    fn interrupt_enabled(&self, index: Self::Index, delta: u16) -> bool {
         let interrupt = unsafe { &*self.interrupt };
         if self.enable_event_idx && interrupt.flag == EventFlag::DESC {
-            let prev_used_index = self.used_index.wrapping_sub(delta, self.size);
+            let prev_used_index = index.wrapping_sub(delta, self.size);
             let base = prev_used_index.offset();
             let end = base + delta;
             let mut offset = interrupt.index.offset();
@@ -228,13 +218,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         }
     }
 
-    fn next_index(&self, chain: &DescChain) -> Self::Index {
-        WrappedIndex(chain.index).wrapping_add(chain.delta, self.size)
-    }
-}
-
-impl<'m> VirtQueue<'m> for PackedQueue<'_, 'm> {
-    fn reg(&self) -> &QueueReg {
-        self.reg
+    fn index_add(&self, index: Self::Index, delta: u16) -> Self::Index {
+        index.wrapping_add(delta, self.size)
     }
 }
