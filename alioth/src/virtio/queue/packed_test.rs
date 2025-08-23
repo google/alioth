@@ -19,7 +19,7 @@ use assert_matches::assert_matches;
 use rstest::rstest;
 
 use crate::mem::mapped::RamBus;
-use crate::virtio::queue::packed::{Desc, DescEvent, EventFlag, PackedQueue, WrappedIndex};
+use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::private::VirtQueuePrivate;
 use crate::virtio::queue::tests::VirtQueueGuest;
 use crate::virtio::queue::{DescFlag, QueueReg, VirtQueue};
@@ -69,27 +69,26 @@ impl<'r, 'm> VirtQueueGuest<'m> for PackedQueue<'r, 'm> {
         readable: &[(u64, u32)],
         writable: &[(u64, u32)],
     ) {
-        let readable_count = readable.len();
+        let writable_count = writable.len();
         let total_count = readable.len() + writable.len();
-        for (i, (addr, len)) in readable.iter().chain(writable.iter()).enumerate() {
+        for (i, (addr, len)) in readable.iter().chain(writable).rev().enumerate() {
+            let index = index.wrapping_add((total_count - 1 - i) as u16, self.size);
             let mut flag = if index.wrap_counter() {
                 DescFlag::AVAIL
             } else {
                 DescFlag::USED
             };
-            if i < total_count - 1 {
+            if i > 0 {
                 flag |= DescFlag::NEXT;
             }
-            if i >= readable_count {
+            if i < writable_count {
                 flag |= DescFlag::WRITE;
             }
-            let desc = Desc {
-                addr: *addr,
-                len: *len,
-                id,
-                flag: flag.bits(),
-            };
-            *unsafe { &mut *self.desc.offset((index.offset() + i as u16) as isize) } = desc;
+            let desc = unsafe { &mut *self.desc.offset(index.offset() as isize) };
+            desc.addr = *addr;
+            desc.len = *len;
+            desc.id = id;
+            desc.flag = flag.bits();
         }
     }
 }
