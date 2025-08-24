@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "uds_vsock_test.rs"]
+mod tests;
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
