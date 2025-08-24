@@ -47,8 +47,8 @@ bitfield! {
 impl WrappedIndex {
     const INIT: WrappedIndex = WrappedIndex(1 << 15);
 
-    fn wrapping_add(&self, count: u16, size: u16) -> WrappedIndex {
-        let mut offset = self.offset() + count;
+    fn wrapping_add(&self, delta: u16, size: u16) -> WrappedIndex {
+        let mut offset = self.offset() + delta;
         let mut wrap_counter = self.wrap_counter();
         if offset >= size {
             offset -= size;
@@ -59,13 +59,13 @@ impl WrappedIndex {
         r
     }
 
-    fn wrapping_sub(&self, count: u16, size: u16) -> WrappedIndex {
+    fn wrapping_sub(&self, delta: u16, size: u16) -> WrappedIndex {
         let mut offset = self.offset();
         let mut wrap_counter = self.wrap_counter();
-        if offset >= count {
-            offset -= count;
+        if offset >= delta {
+            offset -= delta;
         } else {
-            offset += size - count;
+            offset += size - delta;
             wrap_counter = !wrap_counter;
         }
         let mut r = WrappedIndex(offset);
@@ -156,7 +156,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         }
         let mut readable = Vec::new();
         let mut writeable = Vec::new();
-        let mut count = 0;
+        let mut delta = 0;
         let mut offset = index.offset();
         let id = loop {
             let desc = unsafe { &*self.desc.offset(offset as isize) };
@@ -177,7 +177,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
             } else {
                 readable.push((desc.addr, desc.len as u64));
             }
-            count += 1;
+            delta += 1;
             if !flag.contains(DescFlag::NEXT) {
                 break desc.id;
             }
@@ -186,7 +186,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         Ok(Some(DescChain {
             id,
             index: index.0,
-            count,
+            delta,
             readable: self.ram.translate_iov(&readable)?,
             writable: self.ram.translate_iov_mut(&writeable)?,
         }))
@@ -199,7 +199,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         let mut flag = DescFlag::from_bits_retain(first.flag);
         self.set_flag_used(&mut flag, self.used_index.wrap_counter());
         first.flag = flag.bits();
-        self.used_index = self.used_index.wrapping_add(chain.count, self.size);
+        self.used_index = self.used_index.wrapping_add(chain.delta, self.size);
     }
 
     fn enable_notification(&self, enabled: bool) {
@@ -212,12 +212,12 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
         }
     }
 
-    fn interrupt_enabled(&self, count: u16) -> bool {
+    fn interrupt_enabled(&self, delta: u16) -> bool {
         let interrupt = unsafe { &*self.interrupt };
         if self.enable_event_idx && interrupt.flag == EventFlag::DESC {
-            let prev_used_index = self.used_index.wrapping_sub(count, self.size);
+            let prev_used_index = self.used_index.wrapping_sub(delta, self.size);
             let base = prev_used_index.offset();
-            let end = base + count;
+            let end = base + delta;
             let mut offset = interrupt.index.offset();
             if interrupt.index.wrap_counter() != prev_used_index.wrap_counter() {
                 offset += self.size;
@@ -229,7 +229,7 @@ impl<'m> VirtQueuePrivate<'m> for PackedQueue<'_, 'm> {
     }
 
     fn next_index(&self, chain: &DescChain) -> Self::Index {
-        WrappedIndex(chain.index).wrapping_add(chain.count, self.size)
+        WrappedIndex(chain.index).wrapping_add(chain.delta, self.size)
     }
 }
 

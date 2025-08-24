@@ -35,11 +35,11 @@ const WRAP_COUNTER: u16 = 1 << 15;
 fn index_wrapping_add(
     #[case] size: u16,
     #[case] index: u16,
-    #[case] count: u16,
+    #[case] delta: u16,
     #[case] expected: u16,
 ) {
     assert_eq!(
-        WrappedIndex(index).wrapping_add(count, size),
+        WrappedIndex(index).wrapping_add(delta, size),
         WrappedIndex(expected)
     );
 }
@@ -52,11 +52,11 @@ fn index_wrapping_add(
 fn index_wrapping_sub(
     #[case] size: u16,
     #[case] index: u16,
-    #[case] count: u16,
+    #[case] delta: u16,
     #[case] expected: u16,
 ) {
     assert_eq!(
-        WrappedIndex(index).wrapping_sub(count, size),
+        WrappedIndex(index).wrapping_sub(delta, size),
         WrappedIndex(expected)
     );
 }
@@ -186,7 +186,7 @@ fn is_interrupt_enabled(
     #[case] event_flag: EventFlag,
     #[case] event_index: u16,
     #[case] used_index: u16,
-    #[case] count: u16,
+    #[case] delta: u16,
     #[case] expected: bool,
 ) {
     let ram = fixture_ram_bus.lock_layout();
@@ -200,5 +200,5 @@ fn is_interrupt_enabled(
         flag: event_flag,
     };
 
-    assert_eq!(q.interrupt_enabled(count), expected);
+    assert_eq!(q.interrupt_enabled(delta), expected);
 }

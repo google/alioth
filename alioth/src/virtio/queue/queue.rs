@@ -55,7 +55,7 @@ pub struct QueueReg {
 pub struct DescChain<'m> {
     id: u16,
     index: u16,
-    count: u16,
+    delta: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
 }
@@ -77,7 +77,7 @@ mod private {
         fn get_desc_chain(&self, index: Self::Index) -> Result<Option<DescChain<'m>>>;
         fn push_used(&mut self, chain: DescChain, len: u32);
         fn enable_notification(&self, enabled: bool);
-        fn interrupt_enabled(&self, count: u16) -> bool;
+        fn interrupt_enabled(&self, delta: u16) -> bool;
         fn next_index(&self, chain: &DescChain) -> Self::Index;
     }
 }
@@ -129,9 +129,9 @@ where
             return error::InvalidDescriptor { id }.fail();
         };
         let len = op(&mut chain)?;
-        let count = chain.count;
+        let delta = chain.delta;
         self.q.push_used(chain, len);
-        if self.q.interrupt_enabled(count) {
+        if self.q.interrupt_enabled(delta) {
             irq_sender.queue_irq(q_index);
         }
         Ok(())
@@ -152,7 +152,7 @@ where
             self.q.enable_notification(false);
             while let Some(mut chain) = self.q.get_desc_chain(self.iter)? {
                 let next_iter = self.q.next_index(&chain);
-                let count = chain.count;
+                let delta = chain.delta;
                 match op(&mut chain) {
                     Err(e) => {
                         ret = Err(e);
@@ -162,7 +162,7 @@ where
                     Ok(Status::Break) => break 'out,
                     Ok(Status::Done { len }) => {
                         self.q.push_used(chain, len);
-                        send_irq = send_irq || self.q.interrupt_enabled(count);
+                        send_irq = send_irq || self.q.interrupt_enabled(delta);
                     }
                     Ok(Status::Deferred) => {
                         self.deferred.insert(chain.id(), chain);

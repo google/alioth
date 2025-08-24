@@ -241,7 +241,7 @@ impl<'m> VirtQueuePrivate<'m> for SplitQueue<'_, 'm> {
         Ok(Some(DescChain {
             id: desc_id,
             index,
-            count: 1,
+            delta: 1,
             readable,
             writable,
         }))
