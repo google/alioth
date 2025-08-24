@@ -22,7 +22,7 @@ use crate::mem::mapped::RamBus;
 use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
 use crate::virtio::queue::{QueueReg, VirtQueue};
-use crate::virtio::tests::{DATA_ADDR, fixture_queue, fixture_ram_bus};
+use crate::virtio::tests::{DATA_ADDR, fixture_queues, fixture_ram_bus};
 
 impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
     fn add_desc(
@@ -72,25 +72,20 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
 }
 
 #[rstest]
-fn disabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn disabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
-    fixture_queue.enabled.store(false, Ordering::Relaxed);
-    let split_queue = SplitQueue::new(&fixture_queue, &*ram, false);
+    let reg = &fixture_queues[0];
+    reg.enabled.store(false, Ordering::Relaxed);
+    let split_queue = SplitQueue::new(reg, &*ram, false);
     assert_matches!(split_queue, Ok(None));
 }
 
 #[rstest]
-fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn enabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
-    let q = SplitQueue::new(&fixture_queue, &*ram, false)
-        .unwrap()
-        .unwrap();
-    let mut guest_q = GuestQueue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
-    );
+    let reg = &fixture_queues[0];
+    let q = SplitQueue::new(reg, &*ram, false).unwrap().unwrap();
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -136,11 +131,10 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
 }
 
 #[rstest]
-fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
-    let q = SplitQueue::new(&fixture_queue, &*ram, true)
-        .unwrap()
-        .unwrap();
+    let reg = &fixture_queues[0];
+    let q = SplitQueue::new(reg, &*ram, true).unwrap().unwrap();
     unsafe { *q.used_event.unwrap() = 1 };
     assert_eq!(q.used_event(), Some(1));
 

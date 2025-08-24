@@ -27,7 +27,7 @@ use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
     DescChain, Queue, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
 };
-use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queue, fixture_ram_bus};
+use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
 
 pub struct UsedDesc {
     pub id: u16,
@@ -172,22 +172,16 @@ impl<'a> Read for Reader<'a> {
 }
 
 #[rstest]
-fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
+    let reg = &fixture_queues[0];
     let mut host_q = Queue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
+        SplitQueue::new(reg, &*ram, false).unwrap().unwrap(),
+        reg,
         &ram,
     );
-    let mut guest_q = GuestQueue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
-    );
-    assert!(ptr_eq(host_q.reg(), &fixture_queue));
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
+    assert!(ptr_eq(host_q.reg(), reg));
 
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -335,21 +329,15 @@ impl<'a> Write for Writer<'a> {
 }
 
 #[rstest]
-fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
+    let reg = &fixture_queues[0];
     let mut host_q = Queue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
+        SplitQueue::new(reg, &*ram, false).unwrap().unwrap(),
+        reg,
         &ram,
     );
-    let mut guest_q = GuestQueue::new(
-        SplitQueue::new(&fixture_queue, &*ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
-    );
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -471,21 +459,15 @@ fn test_written_bytes() {
 }
 
 #[rstest]
-fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram = fixture_ram_bus.lock_layout();
+    let reg = &fixture_queues[0];
     let mut host_q = Queue::new(
-        SplitQueue::new(&fixture_queue, &ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
+        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
+        reg,
         &ram,
     );
-    let mut guest_q = GuestQueue::new(
-        SplitQueue::new(&fixture_queue, &ram, false)
-            .unwrap()
-            .unwrap(),
-        &fixture_queue,
-    );
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 

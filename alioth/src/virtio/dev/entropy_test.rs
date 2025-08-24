@@ -33,7 +33,7 @@ use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
 use crate::virtio::tests::{
-    DATA_ADDR, FakeIoeventFd, FakeIrqSender, fixture_queue, fixture_ram_bus,
+    DATA_ADDR, FakeIoeventFd, FakeIrqSender, fixture_queues, fixture_ram_bus,
 };
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, VirtioFeature};
 
@@ -47,14 +47,14 @@ fn entry_config_test() {
 }
 
 #[rstest]
-fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
+fn entropy_test(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let ram_bus = Arc::new(fixture_ram_bus);
     let ram = ram_bus.lock_layout();
-    let queues = Arc::new([fixture_queue]);
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues);
 
     let mut guest_q = GuestQueue::new(
-        SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap(),
-        &queues[0],
+        SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap(),
+        &regs[0],
     );
 
     let buf0_addr = DATA_ADDR;
@@ -79,9 +79,7 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queue: QueueReg) {
     assert_eq!(dev.feature(), FEATURE_BUILT_IN);
 
     let (tx, rx) = mpsc::channel();
-    let (handle, waker) = dev
-        .spawn_worker(rx, ram_bus.clone(), queues.clone())
-        .unwrap();
+    let (handle, waker) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
     let start_param = StartParam {

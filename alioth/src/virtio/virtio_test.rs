@@ -23,12 +23,10 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
 use crate::virtio::{IrqSender, Result};
 
-pub const MEM_SIZE: usize = 2 << 20;
 pub const QUEUE_SIZE: u16 = QUEUE_SIZE_MAX;
-pub const DESC_ADDR: u64 = 0x1000;
-pub const AVAIL_ADDR: u64 = 0x2000;
-pub const USED_ADDR: u64 = 0x3000;
-pub const DATA_ADDR: u64 = 0x4000;
+const MEM_SIZE: usize = 2 << 20;
+pub const DATA_ADDR: u64 = 0x0;
+const QUEUE_START: u64 = 1 << 20;
 
 #[fixture]
 pub fn fixture_ram_bus() -> RamBus {
@@ -39,14 +37,19 @@ pub fn fixture_ram_bus() -> RamBus {
 }
 
 #[fixture]
-pub fn fixture_queue() -> QueueReg {
-    QueueReg {
-        size: AtomicU16::new(QUEUE_SIZE),
-        desc: AtomicU64::new(DESC_ADDR),
-        driver: AtomicU64::new(AVAIL_ADDR),
-        device: AtomicU64::new(USED_ADDR),
-        enabled: AtomicBool::new(true),
-    }
+pub fn fixture_queues(#[default(1)] count: u16) -> Box<[QueueReg]> {
+    (0..count)
+        .map(|i| {
+            let base = QUEUE_START + i as u64 * 0x2000;
+            QueueReg {
+                size: AtomicU16::new(QUEUE_SIZE),
+                desc: AtomicU64::new(base),
+                driver: AtomicU64::new(base + 0x1000),
+                device: AtomicU64::new(base + 0x1400),
+                enabled: AtomicBool::new(true),
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug)]
