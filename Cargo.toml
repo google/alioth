@@ -21,7 +21,7 @@ proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 quote = { version = "1" }
 rstest = "0.23"
-tempdir = "0.3"
+tempfile = "3"
 
 [profile.release]
 lto = true

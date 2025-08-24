@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use assert_matches::assert_matches;
 use rstest::rstest;
-use tempdir::TempDir;
+use tempfile::TempDir;
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::mem::emulated::{Action, Mmio};
@@ -114,7 +114,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         reg_tx,
     );
 
-    let temp_dir = TempDir::new("vsock_test").unwrap();
+    let temp_dir = TempDir::new().unwrap();
     let sock_path = temp_dir.path().join("vsock.sock");
 
     const GUEST_CID: u32 = 3;

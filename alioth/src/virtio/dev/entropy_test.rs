@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use assert_matches::assert_matches;
 use rstest::rstest;
-use tempdir::TempDir;
+use tempfile::TempDir;
 
 use crate::ffi;
 use crate::mem::emulated::{Action, Mmio};
@@ -62,7 +62,7 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     let s0 = "Hello, World!";
     let s1 = "Goodbye, World!";
 
-    let temp_dir = TempDir::new("entropy_test").unwrap();
+    let temp_dir = TempDir::new().unwrap();
     let pipe_path = temp_dir.path().join("urandom");
     let pipe_path_c = CString::new(pipe_path.as_os_str().as_encoded_bytes()).unwrap();
     ffi!(unsafe { libc::mkfifo(pipe_path_c.as_ptr(), 0o600) }).unwrap();
