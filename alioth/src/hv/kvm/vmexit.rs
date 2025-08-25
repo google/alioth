@@ -16,7 +16,7 @@ use crate::hv::kvm::bindings::{
     KVM_HC_MAP_GPA_RANGE, KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent,
 };
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::{Error, VmExit};
+use crate::hv::{Error, VmExit, error};
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]
@@ -77,7 +77,10 @@ impl KvmVcpu {
         match kvm_system_event.type_ {
             KvmSystemEvent::SHUTDOWN => Ok(VmExit::Shutdown),
             KvmSystemEvent::RESET => Ok(VmExit::Reboot),
-            _ => Ok(VmExit::Unknown(format!("{kvm_system_event:#x?}",))),
+            _ => error::VmExit {
+                msg: format!("{kvm_system_event:#x?}"),
+            }
+            .fail(),
         }
     }
 }

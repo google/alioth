@@ -114,7 +114,10 @@ impl Vcpu for HvfVcpu {
                     Ok(self.vmexit.clone())
                 } else {
                     self.dump()?;
-                    Ok(VmExit::Unknown(format!("{exit:?}")))
+                    error::VmExit {
+                        msg: format!("{exit:?}"),
+                    }
+                    .fail()
                 }
             }
             _ => todo!(),

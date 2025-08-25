@@ -87,8 +87,6 @@ pub enum Error {
         bdf: Bdf,
         source: Box<crate::pci::Error>,
     },
-    #[snafu(display("Cannot handle vmexit: {msg}"))]
-    VmExit { msg: String },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
     #[snafu(display("Failed to notify the VMM thread"))]
@@ -282,7 +280,6 @@ where
                     self.memory.mark_private_memory(gpa, size, private)?;
                     VmEntry::None
                 }
-                VmExit::Unknown(msg) => break error::VmExit { msg }.fail(),
             };
         }
     }

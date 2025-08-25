@@ -98,6 +98,8 @@ pub enum Error {
     RunVcpu { error: std::io::Error },
     #[snafu(display("Failed to stop a VCPU"))]
     StopVcpu { error: std::io::Error },
+    #[snafu(display("Failed to handle VM exit: {msg}"))]
+    VmExit { msg: String },
     #[cfg(target_os = "linux")]
     #[snafu(display("KVM internal error"), context(false))]
     KvmErr { source: Box<KvmError> },
@@ -360,7 +362,6 @@ pub enum VmExit {
     },
     Shutdown,
     Reboot,
-    Unknown(String),
     Interrupted,
 }
 

@@ -176,7 +176,10 @@ impl Vcpu for KvmVcpu {
                 KvmExit::MMIO => self.handle_mmio(),
                 KvmExit::SHUTDOWN => Ok(VmExit::Shutdown),
                 KvmExit::SYSTEM_EVENT => self.handle_system_event(),
-                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {reason:#x?}"))),
+                reason => error::VmExit {
+                    msg: format!("unkown kvm exit: {reason:#x?}"),
+                }
+                .fail(),
             },
         }
     }
