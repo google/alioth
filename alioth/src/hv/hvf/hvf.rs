@@ -19,6 +19,7 @@ mod vm;
 
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::io::ErrorKind;
 use std::ptr::null_mut;
 
 use parking_lot::Mutex;
@@ -35,7 +36,18 @@ pub struct HvReturn(i32);
 
 impl Display for HvReturn {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{:#x}", self.0 as u32)
+        let msg = match self.0 & 0xff {
+            0x01 => "Error",
+            0x02 => "Busy",
+            0x03 => "Bad argument",
+            0x04 => "Illegal guest state",
+            0x05 => "No resources",
+            0x06 => "No device",
+            0x07 => "Denied",
+            0x0f => "Unsupported",
+            _ => "Unknown",
+        };
+        write!(f, "{msg} {:#x}", self.0 as u32)
     }
 }
 
@@ -46,11 +58,12 @@ fn check_ret(ret: i32) -> std::io::Result<()> {
         return Ok(());
     }
     let kind = match (ret as u32) & 0xff {
-        3 => std::io::ErrorKind::InvalidInput,
-        5 => std::io::ErrorKind::NotFound,
-        7 => std::io::ErrorKind::PermissionDenied,
-        0xf => std::io::ErrorKind::Unsupported,
-        _ => std::io::ErrorKind::Other,
+        0x02 => ErrorKind::ResourceBusy,
+        0x03 => ErrorKind::InvalidInput,
+        0x05 => ErrorKind::NotFound,
+        0x07 => ErrorKind::PermissionDenied,
+        0x0f => ErrorKind::Unsupported,
+        _ => ErrorKind::Other,
     };
     Err(std::io::Error::new(kind, HvReturn(ret)))
 }
