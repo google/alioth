@@ -100,7 +100,7 @@ impl Vcpu for HvfVcpu {
     fn run(&mut self, entry: VmEntry) -> Result<VmExit> {
         match entry {
             VmEntry::None => {}
-            VmEntry::Mmio { data } => self.entry_mmio(data),
+            VmEntry::Mmio { data } => self.entry_mmio(data)?,
             VmEntry::Shutdown => return Ok(VmExit::Shutdown),
             _ => unimplemented!("{entry:?}"),
         }
@@ -110,7 +110,7 @@ impl Vcpu for HvfVcpu {
         let exit = unsafe { &*self.exit };
         match exit.reason {
             HvExitReason::EXCEPTION => {
-                if self.decode_exception(&exit.exception) {
+                if self.handle_exception(&exit.exception)? {
                     Ok(self.vmexit.clone())
                 } else {
                     self.dump()?;

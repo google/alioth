@@ -12,18 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::VmExit;
+use std::io::ErrorKind;
+
+use snafu::ResultExt;
+
 use crate::hv::hvf::bindings::hv_vcpu_set_reg;
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
+use crate::hv::{Result, error};
 
 impl HvfVcpu {
-    pub fn entry_mmio(&mut self, data: u64) {
-        if !matches!(self.vmexit, VmExit::Mmio { write: None, .. }) {
-            panic!()
-        }
-        let Some(reg) = self.exit_reg else { panic!() };
+    pub fn entry_mmio(&mut self, data: u64) -> Result<()> {
+        let Some(reg) = self.exit_reg.take() else {
+            return Err(ErrorKind::InvalidInput.into()).context(error::RunVcpu);
+        };
         let ret = unsafe { hv_vcpu_set_reg(self.vcpu_id, reg, data) };
-        check_ret(ret).unwrap();
+        check_ret(ret).context(error::VcpuReg)
     }
 }
