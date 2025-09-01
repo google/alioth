@@ -38,7 +38,7 @@ use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
-    MsiSender, Result, Vm, VmExit, VmMemory, error,
+    MsiSender, Result, Vm, VmMemory, error,
 };
 
 fn encode_mpidr(id: u32) -> MpidrEl1 {
@@ -313,7 +313,7 @@ impl Vm for HvfVm {
         Ok(HvfVcpu {
             exit,
             vcpu_id,
-            vmexit: VmExit::Shutdown,
+            vmexit: None,
             exit_reg: None,
         })
     }

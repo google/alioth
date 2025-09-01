@@ -29,7 +29,7 @@ use crate::hv::{Result, Vcpu, VmEntry, VmExit, error};
 pub struct HvfVcpu {
     pub exit: *mut HvVcpuExit,
     pub vcpu_id: u64,
-    pub vmexit: VmExit,
+    pub vmexit: Option<VmExit>,
     pub exit_reg: Option<HvReg>,
 }
 
@@ -104,23 +104,25 @@ impl Vcpu for HvfVcpu {
             VmEntry::Shutdown => return Ok(VmExit::Shutdown),
             _ => unimplemented!("{entry:?}"),
         }
-        let ret = unsafe { hv_vcpu_run(self.vcpu_id) };
-        check_ret(ret).context(error::RunVcpu)?;
+        loop {
+            let ret = unsafe { hv_vcpu_run(self.vcpu_id) };
+            check_ret(ret).context(error::RunVcpu)?;
 
-        let exit = unsafe { &*self.exit };
-        match exit.reason {
-            HvExitReason::EXCEPTION => {
-                if self.handle_exception(&exit.exception)? {
-                    Ok(self.vmexit.clone())
-                } else {
-                    self.dump()?;
-                    error::VmExit {
-                        msg: format!("{exit:?}"),
+            let exit = unsafe { &*self.exit };
+            match exit.reason {
+                HvExitReason::EXCEPTION => {
+                    self.handle_exception(&exit.exception)?;
+                }
+                _ => {
+                    break error::VmExit {
+                        msg: format!("{exit:x?}"),
                     }
-                    .fail()
+                    .fail();
                 }
             }
-            _ => todo!(),
+            if let Some(exit) = self.vmexit.take() {
+                break Ok(exit);
+            }
         }
     }
 

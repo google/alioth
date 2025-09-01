@@ -22,19 +22,25 @@ use crate::hv::{Result, Vcpu, VmExit, error};
 
 impl HvfVcpu {
     // https://esr.arm64.dev/
-    pub fn handle_exception(&mut self, exception: &HvVcpuExitException) -> Result<bool> {
+    pub fn handle_exception(&mut self, exception: &HvVcpuExitException) -> Result<()> {
         let esr = exception.syndrome;
         match esr.ec() {
             EsrEl2Ec::DATA_ABORT_LOWER => {
                 self.decode_data_abort(EsrEl2DataAbort(esr.iss()), exception.physical_address)
             }
-            _ => Ok(false),
+            _ => error::VmExit {
+                msg: format!("Unhandled ESR: {esr:x?}"),
+            }
+            .fail(),
         }
     }
 
-    pub fn decode_data_abort(&mut self, iss: EsrEl2DataAbort, gpa: u64) -> Result<bool> {
+    pub fn decode_data_abort(&mut self, iss: EsrEl2DataAbort, gpa: u64) -> Result<()> {
         if !iss.isv() {
-            return Ok(false);
+            return error::VmExit {
+                msg: format!("Unhandled iss: {iss:x?}"),
+            }
+            .fail();
         }
         let reg = HvReg::from(iss.srt());
         let write = if iss.wnr() {
@@ -46,13 +52,12 @@ impl HvfVcpu {
             self.exit_reg = Some(reg);
             None
         };
-        self.vmexit = VmExit::Mmio {
+        self.vmexit = Some(VmExit::Mmio {
             addr: gpa as _,
             write,
             size: 1 << iss.sas(),
-        };
+        });
         let pc = self.get_reg(Reg::Pc)?;
-        self.set_regs(&[(Reg::Pc, pc + 4)])?;
-        Ok(true)
+        self.set_regs(&[(Reg::Pc, pc + 4)])
     }
 }
