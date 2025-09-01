@@ -13,4 +13,5 @@
 // limitations under the License.
 
 pub mod layout;
+pub mod psci;
 pub mod reg;

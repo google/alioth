@@ -121,6 +121,7 @@ bitfield! {
 c_enum! {
     pub struct EsrEl2Ec(u8);
     {
+        HVC_64 = 0b010110;
         DATA_ABORT_LOWER = 0b100100;
         INSTR_ABRT_LOWER = 0b100000;
     }

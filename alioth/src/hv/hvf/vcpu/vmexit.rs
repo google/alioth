@@ -14,6 +14,7 @@
 
 use snafu::ResultExt;
 
+use crate::arch::psci::{PSCI_VERSION_1_1, PsciFunc, PsciMigrateInfo};
 use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, Reg};
 use crate::hv::hvf::bindings::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 use crate::hv::hvf::check_ret;
@@ -28,6 +29,7 @@ impl HvfVcpu {
             EsrEl2Ec::DATA_ABORT_LOWER => {
                 self.decode_data_abort(EsrEl2DataAbort(esr.iss()), exception.physical_address)
             }
+            EsrEl2Ec::HVC_64 => self.handle_hvc(),
             _ => error::VmExit {
                 msg: format!("Unhandled ESR: {esr:x?}"),
             }
@@ -59,5 +61,36 @@ impl HvfVcpu {
         });
         let pc = self.get_reg(Reg::Pc)?;
         self.set_regs(&[(Reg::Pc, pc + 4)])
+    }
+
+    pub fn handle_hvc(&mut self) -> Result<()> {
+        let func = self.get_reg(Reg::X0)?;
+        let ret = match PsciFunc::from(func as u32) {
+            PsciFunc::PSCI_VERSION => PSCI_VERSION_1_1 as u64,
+            PsciFunc::MIGRATE_INFO_TYPE => PsciMigrateInfo::NOT_REQUIRED.raw() as u64,
+            PsciFunc::PSCI_FEATURES => {
+                let f = self.get_reg(Reg::X1)?;
+                match PsciFunc::from(f as u32) {
+                    PsciFunc::PSCI_VERSION
+                    | PsciFunc::MIGRATE_INFO_TYPE
+                    | PsciFunc::PSCI_FEATURES
+                    | PsciFunc::SYSTEM_OFF
+                    | PsciFunc::SYSTEM_OFF2_32
+                    | PsciFunc::SYSTEM_OFF2_64 => 0,
+                    _ => u64::MAX,
+                }
+            }
+            PsciFunc::SYSTEM_OFF | PsciFunc::SYSTEM_OFF2_32 | PsciFunc::SYSTEM_OFF2_64 => {
+                self.vmexit = Some(VmExit::Shutdown);
+                return Ok(());
+            }
+            f => {
+                return error::VmExit {
+                    msg: format!("HVC: {f:x?}"),
+                }
+                .fail();
+            }
+        };
+        self.set_regs(&[(Reg::X0, ret)])
     }
 }
