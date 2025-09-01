@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
@@ -25,7 +26,7 @@ use crate::hv::hvf::bindings::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
     hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
     hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
-    hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
+    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
 };
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::{OsObject, check_ret};
@@ -81,10 +82,14 @@ impl VmMemory for HvfMemory {
 }
 
 #[derive(Debug)]
-pub struct HvfIrqSender {}
+pub struct HvfIrqSender {
+    spi: u32,
+}
+
 impl IrqSender for HvfIrqSender {
     fn send(&self) -> Result<()> {
-        unimplemented!()
+        let ret = unsafe { hv_gic_set_spi(self.spi, true) };
+        check_ret(ret).context(error::SendInterrupt)
     }
 }
 
@@ -130,7 +135,7 @@ impl IrqFd for HvfIrqFd {
 }
 
 #[derive(Debug)]
-pub struct HvfMsiSender {}
+pub struct HvfMsiSender;
 
 impl MsiSender for HvfMsiSender {
     type IrqFd = HvfIrqFd;
@@ -139,8 +144,9 @@ impl MsiSender for HvfMsiSender {
         unimplemented!()
     }
 
-    fn send(&self, _addr: u64, _data: u32) -> Result<()> {
-        unimplemented!()
+    fn send(&self, addr: u64, data: u32) -> Result<()> {
+        let ret = unsafe { hv_gic_send_msi(addr, data) };
+        check_ret(ret).context(error::SendInterrupt)
     }
 }
 
@@ -151,22 +157,22 @@ impl IoeventFd for HvfIoeventFd {}
 
 impl AsFd for HvfIoeventFd {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        unimplemented!()
+        unreachable!()
     }
 }
 
 #[derive(Debug)]
-pub struct HvfIoeventFdRegistry {}
+pub struct HvfIoeventFdRegistry;
 
 impl IoeventFdRegistry for HvfIoeventFdRegistry {
     type IoeventFd = HvfIoeventFd;
 
     fn create(&self) -> Result<Self::IoeventFd> {
-        unimplemented!()
+        Err(ErrorKind::Unsupported.into()).context(error::IoeventFd)
     }
 
     fn deregister(&self, _fd: &Self::IoeventFd) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn register(
@@ -176,7 +182,7 @@ impl IoeventFdRegistry for HvfIoeventFdRegistry {
         _len: u8,
         _data: Option<u64>,
     ) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 }
 
@@ -267,11 +273,11 @@ impl Vm for HvfVm {
     type Vcpu = HvfVcpu;
 
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
-        unimplemented!()
+        Ok(HvfIoeventFdRegistry)
     }
 
     fn create_msi_sender(&self, _devid: u32) -> Result<Self::MsiSender> {
-        unimplemented!()
+        Ok(HvfMsiSender)
     }
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
@@ -311,8 +317,14 @@ impl Vm for HvfVm {
         Err(ErrorKind::Unsupported.into()).context(error::CreateDevice)
     }
 
-    fn create_irq_sender(&self, _pin: u8) -> Result<Self::IrqSender> {
-        unimplemented!()
+    fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender> {
+        let mut spi_base = 0;
+        let mut count = 0;
+        let ret = unsafe { hv_gic_get_spi_interrupt_range(&mut spi_base, &mut count) };
+        check_ret(ret).context(error::CreateDevice)?;
+        Ok(HvfIrqSender {
+            spi: spi_base + pin as u32,
+        })
     }
 
     fn create_gic_v3(
@@ -344,15 +356,16 @@ impl Vm for HvfVm {
             };
         }
 
-        let mut spi_base = 0;
-        let mut spi_count = 0;
-        let ret = unsafe { hv_gic_get_spi_interrupt_range(&mut spi_base, &mut spi_count) };
-        check_ret(ret).context(error::CreateDevice)?;
-
         let ptr = config.addr as *mut _;
         let ret = unsafe { hv_gic_config_set_msi_region_base(ptr, base) };
         check_ret(ret).context(error::CreateDevice)?;
-        let ret = unsafe { hv_gic_config_set_msi_interrupt_range(ptr, 64, spi_count - 32) };
+
+        let mut spi_base = 0;
+        let mut count = 0;
+        let ret = unsafe { hv_gic_get_spi_interrupt_range(&mut spi_base, &mut count) };
+        check_ret(ret).context(error::CreateDevice)?;
+        let count = cmp::min(count, 987);
+        let ret = unsafe { hv_gic_config_set_msi_interrupt_range(ptr, spi_base + 32, count - 32) };
         check_ret(ret).context(error::CreateDevice)?;
 
         Ok(HvfGicV2m)
