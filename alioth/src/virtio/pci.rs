@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -23,7 +24,7 @@ use alioth_macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
-use crate::hv::{IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
+use crate::hv::{self, IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
@@ -519,7 +520,9 @@ where
                             + size_of::<u32>() * self.queues.len() =>
             {
                 let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u16 / 4;
-                log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
+                if self.ioeventfds.is_some() {
+                    log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
+                }
                 let event = WakeEvent::Notify { q_index };
                 self.wake_up_dev(event)
             }
@@ -835,6 +838,9 @@ where
             .collect::<Result<Arc<_>, _>>();
         let ioeventfds = match maybe_ioeventfds {
             Ok(fds) => Some(fds),
+            Err(hv::Error::IoeventFd { error, .. }) if error.kind() == ErrorKind::Unsupported => {
+                None
+            }
             Err(e) => {
                 log::warn!("{}: failed to create ioeventfds: {e:?}", dev.name);
                 None
