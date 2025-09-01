@@ -239,6 +239,11 @@ pub trait GicV2: Debug + Send + Sync + 'static {
 }
 
 #[cfg(target_arch = "aarch64")]
+pub trait GicV2m: Debug + Send + Sync + 'static {
+    fn init(&self) -> Result<()>;
+}
+
+#[cfg(target_arch = "aarch64")]
 pub trait GicV3: Debug + Send + Sync + 'static {
     fn init(&self) -> Result<()>;
 }
@@ -327,6 +332,11 @@ pub trait Vm {
         redistributor_base: u64,
         redistributor_count: u32,
     ) -> Result<Self::GicV3>;
+
+    #[cfg(target_arch = "aarch64")]
+    type GicV2m: GicV2m;
+    #[cfg(target_arch = "aarch64")]
+    fn create_gic_v2m(&self, base: u64) -> Result<Self::GicV2m>;
 
     #[cfg(target_arch = "aarch64")]
     type Its: Its;

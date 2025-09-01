@@ -18,8 +18,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::arch::layout::{
-    DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_ITS_START, GIC_V2_CPU_INTERFACE_START,
-    GIC_V2_DIST_START, GIC_V3_DIST_START, GIC_V3_REDIST_START, MEM_64_START, PCIE_CONFIG_START,
+    DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_DIST_START, GIC_MSI_START,
+    GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, MEM_64_START, PCIE_CONFIG_START,
     PCIE_MMIO_32_NON_PREFETCHABLE_END, PCIE_MMIO_32_NON_PREFETCHABLE_START,
     PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, RAM_32_SIZE,
     RAM_32_START,
@@ -27,7 +27,7 @@ use crate::arch::layout::{
 use crate::arch::reg::SReg;
 use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
-use crate::hv::{GicV2, GicV3, Hypervisor, Its, Vcpu, Vm};
+use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{ExecType, InitState};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRegion, MemRegionType};
@@ -37,7 +37,15 @@ where
     V: Vm,
 {
     V2(V::GicV2),
-    V3 { gic: V::GicV3, its: V::Its },
+    V3(V::GicV3),
+}
+
+enum Msi<V>
+where
+    V: Vm,
+{
+    V2m(V::GicV2m),
+    Its(V::Its),
 }
 
 pub struct ArchBoard<V>
@@ -45,6 +53,7 @@ where
     V: Vm,
 {
     gic: Gic<V>,
+    msi: Option<Msi<V>>,
     mpidrs: Mutex<Vec<u64>>,
 }
 
@@ -53,20 +62,36 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let gicv3_with_its = |gic| vm.create_its(GIC_ITS_START).map(|its| Gic::V3 { gic, its });
-        let ret = vm
-            .create_gic_v3(GIC_V3_DIST_START, GIC_V3_REDIST_START, config.num_cpu)
-            .and_then(gicv3_with_its);
-
-        let gic = match ret {
-            Ok(gic_v3) => gic_v3,
+        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.num_cpu) {
+            Ok(v3) => Gic::V3(v3),
             Err(e) => {
-                log::error!("Cannot create gic v3: {e:?}trying v2...");
-                Gic::V2(vm.create_gic_v2(GIC_V2_DIST_START, GIC_V2_CPU_INTERFACE_START)?)
+                log::error!("Cannot create GIC v3: {e:?}trying v2...");
+                Gic::V2(vm.create_gic_v2(GIC_DIST_START, GIC_V2_CPU_INTERFACE_START)?)
             }
         };
+
+        let create_gic_v2m = || match vm.create_gic_v2m(GIC_MSI_START) {
+            Ok(v2m) => Some(Msi::V2m(v2m)),
+            Err(e) => {
+                log::error!("Cannot create GIC v2m: {e:?}");
+                None
+            }
+        };
+
+        let msi = if matches!(gic, Gic::V3(_)) {
+            match vm.create_its(GIC_MSI_START) {
+                Ok(its) => Some(Msi::Its(its)),
+                Err(e) => {
+                    log::error!("Cannot create ITS: {e:?}trying v2m...");
+                    create_gic_v2m()
+                }
+            }
+        } else {
+            create_gic_v2m()
+        };
+
         let mpidrs = Mutex::new(vec![u64::MAX; config.num_cpu as usize]);
-        Ok(ArchBoard { gic, mpidrs })
+        Ok(ArchBoard { gic, msi, mpidrs })
     }
 }
 
@@ -132,12 +157,14 @@ where
 
     pub fn arch_init(&self) -> Result<()> {
         match &self.arch.gic {
-            Gic::V2(v2) => v2.init()?,
-            Gic::V3 { gic, its } => {
-                gic.init()?;
-                its.init()?;
-            }
-        };
+            Gic::V2(v2) => v2.init(),
+            Gic::V3(v3) => v3.init(),
+        }?;
+        match &self.arch.msi {
+            Some(Msi::V2m(v2m)) => v2m.init(),
+            Some(Msi::Its(its)) => its.init(),
+            None => Ok(()),
+        }?;
         Ok(())
     }
 
@@ -306,66 +333,85 @@ where
         root.nodes.insert("timer".to_owned(), node);
     }
 
-    // Documentation/devicetree/bindings/interrupt-controller/arm,gic.yaml
-    fn create_gicv2_node(&self, root: &mut Node) {
-        let node = Node {
-            props: HashMap::from([
-                ("compatible", PropVal::Str("arm,cortex-a15-gic")),
-                ("#interrupt-cells", PropVal::U32(3)),
-                (
-                    "reg",
-                    PropVal::U64List(vec![
-                        GIC_V2_DIST_START,
-                        0x1000,
-                        GIC_V2_CPU_INTERFACE_START,
-                        0x2000,
-                    ]),
-                ),
-                ("phandle", PropVal::U32(PHANDLE_GIC)),
-                ("interrupt-controller", PropVal::Empty),
-            ]),
-            nodes: HashMap::new(),
+    fn create_gic_msi_node(&self) -> HashMap<String, Node> {
+        let Some(msi) = &self.arch.msi else {
+            return HashMap::new();
         };
-        root.nodes
-            .insert(format!("intc@{GIC_V2_DIST_START:x}"), node);
+        match msi {
+            Msi::Its(_) => {
+                let node = Node {
+                    props: HashMap::from([
+                        ("compatible", PropVal::Str("arm,gic-v3-its")),
+                        ("msi-controller", PropVal::Empty),
+                        ("#msi-cells", PropVal::U32(1)),
+                        ("reg", PropVal::U64List(vec![GIC_MSI_START, 128 << 10])),
+                        ("phandle", PropVal::PHandle(PHANDLE_MSI)),
+                    ]),
+                    nodes: HashMap::new(),
+                };
+                HashMap::from([(format!("its@{GIC_MSI_START:x}"), node)])
+            }
+            Msi::V2m(_) => {
+                let node = Node {
+                    props: HashMap::from([
+                        ("compatible", PropVal::Str("arm,gic-v2m-frame")),
+                        ("msi-controller", PropVal::Empty),
+                        ("reg", PropVal::U64List(vec![GIC_MSI_START, 64 << 10])),
+                        ("phandle", PropVal::PHandle(PHANDLE_MSI)),
+                    ]),
+                    nodes: HashMap::new(),
+                };
+                HashMap::from([(format!("v2m@{GIC_MSI_START:x}"), node)])
+            }
+        }
     }
 
-    // Documentation/devicetree/bindings/interrupt-controller/arm,gic-v3.yaml
-    fn create_gicv3_node(&self, root: &mut Node) {
-        let its_node = Node {
-            props: HashMap::from([
-                ("compatible", PropVal::Str("arm,gic-v3-its")),
-                ("msi-controller", PropVal::Empty),
-                ("#msi-cells", PropVal::U32(1)),
-                ("reg", PropVal::U64List(vec![GIC_ITS_START, 128 << 10])),
-                ("phandle", PropVal::PHandle(PHANDLE_MSI)),
-            ]),
-            nodes: HashMap::new(),
+    fn create_gic_node(&self, root: &mut Node) {
+        let msi = self.create_gic_msi_node();
+        let node = match self.arch.gic {
+            // Documentation/devicetree/bindings/interrupt-controller/arm,gic.yaml
+            Gic::V2(_) => Node {
+                props: HashMap::from([
+                    ("compatible", PropVal::Str("arm,cortex-a15-gic")),
+                    ("#interrupt-cells", PropVal::U32(3)),
+                    (
+                        "reg",
+                        PropVal::U64List(vec![
+                            GIC_DIST_START,
+                            0x1000,
+                            GIC_V2_CPU_INTERFACE_START,
+                            0x2000,
+                        ]),
+                    ),
+                    ("phandle", PropVal::U32(PHANDLE_GIC)),
+                    ("interrupt-controller", PropVal::Empty),
+                ]),
+                nodes: msi,
+            },
+            // Documentation/devicetree/bindings/interrupt-controller/arm,gic-v3.yaml
+            Gic::V3(_) => Node {
+                props: HashMap::from([
+                    ("compatible", PropVal::Str("arm,gic-v3")),
+                    ("#interrupt-cells", PropVal::U32(3)),
+                    ("#address-cells", PropVal::U32(2)),
+                    ("#size-cells", PropVal::U32(2)),
+                    ("interrupt-controller", PropVal::Empty),
+                    ("ranges", PropVal::Empty),
+                    (
+                        "reg",
+                        PropVal::U64List(vec![
+                            GIC_DIST_START,
+                            64 << 10,
+                            GIC_V3_REDIST_START,
+                            self.config.num_cpu as u64 * (128 << 10),
+                        ]),
+                    ),
+                    ("phandle", PropVal::U32(PHANDLE_GIC)),
+                ]),
+                nodes: msi,
+            },
         };
-        let node = Node {
-            props: HashMap::from([
-                ("compatible", PropVal::Str("arm,gic-v3")),
-                ("#interrupt-cells", PropVal::U32(3)),
-                ("#address-cells", PropVal::U32(2)),
-                ("#size-cells", PropVal::U32(2)),
-                ("interrupt-controller", PropVal::Empty),
-                ("ranges", PropVal::Empty),
-                (
-                    "reg",
-                    PropVal::U64List(vec![
-                        GIC_V3_DIST_START,
-                        64 << 10,
-                        GIC_V3_REDIST_START,
-                        self.config.num_cpu as u64 * (128 << 10),
-                    ]),
-                ),
-                ("phandle", PropVal::U32(PHANDLE_GIC)),
-            ]),
-            nodes: HashMap::from([(format!("its@{GIC_ITS_START:x}"), its_node)]),
-        };
-
-        root.nodes
-            .insert(format!("intc@{GIC_V3_DIST_START:x}"), node);
+        root.nodes.insert(format!("intc@{GIC_DIST_START:x}"), node);
     }
 
     // Documentation/devicetree/bindings/arm/psci.yaml
@@ -456,12 +502,9 @@ where
         self.create_pl011_node(root);
         self.create_memory_node(root);
         self.create_cpu_nodes(root);
-        match self.arch.gic {
-            Gic::V2(_) => self.create_gicv2_node(root),
-            Gic::V3 { .. } => {
-                self.create_gicv3_node(root);
-                self.create_pci_bridge_node(root);
-            }
+        self.create_gic_node(root);
+        if self.arch.msi.is_some() {
+            self.create_pci_bridge_node(root);
         }
         self.create_clock_node(root);
         self.create_timer_node(root);

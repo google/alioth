@@ -14,12 +14,11 @@
 
 pub const MMIO_32_START: u64 = 0x1000_0000; // 256 MiB
 
-pub const GIC_V2_DIST_START: u64 = 0x1000_0000; // size 4 KiB
-pub const GIC_V2_CPU_INTERFACE_START: u64 = 0x1000_1000; // size 8 KiB
+pub const GIC_MSI_START: u64 = 0x1000_0000; // 64 KiB for GICv2m, 128 KiB for GICv3, 192 KiB for GICv4.1
+pub const GIC_DIST_START: u64 = 0x1003_0000; // size = 64 KiB
 
-pub const GIC_V3_DIST_START: u64 = 0x1000_0000; // size 64 KiB
-pub const GIC_V3_REDIST_START: u64 = 0x1001_0000; // size 128 KiB * num_cpu
-pub const GIC_ITS_START: u64 = 0x1801_0000; // size 128 KiB * num_its
+pub const GIC_V2_CPU_INTERFACE_START: u64 = 0x1000_4000; // size 8 KiB
+pub const GIC_V3_REDIST_START: u64 = 0x1004_0000; // size = 128 KiB * num_cpu
 
 pub const PL011_START: u64 = 0x2fff_f000;
 

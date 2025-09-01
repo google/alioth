@@ -18,7 +18,16 @@ use crate::hv::kvm::bindings::{
 };
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
-use crate::hv::{GicV2, GicV3, Its};
+use crate::hv::{GicV2, GicV2m, GicV3, Its};
+
+#[derive(Debug)]
+pub struct KvmGicV2m;
+
+impl GicV2m for KvmGicV2m {
+    fn init(&self) -> Result<()> {
+        unreachable!()
+    }
+}
 
 #[derive(Debug)]
 pub struct KvmGicV2 {
