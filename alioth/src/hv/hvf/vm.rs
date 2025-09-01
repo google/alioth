@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::null_mut;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use parking_lot::Mutex;
@@ -31,8 +33,8 @@ use crate::hv::hvf::bindings::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
     hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
     hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
-    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vm_destroy, hv_vm_map,
-    hv_vm_unmap,
+    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vcpus_exit,
+    hv_vm_destroy, hv_vm_map, hv_vm_unmap,
 };
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::{OsObject, check_ret};
@@ -259,9 +261,16 @@ impl Its for HvfIts {
 }
 
 #[derive(Debug)]
+pub enum VcpuEvent {
+    PowerOn { pc: u64, context: u64 },
+    PowerOff,
+}
+
+#[derive(Debug)]
 pub struct HvfVm {
     pub(super) gic_config: Mutex<(OsObject, bool)>,
     pub(super) vcpus: Mutex<HashMap<u32, u64>>,
+    pub(super) senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
 }
 
 impl Drop for HvfVm {
@@ -309,12 +318,18 @@ impl Vm for HvfVm {
         let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
         check_ret(ret).context(error::VcpuReg)?;
 
+        let (sender, receiver) = mpsc::channel();
+        self.senders.lock().insert(mpidr, sender);
+
         self.vcpus.lock().insert(id, vcpu_id);
         Ok(HvfVcpu {
             exit,
             vcpu_id,
             vmexit: None,
             exit_reg: None,
+            senders: self.senders.clone(),
+            receiver,
+            power_on: false,
         })
     }
 
@@ -322,8 +337,21 @@ impl Vm for HvfVm {
         Ok(HvfMemory)
     }
 
-    fn stop_vcpu<T>(_id: u32, _handle: &JoinHandle<T>) -> Result<()> {
-        unimplemented!()
+    fn stop_vcpu<T>(&self, id: u32, _handle: &JoinHandle<T>) -> Result<()> {
+        let vcpus = self.vcpus.lock();
+        let senders = self.senders.lock();
+        let Some(vcpu_id) = vcpus.get(&id) else {
+            return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
+        };
+        let mpidr = encode_mpidr(id);
+        let Some(sender) = senders.get(&mpidr) else {
+            return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
+        };
+        if sender.send(VcpuEvent::PowerOff).is_err() {
+            return Err(ErrorKind::BrokenPipe.into()).context(error::StopVcpu);
+        };
+        let ret = unsafe { hv_vcpus_exit(vcpu_id, 1) };
+        check_ret(ret).context(error::StopVcpu)
     }
 
     fn create_gic_v2(

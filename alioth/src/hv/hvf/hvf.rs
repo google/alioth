@@ -22,6 +22,7 @@ use std::fmt::{Display, Formatter};
 use std::io::ErrorKind;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
@@ -94,6 +95,7 @@ impl Hypervisor for Hvf {
         Ok(HvfVm {
             gic_config: Mutex::new((OsObject { addr: 0 }, false)),
             vcpus: Mutex::new(HashMap::new()),
+            senders: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }

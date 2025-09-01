@@ -128,7 +128,7 @@ impl Default for MemMapOption {
 
 pub trait Vcpu {
     #[cfg(target_arch = "aarch64")]
-    fn reset(&self, is_bsp: bool) -> Result<()>;
+    fn reset(&mut self, is_bsp: bool) -> Result<()>;
 
     fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
     fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
@@ -292,7 +292,7 @@ pub trait Vm {
     ) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
-    fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
+    fn stop_vcpu<T>(&self, id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_start(&self, policy: u32) -> Result<()>;

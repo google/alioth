@@ -15,10 +15,11 @@
 use snafu::ResultExt;
 
 use crate::arch::psci::{PSCI_VERSION_1_1, PsciFunc, PsciMigrateInfo};
-use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, Reg};
+use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, MpidrEl1, Reg};
 use crate::hv::hvf::bindings::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
+use crate::hv::hvf::vm::VcpuEvent;
 use crate::hv::{Result, Vcpu, VmExit, error};
 
 impl HvfVcpu {
@@ -76,13 +77,27 @@ impl HvfVcpu {
                     | PsciFunc::PSCI_FEATURES
                     | PsciFunc::SYSTEM_OFF
                     | PsciFunc::SYSTEM_OFF2_32
-                    | PsciFunc::SYSTEM_OFF2_64 => 0,
+                    | PsciFunc::SYSTEM_OFF2_64
+                    | PsciFunc::CPU_ON_32
+                    | PsciFunc::CPU_ON_64 => 0,
                     _ => u64::MAX,
                 }
             }
             PsciFunc::SYSTEM_OFF | PsciFunc::SYSTEM_OFF2_32 | PsciFunc::SYSTEM_OFF2_64 => {
                 self.vmexit = Some(VmExit::Shutdown);
                 return Ok(());
+            }
+            PsciFunc::CPU_ON_32 | PsciFunc::CPU_ON_64 => {
+                let mpidr = self.get_reg(Reg::X1)?;
+                let pc = self.get_reg(Reg::X2)?;
+                let context = self.get_reg(Reg::X3)?;
+                if let Some(sender) = self.senders.lock().get(&MpidrEl1(mpidr)) {
+                    sender.send(VcpuEvent::PowerOn { pc, context }).unwrap();
+                    0
+                } else {
+                    log::error!("Failed to find CPU with mpidr {mpidr:#x}");
+                    u64::MAX
+                }
             }
             f => {
                 return error::VmExit {

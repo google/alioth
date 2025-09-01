@@ -351,7 +351,9 @@ where
                 for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
                     if id != vcpu_id as u32 {
                         log::info!("VCPU-{id}: stopping VCPU-{vcpu_id}");
-                        V::stop_vcpu(vcpu_id as u32, handle).context(error::StopVcpu { id })?;
+                        self.vm
+                            .stop_vcpu(vcpu_id as u32, handle)
+                            .context(error::StopVcpu { id })?;
                     }
                 }
             }

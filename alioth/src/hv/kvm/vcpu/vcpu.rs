@@ -102,7 +102,7 @@ pub struct KvmVcpu {
 
 impl Vcpu for KvmVcpu {
     #[cfg(target_arch = "aarch64")]
-    fn reset(&self, is_bsp: bool) -> Result<(), Error> {
+    fn reset(&mut self, is_bsp: bool) -> Result<(), Error> {
         self.kvm_vcpu_init(is_bsp)
     }
 
