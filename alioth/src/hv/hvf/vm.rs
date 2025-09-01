@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "vm_test.rs"]
+mod tests;
+
 use std::cmp;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -22,11 +26,13 @@ use std::thread::JoinHandle;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
+use crate::arch::reg::{MpidrEl1, SReg};
 use crate::hv::hvf::bindings::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
     hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
     hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
-    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
+    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vm_destroy, hv_vm_map,
+    hv_vm_unmap,
 };
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::{OsObject, check_ret};
@@ -34,6 +40,13 @@ use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
     MsiSender, Result, Vm, VmExit, VmMemory, error,
 };
+
+fn encode_mpidr(id: u32) -> MpidrEl1 {
+    let mut mpidr = MpidrEl1(0);
+    mpidr.set_aff1(id as u64 >> 3);
+    mpidr.set_aff0(id as u64 & 0x7);
+    mpidr
+}
 
 #[derive(Debug)]
 pub struct HvfMemory {}
@@ -292,6 +305,11 @@ impl Vm for HvfVm {
         let mut vcpu_id = 0;
         let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
         check_ret(ret).context(error::CreateVcpu)?;
+
+        let mpidr = encode_mpidr(id);
+        let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
+        check_ret(ret).context(error::VcpuReg)?;
+
         self.vcpus.lock().insert(id, vcpu_id);
         Ok(HvfVcpu {
             exit,

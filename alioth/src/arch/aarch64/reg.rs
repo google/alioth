@@ -145,3 +145,15 @@ bitfield! {
     pub wnr, _: 6;
     pub dfsc, _: 5, 0;
 }
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct MpidrEl1(u64);
+    impl Debug;
+    pub aff3, set_aff3: 39, 32;
+    pub u, set_u: 30;
+    pub mt, set_mt: 24;
+    pub aff2, set_aff2: 23, 16;
+    pub aff1, set_aff1: 15, 8;
+    pub aff0, set_aff0: 7, 0;
+}
