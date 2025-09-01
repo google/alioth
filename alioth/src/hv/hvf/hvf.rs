@@ -20,11 +20,13 @@ mod vm;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::io::ErrorKind;
+use std::os::raw::c_void;
 use std::ptr::null_mut;
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
+use crate::hv::hvf::bindings::os_release;
 use crate::hv::{Hypervisor, Result, VmConfig, error};
 
 use self::bindings::hv_vm_create;
@@ -69,6 +71,18 @@ fn check_ret(ret: i32) -> std::io::Result<()> {
 }
 
 #[derive(Debug)]
+struct OsObject {
+    addr: usize,
+}
+
+impl Drop for OsObject {
+    fn drop(&mut self) {
+        let ptr = self.addr as *mut c_void;
+        unsafe { os_release(ptr) };
+    }
+}
+
+#[derive(Debug)]
 pub struct Hvf {}
 
 impl Hypervisor for Hvf {
@@ -78,6 +92,7 @@ impl Hypervisor for Hvf {
         let ret = unsafe { hv_vm_create(null_mut()) };
         check_ret(ret).context(error::CreateVm)?;
         Ok(HvfVm {
+            gic_config: Mutex::new((OsObject { addr: 0 }, false)),
             vcpus: Mutex::new(HashMap::new()),
         })
     }

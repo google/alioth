@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::null_mut;
 use std::thread::JoinHandle;
@@ -21,10 +22,13 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::hv::hvf::bindings::{
-    HvMemoryFlag, hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
+    HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
+    hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
+    hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
+    hv_vcpu_create, hv_vm_destroy, hv_vm_map, hv_vm_unmap,
 };
-use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
+use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
     MsiSender, Result, Vm, VmExit, VmMemory, error,
@@ -177,35 +181,35 @@ impl IoeventFdRegistry for HvfIoeventFdRegistry {
 }
 
 #[derive(Debug)]
-pub struct HvfGicV2 {}
+pub struct HvfGicV2;
 
 impl GicV2 for HvfGicV2 {
     fn init(&self) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn get_dist_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn set_dist_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn get_cpu_reg(&self, _cpu_index: u32, _offset: u16) -> Result<u32> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn set_cpu_reg(&self, _cpu_index: u32, _offset: u16, _val: u32) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn get_num_irqs(&self) -> Result<u32> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn set_num_irqs(&self, _val: u32) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 }
 
@@ -214,7 +218,7 @@ pub struct HvfGicV3;
 
 impl GicV3 for HvfGicV3 {
     fn init(&self) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 }
 
@@ -223,7 +227,7 @@ pub struct HvfGicV2m;
 
 impl GicV2m for HvfGicV2m {
     fn init(&self) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 }
 
@@ -232,12 +236,13 @@ pub struct HvfIts;
 
 impl Its for HvfIts {
     fn init(&self) -> Result<()> {
-        unimplemented!()
+        unreachable!()
     }
 }
 
 #[derive(Debug)]
 pub struct HvfVm {
+    pub(super) gic_config: Mutex<(OsObject, bool)>,
     pub(super) vcpus: Mutex<HashMap<u32, u64>>,
 }
 
@@ -270,6 +275,13 @@ impl Vm for HvfVm {
     }
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
+        let (config, created) = &mut *self.gic_config.lock();
+        if config.addr != 0 && !*created {
+            let ret = unsafe { hv_gic_create(config.addr as *mut _) };
+            check_ret(ret).context(error::CreateDevice)?;
+            *created = true;
+        }
+
         let mut exit = null_mut();
         let mut vcpu_id = 0;
         let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
@@ -296,7 +308,7 @@ impl Vm for HvfVm {
         _distributor_base: u64,
         _cpu_interface_base: u64,
     ) -> Result<Self::GicV2> {
-        unimplemented!()
+        Err(ErrorKind::Unsupported.into()).context(error::CreateDevice)
     }
 
     fn create_irq_sender(&self, _pin: u8) -> Result<Self::IrqSender> {
@@ -305,18 +317,48 @@ impl Vm for HvfVm {
 
     fn create_gic_v3(
         &self,
-        _distributor_base: u64,
-        _redistributor_base: u64,
+        distributor_base: u64,
+        redistributor_base: u64,
         _redistributor_count: u32,
     ) -> Result<Self::GicV3> {
-        unimplemented!()
+        let (config, _) = &mut *self.gic_config.lock();
+        if config.addr == 0 {
+            *config = OsObject {
+                addr: unsafe { hv_gic_config_create() } as usize,
+            };
+        }
+        let ptr = config.addr as *mut _;
+        let ret = unsafe { hv_gic_config_set_distributor_base(ptr, distributor_base) };
+        check_ret(ret).context(error::CreateDevice)?;
+        let ret = unsafe { hv_gic_config_set_redistributor_base(ptr, redistributor_base) };
+        check_ret(ret).context(error::CreateDevice)?;
+
+        Ok(HvfGicV3)
     }
 
-    fn create_gic_v2m(&self, _base: u64) -> Result<Self::GicV2m> {
-        unimplemented!()
+    fn create_gic_v2m(&self, base: u64) -> Result<Self::GicV2m> {
+        let (config, _) = &mut *self.gic_config.lock();
+        if config.addr == 0 {
+            *config = OsObject {
+                addr: unsafe { hv_gic_config_create() } as usize,
+            };
+        }
+
+        let mut spi_base = 0;
+        let mut spi_count = 0;
+        let ret = unsafe { hv_gic_get_spi_interrupt_range(&mut spi_base, &mut spi_count) };
+        check_ret(ret).context(error::CreateDevice)?;
+
+        let ptr = config.addr as *mut _;
+        let ret = unsafe { hv_gic_config_set_msi_region_base(ptr, base) };
+        check_ret(ret).context(error::CreateDevice)?;
+        let ret = unsafe { hv_gic_config_set_msi_interrupt_range(ptr, 64, spi_count - 32) };
+        check_ret(ret).context(error::CreateDevice)?;
+
+        Ok(HvfGicV2m)
     }
 
     fn create_its(&self, _base: u64) -> Result<Self::Its> {
-        unimplemented!()
+        Err(ErrorKind::Unsupported.into()).context(error::CreateDevice)
     }
 }

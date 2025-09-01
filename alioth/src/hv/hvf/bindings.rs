@@ -98,6 +98,7 @@ bitflags! {
 
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
+    pub fn os_release(object: *mut c_void);
     pub fn hv_vm_create(config: *mut i32) -> i32;
     pub fn hv_vm_destroy() -> i32;
     pub fn hv_vcpu_create(vcpu: &mut u64, exit: &mut *mut HvVcpuExit, config: *mut c_void) -> i32;
@@ -109,4 +110,27 @@ unsafe extern "C" {
     pub fn hv_vcpu_run(vcpu: u64) -> i32;
     pub fn hv_vm_map(addr: *const u8, ipa: u64, size: usize, flags: HvMemoryFlag) -> i32;
     pub fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
+    pub fn hv_gic_get_spi_interrupt_range(
+        spi_intid_base: &mut u32,
+        spi_intid_count: &mut u32,
+    ) -> i32;
+    pub fn hv_gic_config_create() -> *mut c_void;
+    pub fn hv_gic_config_set_distributor_base(
+        config: *mut c_void,
+        distributor_base_address: u64,
+    ) -> i32;
+    pub fn hv_gic_config_set_redistributor_base(
+        config: *mut c_void,
+        redistributor_base_address: u64,
+    ) -> i32;
+    pub fn hv_gic_config_set_msi_region_base(
+        config: *mut c_void,
+        msi_region_base_address: u64,
+    ) -> i32;
+    pub fn hv_gic_config_set_msi_interrupt_range(
+        config: *mut c_void,
+        msi_intid_base: u32,
+        msi_intid_count: u32,
+    ) -> i32;
+    pub fn hv_gic_create(config: *mut c_void) -> i32;
 }
