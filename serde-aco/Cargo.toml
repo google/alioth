@@ -1,8 +1,8 @@
 [package]
 name = "serde-aco"
-version = "0.7.0"
+version = "0.8.0"
 edition.workspace = true
-description = "Serialize/deserialize Alioth command line options"
+description = "Serialization and deserialization library for Alioth command-line options."
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
