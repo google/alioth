@@ -14,4 +14,7 @@
 
 #[cfg(target_os = "macos")]
 #[path = "macos/macos.rs"]
-pub mod macos;
+mod macos;
+
+#[cfg(target_os = "macos")]
+pub use macos::*;

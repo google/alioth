@@ -12,26 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "xpc_test.rs"]
-mod tests;
+use crate::platform::vmnet::{OperationMode, VmnetReturn, vmnet_network_configuration_create};
 
-use std::ffi::{c_char, c_void};
-
-// pub type XpcObject = c_void;
-#[repr(transparent)]
-pub struct XpcObject(c_void);
-
-unsafe extern "C" {
-    pub fn xpc_dictionary_create(
-        keys: *const *const c_char,
-        values: *const *const XpcObject,
-        count: usize,
-    ) -> *mut XpcObject;
-    pub fn xpc_release(object: *mut XpcObject);
-
-    pub fn xpc_uint64_create(value: u64) -> *mut XpcObject;
-
-    pub fn xpc_dictionary_get_uint64(xdict: *const XpcObject, key: *const c_char) -> u64;
-
+#[test]
+fn test_vmnet() {
+    // unsafe {
+    //     let mut status = VmnetReturn::FAILURE;
+    //     let _ = vmnet_network_configuration_create(OperationMode::HOST, &mut status);
+    // }
 }

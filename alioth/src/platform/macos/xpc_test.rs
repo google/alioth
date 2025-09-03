@@ -12,26 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "xpc_test.rs"]
-mod tests;
+use std::ffi::c_char;
 
-use std::ffi::{c_char, c_void};
+use crate::platform::xpc::{
+    XpcObject, xpc_dictionary_create, xpc_dictionary_get_uint64, xpc_uint64_create,
+};
 
-// pub type XpcObject = c_void;
-#[repr(transparent)]
-pub struct XpcObject(c_void);
-
-unsafe extern "C" {
-    pub fn xpc_dictionary_create(
-        keys: *const *const c_char,
-        values: *const *const XpcObject,
-        count: usize,
-    ) -> *mut XpcObject;
-    pub fn xpc_release(object: *mut XpcObject);
-
-    pub fn xpc_uint64_create(value: u64) -> *mut XpcObject;
-
-    pub fn xpc_dictionary_get_uint64(xdict: *const XpcObject, key: *const c_char) -> u64;
-
+#[test]
+fn test_xpc_create() {
+    unsafe {
+        let v1 = xpc_uint64_create(123) as *const XpcObject;
+        let key = b"key".as_ptr() as *const c_char;
+        let dict = xpc_dictionary_create(&key, &v1, 1);
+        let v = xpc_dictionary_get_uint64(dict, key);
+        assert_eq!(v, 123);
+    }
 }
