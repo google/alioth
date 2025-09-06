@@ -35,6 +35,8 @@ pub mod net;
 pub mod pci;
 #[path = "platform/platform.rs"]
 pub mod platform;
+#[path = "sync/sync.rs"]
+pub mod sync;
 #[path = "utils/utils.rs"]
 pub(crate) mod utils;
 #[cfg(target_os = "linux")]
