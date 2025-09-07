@@ -12,5 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "macos")]
-pub mod eventfd;
+pub mod if_tun;

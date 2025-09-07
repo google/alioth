@@ -22,7 +22,7 @@ use alioth::errors::{DebugTrace, trace_error};
 use alioth::mem::mapped::RamBus;
 use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
-use alioth::virtio::dev::net::NetTapParam;
+use alioth::virtio::dev::net::tap::NetTapParam;
 use alioth::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
 use clap::{Args, Subcommand};
