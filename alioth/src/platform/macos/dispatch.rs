@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
-pub type DispatchQueue = c_void;
+#[repr(transparent)]
+pub struct DispatchQueue(c_void);
+
+unsafe extern "C" {
+    pub fn dispatch_queue_create(name: *const c_char, attr: *const c_void) -> *mut DispatchQueue;
+}

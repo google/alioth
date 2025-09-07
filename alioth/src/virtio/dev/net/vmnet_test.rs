@@ -11,3 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+use crate::{
+    platform::vmnet::{OperationMode, VmnetReturn, vmnet_network_configuration_create},
+    virtio::dev::net::vmnet::Net,
+};
+
+#[test]
+fn test_vmnet() {
+    println!("will call new");
+    Net::new();
+    // unsafe {
+    //     let mut status = VmnetReturn::FAILURE;
+    //     let _ = vmnet_network_configuration_create(OperationMode::HOST, &mut status);
+    // }
+}

@@ -21,6 +21,7 @@ use std::ffi::{c_char, c_void};
 use libc::iovec;
 
 use crate::c_enum;
+use crate::platform::block::BlockLiteral;
 use crate::platform::dispatch::DispatchQueue;
 use crate::platform::xpc::XpcObject;
 
@@ -56,7 +57,8 @@ pub struct VmnetInterface(c_void);
 #[repr(transparent)]
 pub struct VmnetNetworkConfiguration(c_void);
 
-pub type VmnetInterfaceCompletionHandler = extern "C" fn(VmnetReturn, *const XpcObject);
+pub type VmnetInterfaceCompletionHandler =
+    BlockLiteral<extern "C" fn(*mut c_void, VmnetReturn, *const XpcObject)>;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -71,17 +73,20 @@ pub struct VmPktDesc {
 unsafe extern "C" {
     pub static vmnet_operation_mode_key: *const c_char;
     pub static vmnet_interface_id_key: *const c_char;
+    pub static vmnet_mac_address_key: *const c_char;
+    pub static vmnet_mtu_key: *const c_char;
+    pub static vmnet_max_packet_size_key: *const c_char;
 
     pub fn vmnet_start_interface(
-        interface: *const XpcObject,
+        interface_desc: *const XpcObject,
         queue: *const DispatchQueue,
-        handler: VmnetInterfaceCompletionHandler,
+        handler: &VmnetInterfaceCompletionHandler,
     ) -> *mut VmnetInterface;
 
     pub fn vmnet_stop_interface(
         interface: *mut VmnetInterface,
         queue: *const DispatchQueue,
-        handler: VmnetInterfaceCompletionHandler,
+        handler: &VmnetInterfaceCompletionHandler,
     );
 
     pub fn vmnet_read(

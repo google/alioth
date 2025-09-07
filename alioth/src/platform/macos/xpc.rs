@@ -33,5 +33,5 @@ unsafe extern "C" {
     pub fn xpc_uint64_create(value: u64) -> *mut XpcObject;
 
     pub fn xpc_dictionary_get_uint64(xdict: *const XpcObject, key: *const c_char) -> u64;
-
+    pub fn xpc_dictionary_get_string(xdict: *const XpcObject, key: *const c_char) -> *const c_char;
 }
