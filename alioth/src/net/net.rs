@@ -19,7 +19,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct MacAddr([u8; 6]);
+pub struct MacAddr(pub [u8; 6]);
 
 impl Help for MacAddr {
     const HELP: TypedHelp = TypedHelp::Custom { desc: "mac-addr" };

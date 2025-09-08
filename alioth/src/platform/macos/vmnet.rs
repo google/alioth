@@ -51,6 +51,13 @@ c_enum! {
     }
 }
 
+c_enum! {
+    pub struct InterfaceEvent(u32);
+    {
+        PACKETS_AVAILABLE = 1 << 0;
+    }
+}
+
 #[repr(transparent)]
 pub struct VmnetInterface(c_void);
 
@@ -60,13 +67,16 @@ pub struct VmnetNetworkConfiguration(c_void);
 pub type VmnetInterfaceCompletionHandler =
     BlockLiteral<extern "C" fn(*mut c_void, VmnetReturn, *const XpcObject)>;
 
+pub type VmnetInterfaceEventCallback =
+    BlockLiteral<extern "C" fn(*mut c_void, InterfaceEvent, *const XpcObject)>;
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct VmPktDesc {
-    vm_pkt_size: usize,
-    vm_pkt_iov: *mut iovec,
-    vm_pkt_iovcnt: u32,
-    vm_flags: u32,
+    pub vm_pkt_size: usize,
+    pub vm_pkt_iov: *mut iovec,
+    pub vm_pkt_iovcnt: u32,
+    pub vm_flags: u32,
 }
 
 #[link(name = "vmnet", kind = "framework")]
@@ -80,14 +90,21 @@ unsafe extern "C" {
     pub fn vmnet_start_interface(
         interface_desc: *const XpcObject,
         queue: *const DispatchQueue,
-        handler: &VmnetInterfaceCompletionHandler,
+        handler: *const VmnetInterfaceCompletionHandler,
     ) -> *mut VmnetInterface;
 
     pub fn vmnet_stop_interface(
         interface: *mut VmnetInterface,
         queue: *const DispatchQueue,
-        handler: &VmnetInterfaceCompletionHandler,
+        handler: *const VmnetInterfaceCompletionHandler,
     );
+
+    pub fn vmnet_interface_set_event_callback(
+        interface: *mut VmnetInterface,
+        event_mask: InterfaceEvent,
+        queue: *const DispatchQueue,
+        callback: *const VmnetInterfaceEventCallback,
+    ) -> VmnetReturn;
 
     pub fn vmnet_read(
         interface: *mut VmnetInterface,

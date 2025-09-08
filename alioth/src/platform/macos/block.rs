@@ -6,7 +6,7 @@ pub struct BlockDescriptor {
     pub size: c_ulong,
     pub copy_helper: Option<extern "C" fn(dst: *mut c_void, src: *const c_void)>,
     pub dispose_helper: Option<extern "C" fn(src: *mut c_void)>,
-    pub signature: *const c_char,
+    // pub signature: *const c_char,
 }
 
 #[repr(C)]

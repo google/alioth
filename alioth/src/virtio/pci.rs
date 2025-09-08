@@ -520,9 +520,9 @@ where
                             + size_of::<u32>() * self.queues.len() =>
             {
                 let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u16 / 4;
-                if self.ioeventfds.is_some() {
-                    log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
-                }
+                // if self.ioeventfds.is_some() {
+                log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
+                // }
                 let event = WakeEvent::Notify { q_index };
                 self.wake_up_dev(event)
             }

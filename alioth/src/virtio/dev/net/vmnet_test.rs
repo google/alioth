@@ -20,7 +20,7 @@ use crate::{
 #[test]
 fn test_vmnet() {
     println!("will call new");
-    Net::new();
+    // Net::new();
     // unsafe {
     //     let mut status = VmnetReturn::FAILURE;
     //     let _ = vmnet_network_configuration_create(OperationMode::HOST, &mut status);

@@ -20,7 +20,7 @@ pub mod vmnet;
 use std::fmt::Debug;
 
 use bitflags::bitflags;
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::net::MacAddr;
 use crate::{c_enum, impl_mmio_for_zerocopy};
@@ -114,4 +114,16 @@ bitflags! {
         const SPEED_DUPLEX = 1 << 63;
         const INDIRECT_DESC = 1 << 28;
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
+pub struct VirtioNetHdr {
+    pub flags: u8,
+    pub gso_type: u8,
+    pub hdr_len: u16,
+    pub gso_size: u16,
+    pub csum_start: u16,
+    pub csum_offset: u16,
+    pub num_buffers: u16,
 }
