@@ -390,6 +390,8 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
     vm.add_com1().context(error::CreateDevice)?;
     #[cfg(target_arch = "aarch64")]
     vm.add_pl011().context(error::CreateDevice)?;
+    #[cfg(target_arch = "aarch64")]
+    vm.add_pl031();
 
     if args.pvpanic {
         vm.add_pvpanic().context(error::CreateDevice)?;

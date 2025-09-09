@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "aarch64")]
-use crate::arch::layout::PL011_START;
+use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
 use crate::board::{ArchBoard, Board, BoardConfig};
@@ -32,6 +32,8 @@ use crate::board::{ArchBoard, Board, BoardConfig};
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl011::Pl011;
+#[cfg(target_arch = "aarch64")]
+use crate::device::pl031::Pl031;
 use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
@@ -184,6 +186,18 @@ where
             )),
         ));
         Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn add_pl031(&self) {
+        let pl031_dev = Pl031::new(PL031_START);
+        self.board.mmio_devs.write().push((
+            PL031_START,
+            Arc::new(MemRegion::with_emulated(
+                Arc::new(pl031_dev),
+                MemRegionType::Hidden,
+            )),
+        ));
     }
 
     pub fn add_pci_dev(&self, bdf: Option<Bdf>, dev: PciDevice) -> Result<(), Error> {

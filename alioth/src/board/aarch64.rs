@@ -21,8 +21,8 @@ use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_DIST_START, GIC_MSI_START,
     GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, MEM_64_START, PCIE_CONFIG_START,
     PCIE_MMIO_32_NON_PREFETCHABLE_END, PCIE_MMIO_32_NON_PREFETCHABLE_START,
-    PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, RAM_32_SIZE,
-    RAM_32_START,
+    PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, PL031_START,
+    RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::SReg;
 use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
@@ -309,6 +309,19 @@ where
         root.nodes.insert(format!("pl011@{PL011_START:x}"), node);
     }
 
+    fn create_pl031_node(&self, root: &mut Node) {
+        let node = Node {
+            props: HashMap::from([
+                ("compatible", PropVal::Str("arm,primecell\0arm,pl031")),
+                ("reg", PropVal::U64List(vec![PL031_START, 0x1000])),
+                ("clock-names", PropVal::Str("apb_pclk")),
+                ("clocks", PropVal::U32List(vec![PHANDLE_CLOCK])),
+            ]),
+            nodes: HashMap::new(),
+        };
+        root.nodes.insert(format!("pl031@{PL031_START:x}"), node);
+    }
+
     // Documentation/devicetree/bindings/timer/arm,arch_timer.yaml
     fn create_timer_node(&self, root: &mut Node) {
         let mut interrupts = vec![];
@@ -500,6 +513,7 @@ where
 
         self.create_chosen_node(init_state, root);
         self.create_pl011_node(root);
+        self.create_pl031_node(root);
         self.create_memory_node(root);
         self.create_cpu_nodes(root);
         self.create_gic_node(root);
