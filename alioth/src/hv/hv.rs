@@ -161,6 +161,12 @@ pub trait Vcpu {
     fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn advance_pc(&mut self) -> Result<()> {
+        let pc = self.get_reg(Reg::Pc)?;
+        self.set_regs(&[(Reg::Pc, pc + 4)])
+    }
 }
 
 pub trait IrqSender: Debug + Send + Sync + 'static {
