@@ -15,7 +15,7 @@
 use snafu::ResultExt;
 
 use crate::arch::psci::{PSCI_VERSION_1_1, PsciFunc, PsciMigrateInfo};
-use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, MpidrEl1, Reg};
+use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, EsrEl2SysReg, MpidrEl1, Reg, SReg, encode};
 use crate::hv::hvf::bindings::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
@@ -31,6 +31,7 @@ impl HvfVcpu {
                 self.decode_data_abort(EsrEl2DataAbort(esr.iss()), exception.physical_address)
             }
             EsrEl2Ec::HVC_64 => self.handle_hvc(),
+            EsrEl2Ec::SYS_REG_64 => self.handle_sys_reg(EsrEl2SysReg(esr.iss())),
             _ => error::VmExit {
                 msg: format!("Unhandled ESR: {esr:x?}"),
             }
@@ -60,8 +61,7 @@ impl HvfVcpu {
             write,
             size: 1 << iss.sas(),
         });
-        let pc = self.get_reg(Reg::Pc)?;
-        self.set_regs(&[(Reg::Pc, pc + 4)])
+        self.advance_pc()
     }
 
     pub fn handle_hvc(&mut self) -> Result<()> {
@@ -107,5 +107,34 @@ impl HvfVcpu {
             }
         };
         self.set_regs(&[(Reg::X0, ret)])
+    }
+
+    pub fn handle_sys_reg(&mut self, iss: EsrEl2SysReg) -> Result<()> {
+        if iss.is_read() {
+            return error::VmExit {
+                msg: format!("Unhandled iss: {iss:x?}"),
+            }
+            .fail();
+        }
+        let rt = HvReg::from(iss.rt());
+        let mut val = 0;
+        let ret = unsafe { hv_vcpu_get_reg(self.vcpu_id, rt, &mut val) };
+        check_ret(ret).context(error::VcpuReg)?;
+        let sreg = SReg::from(encode(
+            iss.op0(),
+            iss.op1(),
+            iss.crn(),
+            iss.crm(),
+            iss.op2(),
+        ));
+        if sreg == SReg::OSDLR_EL1 || sreg == SReg::OSLAR_EL1 {
+            log::warn!("vCPU-{} wrote {val:#x} to {sreg:?}", self.vcpu_id);
+            self.advance_pc()?;
+            return Ok(());
+        }
+        error::VmExit {
+            msg: format!("Unhandled iss: {iss:x?}, sreg: {sreg:?}"),
+        }
+        .fail()
     }
 }

@@ -63,6 +63,12 @@ c_enum! {
     /// https://developer.arm.com/documentation/ddi0601/2020-12/Index-by-Encoding
     pub struct SReg(u16);
     {
+        /// OS Lock Access Register
+        /// https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/OSLAR-EL1--OS-Lock-Access-Register
+        OSLAR_EL1 = encode(2, 0, 1, 0, 4);
+        /// OS Double Lock Register
+        /// https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/OSDLR-EL1--OS-Double-Lock-Register
+        OSDLR_EL1 = encode(2, 0, 1, 3, 4);
         /// Exception Syndrome Register (EL2)
         ESR_EL2 = encode(3, 4, 5, 2, 0);
         /// Multiprocessor Affinity Register
@@ -121,9 +127,10 @@ bitfield! {
 c_enum! {
     pub struct EsrEl2Ec(u8);
     {
-        HVC_64 = 0b010110;
-        DATA_ABORT_LOWER = 0b100100;
-        INSTR_ABRT_LOWER = 0b100000;
+        HVC_64 = 0x16;
+        SYS_REG_64 = 0x18;
+        INSTR_ABRT_LOWER = 0x20;
+        DATA_ABORT_LOWER = 0x24;
     }
 }
 
@@ -145,6 +152,19 @@ bitfield! {
     pub s1ptw, _: 7;
     pub wnr, _: 6;
     pub dfsc, _: 5, 0;
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+     pub struct EsrEl2SysReg(u32);
+     impl Debug;
+     pub is_read, _: 0;
+     pub u16, crm, _: 4, 1;
+     pub rt, _: 9, 5;
+     pub u16, crn, _: 13, 10;
+     pub u16, op1, _: 16, 14;
+     pub u16, op2, _: 19, 17;
+     pub u16, op0, _: 21, 20;
 }
 
 bitfield! {
