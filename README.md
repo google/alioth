@@ -33,10 +33,9 @@ Finally, boot a Linux kernel. This example starts a VM with 2 CPUs and 4 GiB of
 memory:
 
 ```sh
-
 case $(uname -m) in
    arm64 | aarch64)
-       CONSOLE=ttyAMA00
+       CONSOLE=ttyAMA0
       ;;
    x86_64)
        CONSOLE=ttyS0
