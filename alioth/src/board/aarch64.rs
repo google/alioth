@@ -456,7 +456,7 @@ where
                 ("compatible", PropVal::Str("pci-host-ecam-generic")),
                 ("device_type", PropVal::Str("pci")),
                 ("reg", PropVal::U64List(vec![PCIE_CONFIG_START, 256 << 20])),
-                ("bus-range", PropVal::U64List(vec![0, max_bus as u64])),
+                ("bus-range", PropVal::U32List(vec![0, max_bus as u32])),
                 ("#address-cells", PropVal::U32(3)),
                 ("#size-cells", PropVal::U32(2)),
                 (
