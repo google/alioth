@@ -79,7 +79,10 @@ impl HvfVcpu {
                     | PsciFunc::SYSTEM_OFF2_32
                     | PsciFunc::SYSTEM_OFF2_64
                     | PsciFunc::CPU_ON_32
-                    | PsciFunc::CPU_ON_64 => 0,
+                    | PsciFunc::CPU_ON_64
+                    | PsciFunc::SYSTEM_RESET
+                    | PsciFunc::SYSTEM_RESET2_32
+                    | PsciFunc::SYSTEM_RESET2_64 => 0,
                     _ => u64::MAX,
                 }
             }
@@ -98,6 +101,10 @@ impl HvfVcpu {
                     log::error!("Failed to find CPU with mpidr {mpidr:#x}");
                     u64::MAX
                 }
+            }
+            PsciFunc::SYSTEM_RESET | PsciFunc::SYSTEM_RESET2_32 | PsciFunc::SYSTEM_RESET2_64 => {
+                self.vmexit = Some(VmExit::Reboot);
+                return Ok(());
             }
             f => {
                 return error::VmExit {
