@@ -69,12 +69,15 @@ c_enum! {
         /// OS Double Lock Register
         /// https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/OSDLR-EL1--OS-Double-Lock-Register
         OSDLR_EL1 = encode(2, 0, 1, 3, 4);
-        /// Exception Syndrome Register (EL2)
-        ESR_EL2 = encode(3, 4, 5, 2, 0);
         /// Multiprocessor Affinity Register
         MPIDR_EL1 = encode(3, 0, 0, 0, 5);
+        /// System Control Register
+        /// https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-
+        SCTLR_EL1 = encode(3, 0, 1, 0, 0);
         /// Stack Pointer (EL0)
         SP_EL0 = encode(3, 0, 4, 1, 0);
+        /// Exception Syndrome Register (EL2)
+        ESR_EL2 = encode(3, 4, 5, 2, 0);
     }
 }
 

@@ -114,7 +114,7 @@ impl Reg {
 impl Vcpu for HvfVcpu {
     fn reset(&mut self, is_bsp: bool) -> Result<()> {
         self.power_on = is_bsp;
-        Ok(())
+        self.set_sregs(&[(SReg::SCTLR_EL1, 0)])
     }
 
     fn dump(&self) -> Result<()> {
