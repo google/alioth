@@ -42,6 +42,8 @@ use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 use alioth::virtio::dev::fs::vu::VuFsParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::net::tap::NetTapParam;
+#[cfg(target_os = "macos")]
+use alioth::virtio::dev::net::vmnet::NetVmnetParam;
 use alioth::virtio::dev::vsock::UdsVsockParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::vsock::VhostVsockParam;
@@ -140,13 +142,18 @@ struct VuSocket {
     socket: PathBuf,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Deserialize, Help)]
 enum NetParam {
     /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
+    #[cfg(target_os = "linux")]
     #[serde(alias = "tap")]
     Tap(NetTapParam),
+    /// VirtIO net device backed by vmnet framework.
+    #[cfg(target_os = "macos")]
+    #[serde(alias = "vmnet")]
+    Vmnet(NetVmnetParam),
     /// vhost-user net device over a Unix domain socket.
+    #[cfg(target_os = "linux")]
     #[serde(alias = "vu")]
     Vu(VuSocket),
 }
@@ -218,7 +225,6 @@ pub struct BootArgs {
     #[arg(long)]
     entropy: bool,
 
-    #[cfg(target_os = "linux")]
     #[arg(long, help(
         help_text::<NetParam>("Add a VirtIO net device.")
     ))]
@@ -272,7 +278,6 @@ pub struct BootArgs {
     objects: Vec<String>,
 }
 
-#[cfg(target_os = "linux")]
 fn add_net<H>(
     vm: &Machine<H>,
     args: Vec<String>,
@@ -281,16 +286,21 @@ fn add_net<H>(
 where
     H: hv::Hypervisor + 'static,
 {
-    for (index, net_opt) in args.into_iter().enumerate() {
-        let net_param: NetParam = match serde_aco::from_args(&net_opt, objects) {
+    for (index, arg) in args.into_iter().enumerate() {
+        #[cfg(target_os = "linux")]
+        let param: NetParam = match serde_aco::from_args(&arg, objects) {
             Ok(p) => p,
             Err(_) => {
-                let tap_param = serde_aco::from_args::<NetTapParam>(&net_opt, objects)
-                    .context(error::ParseArg { arg: net_opt })?;
+                let tap_param = serde_aco::from_args::<NetTapParam>(&arg, objects)
+                    .context(error::ParseArg { arg })?;
                 NetParam::Tap(tap_param)
             }
         };
-        match net_param {
+        #[cfg(target_os = "macos")]
+        let param: NetParam =
+            serde_aco::from_args(&arg, objects).context(error::ParseArg { arg })?;
+        match param {
+            #[cfg(target_os = "linux")]
             NetParam::Tap(tap_param) => vm.add_virtio_dev(format!("virtio-net-{index}"), tap_param),
             #[cfg(target_os = "linux")]
             NetParam::Vu(sock) => {
@@ -300,6 +310,8 @@ where
                 };
                 vm.add_virtio_dev(format!("vu-net-{index}"), param)
             }
+            #[cfg(target_os = "macos")]
+            NetParam::Vmnet(p) => vm.add_virtio_dev(format!("virtio-net-{index}"), p),
         }
         .context(error::CreateDevice)?;
     }
@@ -434,7 +446,6 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
         vm.add_virtio_dev("virtio-entropy", EntropyParam::default())
             .context(error::CreateDevice)?;
     }
-    #[cfg(target_os = "linux")]
     add_net(&vm, args.net, &objects)?;
     add_blk(&vm, args.blk, &objects)?;
     for (index, fs) in args.fs.into_iter().enumerate() {

@@ -57,7 +57,8 @@ alioth -l info --log-to-file \
 - **Confidential Computing:** Supports confidential VMs using AMD SEV, SEV-ES,
   and SEV-SNP. See [coco.md](docs/coco.md) for more details.
 - **VirtIO Devices:**
-  - `net`: Backed by a TAP device.
+  - `net`: Backed by a TAP device on Linux and
+    [vmnet framework](https://developer.apple.com/documentation/vmnet) on macOS.
   - `vsock`: Backed by either the host's `/dev/vhost-vsock` or a Unix domain
     socket.
   - `blk`: Backed by a raw disk image.
