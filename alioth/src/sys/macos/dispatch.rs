@@ -12,14 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "linux/linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "macos/macos.rs"]
-mod macos;
+use libc::{c_char, c_void};
 
-#[cfg(target_os = "linux")]
-pub use linux::*;
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[repr(transparent)]
+pub struct DispatchQueue(c_void);
+
+unsafe extern "C" {
+    pub fn dispatch_queue_create(name: *const c_char, attr: *const c_void) -> *mut DispatchQueue;
+}

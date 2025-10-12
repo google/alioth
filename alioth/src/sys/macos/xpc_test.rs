@@ -12,14 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "linux/linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "macos/macos.rs"]
-mod macos;
+use super::{
+    XpcObject, xpc_dictionary_create, xpc_dictionary_get_uint64, xpc_release, xpc_uint64_create,
+};
 
-#[cfg(target_os = "linux")]
-pub use linux::*;
-#[cfg(target_os = "macos")]
-pub use macos::*;
+#[test]
+fn test_xpc_create() {
+    let key = c"key".as_ptr();
+    let val: *mut XpcObject;
+    let dict: *mut XpcObject;
+    let num;
+    unsafe {
+        val = xpc_uint64_create(123);
+        dict = xpc_dictionary_create(&key, &(val as *const XpcObject), 1);
+        num = xpc_dictionary_get_uint64(dict, key);
+    }
+    assert_eq!(num, 123);
+    unsafe {
+        xpc_release(val);
+        xpc_release(dict);
+    }
+}

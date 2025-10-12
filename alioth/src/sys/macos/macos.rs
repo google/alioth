@@ -12,14 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "linux/linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "macos/macos.rs"]
-mod macos;
-
-#[cfg(target_os = "linux")]
-pub use linux::*;
-#[cfg(target_os = "macos")]
-pub use macos::*;
+pub mod block;
+pub mod dispatch;
+pub mod vmnet;
+pub mod xpc;
