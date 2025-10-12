@@ -15,6 +15,8 @@
 mod mac_addr;
 #[cfg(target_os = "linux")]
 pub mod tap;
+#[cfg(target_os = "macos")]
+pub mod vmnet;
 
 use std::fmt::Debug;
 
