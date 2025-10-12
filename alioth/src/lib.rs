@@ -31,6 +31,8 @@ pub mod loader;
 pub mod mem;
 #[path = "pci/pci.rs"]
 pub mod pci;
+#[path = "sync/sync.rs"]
+pub mod sync;
 #[path = "sys/sys.rs"]
 pub mod sys;
 #[path = "utils/utils.rs"]
