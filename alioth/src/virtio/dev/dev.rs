@@ -17,7 +17,6 @@ pub mod blk;
 pub mod entropy;
 #[path = "fs/fs.rs"]
 pub mod fs;
-#[cfg(target_os = "linux")]
 #[path = "net/net.rs"]
 pub mod net;
 #[path = "vsock/vsock.rs"]

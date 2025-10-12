@@ -41,7 +41,7 @@ use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::fs::vu::VuFsParam;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::net::NetTapParam;
+use alioth::virtio::dev::net::tap::NetTapParam;
 use alioth::virtio::dev::vsock::UdsVsockParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::dev::vsock::VhostVsockParam;

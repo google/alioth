@@ -33,6 +33,8 @@ pub mod mem;
 pub mod net;
 #[path = "pci/pci.rs"]
 pub mod pci;
+#[path = "sys/sys.rs"]
+pub mod sys;
 #[path = "utils/utils.rs"]
 pub(crate) mod utils;
 #[cfg(target_os = "linux")]
