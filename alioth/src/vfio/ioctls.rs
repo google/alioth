@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::sys::ioctl::ioctl_io;
-use crate::vfio::bindings::{
+use crate::sys::vfio::{
     IOMMUFD_TYPE, IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasUnmap, VFIO_TYPE,
     VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo,
     VfioIommu, VfioIommuType1DmaMap, VfioIommuType1DmaUnmap, VfioIrqInfo, VfioIrqSet,

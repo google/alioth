@@ -23,7 +23,7 @@ use snafu::ResultExt;
 use crate::errors::BoxTrace;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged};
-use crate::vfio::bindings::{
+use crate::sys::vfio::{
     IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap,
 };
 use crate::vfio::ioctls::{iommu_destroy, iommu_ioas_alloc, iommu_ioas_map, iommu_ioas_unmap};

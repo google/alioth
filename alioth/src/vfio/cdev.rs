@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use snafu::ResultExt;
 
-use crate::vfio::bindings::{
+use crate::sys::vfio::{
     VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt,
 };
 use crate::vfio::device::Device;

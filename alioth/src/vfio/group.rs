@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use snafu::ResultExt;
 
-use crate::vfio::bindings::VfioIommu;
+use crate::sys::vfio::VfioIommu;
 use crate::vfio::container::Container;
 use crate::vfio::device::Device;
 use crate::vfio::ioctls::{

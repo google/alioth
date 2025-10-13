@@ -19,11 +19,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
 use crate::mem;
-use crate::vfio::Result;
-use crate::vfio::bindings::{
+use crate::sys::vfio::{
     VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq,
     VfioRegionInfo,
 };
+use crate::vfio::Result;
 use crate::vfio::ioctls::{
     vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset,
     vfio_device_set_irqs,

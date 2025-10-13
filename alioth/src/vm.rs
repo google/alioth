@@ -47,7 +47,7 @@ use crate::mem::Memory;
 use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::{Bdf, PciDevice};
 #[cfg(target_os = "linux")]
-use crate::vfio::bindings::VfioIommu;
+use crate::sys::vfio::VfioIommu;
 #[cfg(target_os = "linux")]
 use crate::vfio::cdev::Cdev;
 #[cfg(target_os = "linux")]

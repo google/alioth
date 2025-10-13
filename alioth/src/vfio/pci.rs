@@ -41,7 +41,7 @@ use crate::pci::config::{
     HeaderData, HeaderType, PciConfig, PciConfigArea, Status,
 };
 use crate::pci::{self, Bdf, Pci, PciBar};
-use crate::vfio::bindings::{
+use crate::sys::vfio::{
     VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo,
     VfioRegionInfoFlag,
 };

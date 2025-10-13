@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod bindings;
 pub mod cdev;
 pub mod container;
 pub mod device;
@@ -28,8 +27,7 @@ use serde_aco::Help;
 use snafu::Snafu;
 
 use crate::errors::{DebugTrace, trace_error};
-
-use self::bindings::VfioIommu;
+use crate::sys::vfio::VfioIommu;
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
