@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::str::FromStr;
+
 use serde::Deserialize;
 use serde::de::{self, Visitor};
 use serde_aco::{Help, TypedHelp};
@@ -20,6 +22,37 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct MacAddr([u8; 6]);
+
+#[derive(Debug)]
+pub enum Error {
+    InvalidLength { len: usize },
+    InvalidNumber { num: String },
+}
+
+impl FromStr for MacAddr {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut addr = [0u8; 6];
+        let iter = s.split(':');
+        let mut index = 0;
+        for b_s in iter {
+            let Ok(v) = u8::from_str_radix(b_s, 16) else {
+                return Err(Error::InvalidNumber {
+                    num: b_s.to_owned(),
+                });
+            };
+            if let Some(b) = addr.get_mut(index) {
+                *b = v;
+            };
+            index += 1;
+        }
+        if index != 6 {
+            return Err(Error::InvalidLength { len: index });
+        }
+        Ok(MacAddr(addr))
+    }
+}
 
 impl Help for MacAddr {
     const HELP: TypedHelp = TypedHelp::Custom { desc: "mac-addr" };
@@ -38,23 +71,14 @@ impl<'de> Visitor<'de> for MacAddrVisitor {
     where
         E: de::Error,
     {
-        let mut addr = [0u8; 6];
-        let iter = v.split(':');
-        let mut index = 0;
-        for b_s in iter {
-            let Some(b) = addr.get_mut(index) else {
-                return Err(E::custom("expect 6 bytes"));
-            };
-            let Ok(v) = u8::from_str_radix(b_s, 16) else {
-                return Err(E::custom("expect bytes"));
-            };
-            *b = v;
-            index += 1;
+        match v.parse::<MacAddr>() {
+            Ok(v) => Ok(v),
+            Err(Error::InvalidLength { len }) => Err(E::invalid_length(len, &"6")),
+            Err(Error::InvalidNumber { num }) => Err(E::invalid_value(
+                de::Unexpected::Str(num.as_str()),
+                &"hexadecimal",
+            )),
         }
-        if index != 6 {
-            return Err(E::custom("expect 6 bytes"));
-        }
-        Ok(MacAddr(addr))
     }
 }
 
@@ -72,9 +96,7 @@ mod test {
     use serde::de::Visitor;
     use serde::de::value::Error;
 
-    use crate::net::MacAddr;
-
-    use super::MacAddrVisitor;
+    use super::{MacAddr, MacAddrVisitor};
 
     #[test]
     fn test_mac_addr_visitor() {

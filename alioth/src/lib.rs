@@ -29,8 +29,6 @@ pub mod hv;
 pub mod loader;
 #[path = "mem/mem.rs"]
 pub mod mem;
-#[path = "net/net.rs"]
-pub mod net;
 #[path = "pci/pci.rs"]
 pub mod pci;
 #[path = "sys/sys.rs"]
