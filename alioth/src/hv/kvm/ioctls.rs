@@ -27,8 +27,8 @@ use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDeviceAttr, KvmVcpuInit};
 #[cfg(target_arch = "x86_64")]
 use crate::ioctl_writeread_buf;
 #[cfg(target_arch = "x86_64")]
-use crate::utils::ioctls::ioctl_iowr;
-use crate::utils::ioctls::{ioctl_io, ioctl_ior};
+use crate::sys::ioctl::ioctl_iowr;
+use crate::sys::ioctl::{ioctl_io, ioctl_ior};
 use crate::{
     ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
 };

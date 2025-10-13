@@ -17,7 +17,7 @@ use std::ffi::{c_int, c_uint, c_ulong};
 use bitflags::bitflags;
 use libc::ifreq;
 
-use crate::utils::ioctls::ioctl_iow;
+use crate::sys::ioctl::ioctl_iow;
 use crate::{ioctl_read, ioctl_write_ptr, ioctl_write_val};
 
 ioctl_write_ptr!(tun_set_iff, ioctl_iow::<c_int>(b'T', 202), ifreq);
