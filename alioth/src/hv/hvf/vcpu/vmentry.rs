@@ -16,10 +16,10 @@ use std::io::ErrorKind;
 
 use snafu::ResultExt;
 
-use crate::hv::hvf::bindings::hv_vcpu_set_reg;
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::{Result, error};
+use crate::sys::hvf::hv_vcpu_set_reg;
 
 impl HvfVcpu {
     pub fn entry_mmio(&mut self, data: u64) -> Result<()> {

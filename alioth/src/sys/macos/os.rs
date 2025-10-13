@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod block;
-pub mod dispatch;
-pub mod hvf;
-pub mod os;
-pub mod vmnet;
-pub mod xpc;
+use libc::c_void;
+
+unsafe extern "C" {
+    pub fn os_release(object: *mut c_void);
+}

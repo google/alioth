@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod bindings;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
 mod vm;
@@ -27,10 +26,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::hv::hvf::bindings::os_release;
 use crate::hv::{Hypervisor, Result, VmConfig, error};
+use crate::sys::hvf::hv_vm_create;
+use crate::sys::os::os_release;
 
-use self::bindings::hv_vm_create;
 use self::vm::HvfVm;
 
 #[derive(Debug, Clone, Copy)]

@@ -29,18 +29,18 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::arch::reg::{MpidrEl1, SReg};
-use crate::hv::hvf::bindings::{
-    HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
-    hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
-    hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
-    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vcpus_exit,
-    hv_vm_destroy, hv_vm_map, hv_vm_unmap,
-};
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
     MsiSender, Result, Vm, VmMemory, error,
+};
+use crate::sys::hvf::{
+    HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
+    hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
+    hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
+    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vcpus_exit,
+    hv_vm_destroy, hv_vm_map, hv_vm_unmap,
 };
 
 fn encode_mpidr(id: u32) -> MpidrEl1 {

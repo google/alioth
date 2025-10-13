@@ -16,11 +16,11 @@ use snafu::ResultExt;
 
 use crate::arch::psci::{PSCI_VERSION_1_1, PsciFunc, PsciMigrateInfo};
 use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, EsrEl2SysReg, MpidrEl1, Reg, SReg, encode};
-use crate::hv::hvf::bindings::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
 use crate::hv::hvf::vm::VcpuEvent;
 use crate::hv::{Result, Vcpu, VmExit, error};
+use crate::sys::hvf::{HvReg, HvVcpuExitException, hv_vcpu_get_reg};
 
 impl HvfVcpu {
     // https://esr.arm64.dev/

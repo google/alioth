@@ -24,13 +24,13 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::arch::reg::{MpidrEl1, Reg, SReg};
-use crate::hv::hvf::bindings::{
-    HvExitReason, HvReg, HvVcpuExit, hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg,
-    hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
-};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vm::VcpuEvent;
 use crate::hv::{Result, Vcpu, VmEntry, VmExit, error};
+use crate::sys::hvf::{
+    HvExitReason, HvReg, HvVcpuExit, hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg,
+    hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
+};
 
 #[derive(Debug)]
 pub struct HvfVcpu {
