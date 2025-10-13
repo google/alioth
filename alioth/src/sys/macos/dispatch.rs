@@ -19,4 +19,5 @@ pub struct DispatchQueue(c_void);
 
 unsafe extern "C" {
     pub fn dispatch_queue_create(name: *const c_char, attr: *const c_void) -> *mut DispatchQueue;
+    pub fn dispatch_release(object: *mut DispatchQueue);
 }

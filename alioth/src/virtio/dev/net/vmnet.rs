@@ -33,12 +33,13 @@ use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::block::{_NSConcreteStackBlock, BlockDescriptor, BlockFlag};
-use crate::sys::dispatch::{DispatchQueue, dispatch_queue_create};
+use crate::sys::dispatch::{DispatchQueue, dispatch_queue_create, dispatch_release};
 use crate::sys::vmnet::{
-    InterfaceEvent, OperationMode, VmPktDesc, VmnetInterface, VmnetInterfaceEventCallback,
-    VmnetReturn, VmnetStartInterfaceCompletionHandler, vmnet_allocate_mac_address_key,
-    vmnet_enable_isolation_key, vmnet_interface_set_event_callback, vmnet_mac_address_key,
-    vmnet_mtu_key, vmnet_operation_mode_key, vmnet_read, vmnet_start_interface, vmnet_write,
+    InterfaceEvent, OperationMode, VmPktDesc, VmnetInterface, VmnetInterfaceCompletionHandler,
+    VmnetInterfaceEventCallback, VmnetReturn, VmnetStartInterfaceCompletionHandler,
+    vmnet_allocate_mac_address_key, vmnet_enable_isolation_key, vmnet_interface_set_event_callback,
+    vmnet_mac_address_key, vmnet_mtu_key, vmnet_operation_mode_key, vmnet_read,
+    vmnet_start_interface, vmnet_stop_interface, vmnet_write,
 };
 use crate::sys::xpc::{
     XpcObject, xpc_bool_create, xpc_dictionary_create, xpc_dictionary_get_string,
@@ -172,6 +173,62 @@ impl Net {
             interface: AtomicPtr::new(interface),
             rx_notifier: Notifier::new()?,
         })
+    }
+}
+
+impl Drop for Net {
+    fn drop(&mut self) {
+        let interface = self.interface.load(Ordering::Acquire);
+        let dispatch_queue = self.dispatch_queue.load(Ordering::Acquire);
+
+        let (sender, receiver) = mpsc::channel::<VmnetReturn>();
+
+        #[repr(C)]
+        struct HandlerBlock {
+            block: VmnetInterfaceCompletionHandler,
+            sender: *const Sender<VmnetReturn>,
+        }
+
+        extern "C" fn handler_invoke(this: *mut c_void, ret: VmnetReturn) {
+            let this = unsafe { &*(this as *mut HandlerBlock) };
+            let sender = unsafe { &*this.sender };
+
+            if let Err(e) = sender.send(ret) {
+                log::error!("Failed to send ret {ret:x?}: {e:?}");
+            }
+        }
+
+        static BLOCK_DESC: BlockDescriptor = BlockDescriptor {
+            reserved: 0,
+            size: size_of::<HandlerBlock>() as _,
+        };
+        let handler = HandlerBlock {
+            block: VmnetInterfaceCompletionHandler {
+                isa: unsafe { _NSConcreteStackBlock },
+                flags: BlockFlag::HAS_STRET,
+                reserved: 0,
+                invoke: handler_invoke,
+                descriptor: &BLOCK_DESC as *const _,
+            },
+            sender: &sender as *const _,
+        };
+        let ret = unsafe { vmnet_stop_interface(interface, dispatch_queue, &handler.block) };
+        if let Err(e) = check_ret(ret) {
+            log::error!("{}: failed to stop interface: {e:?}", self.name);
+            return;
+        }
+        match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(ret) => {
+                if let Err(e) = check_ret(ret) {
+                    log::error!("{}: failed to stop interface: {e:?}", self.name);
+                }
+            }
+            Err(e) => log::error!(
+                "{}: failed to receive stop interface response: {e:?}",
+                self.name
+            ),
+        }
+        unsafe { dispatch_release(dispatch_queue) };
     }
 }
 
