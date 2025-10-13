@@ -35,8 +35,8 @@ use crate::sync::notifier::Notifier;
 use crate::sys::block::{_NSConcreteStackBlock, BlockDescriptor, BlockFlag};
 use crate::sys::dispatch::{DispatchQueue, dispatch_queue_create};
 use crate::sys::vmnet::{
-    InterfaceEvent, OperationMode, VmPktDesc, VmnetInterface, VmnetInterfaceCompletionHandler,
-    VmnetInterfaceEventCallback, VmnetReturn, vmnet_allocate_mac_address_key,
+    InterfaceEvent, OperationMode, VmPktDesc, VmnetInterface, VmnetInterfaceEventCallback,
+    VmnetReturn, VmnetStartInterfaceCompletionHandler, vmnet_allocate_mac_address_key,
     vmnet_enable_isolation_key, vmnet_interface_set_event_callback, vmnet_mac_address_key,
     vmnet_mtu_key, vmnet_operation_mode_key, vmnet_read, vmnet_start_interface, vmnet_write,
 };
@@ -96,7 +96,7 @@ impl Net {
 
         #[repr(C)]
         struct HandlerBlock {
-            block: VmnetInterfaceCompletionHandler,
+            block: VmnetStartInterfaceCompletionHandler,
             sender: *const Sender<Result<NetConfig>>,
         }
 
@@ -144,7 +144,7 @@ impl Net {
             size: size_of::<HandlerBlock>() as _,
         };
         let handler = HandlerBlock {
-            block: VmnetInterfaceCompletionHandler {
+            block: VmnetStartInterfaceCompletionHandler {
                 isa: unsafe { _NSConcreteStackBlock },
                 flags: BlockFlag::HAS_STRET,
                 reserved: 0,

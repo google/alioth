@@ -58,8 +58,10 @@ pub struct VmnetInterface(c_void);
 #[repr(transparent)]
 pub struct VmnetNetworkConfiguration(c_void);
 
-pub type VmnetInterfaceCompletionHandler =
+pub type VmnetStartInterfaceCompletionHandler =
     Block<extern "C" fn(*mut c_void, VmnetReturn, *const XpcObject)>;
+
+pub type VmnetInterfaceCompletionHandler = Block<extern "C" fn(*mut c_void, VmnetReturn)>;
 
 pub type VmnetInterfaceEventCallback =
     Block<extern "C" fn(*mut c_void, InterfaceEvent, *const XpcObject)>;
@@ -86,14 +88,14 @@ unsafe extern "C" {
     pub fn vmnet_start_interface(
         interface_desc: *const XpcObject,
         queue: *const DispatchQueue,
-        handler: *const VmnetInterfaceCompletionHandler,
+        handler: *const VmnetStartInterfaceCompletionHandler,
     ) -> *mut VmnetInterface;
 
     pub fn vmnet_stop_interface(
         interface: *mut VmnetInterface,
         queue: *const DispatchQueue,
         handler: *const VmnetInterfaceCompletionHandler,
-    );
+    ) -> VmnetReturn;
 
     pub fn vmnet_interface_set_event_callback(
         interface: *mut VmnetInterface,
