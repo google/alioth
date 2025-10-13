@@ -17,10 +17,12 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
-use crate::hv::kvm::bindings::{KvmCreateDevice, KvmDevType, KvmDeviceAttr};
-use crate::hv::kvm::ioctls::{kvm_create_device, kvm_get_device_attr, kvm_set_device_attr};
 use crate::hv::kvm::kvm_error;
 use crate::hv::{KvmError, Result};
+use crate::sys::kvm::{
+    KvmCreateDevice, KvmDevType, KvmDeviceAttr, kvm_create_device, kvm_get_device_attr,
+    kvm_set_device_attr,
+};
 
 #[derive(Debug)]
 pub(super) struct KvmDevice(pub OwnedFd);

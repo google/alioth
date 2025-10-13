@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::hv::VmExit;
-use crate::hv::kvm::bindings::{KvmExit, KvmRunExitIo};
 use crate::hv::kvm::vcpu::KvmVcpu;
+use crate::sys::kvm::{KvmExit, KvmRunExitIo};
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]
     pub(super) fn entry_mmio(&mut self, data: u64) {
-        use crate::hv::kvm::bindings::KvmExit;
+        use crate::sys::kvm::KvmExit;
 
         assert_eq!(self.kvm_run.exit_reason, KvmExit::MMIO);
         let kvm_mmio = unsafe { &mut self.kvm_run.exit.mmio };

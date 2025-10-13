@@ -16,16 +16,16 @@ use std::os::fd::{FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
-use crate::hv::kvm::bindings::{KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType};
-use crate::hv::kvm::ioctls::{
-    kvm_check_extension, kvm_create_guest_memfd, kvm_create_irqchip, kvm_enable_cap,
-    kvm_set_identity_map_addr, kvm_set_tss_addr,
-};
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::sev::bindings::{KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2, KvmSevInit};
 use crate::hv::kvm::vm::{KvmVm, VmArch};
 use crate::hv::kvm::{Kvm, kvm_error};
 use crate::hv::{Coco, Result, VmConfig, error};
+use crate::sys::kvm::{
+    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, kvm_check_extension,
+    kvm_create_guest_memfd, kvm_create_irqchip, kvm_enable_cap, kvm_set_identity_map_addr,
+    kvm_set_tss_addr,
+};
 
 impl Kvm {
     pub(super) fn determine_vm_type(config: &VmConfig) -> Result<KvmVmType> {

@@ -20,17 +20,14 @@ use snafu::ResultExt;
 
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
-use crate::hv::kvm::bindings::{
-    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS,
-};
-use crate::hv::kvm::ioctls::{
-    kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs,
-    kvm_set_sregs, kvm_set_sregs2,
-};
 use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, Result, error};
+use crate::sys::kvm::{
+    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
+    MAX_IO_MSRS, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_msrs,
+    kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+};
 
 macro_rules! set_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident, $val:expr) => {

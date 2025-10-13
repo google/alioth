@@ -36,11 +36,10 @@ use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 use crate::ffi;
-use crate::hv::kvm::bindings::{KvmExit, KvmRun};
-use crate::hv::kvm::ioctls::kvm_run;
 use crate::hv::kvm::vm::VmInner;
 use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{Error, Result, Vcpu, VmEntry, VmExit, error};
+use crate::sys::kvm::{KvmExit, KvmRun, kvm_run};
 
 pub(super) struct KvmRunBlock {
     addr: usize,

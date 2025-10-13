@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::hv::kvm::bindings::{
-    KVM_HC_MAP_GPA_RANGE, KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent,
-};
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, VmExit, error};
+use crate::sys::kvm::{KVM_HC_MAP_GPA_RANGE, KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent};
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]

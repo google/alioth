@@ -18,7 +18,6 @@ use snafu::ResultExt;
 
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::hv::Result;
-use crate::hv::kvm::ioctls::kvm_memory_encrypt_op;
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::sev::bindings::{
     KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
@@ -28,6 +27,7 @@ use crate::hv::kvm::sev::bindings::{
     KvmSevSnpLaunchUpdate,
 };
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
+use crate::sys::kvm::kvm_memory_encrypt_op;
 
 #[derive(Debug)]
 pub struct VmArch {

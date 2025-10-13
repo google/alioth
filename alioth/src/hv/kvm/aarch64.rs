@@ -15,9 +15,9 @@
 use std::os::fd::OwnedFd;
 
 use crate::hv::kvm::Kvm;
-use crate::hv::kvm::bindings::KvmVmType;
 use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Result, VmConfig};
+use crate::sys::kvm::KvmVmType;
 
 impl Kvm {
     pub(super) fn determine_vm_type(_config: &VmConfig) -> Result<KvmVmType> {

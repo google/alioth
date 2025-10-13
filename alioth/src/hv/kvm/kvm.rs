@@ -17,10 +17,8 @@ mod aarch64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 
-mod bindings;
 #[cfg(target_arch = "aarch64")]
 mod device;
-mod ioctls;
 #[path = "sev/sev.rs"]
 mod sev;
 #[path = "vcpu/vcpu.rs"]
@@ -53,15 +51,16 @@ use crate::arch::cpuid::CpuidIn;
 use crate::errors::{DebugTrace, trace_error};
 use crate::ffi;
 use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
-
-use self::bindings::KVM_API_VERSION;
 #[cfg(target_arch = "aarch64")]
-use self::bindings::KvmDevType;
+use crate::sys::kvm::KvmDevType;
 #[cfg(target_arch = "x86_64")]
-use self::bindings::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
+use crate::sys::kvm::kvm_get_supported_cpuid;
+use crate::sys::kvm::{
+    KVM_API_VERSION, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size,
+};
 #[cfg(target_arch = "x86_64")]
-use self::ioctls::kvm_get_supported_cpuid;
-use self::ioctls::{kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size};
+use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
+
 use self::vm::{KvmVm, VmInner};
 
 #[trace_error]

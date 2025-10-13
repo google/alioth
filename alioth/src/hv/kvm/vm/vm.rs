@@ -33,26 +33,24 @@ use snafu::ResultExt;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::ffi;
-#[cfg(target_arch = "x86_64")]
-use crate::hv::kvm::bindings::KVM_IRQCHIP_IOAPIC;
-#[cfg(target_arch = "aarch64")]
-use crate::hv::kvm::bindings::KvmMsiFlag;
-use crate::hv::kvm::bindings::{
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEncRegion, KvmIoEventFd,
-    KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
-    KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
-    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2,
-};
-use crate::hv::kvm::ioctls::{
-    kvm_check_extension, kvm_create_vcpu, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
-    kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing, kvm_set_memory_attributes,
-    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
-};
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{
     Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result, Vm,
     VmMemory, error,
+};
+#[cfg(target_arch = "x86_64")]
+use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
+#[cfg(target_arch = "aarch64")]
+use crate::sys::kvm::KvmMsiFlag;
+use crate::sys::kvm::{
+    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEncRegion, KvmIoEventFd,
+    KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
+    KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_check_extension, kvm_create_vcpu,
+    kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region,
+    kvm_set_gsi_routing, kvm_set_memory_attributes, kvm_set_user_memory_region,
+    kvm_set_user_memory_region2, kvm_signal_msi,
 };
 
 #[cfg(target_arch = "x86_64")]

@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::hv::kvm::Result;
-use crate::hv::kvm::bindings::{
-    KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
-};
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{GicV2, GicV2m, GicV3, Its};
+use crate::sys::kvm::{
+    KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
+};
 
 #[derive(Debug)]
 pub struct KvmGicV2m;
