@@ -220,6 +220,20 @@ impl Virtio for Net {
 
 impl VirtioMio for Net {
     fn reset(&mut self, registry: &Registry) {
+        let interface = self.interface.load(Ordering::Acquire);
+
+        let ret = unsafe {
+            vmnet_interface_set_event_callback(
+                interface,
+                InterfaceEvent::PACKETS_AVAILABLE,
+                null(),
+                null(),
+            )
+        };
+        if let Err(err) = check_ret(ret) {
+            log::error!("{}: failed to reset event callback: {}", self.name, err);
+        }
+
         let _ = registry.deregister(&mut self.rx_notifier);
     }
 
