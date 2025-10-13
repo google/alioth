@@ -16,6 +16,32 @@ use bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_aco::Help;
 
+pub const SEV_RET_SUCCESS: u32 = 0;
+pub const SEV_RET_INVALID_PLATFORM_STATE: u32 = 1;
+pub const SEV_RET_INVALID_GUEST_STATE: u32 = 2;
+pub const SEV_RET_INAVLID_CONFIG: u32 = 3;
+pub const SEV_RET_INVALID_LEN: u32 = 4;
+pub const SEV_RET_ALREADY_OWNED: u32 = 5;
+pub const SEV_RET_INVALID_CERTIFICATE: u32 = 6;
+pub const SEV_RET_POLICY_FAILURE: u32 = 7;
+pub const SEV_RET_INACTIVE: u32 = 8;
+pub const SEV_RET_INVALID_ADDRESS: u32 = 9;
+pub const SEV_RET_BAD_SIGNATURE: u32 = 10;
+pub const SEV_RET_BAD_MEASUREMENT: u32 = 11;
+pub const SEV_RET_ASID_OWNED: u32 = 12;
+pub const SEV_RET_INVALID_ASID: u32 = 13;
+pub const SEV_RET_WBINVD_REQUIRED: u32 = 14;
+pub const SEV_RET_DFFLUSH_REQUIRED: u32 = 15;
+pub const SEV_RET_INVALID_GUEST: u32 = 16;
+pub const SEV_RET_INVALID_COMMAND: u32 = 17;
+pub const SEV_RET_ACTIVE: u32 = 18;
+pub const SEV_RET_HWSEV_RET_PLATFORM: u32 = 19;
+pub const SEV_RET_HWSEV_RET_UNSAFE: u32 = 20;
+pub const SEV_RET_UNSUPPORTED: u32 = 21;
+pub const SEV_RET_INVALID_PARAM: u32 = 22;
+pub const SEV_RET_RESOURCE_LIMIT: u32 = 23;
+pub const SEV_RET_SECURE_DATA_INVALID: u32 = 24;
+
 bitfield! {
     /// AMD SEV guest policy
     ///
@@ -71,4 +97,54 @@ pub enum SnpPageType {
     Secrets = 5,
     /// A page for the hypervisor to provide CPUID function values.
     Cpuid = 6,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct SevUserDataStatus {
+    pub api_major: u8,
+    pub api_minor: u8,
+    pub state: u8,
+    pub flags: u32,
+    pub build: u8,
+    pub guest_count: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct SevUserDataPekCsr {
+    pub address: u64,
+    pub length: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct SevUserDataPekCertImport {
+    pub pek_cert_address: u64,
+    pub pek_cert_len: u32,
+    pub oca_cert_address: u64,
+    pub oca_cert_len: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct SevUserDataPdhCertExport {
+    pub pdh_cert_address: u64,
+    pub pdh_cert_len: u32,
+    pub cert_chain_address: u64,
+    pub cert_chain_len: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct SevUserDataGetId {
+    pub socket1: [u8; 64],
+    pub socket2: [u8; 64],
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone)]
+pub struct SevUserDataGetId2 {
+    pub address: u64,
+    pub length: u32,
 }

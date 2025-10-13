@@ -19,15 +19,15 @@ use snafu::ResultExt;
 use crate::arch::sev::{SnpPageType, SnpPolicy};
 use crate::hv::Result;
 use crate::hv::kvm::sev::SevFd;
-use crate::hv::kvm::sev::bindings::{
+use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
+use crate::sys::kvm::kvm_memory_encrypt_op;
+use crate::sys::sev::{
     KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
     KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH,
     KVM_SEV_SNP_LAUNCH_START, KVM_SEV_SNP_LAUNCH_UPDATE, KvmSevCmd, KvmSevLaunchMeasure,
     KvmSevLaunchStart, KvmSevLaunchUpdateData, KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart,
     KvmSevSnpLaunchUpdate,
 };
-use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
-use crate::sys::kvm::kvm_memory_encrypt_op;
 
 #[derive(Debug)]
 pub struct VmArch {

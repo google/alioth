@@ -19,7 +19,7 @@ mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 mod device;
-#[path = "sev/sev.rs"]
+#[cfg(target_arch = "x86_64")]
 mod sev;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
