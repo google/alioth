@@ -22,7 +22,6 @@ pub mod pci;
 #[path = "queue/queue.rs"]
 pub mod queue;
 #[cfg(target_os = "linux")]
-#[path = "vhost/vhost.rs"]
 pub mod vhost;
 #[cfg(target_os = "linux")]
 #[path = "vu/vu.rs"]

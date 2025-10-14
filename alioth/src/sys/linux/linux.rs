@@ -18,3 +18,4 @@ pub mod kvm;
 #[cfg(target_arch = "x86_64")]
 pub mod sev;
 pub mod vfio;
+pub mod vhost;

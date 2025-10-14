@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod bindings;
-pub mod ioctls;
-
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -25,11 +22,8 @@ use snafu::{ResultExt, Snafu};
 use crate::errors::{BoxTrace, DebugTrace, trace_error};
 use crate::mem::mapped::Ram;
 use crate::mem::{self, LayoutUpdated};
-
-use self::bindings::{
+use crate::sys::vhost::{
     MemoryMultipleRegion, MemoryRegion, VhostFeature, VirtqAddr, VirtqFile, VirtqState,
-};
-use self::ioctls::{
     vhost_get_backend_features, vhost_get_features, vhost_set_backend_features, vhost_set_features,
     vhost_set_mem_table, vhost_set_owner, vhost_set_virtq_addr, vhost_set_virtq_base,
     vhost_set_virtq_call, vhost_set_virtq_err, vhost_set_virtq_kick, vhost_set_virtq_num,
