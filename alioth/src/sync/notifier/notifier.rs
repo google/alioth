@@ -13,13 +13,17 @@
 // limitations under the License.
 
 #[cfg(test)]
-#[cfg(target_os = "macos")]
 #[path = "notifier_test.rs"]
 mod tests;
 
+#[cfg(target_os = "linux")]
+#[path = "notifier_linux.rs"]
+mod linux;
 #[cfg(target_os = "macos")]
 #[path = "notifier_macos.rs"]
 mod macos;
 
+#[cfg(target_os = "linux")]
+pub use linux::Notifier;
 #[cfg(target_os = "macos")]
 pub use macos::Notifier;

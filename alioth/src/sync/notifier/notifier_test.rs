@@ -19,20 +19,26 @@ use super::Notifier;
 
 #[test]
 fn test_notifier() {
-    let mut fd = Notifier::new().unwrap();
+    let mut n1 = Notifier::new().unwrap();
+    let mut n2 = Notifier::new().unwrap();
 
     let mut poll = Poll::new().unwrap();
     poll.registry()
-        .register(&mut fd, Token(1), Interest::READABLE)
+        .register(&mut n1, Token(1), Interest::READABLE)
+        .unwrap();
+    poll.registry()
+        .register(&mut n2, Token(2), Interest::READABLE)
         .unwrap();
 
-    fd.notify().unwrap();
+    n1.notify().unwrap();
+    n2.notify().unwrap();
 
     let mut events = Events::with_capacity(8);
     poll.poll(&mut events, None).unwrap();
 
     let tokens: Vec<_> = events.iter().map(|e| e.token()).collect();
-    assert_matches!(&tokens[..], [Token(1)]);
+    assert_matches!(&tokens[..], [Token(1), Token(2)]);
 
-    poll.registry().deregister(&mut fd).unwrap();
+    poll.registry().deregister(&mut n1).unwrap();
+    poll.registry().deregister(&mut n2).unwrap();
 }
