@@ -26,6 +26,7 @@ use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
     ShutdownFlag, UdsVsockParam, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
     VsockType, VsockVirtq,
@@ -37,7 +38,6 @@ use crate::virtio::queue::tests::{GuestQueue, VirtQueueGuest};
 use crate::virtio::tests::{
     DATA_ADDR, FakeIoeventFd, FakeIrqSender, fixture_queues, fixture_ram_bus,
 };
-use crate::virtio::worker::Waker;
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, VirtioFeature};
 
 #[test]
@@ -58,7 +58,7 @@ fn send_to_tx<'m, Q>(
     buf_addr: u64,
     q: &mut GuestQueue<'m, Q>,
     tx: &Sender<WakeEvent<FakeIrqSender, FakeIoeventFd>>,
-    waker: &Waker,
+    notifier: &Notifier,
     irq_rx: &Receiver<u16>,
     expect_rx: bool,
 ) where
@@ -82,7 +82,7 @@ fn send_to_tx<'m, Q>(
         q_index: VsockVirtq::TX.raw(),
     })
     .unwrap();
-    waker.wake().unwrap();
+    notifier.notify().unwrap();
     if expect_rx {
         assert_eq!(
             irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -134,7 +134,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
     );
 
     let (tx, rx) = mpsc::channel();
-    let (handle, waker) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
     let (irq_tx, irq_rx) = mpsc::channel();
     let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
     let start_param = StartParam {
@@ -188,7 +188,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         false,
     );
@@ -221,7 +221,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         true,
     );
@@ -248,7 +248,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         q_index: VsockVirtq::RX.raw(),
     })
     .unwrap();
-    waker.wake().unwrap();
+    notifier.notify().unwrap();
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     g2h_stream.write_all(h2g_data.as_bytes()).unwrap();
@@ -291,7 +291,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         false,
     );
@@ -319,7 +319,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         false,
     );
@@ -344,7 +344,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         false,
     );
@@ -369,13 +369,13 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         tx_buf_addr,
         &mut tx_q,
         &tx,
-        &waker,
+        &notifier,
         &irq_rx,
         false,
     );
     assert_matches!(g2h_stream.read(&mut buf), Ok(0));
 
     tx.send(WakeEvent::Shutdown).unwrap();
-    waker.wake().unwrap();
+    notifier.notify().unwrap();
     handle.join().unwrap();
 }

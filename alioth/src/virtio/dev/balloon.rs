@@ -31,9 +31,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, Status, VirtQueue};
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
 use crate::{c_enum, ffi, impl_mmio_for_zerocopy, mem};
@@ -205,7 +205,7 @@ impl Virtio for Balloon {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

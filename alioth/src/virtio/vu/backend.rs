@@ -193,7 +193,7 @@ impl VuBackend {
         if is_start {
             return;
         }
-        if let Err(e) = self.dev.waker.wake() {
+        if let Err(e) = self.dev.notifier.notify() {
             log::error!("{}: failed to wake up device: {e}", self.dev.name);
         }
     }

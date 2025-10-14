@@ -36,10 +36,10 @@ use crate::pci::config::{
     PciConfig, PciConfigArea,
 };
 use crate::pci::{self, Pci, PciBar};
+use crate::sync::notifier::Notifier;
 use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
 use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::queue::QueueReg;
-use crate::virtio::worker::Waker;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
 use crate::{impl_mmio_for_zerocopy, mem};
 
@@ -194,7 +194,7 @@ where
     irq_sender: Arc<PciIrqSender<M>>,
     ioeventfds: Option<Arc<[E]>>,
     event_tx: Sender<WakeEvent<PciIrqSender<M>, E>>,
-    waker: Arc<Waker>,
+    notifier: Arc<Notifier>,
 }
 
 impl<M, E> VirtioPciRegisterMmio<M, E>
@@ -211,7 +211,7 @@ where
         if is_start {
             return;
         }
-        if let Err(e) = self.waker.wake() {
+        if let Err(e) = self.notifier.notify() {
             log::error!("{}: failed to wake up device: {e}", self.name);
         }
     }
@@ -858,7 +858,7 @@ where
                 ..Default::default()
             },
             event_tx: dev.event_tx.clone(),
-            waker: dev.waker.clone(),
+            notifier: dev.notifier.clone(),
             queues: dev.queue_regs.clone(),
             irq_sender: Arc::new(PciIrqSender {
                 msix_vector,

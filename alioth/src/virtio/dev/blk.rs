@@ -38,12 +38,13 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, QueueReg, Status as QStatus, VirtQueue};
+use crate::virtio::worker::WorkerApi;
 #[cfg(target_os = "linux")]
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
-use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
 use crate::{c_enum, impl_mmio_for_zerocopy};
 
@@ -302,7 +303,7 @@ impl Virtio for Block {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

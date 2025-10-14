@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::iter;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -24,12 +24,12 @@ use io_uring::{SubmissionQueue, opcode, types};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
     WorkerState,
 };
 use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
-use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result};
 
 pub enum BufferAction {
@@ -57,15 +57,15 @@ const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = (1 << 62) | (1 << 61);
 
 pub struct IoUring {
-    waker: Arc<Waker>,
-    waker_token: u64,
+    notifier: Arc<Notifier>,
+    notifier_token: u64,
 }
 
 impl IoUring {
-    fn submit_waker(&self, sq: &mut SubmissionQueue) -> Result<()> {
-        let fd = types::Fd(self.waker.0.as_raw_fd());
+    fn submit_notifier(&self, sq: &mut SubmissionQueue) -> Result<()> {
+        let fd = types::Fd(self.notifier.as_fd().as_raw_fd());
         let poll = opcode::PollAdd::new(fd, libc::EPOLLIN as _).multi(true);
-        let entry = poll.build().user_data(self.waker_token);
+        let entry = poll.build().user_data(self.notifier_token);
         unsafe { sq.push(&entry) }.unwrap();
         Ok(())
     }
@@ -75,16 +75,16 @@ impl IoUring {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         D: VirtioIoUring,
         E: IoeventFd,
         S: IrqSender,
     {
-        let waker = Waker::new_eventfd()?;
+        let notifier = Notifier::new()?;
         let ring = IoUring {
-            waker: Arc::new(waker),
-            waker_token: 0,
+            notifier: Arc::new(notifier),
+            notifier_token: 0,
         };
         Worker::spawn(dev, ring, event_rx, memory, queue_regs)
     }
@@ -103,9 +103,9 @@ impl<D> Backend<D> for IoUring
 where
     D: VirtioIoUring,
 {
-    fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
-        self.waker_token = token;
-        Ok(self.waker.clone())
+    fn register_notifier(&mut self, token: u64) -> Result<Arc<Notifier>> {
+        self.notifier_token = token;
+        Ok(self.notifier.clone())
     }
 
     fn reset(&self, _dev: &mut D) -> Result<()> {
@@ -134,7 +134,7 @@ where
             queues,
             submit_counts,
         };
-        self.submit_waker(&mut active_ring.ring.submission())?;
+        self.submit_notifier(&mut active_ring.ring.submission())?;
         context.dev.activate(param.feature, &mut active_ring)?;
 
         if let Some(fds) = &param.ioeventfds {

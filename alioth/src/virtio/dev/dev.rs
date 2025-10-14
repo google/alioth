@@ -35,12 +35,12 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
+use crate::sync::notifier::Notifier;
 use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
-use crate::virtio::worker::Waker;
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
 
 pub trait Virtio: Debug + Send + Sync + 'static {
@@ -57,7 +57,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>;
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
     }
@@ -146,7 +146,7 @@ where
     pub device_feature: u128,
     pub queue_regs: Arc<[QueueReg]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
-    pub waker: Arc<Waker>,
+    pub notifier: Arc<Notifier>,
     pub event_tx: Sender<WakeEvent<S, E>>,
     worker_handle: Option<JoinHandle<()>>,
 }
@@ -161,7 +161,7 @@ where
             return Ok(());
         };
         self.event_tx.send(WakeEvent::Shutdown)?;
-        self.waker.wake()?;
+        self.notifier.notify()?;
         if let Err(e) = handle.join() {
             log::error!("{}: failed to join worker thread: {e:?}", self.name)
         }
@@ -195,7 +195,7 @@ where
 
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
-        let (handle, waker) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
+        let (handle, notifier) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
         log::debug!(
             "{name}: created with {:x?} {:x?}",
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
@@ -208,7 +208,7 @@ where
             queue_regs,
             worker_handle: Some(handle),
             event_tx,
-            waker,
+            notifier,
             device_config,
             shared_mem_regions,
         };
@@ -229,7 +229,7 @@ where
 }
 
 pub trait Backend<D: Virtio>: Send + 'static {
-    fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>>;
+    fn register_notifier(&mut self, token: u64) -> Result<Arc<Notifier>>;
     fn reset(&self, dev: &mut D) -> Result<()>;
     fn event_loop<'m, S, Q, E>(
         &mut self,
@@ -347,8 +347,8 @@ where
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)> {
-        let waker = backend.register_waker(TOKEN_WARKER)?;
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)> {
+        let notifier = backend.register_notifier(TOKEN_WARKER)?;
         let worker = Worker {
             context: Context {
                 dev,
@@ -364,7 +364,7 @@ where
             .name(name.to_owned())
             .spawn(move || worker.do_work())
             .context(error::WorkerThread)?;
-        Ok((handle, waker))
+        Ok((handle, notifier))
     }
 
     fn event_loop<'m, Q>(

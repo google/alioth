@@ -32,13 +32,13 @@ use std::thread::JoinHandle;
 use crate::ffi;
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
     ShutdownFlag, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp, VsockType,
     VsockVirtq,
 };
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
 
@@ -722,7 +722,7 @@ impl Virtio for UdsVsock {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

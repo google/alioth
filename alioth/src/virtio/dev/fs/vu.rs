@@ -36,6 +36,7 @@ use crate::fuse::{self, DaxRegion};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::fs::{FsConfig, FsFeature};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
@@ -43,7 +44,6 @@ use crate::virtio::vu::bindings::{DeviceConfig, FsMap, VuBackMsg, VuFeature};
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::vu::frontend::VuFrontend;
 use crate::virtio::vu::{Error, error as vu_error};
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, IrqSender, Result};
 use crate::{align_up, ffi};
@@ -155,7 +155,7 @@ impl Virtio for VuFs {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

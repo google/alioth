@@ -30,6 +30,7 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vu::bindings::{
@@ -37,7 +38,6 @@ use crate::virtio::vu::bindings::{
 };
 use crate::virtio::vu::conn::{VuChannel, VuSession};
 use crate::virtio::vu::error as vu_error;
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
 use crate::{ffi, mem};
@@ -259,7 +259,7 @@ impl Virtio for VuFrontend {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

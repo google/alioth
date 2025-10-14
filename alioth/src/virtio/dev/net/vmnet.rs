@@ -49,7 +49,6 @@ use crate::virtio::dev::net::mac_addr::MacAddr;
 use crate::virtio::dev::net::{NetConfig, NetFeature, VirtioNetHdr};
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender};
 
@@ -266,7 +265,7 @@ impl Virtio for Net {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

@@ -37,6 +37,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
+use crate::sync::notifier::Notifier;
 use crate::sys::if_tun::{TunFeature, tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz};
 use crate::virtio::dev::net::mac_addr::MacAddr;
 use crate::virtio::dev::net::{
@@ -46,9 +47,9 @@ use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::{
     DescChain, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
 };
+use crate::virtio::worker::WorkerApi;
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
-use crate::virtio::worker::{Waker, WorkerApi};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, error};
 
 #[derive(Debug)]
@@ -231,7 +232,7 @@ impl Virtio for Net {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

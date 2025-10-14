@@ -30,12 +30,12 @@ use crate::ffi;
 use crate::hv::IoeventFd;
 use crate::mem::LayoutUpdated;
 use crate::mem::mapped::RamBus;
+use crate::sync::notifier::Notifier;
 use crate::sys::vhost::{VHOST_FILE_UNBIND, VirtqAddr, VirtqFile, VirtqState};
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
 use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vhost::{UpdateVsockMem, VhostDev, error};
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
@@ -141,7 +141,7 @@ impl Virtio for VhostVsock {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

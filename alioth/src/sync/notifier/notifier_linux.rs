@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd};
 
 use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use mio::event::Source;
@@ -62,5 +62,11 @@ impl Source for Notifier {
 
     fn deregister(&mut self, registry: &Registry) -> std::io::Result<()> {
         registry.deregister(&mut SourceFd(&self.fd.as_raw_fd()))
+    }
+}
+
+impl AsFd for Notifier {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 }

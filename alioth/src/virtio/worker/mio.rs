@@ -24,12 +24,12 @@ use snafu::ResultExt;
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
     WorkerState,
 };
 use crate::virtio::queue::{Queue, QueueReg, VirtQueue};
-use crate::virtio::worker::Waker;
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
@@ -84,7 +84,7 @@ impl Mio {
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         D: VirtioMio,
         S: IrqSender,
@@ -100,23 +100,11 @@ impl<D> Backend<D> for Mio
 where
     D: VirtioMio,
 {
-    fn register_waker(&mut self, token: u64) -> Result<Arc<Waker>> {
-        #[cfg(target_os = "linux")]
-        {
-            let waker = Waker::new_eventfd()?;
-            self.poll.registry().register(
-                &mut SourceFd(&waker.0.as_raw_fd()),
-                Token(token as usize),
-                Interest::READABLE,
-            )?;
-            Ok(Arc::new(waker))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let waker = ::mio::Waker::new(self.poll.registry(), Token(token as usize))
-                .context(error::CreateWaker)?;
-            Ok(Arc::new(Waker(waker)))
-        }
+    fn register_notifier(&mut self, token: u64) -> Result<Arc<Notifier>> {
+        let mut notifier = Notifier::new()?;
+        let registry = self.poll.registry();
+        registry.register(&mut notifier, Token(token as usize), Interest::READABLE)?;
+        Ok(Arc::new(notifier))
     }
 
     fn reset(&self, dev: &mut D) -> Result<()> {

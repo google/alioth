@@ -34,13 +34,13 @@ use crate::fuse::{self, DaxRegion, Fuse};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{MemRegion, MemRegionType};
+use crate::sync::notifier::Notifier;
 #[cfg(target_os = "linux")]
 use crate::virtio::dev::fs::vu::VuDaxRegion;
 use crate::virtio::dev::{Result, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
-use crate::virtio::worker::Waker;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender};
 use crate::{ffi, impl_mmio_for_zerocopy};
@@ -429,7 +429,7 @@ where
         event_rx: Receiver<WakeEvent<S, E>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Waker>)>
+    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
         E: IoeventFd,

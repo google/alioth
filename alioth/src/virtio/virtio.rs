@@ -57,8 +57,6 @@ pub enum Error {
     System { error: std::io::Error },
     #[snafu(display("Failed to create a poll"))]
     CreatePoll { error: std::io::Error },
-    #[snafu(display("Failed to create a thread waker"))]
-    CreateWaker { error: std::io::Error },
     #[snafu(display("Failed to register/deregister an event source"))]
     EventSource { error: std::io::Error },
     #[snafu(display("Failed to poll events"))]
