@@ -16,37 +16,44 @@ use bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_aco::Help;
 
-pub const SEV_RET_SUCCESS: u32 = 0;
-pub const SEV_RET_INVALID_PLATFORM_STATE: u32 = 1;
-pub const SEV_RET_INVALID_GUEST_STATE: u32 = 2;
-pub const SEV_RET_INAVLID_CONFIG: u32 = 3;
-pub const SEV_RET_INVALID_LEN: u32 = 4;
-pub const SEV_RET_ALREADY_OWNED: u32 = 5;
-pub const SEV_RET_INVALID_CERTIFICATE: u32 = 6;
-pub const SEV_RET_POLICY_FAILURE: u32 = 7;
-pub const SEV_RET_INACTIVE: u32 = 8;
-pub const SEV_RET_INVALID_ADDRESS: u32 = 9;
-pub const SEV_RET_BAD_SIGNATURE: u32 = 10;
-pub const SEV_RET_BAD_MEASUREMENT: u32 = 11;
-pub const SEV_RET_ASID_OWNED: u32 = 12;
-pub const SEV_RET_INVALID_ASID: u32 = 13;
-pub const SEV_RET_WBINVD_REQUIRED: u32 = 14;
-pub const SEV_RET_DFFLUSH_REQUIRED: u32 = 15;
-pub const SEV_RET_INVALID_GUEST: u32 = 16;
-pub const SEV_RET_INVALID_COMMAND: u32 = 17;
-pub const SEV_RET_ACTIVE: u32 = 18;
-pub const SEV_RET_HWSEV_RET_PLATFORM: u32 = 19;
-pub const SEV_RET_HWSEV_RET_UNSAFE: u32 = 20;
-pub const SEV_RET_UNSUPPORTED: u32 = 21;
-pub const SEV_RET_INVALID_PARAM: u32 = 22;
-pub const SEV_RET_RESOURCE_LIMIT: u32 = 23;
-pub const SEV_RET_SECURE_DATA_INVALID: u32 = 24;
+use crate::c_enum;
+
+c_enum! {
+    pub struct SevStatus(u32);
+    {
+        SUCCESS = 0;
+        INVALID_PLATFORM_STATE = 1;
+        INVALID_GUEST_STATE = 2;
+        INAVLID_CONFIG = 3;
+        INVALID_LEN = 4;
+        ALREADY_OWNED = 5;
+        INVALID_CERTIFICATE = 6;
+        POLICY_FAILURE = 7;
+        INACTIVE = 8;
+        INVALID_ADDRESS = 9;
+        BAD_SIGNATURE = 10;
+        BAD_MEASUREMENT = 11;
+        ASID_OWNED = 12;
+        INVALID_ASID = 13;
+        WBINVD_REQUIRED = 14;
+        DFFLUSH_REQUIRED = 15;
+        INVALID_GUEST = 16;
+        INVALID_COMMAND = 17;
+        ACTIVE = 18;
+        HWSEV_RET_PLATFORM = 19;
+        HWSEV_RET_UNSAFE = 20;
+        UNSUPPORTED = 21;
+        INVALID_PARAM = 22;
+        RESOURCE_LIMIT = 23;
+        SECURE_DATA_INVALID = 24;
+    }
+}
 
 bitfield! {
     /// AMD SEV guest policy
     ///
     /// From Secure Encrypted Virtualization API Version 0.24, Revision 3.24, Ch.2, Table 2.
-    #[derive(Copy, Clone, Serialize, Deserialize, Help)]
+    #[derive(Copy, Clone, Default, Serialize, Deserialize, Help)]
     pub struct SevPolicy(u32);
     impl Debug;
     pub no_debug, set_no_debug: 0;
@@ -63,7 +70,7 @@ bitfield! {
     /// AMD SEV-SNP guest policy
     ///
     /// From SEV SNP Firmware ABI Specification, Revision 1.55, Sec.4.3, Table 9.
-    #[derive(Copy, Clone, Serialize, Deserialize, Help)]
+    #[derive(Copy, Clone, Default, Serialize, Deserialize, Help)]
     pub struct SnpPolicy(u64);
     impl Debug;
     pub api_minor, set_api_minor: 7,0;

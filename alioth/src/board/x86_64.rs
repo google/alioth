@@ -310,7 +310,7 @@ where
         }
         if let Some(coco) = &self.config.coco {
             match coco {
-                Coco::AmdSev { policy } => self.vm.sev_launch_start(policy.0)?,
+                Coco::AmdSev { policy } => self.vm.sev_launch_start(*policy)?,
                 Coco::AmdSnp { policy } => self.vm.snp_launch_start(*policy)?,
             }
         }

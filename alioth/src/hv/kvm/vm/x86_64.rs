@@ -16,17 +16,14 @@ use std::os::fd::{AsFd, AsRawFd};
 
 use snafu::ResultExt;
 
-use crate::arch::sev::{SnpPageType, SnpPolicy};
+use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::hv::Result;
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 use crate::sys::kvm::kvm_memory_encrypt_op;
 use crate::sys::sev::{
-    KVM_SEV_LAUNCH_FINISH, KVM_SEV_LAUNCH_MEASURE, KVM_SEV_LAUNCH_START,
-    KVM_SEV_LAUNCH_UPDATE_DATA, KVM_SEV_LAUNCH_UPDATE_VMSA, KVM_SEV_SNP_LAUNCH_FINISH,
-    KVM_SEV_SNP_LAUNCH_START, KVM_SEV_SNP_LAUNCH_UPDATE, KvmSevCmd, KvmSevLaunchMeasure,
-    KvmSevLaunchStart, KvmSevLaunchUpdateData, KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart,
-    KvmSevSnpLaunchUpdate,
+    KvmSevCmd, KvmSevCmdId, KvmSevLaunchMeasure, KvmSevLaunchStart, KvmSevLaunchUpdateData,
+    KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KvmSevSnpLaunchUpdate,
 };
 
 #[derive(Debug)]
@@ -35,7 +32,7 @@ pub struct VmArch {
 }
 
 impl KvmVm {
-    pub fn sev_op<T>(&self, cmd: u32, data: Option<&mut T>) -> Result<(), KvmError> {
+    pub fn sev_op<T>(&self, cmd: KvmSevCmdId, data: Option<&mut T>) -> Result<(), KvmError> {
         let Some(sev_fd) = &self.vm.arch.sev_fd else {
             unreachable!("SevFd is not initialized")
         };
@@ -46,18 +43,18 @@ impl KvmVm {
                 None => 0,
             },
             id: cmd,
-            error: 0,
+            error: SevStatus::SUCCESS,
         };
         unsafe { kvm_memory_encrypt_op(&self.vm.fd, &mut req) }.context(kvm_error::SevCmd)?;
         Ok(())
     }
 
-    pub fn kvm_sev_launch_start(&self, policy: u32) -> Result<()> {
+    pub fn kvm_sev_launch_start(&self, policy: SevPolicy) -> Result<()> {
         let mut start = KvmSevLaunchStart {
             policy,
             ..Default::default()
         };
-        self.sev_op(KVM_SEV_LAUNCH_START, Some(&mut start))?;
+        self.sev_op(KvmSevCmdId::LAUNCH_START, Some(&mut start))?;
         Ok(())
     }
 
@@ -66,39 +63,39 @@ impl KvmVm {
             uaddr: range.as_mut_ptr() as u64,
             len: range.len() as u32,
         };
-        self.sev_op(KVM_SEV_LAUNCH_UPDATE_DATA, Some(&mut update_data))?;
+        self.sev_op(KvmSevCmdId::LAUNCH_UPDATE_DATA, Some(&mut update_data))?;
         Ok(())
     }
 
     pub fn kvm_sev_launch_update_vmsa(&self) -> Result<()> {
-        self.sev_op::<()>(KVM_SEV_LAUNCH_UPDATE_VMSA, None)?;
+        self.sev_op::<()>(KvmSevCmdId::LAUNCH_UPDATE_VMSA, None)?;
         Ok(())
     }
 
     pub fn kvm_sev_launch_measure(&self) -> Result<Vec<u8>> {
         let mut empty = KvmSevLaunchMeasure { uaddr: 0, len: 0 };
-        let _ = self.sev_op(KVM_SEV_LAUNCH_MEASURE, Some(&mut empty));
+        let _ = self.sev_op(KvmSevCmdId::LAUNCH_MEASURE, Some(&mut empty));
         assert_ne!(empty.len, 0);
         let mut buf = vec![0u8; empty.len as usize];
         let mut measure = KvmSevLaunchMeasure {
             uaddr: buf.as_mut_ptr() as u64,
             len: buf.len() as u32,
         };
-        self.sev_op(KVM_SEV_LAUNCH_MEASURE, Some(&mut measure))?;
+        self.sev_op(KvmSevCmdId::LAUNCH_MEASURE, Some(&mut measure))?;
         Ok(buf)
     }
 
     pub fn kvm_sev_launch_finish(&self) -> Result<()> {
-        self.sev_op::<()>(KVM_SEV_LAUNCH_FINISH, None)?;
+        self.sev_op::<()>(KvmSevCmdId::LAUNCH_FINISH, None)?;
         Ok(())
     }
 
     pub fn kvm_snp_launch_start(&self, policy: SnpPolicy) -> Result<()> {
         let mut start = KvmSevSnpLaunchStart {
-            policy: policy.0,
+            policy,
             ..Default::default()
         };
-        self.sev_op(KVM_SEV_SNP_LAUNCH_START, Some(&mut start))?;
+        self.sev_op(KvmSevCmdId::SNP_LAUNCH_START, Some(&mut start))?;
         Ok(())
     }
 
@@ -115,13 +112,13 @@ impl KvmVm {
             type_: type_ as _,
             ..Default::default()
         };
-        self.sev_op(KVM_SEV_SNP_LAUNCH_UPDATE, Some(&mut update))?;
+        self.sev_op(KvmSevCmdId::SNP_LAUNCH_UPDATE, Some(&mut update))?;
         Ok(())
     }
 
     pub fn kvm_snp_launch_finish(&self) -> Result<()> {
         let mut finish = KvmSevSnpLaunchFinish::default();
-        self.sev_op(KVM_SEV_SNP_LAUNCH_FINISH, Some(&mut finish))?;
+        self.sev_op(KvmSevCmdId::SNP_LAUNCH_FINISH, Some(&mut finish))?;
         Ok(())
     }
 }

@@ -31,7 +31,7 @@ use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::sev::{SnpPageType, SnpPolicy};
+use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 use crate::ffi;
 use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
 use crate::hv::kvm::{KvmError, kvm_error};
@@ -687,7 +687,7 @@ impl Vm for KvmVm {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn sev_launch_start(&self, policy: u32) -> Result<(), Error> {
+    fn sev_launch_start(&self, policy: SevPolicy) -> Result<(), Error> {
         self.kvm_sev_launch_start(policy)
     }
 

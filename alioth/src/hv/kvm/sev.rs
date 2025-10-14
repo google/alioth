@@ -19,10 +19,10 @@ use std::path::Path;
 
 use snafu::ResultExt;
 
-use crate::arch::sev::SEV_RET_SUCCESS;
+use crate::arch::sev::SevStatus;
 use crate::hv::Result;
 use crate::hv::kvm::kvm_error;
-use crate::sys::sev::{SevIssueCmd, sev_issue_cmd};
+use crate::sys::sev::{SevCmd, SevIssueCmd, sev_issue_cmd};
 
 #[derive(Debug)]
 pub struct SevFd {
@@ -45,14 +45,14 @@ impl SevFd {
     }
 
     #[allow(dead_code)]
-    pub fn issue_cmd<T>(&self, cmd: u32, data: &mut T) -> Result<()> {
+    pub fn issue_cmd<T>(&self, cmd: SevCmd, data: &mut T) -> Result<()> {
         let mut req = SevIssueCmd {
             cmd,
             data: data as *mut T as _,
-            error: 0,
+            error: SevStatus::SUCCESS,
         };
         unsafe { sev_issue_cmd(&self.fd, &mut req) }.context(kvm_error::SevCmd)?;
-        if req.error != SEV_RET_SUCCESS {
+        if req.error != SevStatus::SUCCESS {
             return kvm_error::SevErr { code: req.error }.fail()?;
         }
         Ok(())

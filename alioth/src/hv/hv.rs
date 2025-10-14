@@ -301,7 +301,7 @@ pub trait Vm {
     fn stop_vcpu<T>(&self, id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn sev_launch_start(&self, policy: u32) -> Result<()>;
+    fn sev_launch_start(&self, policy: SevPolicy) -> Result<()>;
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_update_vmsa(&self) -> Result<()>;

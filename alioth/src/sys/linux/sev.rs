@@ -12,55 +12,66 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::ioctl_writeread;
+use crate::arch::sev::{SevPolicy, SevStatus, SnpPolicy};
+use crate::{c_enum, ioctl_writeread};
 
-pub const SEV_PLATFORM_STATUS: u32 = 1;
+c_enum! {
+    pub struct SevCmd(u32);
+    {
+        PLATFORM_STATUS = 1;
+    }
+}
 
 #[repr(C, packed(4))]
 #[derive(Debug, Copy, Clone)]
 pub struct SevIssueCmd {
-    pub cmd: u32,
+    pub cmd: SevCmd,
     pub data: u64,
-    pub error: u32,
+    pub error: SevStatus,
 }
 
 pub const SEV_IOC_TYPE: u8 = b'S';
 
 ioctl_writeread!(sev_issue_cmd, SEV_IOC_TYPE, 0x0, SevIssueCmd);
 
-pub const KVM_SEV_INIT: u32 = 0;
-pub const KVM_SEV_ES_INIT: u32 = 1;
-pub const KVM_SEV_LAUNCH_START: u32 = 2;
-pub const KVM_SEV_LAUNCH_UPDATE_DATA: u32 = 3;
-pub const KVM_SEV_LAUNCH_UPDATE_VMSA: u32 = 4;
-pub const KVM_SEV_LAUNCH_SECRET: u32 = 5;
-pub const KVM_SEV_LAUNCH_MEASURE: u32 = 6;
-pub const KVM_SEV_LAUNCH_FINISH: u32 = 7;
-pub const KVM_SEV_SEND_START: u32 = 8;
-pub const KVM_SEV_SEND_UPDATE_DATA: u32 = 9;
-pub const KVM_SEV_SEND_UPDATE_VMSA: u32 = 10;
-pub const KVM_SEV_SEND_FINISH: u32 = 11;
-pub const KVM_SEV_RECEIVE_START: u32 = 12;
-pub const KVM_SEV_RECEIVE_UPDATE_DATA: u32 = 13;
-pub const KVM_SEV_RECEIVE_UPDATE_VMSA: u32 = 14;
-pub const KVM_SEV_RECEIVE_FINISH: u32 = 15;
-pub const KVM_SEV_GUEST_STATUS: u32 = 16;
-pub const KVM_SEV_DBG_DECRYPT: u32 = 17;
-pub const KVM_SEV_DBG_ENCRYPT: u32 = 18;
-pub const KVM_SEV_CERT_EXPORT: u32 = 19;
-pub const KVM_SEV_GET_ATTESTATION_REPORT: u32 = 20;
-pub const KVM_SEV_SEND_CANCEL: u32 = 21;
-pub const KVM_SEV_INIT2: u32 = 22;
-pub const KVM_SEV_SNP_LAUNCH_START: u32 = 100;
-pub const KVM_SEV_SNP_LAUNCH_UPDATE: u32 = 101;
-pub const KVM_SEV_SNP_LAUNCH_FINISH: u32 = 102;
+c_enum! {
+    pub struct KvmSevCmdId(u32);
+    {
+        INIT = 0;
+        ES_INIT = 1;
+        LAUNCH_START = 2;
+        LAUNCH_UPDATE_DATA = 3;
+        LAUNCH_UPDATE_VMSA = 4;
+        LAUNCH_SECRET = 5;
+        LAUNCH_MEASURE = 6;
+        LAUNCH_FINISH = 7;
+        SEND_START = 8;
+        SEND_UPDATE_DATA = 9;
+        SEND_UPDATE_VMSA = 10;
+        SEND_FINISH = 11;
+        RECEIVE_START = 12;
+        RECEIVE_UPDATE_DATA = 13;
+        RECEIVE_UPDATE_VMSA = 14;
+        RECEIVE_FINISH = 15;
+        GUEST_STATUS = 16;
+        DBG_DECRYPT = 17;
+        DBG_ENCRYPT = 18;
+        CERT_EXPORT = 19;
+        GET_ATTESTATION_REPORT = 20;
+        SEND_CANCEL = 21;
+        INIT2 = 22;
+        SNP_LAUNCH_START = 100;
+        SNP_LAUNCH_UPDATE = 101;
+        SNP_LAUNCH_FINISH = 102;
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct KvmSevCmd {
-    pub id: u32,
+    pub id: KvmSevCmdId,
     pub data: u64,
-    pub error: u32,
+    pub error: SevStatus,
     pub sev_fd: u32,
 }
 
@@ -78,7 +89,7 @@ pub struct KvmSevInit {
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmSevLaunchStart {
     pub handle: u32,
-    pub policy: u32,
+    pub policy: SevPolicy,
     pub dh_uaddr: u64,
     pub dh_len: u32,
     pub session_uaddr: u64,
@@ -184,7 +195,7 @@ pub struct KvmSevReceiveUpdateData {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmSevSnpLaunchStart {
-    pub policy: u64,
+    pub policy: SnpPolicy,
     pub gosvw: [u8; 16],
     pub flags: u16,
     pub pad0: [u8; 6],

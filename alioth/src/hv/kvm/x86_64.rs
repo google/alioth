@@ -25,7 +25,7 @@ use crate::sys::kvm::{
     kvm_create_guest_memfd, kvm_create_irqchip, kvm_enable_cap, kvm_set_identity_map_addr,
     kvm_set_tss_addr,
 };
-use crate::sys::sev::{KVM_SEV_ES_INIT, KVM_SEV_INIT, KVM_SEV_INIT2, KvmSevInit};
+use crate::sys::sev::{KvmSevCmdId, KvmSevInit};
 
 impl Kvm {
     pub(super) fn determine_vm_type(config: &VmConfig) -> Result<KvmVmType> {
@@ -73,9 +73,9 @@ impl Kvm {
             match config.coco.as_ref() {
                 Some(Coco::AmdSev { policy }) => {
                     if policy.es() {
-                        kvm_vm.sev_op::<()>(KVM_SEV_ES_INIT, None)?;
+                        kvm_vm.sev_op::<()>(KvmSevCmdId::ES_INIT, None)?;
                     } else {
-                        kvm_vm.sev_op::<()>(KVM_SEV_INIT, None)?;
+                        kvm_vm.sev_op::<()>(KvmSevCmdId::INIT, None)?;
                     }
                 }
                 Some(Coco::AmdSnp { .. }) => {
@@ -98,7 +98,7 @@ impl Kvm {
                         )?;
                     }
                     let mut init = KvmSevInit::default();
-                    kvm_vm.sev_op(KVM_SEV_INIT2, Some(&mut init))?;
+                    kvm_vm.sev_op(KvmSevCmdId::INIT2, Some(&mut init))?;
                     log::debug!("{}: snp init: {init:#x?}", kvm_vm.vm);
                 }
                 _ => {}
