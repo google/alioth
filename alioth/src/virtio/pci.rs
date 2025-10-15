@@ -685,7 +685,7 @@ where
                 vendor: VIRTIO_VENDOR_ID,
                 device: VIRTIO_DEVICE_ID_BASE + dev.id as u16,
                 revision: 0x1,
-                header_type: HeaderType::Device as u8,
+                header_type: HeaderType::DEVICE,
                 class,
                 subclass,
                 ..Default::default()

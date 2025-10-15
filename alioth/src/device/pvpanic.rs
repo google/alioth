@@ -66,7 +66,7 @@ impl PvPanic {
                 vendor: PVPANIC_VENDOR_ID,
                 device: PVPANIC_DEVICE_ID,
                 revision: 1,
-                header_type: HeaderType::Device as u8,
+                header_type: HeaderType::DEVICE,
                 class: 0x08,
                 subclass: 0x80,
                 ..Default::default()

@@ -367,13 +367,11 @@ where
         cdev.dev.fd().read_at(&mut buf, region_config.offset)?;
 
         let (mut dev_header, _) = DeviceHeader::read_from_prefix(&buf).unwrap();
-        dev_header.common.header_type &= !(1 << 7);
-        if dev_header.common.header_type != HeaderType::Device as u8 {
-            return error::NotSupportedHeader {
-                ty: dev_header.common.header_type,
-            }
-            .fail();
+        let header_type = dev_header.common.header_type.raw() & !(1 << 7);
+        if header_type != HeaderType::DEVICE.raw() {
+            return error::NotSupportedHeader { ty: header_type }.fail();
         }
+        dev_header.common.header_type = HeaderType::DEVICE;
         dev_header.intx_pin = 0;
         dev_header.common.command = Command::empty();
 

@@ -36,7 +36,7 @@ impl HostBridge {
                 device: 0x1480,
                 class: 0x06,
                 subclass: 0x00,
-                header_type: HeaderType::Device as u8,
+                header_type: HeaderType::DEVICE,
                 ..Default::default()
             },
             ..Default::default()

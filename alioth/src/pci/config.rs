@@ -25,7 +25,7 @@ use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar};
-use crate::{assign_bits, impl_mmio_for_zerocopy, mask_bits, mem};
+use crate::{assign_bits, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
 
 pub trait PciConfigArea: Mmio {
     fn reset(&self);
@@ -108,11 +108,13 @@ impl std::fmt::Debug for Status {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum HeaderType {
-    Device = 0,
-    Bridge = 1,
+c_enum! {
+    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
+    pub struct HeaderType(u8);
+    {
+        DEVICE = 0;
+        BRIDGE = 1;
+    }
 }
 
 #[derive(Debug, Clone, Default, FromBytes, Immutable, KnownLayout, IntoBytes, Layout)]
@@ -128,7 +130,7 @@ pub struct CommonHeader {
     pub class: u8,
     pub cache_line_size: u8,
     pub latency_timer: u8,
-    pub header_type: u8,
+    pub header_type: HeaderType,
     pub bist: u8,
 }
 
