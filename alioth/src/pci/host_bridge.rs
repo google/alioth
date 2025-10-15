@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "host_bridge_test.rs"]
+mod tests;
+
 use crate::pci;
 use crate::pci::cap::PciCapList;
 use crate::pci::config::{CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig};
