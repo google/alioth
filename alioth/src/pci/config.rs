@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "config_test.rs"]
+mod tests;
+
+use std::cmp::max;
 use std::iter::zip;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -252,9 +257,9 @@ impl ChangeLayout for MoveBarCallback {
 
 #[derive(Debug)]
 pub struct HeaderData {
-    pub header: ConfigHeader,
-    pub bar_masks: [u32; 6],
-    pub bdf: Bdf,
+    header: ConfigHeader,
+    bar_masks: [u32; 6],
+    bdf: Bdf,
 }
 
 impl HeaderData {
@@ -401,6 +406,41 @@ pub struct EmulatedHeader {
 }
 
 impl EmulatedHeader {
+    pub fn new(header: ConfigHeader, bars: [PciBar; 6]) -> Self {
+        let mut bar_masks = [0u32; 6];
+        let mut mask_hi = 0;
+        for ((bar, val), mask) in bars.iter().zip(header.bars()).zip(&mut bar_masks) {
+            match bar {
+                PciBar::Empty => {
+                    *mask = mask_hi;
+                    mask_hi = 0;
+                }
+                PciBar::Io(region) => {
+                    debug_assert_eq!(val & BAR_IO_MASK, BAR_IO);
+                    let size = max(region.size().next_power_of_two(), 1 << 2);
+                    *mask = !(size - 1) as u32;
+                }
+                PciBar::Mem(region) => {
+                    debug_assert_ne!(val & BAR_IO_MASK, BAR_IO);
+                    let size = max(region.size().next_power_of_two(), 4 << 10);
+                    let mask_64 = !(size - 1);
+                    *mask = mask_64 as u32;
+                    if BAR_MEM64 & val == BAR_MEM64 {
+                        mask_hi = (mask_64 >> 32) as u32;
+                    }
+                }
+            }
+        }
+        Self {
+            data: Arc::new(RwLock::new(HeaderData {
+                header,
+                bar_masks,
+                bdf: Bdf(0),
+            })),
+            bars,
+        }
+    }
+
     pub fn set_bdf(&self, bdf: Bdf) {
         self.data.write().bdf = bdf
     }
@@ -476,7 +516,6 @@ impl Mmio for EmulatedConfig {
 impl EmulatedConfig {
     pub fn new_device(
         mut header: DeviceHeader,
-        bar_masks: [u32; 6],
         bars: [PciBar; 6],
         caps: PciCapList,
     ) -> EmulatedConfig {
@@ -484,15 +523,10 @@ impl EmulatedConfig {
             header.common.status |= Status::CAP;
             header.capability_pointer = size_of::<DeviceHeader>() as u8;
         }
-        let header = EmulatedHeader {
-            data: Arc::new(RwLock::new(HeaderData {
-                header: ConfigHeader::Device(header),
-                bar_masks,
-                bdf: Bdf(0),
-            })),
-            bars,
-        };
-        EmulatedConfig { header, caps }
+        EmulatedConfig {
+            header: EmulatedHeader::new(ConfigHeader::Device(header), bars),
+            caps,
+        }
     }
 }
 

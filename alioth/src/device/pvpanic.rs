@@ -74,14 +74,13 @@ impl PvPanic {
             bars: [BAR_MEM64 | BAR_PREFETCHABLE, 0, 0, 0, 0, 0],
             ..Default::default()
         };
-        let bar_masks = [!(BAR_SIZE as u32 - 1), 0xffff_ffff, 0, 0, 0, 0];
         let bar0 = PciBar::Mem(Arc::new(MemRegion::with_emulated(
             Arc::new(PvPanicBar::<BAR_SIZE>),
             mem::MemRegionType::Hidden,
         )));
         let mut bars = [const { PciBar::Empty }; 6];
         bars[0] = bar0;
-        let config = EmulatedConfig::new_device(header, bar_masks, bars, PciCapList::new());
+        let config = EmulatedConfig::new_device(header, bars, PciCapList::new());
         PvPanic { config }
     }
 }

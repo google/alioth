@@ -37,10 +37,10 @@ use crate::pci::cap::{
     NullCap, PciCapHdr, PciCapId,
 };
 use crate::pci::config::{
-    BAR_IO, BAR_MEM64, Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader,
-    HeaderData, HeaderType, PciConfig, PciConfigArea, Status,
+    BAR_IO, Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderType,
+    PciConfig, PciConfigArea, Status,
 };
-use crate::pci::{self, Bdf, Pci, PciBar};
+use crate::pci::{self, Pci, PciBar};
 use crate::sys::vfio::{
     VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo,
     VfioRegionInfoFlag,
@@ -506,8 +506,6 @@ where
         });
 
         let mut bars = [const { PciBar::Empty }; 6];
-        let mut bar_masks = [0u32; 6];
-
         let bar_vals = config_header.bars();
 
         for index in VfioPciRegion::BAR0.raw()..=VfioPciRegion::BAR5.raw() {
@@ -536,8 +534,6 @@ where
             };
             let index = index as usize;
             let bar_val = bar_vals[index];
-            let region_mask = !(region_info.size.next_power_of_two() - 1);
-            bar_masks[index] = region_mask as u32;
             if bar_val & BAR_IO == BAR_IO {
                 let MemRange::Emulated(range) = &region.ranges[0] else {
                     unreachable!()
@@ -546,9 +542,6 @@ where
                     range: range.clone(),
                     callbacks: Mutex::new(vec![]),
                 }))
-            } else if bar_val & BAR_MEM64 == BAR_MEM64 {
-                bar_masks[index + 1] = (region_mask >> 32) as u32;
-                bars[index] = PciBar::Mem(Arc::new(region));
             } else {
                 bars[index] = PciBar::Mem(Arc::new(region));
             }
@@ -556,14 +549,7 @@ where
 
         Ok(VfioPciDev {
             config: PciPthConfig {
-                header: EmulatedHeader {
-                    data: Arc::new(RwLock::new(HeaderData {
-                        header: config_header,
-                        bar_masks,
-                        bdf: Bdf(0),
-                    })),
-                    bars,
-                },
+                header: EmulatedHeader::new(config_header, bars),
                 extra: extra_areas,
                 dev: cdev,
             },
