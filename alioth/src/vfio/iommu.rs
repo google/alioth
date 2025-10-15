@@ -24,9 +24,9 @@ use crate::errors::BoxTrace;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged};
 use crate::sys::vfio::{
-    IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap,
+    IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap, iommu_destroy,
+    iommu_ioas_alloc, iommu_ioas_map, iommu_ioas_unmap,
 };
-use crate::vfio::ioctls::{iommu_destroy, iommu_ioas_alloc, iommu_ioas_map, iommu_ioas_unmap};
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]

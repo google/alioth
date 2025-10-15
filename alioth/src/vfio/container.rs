@@ -25,8 +25,8 @@ use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged};
 use crate::sys::vfio::{
     VfioDmaMapFlag, VfioDmaUnmapFlag, VfioIommu, VfioIommuType1DmaMap, VfioIommuType1DmaUnmap,
+    vfio_iommu_map_dma, vfio_iommu_unmap_dma, vfio_set_iommu,
 };
-use crate::vfio::ioctls::{vfio_iommu_map_dma, vfio_iommu_unmap_dma, vfio_set_iommu};
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]

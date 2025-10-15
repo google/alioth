@@ -16,7 +16,6 @@ pub mod cdev;
 pub mod container;
 pub mod device;
 pub mod group;
-pub mod ioctls;
 pub mod iommu;
 pub mod pci;
 

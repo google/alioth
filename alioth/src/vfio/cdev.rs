@@ -23,11 +23,9 @@ use snafu::ResultExt;
 
 use crate::sys::vfio::{
     VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt,
-};
-use crate::vfio::device::Device;
-use crate::vfio::ioctls::{
     vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd, vfio_device_detach_iommufd_pt,
 };
+use crate::vfio::device::Device;
 use crate::vfio::iommu::Ioas;
 use crate::vfio::{Result, error};
 

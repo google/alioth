@@ -21,13 +21,10 @@ use std::os::unix::fs::FileExt;
 use crate::mem;
 use crate::sys::vfio::{
     VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq,
-    VfioRegionInfo,
+    VfioRegionInfo, vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info,
+    vfio_device_reset, vfio_device_set_irqs,
 };
 use crate::vfio::Result;
-use crate::vfio::ioctls::{
-    vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset,
-    vfio_device_set_irqs,
-};
 
 pub trait Device: Debug + Send + Sync + 'static {
     fn fd(&self) -> &File;

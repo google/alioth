@@ -20,12 +20,11 @@ use std::sync::Arc;
 
 use snafu::ResultExt;
 
-use crate::sys::vfio::VfioIommu;
+use crate::sys::vfio::{
+    VfioIommu, vfio_group_get_device_fd, vfio_group_set_container, vfio_group_unset_container,
+};
 use crate::vfio::container::Container;
 use crate::vfio::device::Device;
-use crate::vfio::ioctls::{
-    vfio_group_get_device_fd, vfio_group_set_container, vfio_group_unset_container,
-};
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]
