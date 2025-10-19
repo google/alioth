@@ -97,7 +97,7 @@ impl PciBus {
 
         #[cfg(target_arch = "x86_64")]
         segment.add(
-            Bdf(0),
+            Bdf::new(0, 0, 0),
             PciDevice::new("host_bridge", Arc::new(HostBridge::new())),
         );
 

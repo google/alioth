@@ -141,7 +141,7 @@ fn test_emulated_header_write_bar(
 ) {
     let header = fixture_emulated_header();
     header.set_command(command);
-    let bdf = Bdf(1 << 3);
+    let bdf = Bdf::new(0, 1, 0);
     header.set_bdf(bdf);
 
     let old_val = header

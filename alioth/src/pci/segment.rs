@@ -39,7 +39,7 @@ impl Pci for EmptyDevice {
 #[derive(Debug)]
 pub struct PciSegment {
     devices: RwLock<HashMap<Bdf, PciDevice>>,
-    next_bdf: Mutex<u16>,
+    next_bdf: Mutex<Bdf>,
     placeholder: Arc<dyn Pci>,
 }
 
@@ -47,7 +47,7 @@ impl PciSegment {
     pub fn new() -> Self {
         Self {
             devices: RwLock::new(HashMap::new()),
-            next_bdf: Mutex::new(0),
+            next_bdf: Mutex::new(Bdf::new(0, 0, 0)),
             placeholder: Arc::new(EmptyDevice),
         }
     }
@@ -84,16 +84,16 @@ impl PciSegment {
                 }
             }
             None => {
-                let mut next_dev = self.next_bdf.lock();
-                let init = *next_dev;
+                let mut next_bdf = self.next_bdf.lock();
+                let init = *next_bdf;
                 loop {
-                    let bdf = Bdf(*next_dev);
-                    *next_dev = next_dev.wrapping_add(8);
+                    let bdf = *next_bdf;
+                    *next_bdf = Bdf(next_bdf.0.wrapping_add(8));
                     match self.add(bdf, empty_dev) {
                         None => break Some(bdf),
                         Some(d) => empty_dev = d,
                     }
-                    if *next_dev == init {
+                    if *next_bdf == init {
                         break None;
                     }
                 }
