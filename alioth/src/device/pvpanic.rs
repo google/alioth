@@ -35,12 +35,14 @@ bitflags! {
 const PVPANIC_VENDOR_ID: u16 = 0x1b36;
 const PVPANIC_DEVICE_ID: u16 = 0x0011;
 
-#[derive(Debug)]
-struct PvPanicBar<const N: u64>;
+const BAR_SIZE: u64 = 0x1000;
 
-impl<const N: u64> Mmio for PvPanicBar<N> {
+#[derive(Debug)]
+struct PvPanicBar;
+
+impl Mmio for PvPanicBar {
     fn size(&self) -> u64 {
-        N
+        BAR_SIZE
     }
 
     fn read(&self, _offset: u64, _size: u8) -> mem::Result<u64> {
@@ -60,7 +62,6 @@ pub struct PvPanic {
 
 impl PvPanic {
     pub fn new() -> Self {
-        const BAR_SIZE: u64 = 0x1000;
         let header = DeviceHeader {
             common: CommonHeader {
                 vendor: PVPANIC_VENDOR_ID,
@@ -75,7 +76,7 @@ impl PvPanic {
             ..Default::default()
         };
         let bar0 = PciBar::Mem(Arc::new(MemRegion::with_emulated(
-            Arc::new(PvPanicBar::<BAR_SIZE>),
+            Arc::new(PvPanicBar),
             mem::MemRegionType::Hidden,
         )));
         let mut bars = [const { PciBar::Empty }; 6];
