@@ -443,8 +443,7 @@ where
     // Documentation/devicetree/bindings/pci/host-generic-pci.yaml
     // IEEE Std 1275-1994
     fn create_pci_bridge_node(&self, root: &mut Node) {
-        let devices = self.pci_bus.segment.devices.read();
-        let Some(max_bus) = devices.keys().map(|bdf| bdf.bus()).max() else {
+        let Some(max_bus) = self.pci_bus.segment.max_bus() else {
             return;
         };
         let pcie_mmio_64_start = self.config.pcie_mmio_64_start();

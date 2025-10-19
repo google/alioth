@@ -45,7 +45,6 @@ use crate::loader::{ExecType, InitState, Payload, firmware, linux};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
-use crate::pci::Bdf;
 use crate::pci::bus::PciBus;
 #[cfg(target_os = "linux")]
 use crate::vfio::container::Container;
@@ -82,11 +81,8 @@ pub enum Error {
         id: u32,
         source: Box<crate::hv::Error>,
     },
-    #[snafu(display("Failed to reset PCI {bdf}"))]
-    ResetPci {
-        bdf: Bdf,
-        source: Box<crate::pci::Error>,
-    },
+    #[snafu(display("Failed to reset PCI devices"))]
+    ResetPci { source: Box<crate::pci::Error> },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
     #[snafu(display("Failed to notify the VMM thread"))]
@@ -239,7 +235,7 @@ where
             )),
         )?;
         let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
-        self.pci_bus.assign_resources(&[
+        self.pci_bus.segment.assign_resources(&[
             (0x1000, 0x10000),
             (
                 PCIE_MMIO_32_NON_PREFETCHABLE_START,
@@ -361,11 +357,7 @@ where
             self.sync_vcpus(&vcpus)?;
 
             if id == 0 {
-                let devices = self.pci_bus.segment.devices.read();
-                for (bdf, dev) in devices.iter() {
-                    dev.dev.reset().context(error::ResetPci { bdf: *bdf })?;
-                    dev.dev.config().reset();
-                }
+                self.pci_bus.segment.reset().context(error::ResetPci)?;
                 self.memory.reset()?;
             }
             self.reset_vcpu(id, vcpu)?;

@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::iter::zip;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
-use crate::pci::config::PciConfig;
+use crate::pci::config::{BAR_IO, BAR_MEM64, BAR_PREFETCHABLE, PciConfig};
 use crate::pci::{Bdf, Pci, PciDevice, Result};
+use crate::{align_up, mem};
 
 #[derive(Debug)]
 struct EmptyDevice;
@@ -37,11 +38,23 @@ impl Pci for EmptyDevice {
 
 #[derive(Debug)]
 pub struct PciSegment {
-    pub devices: RwLock<HashMap<Bdf, PciDevice>>,
-    pub(super) next_bdf: Mutex<u16>,
+    devices: RwLock<HashMap<Bdf, PciDevice>>,
+    next_bdf: Mutex<u16>,
 }
 
 impl PciSegment {
+    pub fn new() -> Self {
+        Self {
+            devices: RwLock::new(HashMap::new()),
+            next_bdf: Mutex::new(0),
+        }
+    }
+
+    pub fn max_bus(&self) -> Option<u8> {
+        let devices = self.devices.read();
+        devices.keys().map(|bdf| bdf.bus()).max()
+    }
+
     fn add_dev(
         configs: &mut HashMap<Bdf, PciDevice>,
         bdf: Bdf,
@@ -89,6 +102,89 @@ impl PciSegment {
     pub fn add(&self, bdf: Bdf, config: PciDevice) -> Option<PciDevice> {
         let mut configs = self.devices.write();
         Self::add_dev(&mut configs, bdf, config)
+    }
+
+    /// Assigns addresses to all devices' base address registers
+    ///
+    /// `resources` is an array of 4 `(start, end)` tuples, corresponds to
+    ///
+    /// - IO space,
+    /// - 32-bit non-prefetchable memory space,
+    /// - 32-bit prefetchable memory space,
+    /// - 64-bit prefetchable memory space,
+    ///
+    /// respectively.
+    pub fn assign_resources(&self, resources: &[(u64, u64); 4]) {
+        let mut bar_lists = [const { vec![] }; 4];
+        let devices = self.devices.read();
+        for (bdf, dev) in devices.iter() {
+            let config = dev.dev.config();
+            let header = config.get_header().data.read();
+            let mut index = 0;
+            while index < 6 {
+                let bar_index = index;
+                index += 1;
+                let (val, mask) = header.get_bar(bar_index);
+                let mut mask = mask as u64;
+                if val & BAR_MEM64 == BAR_MEM64 {
+                    let (_, mask_hi) = header.get_bar(bar_index + 1);
+                    mask |= (mask_hi as u64) << 32;
+                    index += 1;
+                }
+                if mask == 0 {
+                    continue;
+                }
+                let bar_list = if val & BAR_IO == BAR_IO {
+                    &mut bar_lists[0]
+                } else if val & (BAR_MEM64 | BAR_PREFETCHABLE) == BAR_MEM64 | BAR_PREFETCHABLE {
+                    &mut bar_lists[3]
+                } else if val & (BAR_MEM64 | BAR_PREFETCHABLE) == BAR_MEM64 {
+                    unreachable!("{bdf}: BAR {index} is 64-bit but not prefetchable")
+                } else if val & BAR_PREFETCHABLE == BAR_PREFETCHABLE {
+                    &mut bar_lists[2]
+                } else {
+                    &mut bar_lists[1]
+                };
+                bar_list.push((*bdf, dev, bar_index, 1 << mask.trailing_zeros()));
+            }
+        }
+        for bar_list in bar_lists.iter_mut() {
+            bar_list.sort_by_key(|(bdf, _, index, size)| (u64::MAX - size, *bdf, *index));
+        }
+        for (bar_list, (start, end)) in zip(bar_lists, resources) {
+            let mut addr = *start;
+            for (bdf, dev, index, size) in bar_list {
+                let config = dev.dev.config();
+                let mut header = config.get_header().data.write();
+                let aligned_addr = align_up!(addr, size.trailing_zeros());
+                if aligned_addr + size > *end {
+                    log::error!(
+                        "{bdf}: cannot map BAR {index} into address range {start:#x}..{end:#x}"
+                    );
+                    continue;
+                }
+                header.set_bar(index, aligned_addr as u32);
+                if aligned_addr > u32::MAX as u64 {
+                    header.set_bar(index + 1, (aligned_addr >> 32) as u32);
+                }
+                addr = aligned_addr + size;
+            }
+        }
+    }
+
+    pub fn reset(&self) -> Result<()> {
+        let devices = self.devices.read();
+        for (_, dev) in devices.iter() {
+            dev.dev.reset()?;
+            dev.dev.config().reset();
+        }
+        Ok(())
+    }
+}
+
+impl Default for PciSegment {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
