@@ -36,8 +36,8 @@ bitflags! {
     }
 }
 
-const PVPANIC_VENDOR_ID: u16 = 0x1b36;
-const PVPANIC_DEVICE_ID: u16 = 0x0011;
+pub const PVPANIC_VENDOR_ID: u16 = 0x1b36;
+pub const PVPANIC_DEVICE_ID: u16 = 0x0011;
 
 const BAR_SIZE: u64 = 0x1000;
 
