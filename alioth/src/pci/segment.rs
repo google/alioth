@@ -85,15 +85,18 @@ impl PciSegment {
             }
             None => {
                 let mut next_dev = self.next_bdf.lock();
-                for _ in 0..(u16::MAX >> 3) {
+                let init = *next_dev;
+                loop {
                     let bdf = Bdf(*next_dev);
-                    *next_dev += 8;
+                    *next_dev = next_dev.wrapping_add(8);
                     match self.add(bdf, empty_dev) {
-                        None => return Some(bdf),
+                        None => break Some(bdf),
                         Some(d) => empty_dev = d,
                     }
+                    if *next_dev == init {
+                        break None;
+                    }
                 }
-                None
             }
         }
     }
