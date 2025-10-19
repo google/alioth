@@ -56,7 +56,7 @@ impl SlotBackend for Box<dyn PciConfigArea> {
     }
 }
 
-#[derive(Clone, Copy, Default, IntoBytes, FromBytes, KnownLayout, Immutable)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, IntoBytes, FromBytes, KnownLayout, Immutable)]
 #[repr(transparent)]
 pub struct Command(u16);
 
@@ -157,8 +157,12 @@ pub struct DeviceHeader {
 }
 impl_mmio_for_zerocopy!(DeviceHeader);
 
-pub const OFFSET_BAR0: usize = DeviceHeader::OFFSET_BARS;
-pub const OFFSET_BAR5: usize = OFFSET_BAR0 + 5 * size_of::<u32>();
+pub const fn offset_bar(index: usize) -> usize {
+    DeviceHeader::OFFSET_BARS + index * size_of::<u32>()
+}
+
+pub const OFFSET_BAR0: usize = offset_bar(0);
+pub const OFFSET_BAR5: usize = offset_bar(5);
 
 pub const BAR_PREFETCHABLE: u32 = 0b1000;
 pub const BAR_MEM64: u32 = 0b0100;

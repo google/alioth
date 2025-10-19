@@ -20,7 +20,12 @@ use crate::mem::addressable::{Addressable, SlotBackend};
 use crate::mem::{Memory, Result};
 use crate::utils::truncate_u64;
 
+#[cfg(not(test))]
 pub trait ChangeLayout: Debug + Send + Sync + 'static {
+    fn change(&self, memory: &Memory) -> Result<()>;
+}
+#[cfg(test)]
+pub trait ChangeLayout: Debug + Send + Sync + std::any::Any + 'static {
     fn change(&self, memory: &Memory) -> Result<()>;
 }
 
