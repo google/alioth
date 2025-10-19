@@ -110,8 +110,8 @@ impl PciBus {
         }
     }
 
-    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<str>) -> Option<Bdf> {
-        self.segment.reserve(bdf, name)
+    pub fn reserve(&self, bdf: Option<Bdf>) -> Option<Bdf> {
+        self.segment.reserve(bdf)
     }
 
     pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {

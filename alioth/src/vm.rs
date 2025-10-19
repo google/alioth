@@ -205,7 +205,7 @@ where
         let bdf = if let Some(bdf) = bdf {
             bdf
         } else {
-            self.board.pci_bus.reserve(None, name.clone()).unwrap()
+            self.board.pci_bus.reserve(None).unwrap()
         };
         dev.dev.config().get_header().set_bdf(bdf);
         self.board.pci_bus.add(bdf, dev);
@@ -250,7 +250,7 @@ where
             return error::MemNotSharedFd.fail();
         }
         let name = name.into();
-        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
+        let bdf = self.board.pci_bus.reserve(None).unwrap();
         let dev = param.build(name.clone())?;
         if let Some(callback) = dev.mem_update_callback() {
             self.board.memory.register_update_callback(callback)?;
@@ -357,7 +357,7 @@ impl Machine<Kvm> {
         let mut cdev = Cdev::new(&param.path)?;
         cdev.attach_iommu_ioas(ioas.clone())?;
 
-        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
+        let bdf = self.board.pci_bus.reserve(None).unwrap();
         let msi_sender = self.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
@@ -421,7 +421,7 @@ impl Machine<Kvm> {
     }
 
     fn add_vfio_devfd(&self, name: Arc<str>, devfd: DevFd) -> Result<()> {
-        let bdf = self.board.pci_bus.reserve(None, name.clone()).unwrap();
+        let bdf = self.board.pci_bus.reserve(None).unwrap();
         let msi_sender = self.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),

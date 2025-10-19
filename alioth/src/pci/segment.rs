@@ -40,6 +40,7 @@ impl Pci for EmptyDevice {
 pub struct PciSegment {
     devices: RwLock<HashMap<Bdf, PciDevice>>,
     next_bdf: Mutex<u16>,
+    placeholder: Arc<dyn Pci>,
 }
 
 impl PciSegment {
@@ -47,6 +48,7 @@ impl PciSegment {
         Self {
             devices: RwLock::new(HashMap::new()),
             next_bdf: Mutex::new(0),
+            placeholder: Arc::new(EmptyDevice),
         }
     }
 
@@ -55,14 +57,10 @@ impl PciSegment {
         devices.keys().map(|bdf| bdf.bus()).max()
     }
 
-    fn add_dev(
-        configs: &mut HashMap<Bdf, PciDevice>,
-        bdf: Bdf,
-        dev: PciDevice,
-    ) -> Option<PciDevice> {
-        let name = dev.name.clone();
+    pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {
+        let mut configs = self.devices.write();
         if let Some(exist_dev) = configs.insert(bdf, dev) {
-            if exist_dev.name == name {
+            if Arc::ptr_eq(&exist_dev.dev, &self.placeholder) {
                 None
             } else {
                 configs.insert(bdf, exist_dev)
@@ -72,16 +70,17 @@ impl PciSegment {
         }
     }
 
-    pub fn reserve(&self, bdf: Option<Bdf>, name: Arc<str>) -> Option<Bdf> {
+    pub fn reserve(&self, bdf: Option<Bdf>) -> Option<Bdf> {
         let mut empty_dev = PciDevice {
-            name: name.clone(),
-            dev: Arc::new(EmptyDevice),
+            name: "Place Holder".into(),
+            dev: self.placeholder.clone(),
         };
-        let mut configs = self.devices.write();
         match bdf {
             Some(bdf) => {
-                if Self::add_dev(&mut configs, bdf, empty_dev).is_none() {
-                    return Some(bdf);
+                if self.add(bdf, empty_dev).is_none() {
+                    Some(bdf)
+                } else {
+                    None
                 }
             }
             None => {
@@ -89,19 +88,14 @@ impl PciSegment {
                 for _ in 0..(u16::MAX >> 3) {
                     let bdf = Bdf(*next_dev);
                     *next_dev += 8;
-                    match Self::add_dev(&mut configs, bdf, empty_dev) {
+                    match self.add(bdf, empty_dev) {
                         None => return Some(bdf),
                         Some(d) => empty_dev = d,
                     }
                 }
+                None
             }
-        };
-        None
-    }
-
-    pub fn add(&self, bdf: Bdf, config: PciDevice) -> Option<PciDevice> {
-        let mut configs = self.devices.write();
-        Self::add_dev(&mut configs, bdf, config)
+        }
     }
 
     /// Assigns addresses to all devices' base address registers
