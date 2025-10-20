@@ -50,10 +50,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Install tools
-        run: |
-          cargo install cargo-tarpaulin cargo-update && \
-          cargo install-update -a
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
       - name: Build
         run: cargo build --verbose
       - name: Format
