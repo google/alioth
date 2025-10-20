@@ -1,0 +1,4 @@
+[test_config]
+exclude-files = ["**/*_test.rs"]
+skip-clean = true
+target-dir = "target/tarpaulin"
