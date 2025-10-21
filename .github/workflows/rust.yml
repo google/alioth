@@ -51,7 +51,11 @@ jobs:
         with:
           components: clippy
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@cargo-tarpaulin
+        uses: taiki-e/install-action@e43a5023a747770bfcb71ae048541a681714b951 # v2.62.33
+        with:
+          tool: cargo-tarpaulin,cargo-deny
+      - name: Check dependencies
+        run: cargo deny check
       - name: Build
         run: cargo build --verbose
       - name: Format
