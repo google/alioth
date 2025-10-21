@@ -74,6 +74,22 @@ fn test_pci_io_bus() {
     assert_matches!(io_bus.write(8, 1, 1), Ok(Action::None));
 }
 
+#[test]
+fn test_pci_io_bus_unaligned_address_access() {
+    let io_bus = PciIoBus {
+        address: AtomicU32::new(0),
+        segment: Arc::new(PciSegment::new()),
+    };
+
+    let reg_addr = Address::new(true, 0, 1, 0, offset_bar(0) as u8);
+    assert_matches!(io_bus.write(0, 4, reg_addr.0 as u64), Ok(Action::None));
+
+    assert_matches!(io_bus.write(0, 2, 0x12345678), Ok(Action::None));
+    assert_matches!(io_bus.read(0, 2), Ok(0));
+
+    assert_eq!(io_bus.read(0, 4).unwrap(), reg_addr.0 as u64);
+}
+
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn test_host_bridge() {

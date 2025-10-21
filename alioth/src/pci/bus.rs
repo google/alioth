@@ -61,8 +61,11 @@ impl Mmio for PciIoBus {
     fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         match offset {
             0 => {
-                assert_eq!(size, 4);
-                Ok(self.address.load(Ordering::Acquire) as u64)
+                if size == 4 {
+                    Ok(self.address.load(Ordering::Acquire) as u64)
+                } else {
+                    Ok(0)
+                }
             }
             4..=7 => {
                 let addr = Address(self.address.load(Ordering::Acquire));
@@ -76,8 +79,9 @@ impl Mmio for PciIoBus {
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         match offset {
             0 => {
-                assert_eq!(size, 4);
-                self.address.store(val as u32, Ordering::Release);
+                if size == 4 {
+                    self.address.store(val as u32, Ordering::Release);
+                }
                 Ok(Action::None)
             }
             4..=7 => {
