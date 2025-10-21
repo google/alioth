@@ -69,8 +69,12 @@ impl Mmio for PciIoBus {
             }
             4..=7 => {
                 let addr = Address(self.address.load(Ordering::Acquire));
-                self.segment
-                    .read(addr.to_ecam_addr() | (offset & 0b11), size)
+                if addr.enabled() {
+                    let ecam_addr = addr.to_ecam_addr() | (offset & 0b11);
+                    self.segment.read(ecam_addr, size)
+                } else {
+                    Ok(0)
+                }
             }
             _ => Ok(0),
         }
@@ -86,8 +90,12 @@ impl Mmio for PciIoBus {
             }
             4..=7 => {
                 let addr = Address(self.address.load(Ordering::Acquire));
-                self.segment
-                    .write(addr.to_ecam_addr() | (offset & 0b11), size, val)
+                if addr.enabled() {
+                    let ecam_addr = addr.to_ecam_addr() | (offset & 0b11);
+                    self.segment.write(ecam_addr, size, val)
+                } else {
+                    Ok(Action::None)
+                }
             }
             _ => Ok(Action::None),
         }
