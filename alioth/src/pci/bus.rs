@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "bus_test.rs"]
+mod tests;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -28,11 +32,12 @@ bitfield! {
     #[derive(Copy, Clone, Default)]
     struct Address(u32);
     impl Debug;
-    enabled, _: 31;
-    bus, _: 23, 16;
-    dev, _: 15, 11;
-    func, _: 10, 8;
-    offset, _: 7, 0;
+    impl new;
+    pub bool, enabled, set_enabled: 31;
+    pub u8, bus, set_bus: 23, 16;
+    pub u8, dev, set_dev: 15, 11;
+    pub u8, func, set_func: 10, 8;
+    pub u8, offset, set_offset: 7, 0;
 }
 
 impl Address {
