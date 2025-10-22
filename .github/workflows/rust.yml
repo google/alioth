@@ -44,16 +44,15 @@ jobs:
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt
-        if: matrix.target.name == 'x86_64-unknown-linux-gnu'
+          components: rustfmt,llvm-tools
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Install cargo-tarpaulin
+      - name: Install tools
         uses: taiki-e/install-action@e43a5023a747770bfcb71ae048541a681714b951 # v2.62.33
         with:
-          tool: cargo-tarpaulin,cargo-deny
+          tool: cargo-llvm-cov,cargo-deny
       - name: Check dependencies
         run: cargo deny check
       - name: Build
@@ -62,7 +61,10 @@ jobs:
         run: cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
       - name: Run tests and collect coverage
-        run: cargo tarpaulin -o Lcov
+        run: |
+          cargo +nightly llvm-cov --branch \
+              --workspace --ignore-filename-regex '.*_test.rs$' \
+              --lcov --output-path lcov.info
       - name: Clippy
         run: cargo clippy -- -D warnings
       - name: Upload coverage
