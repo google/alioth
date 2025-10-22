@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "cap_test.rs"]
+mod tests;
+
 use std::fmt::Debug;
 use std::mem::size_of;
 
@@ -321,6 +325,12 @@ pub enum MsixTableMmioEntry<F> {
     IrqFd(F),
 }
 
+impl<F> Default for MsixTableMmioEntry<F> {
+    fn default() -> Self {
+        MsixTableMmioEntry::Entry(MsixTableEntry::default())
+    }
+}
+
 macro_rules! impl_msix_table_mmio_entry_method {
     ($field:ident, $get:ident, $set:ident) => {
         pub fn $get(&self) -> u32 {
@@ -412,7 +422,7 @@ where
     pub fn reset(&self) {
         let mut entries = self.entries.write();
         for entry in entries.iter_mut() {
-            *entry = MsixTableMmioEntry::Entry(MsixTableEntry::default());
+            *entry = MsixTableMmioEntry::default();
         }
     }
 }
@@ -452,32 +462,5 @@ where
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         self.write_val(offset, size, val)?;
         Ok(Action::None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use assert_matches::assert_matches;
-    use rstest::rstest;
-
-    use crate::mem::emulated::Mmio;
-    use crate::pci::cap::NullCap;
-
-    #[rstest]
-    #[case(0x0, 1, 0x0)]
-    #[case(0x0, 2, 0x60_00)]
-    #[case(0x0, 4, 0x60_00)]
-    #[case(0x1, 1, 0x60)]
-    #[case(0x1, 2, 0x60)]
-    #[case(0x1, 2, 0x60)]
-    #[case(0x2, 1, 0x0)]
-    #[case(0x2, 2, 0x0)]
-    #[case(0xb, 1, 0x0)]
-    fn test_null_cap(#[case] offset: u64, #[case] size: u8, #[case] val: u64) {
-        let null_cap = NullCap {
-            next: 0x60,
-            size: 0xc,
-        };
-        assert_matches!(null_cap.read(offset, size), Ok(v) if v == val);
     }
 }
