@@ -30,7 +30,7 @@ use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::Error;
 use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::utils::truncate_u64;
-use crate::{align_up, impl_mmio_for_zerocopy, mem};
+use crate::{align_up, impl_mmio_for_zerocopy, mask_bits, mem};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
@@ -131,7 +131,6 @@ bitfield! {
 
 impl MsixMsgCtrl {
     pub fn new(len: u16) -> Self {
-        assert_ne!(len, 1);
         MsixMsgCtrl(len - 1)
     }
 }
@@ -141,16 +140,16 @@ bitfield! {
     #[repr(C)]
     pub struct MsixCapOffset(u32);
     impl Debug;
-    pub bar, set_bar: 2, 0;
+    pub bar, _: 2, 0;
 }
 
 impl MsixCapOffset {
-    pub fn offset(&self) -> u32 {
-        self.0 & !0b111
+    pub fn new(offset: u32, bar: u8) -> Self {
+        MsixCapOffset(mask_bits!(offset, bar as u32, 0b111))
     }
 
-    pub fn set_offset(&mut self, val: u32) {
-        self.0 = (val & !0b111) | self.bar()
+    pub fn offset(&self) -> u32 {
+        self.0 & !0b111
     }
 }
 

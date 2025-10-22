@@ -714,8 +714,8 @@ where
                 ..Default::default()
             },
             control: msix_msg_ctrl,
-            table_offset: MsixCapOffset(msix_table_offset as u32),
-            pba_offset: MsixCapOffset(msix_pba_offset as u32),
+            table_offset: MsixCapOffset::new(msix_table_offset as u32, 0),
+            pba_offset: MsixCapOffset::new(msix_pba_offset as u32, 0),
         };
         let cap_common = VirtioPciCap {
             header: PciCapHdr {

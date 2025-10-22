@@ -18,7 +18,11 @@ use rstest::rstest;
 
 use crate::hv::tests::TestIrqFd;
 use crate::mem::emulated::{Action, Mmio};
-use crate::pci::cap::{MsixTableEntry, MsixTableMmio, MsixTableMmioEntry, MsixVectorCtrl, NullCap};
+use crate::pci::cap::{
+    MsiMsgCtrl, MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
+    MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId,
+};
+use crate::pci::config::PciConfigArea;
 
 #[rstest]
 #[case(0x0, 1, 0x0)]
@@ -36,6 +40,69 @@ fn test_null_cap(#[case] offset: u64, #[case] size: u8, #[case] val: u64) {
         size: 0xc,
     };
     assert_matches!(null_cap.read(offset, size), Ok(v) if v == val);
+}
+
+#[rstest]
+#[case(false, false, 12)]
+#[case(true, false, 16)]
+#[case(false, true, 20)]
+#[case(true, true, 24)]
+fn test_msi_msg_ctrl_cap_size(
+    #[case] addr_64_cap: bool,
+    #[case] per_vector_masking_cap: bool,
+    #[case] expected_size: u8,
+) {
+    let mut ctrl = MsiMsgCtrl::default();
+    ctrl.set_addr_64_cap(addr_64_cap);
+    ctrl.set_per_vector_masking_cap(per_vector_masking_cap);
+    assert_eq!(ctrl.cap_size(), expected_size);
+}
+
+#[rstest]
+#[case(1, 0x0)]
+#[case(2, 0x1)]
+fn test_msix_msg_ctrl(#[case] len: u16, #[case] val: u16) {
+    let ctrl = MsixMsgCtrl::new(len);
+    assert_eq!(ctrl.0, val);
+}
+
+#[test]
+fn test_msix_cap_mmio() {
+    let table_offset = MsixCapOffset::new(0x1000, 1);
+    let pba_offset = MsixCapOffset::new(0x2000, 2);
+
+    assert_eq!(table_offset.offset(), 0x1000);
+    assert_eq!(table_offset.bar(), 1);
+    assert_eq!(pba_offset.offset(), 0x2000);
+    assert_eq!(pba_offset.bar(), 2);
+
+    let mut msix = MsixCapMmio {
+        cap: RwLock::new(MsixCap {
+            header: PciCapHdr {
+                id: PciCapId::Msix as u8,
+                ..Default::default()
+            },
+            control: MsixMsgCtrl::new(2),
+            table_offset,
+            pba_offset,
+        }),
+    };
+    msix.set_next(0x80);
+
+    assert_eq!(msix.size(), 12);
+    assert_matches!(msix.read(0, 1), Ok(0x11));
+    assert_matches!(msix.read(1, 1), Ok(0x80));
+    assert_matches!(msix.write(2, 2, 0b11 << 14), Ok(Action::None));
+    assert_matches!(msix.read(2, 2), Ok(0b1100000000000001));
+    assert_matches!(msix.read(4, 4), Ok(0x1001));
+    assert_matches!(msix.read(8, 4), Ok(0x2002));
+
+    // Unknown writes are ignored
+    assert_matches!(msix.write(0, 1, 0), Ok(Action::None));
+    assert_matches!(msix.write(2, 1, 0), Ok(Action::None));
+
+    msix.reset();
+    assert_matches!(msix.read(2, 2), Ok(0b1));
 }
 
 #[test]
