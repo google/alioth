@@ -10,7 +10,7 @@ readme = "../README.md"
 
 [dependencies]
 log = "0.4"
-flexi_logger = "0.31"
+flexi_logger.workspace = true
 clap = { version = "4", features = ["derive"] }
 snafu.workspace = true
 alioth.workspace = true

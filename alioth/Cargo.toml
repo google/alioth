@@ -28,5 +28,7 @@ io-uring = "0.7"
 
 [dev-dependencies]
 assert_matches.workspace = true
+ctor.workspace = true
+flexi_logger.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

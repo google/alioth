@@ -61,6 +61,8 @@ jobs:
         run: cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
       - name: Run tests and collect coverage
+        env:
+          RUST_LOG: "trace"
         run: |
           cargo +nightly llvm-cov --branch \
               --workspace --ignore-filename-regex '.*_test.rs$' \
