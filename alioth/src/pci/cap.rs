@@ -57,33 +57,6 @@ bitfield! {
     pub id, _: 15,0;
 }
 
-#[repr(C)]
-#[derive(Debug, Default, Clone)]
-pub struct NullCap {
-    pub next: u8,
-    pub size: u8,
-}
-
-impl Mmio for NullCap {
-    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
-        let shift = std::cmp::min(63, offset << 3);
-        let val = ((self.next as u64) << 8) >> shift;
-        Ok(truncate_u64(val, size as u64))
-    }
-
-    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
-        Ok(Action::None)
-    }
-
-    fn size(&self) -> u64 {
-        self.size as u64
-    }
-}
-
-impl PciConfigArea for NullCap {
-    fn reset(&self) {}
-}
-
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
@@ -470,4 +443,37 @@ where
         self.write_val(offset, size, val)?;
         Ok(Action::None)
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone)]
+pub struct NullCap {
+    pub next: u8,
+    pub size: u8,
+}
+
+impl Mmio for NullCap {
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let shift = std::cmp::min(63, offset << 3);
+        let val = ((self.next as u64) << 8) >> shift;
+        Ok(truncate_u64(val, size as u64))
+    }
+
+    fn write(&self, _offset: u64, _size: u8, _val: u64) -> mem::Result<Action> {
+        Ok(Action::None)
+    }
+
+    fn size(&self) -> u64 {
+        self.size as u64
+    }
+}
+
+impl PciCap for NullCap {
+    fn set_next(&mut self, val: u8) {
+        self.next = val;
+    }
+}
+
+impl PciConfigArea for NullCap {
+    fn reset(&self) {}
 }
