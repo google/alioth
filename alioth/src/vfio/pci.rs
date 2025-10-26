@@ -420,9 +420,7 @@ where
         let mut msix_cap = None;
         if let Some((offset, cap)) = msix_info {
             msix_cap = Some(cap.clone());
-            let msix_cap_mmio = MsixCapMmio {
-                cap: RwLock::new(cap),
-            };
+            let msix_cap_mmio = MsixCapMmio::new(cap);
             masked_caps.push((offset as u64, Box::new(msix_cap_mmio)));
             if let Some((offset, hdr)) = msi_info {
                 let null_cap = NullCap {

@@ -280,7 +280,15 @@ impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
 
 #[derive(Debug)]
 pub struct MsixCapMmio {
-    pub cap: RwLock<MsixCap>,
+    cap: RwLock<MsixCap>,
+}
+
+impl MsixCapMmio {
+    pub fn new(cap: MsixCap) -> Self {
+        Self {
+            cap: RwLock::new(cap),
+        }
+    }
 }
 
 impl Mmio for MsixCapMmio {

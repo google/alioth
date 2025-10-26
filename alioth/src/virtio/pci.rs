@@ -789,9 +789,7 @@ where
         };
 
         let mut caps: Vec<Box<dyn PciCap>> = vec![
-            Box::new(MsixCapMmio {
-                cap: RwLock::new(cap_msix),
-            }),
+            Box::new(MsixCapMmio::new(cap_msix)),
             Box::new(cap_common),
             Box::new(cap_isr),
             Box::new(cap_notify),
