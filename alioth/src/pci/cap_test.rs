@@ -169,3 +169,39 @@ fn test_msix_table_mmio() {
         ]
     );
 }
+
+#[test]
+fn test_pci_cap_list() {
+    let caps: Vec<Box<dyn PciCap>> = vec![
+        Box::new(MsixCapMmio::new(MsixCap {
+            header: PciCapHdr {
+                id: PciCapId::MSIX,
+                next: 0,
+            },
+            ..Default::default()
+        })),
+        Box::new(NullCap { size: 16, next: 0 }),
+    ];
+
+    let cap_list = PciCapList::try_from(caps).unwrap();
+
+    assert_eq!(cap_list.is_empty(), false);
+
+    assert_eq!(cap_list.size(), 4096);
+    assert_matches!(cap_list.read(0x40, 1), Ok(0x11));
+    assert_matches!(cap_list.read(0x41, 1), Ok(0x4c));
+    assert_matches!(cap_list.write(0x42, 2, 0xc001), Ok(Action::None));
+    assert_matches!(cap_list.read(0x42, 2), Ok(0xc000));
+
+    assert_matches!(cap_list.read(0x4c, 1), Ok(0x0));
+    assert_matches!(cap_list.read(0x4d, 1), Ok(0x0));
+
+    cap_list.reset();
+    assert_matches!(cap_list.read(0x42, 2), Ok(0));
+}
+
+#[test]
+fn test_pci_cap_list_default() {
+    let cap_list = PciCapList::default();
+    assert!(cap_list.is_empty());
+}
