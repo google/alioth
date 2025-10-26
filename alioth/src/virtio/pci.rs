@@ -710,7 +710,7 @@ where
 
         let cap_msix = MsixCap {
             header: PciCapHdr {
-                id: PciCapId::Msix as u8,
+                id: PciCapId::MSIX,
                 ..Default::default()
             },
             control: msix_msg_ctrl,
@@ -719,7 +719,7 @@ where
         };
         let cap_common = VirtioPciCap {
             header: PciCapHdr {
-                id: PciCapId::Vendor as u8,
+                id: PciCapId::VENDOR,
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
@@ -732,7 +732,7 @@ where
         };
         let cap_isr = VirtioPciCap {
             header: PciCapHdr {
-                id: PciCapId::Vendor as u8,
+                id: PciCapId::VENDOR,
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
@@ -746,7 +746,7 @@ where
         let cap_notify = VirtioPciNotifyCap {
             cap: VirtioPciCap {
                 header: PciCapHdr {
-                    id: PciCapId::Vendor as u8,
+                    id: PciCapId::VENDOR,
                     ..Default::default()
                 },
                 cap_len: size_of::<VirtioPciNotifyCap>() as u8,
@@ -761,7 +761,7 @@ where
         };
         let cap_device_config = VirtioPciCap {
             header: PciCapHdr {
-                id: PciCapId::Vendor as u8,
+                id: PciCapId::VENDOR,
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
@@ -803,7 +803,7 @@ where
                 let share_mem_cap = VirtioPciCap64 {
                     cap: VirtioPciCap {
                         header: PciCapHdr {
-                            id: PciCapId::Vendor as u8,
+                            id: PciCapId::VENDOR,
                             ..Default::default()
                         },
                         cap_len: size_of::<VirtioPciCap64>() as u8,

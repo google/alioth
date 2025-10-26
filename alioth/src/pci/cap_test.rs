@@ -20,7 +20,7 @@ use crate::hv::tests::TestIrqFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::{
     MsiMsgCtrl, MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
-    MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId,
+    MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList,
 };
 use crate::pci::config::PciConfigArea;
 
@@ -79,7 +79,7 @@ fn test_msix_cap_mmio() {
     let mut msix = MsixCapMmio {
         cap: RwLock::new(MsixCap {
             header: PciCapHdr {
-                id: PciCapId::Msix as u8,
+                id: PciCapId::MSIX,
                 ..Default::default()
             },
             control: MsixMsgCtrl::new(2),

@@ -30,20 +30,22 @@ use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::Error;
 use crate::pci::config::{DeviceHeader, PciConfigArea};
 use crate::utils::truncate_u64;
-use crate::{align_up, impl_mmio_for_zerocopy, mask_bits, mem};
+use crate::{align_up, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum PciCapId {
-    Msi = 0x05,
-    Vendor = 0x09,
-    Msix = 0x11,
+c_enum! {
+    #[derive(Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
+    pub struct PciCapId(u8);
+    {
+        MSI = 0x05;
+        VENDOR = 0x09;
+        MSIX = 0x11;
+    }
 }
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, KnownLayout, Layout)]
 pub struct PciCapHdr {
-    pub id: u8,
+    pub id: PciCapId,
     pub next: u8,
 }
 
