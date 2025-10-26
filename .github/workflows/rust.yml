@@ -66,9 +66,30 @@ jobs:
         run: |
           cargo +nightly llvm-cov --branch \
               --workspace --ignore-filename-regex '.*_test.rs$' \
-              --lcov --output-path lcov.info
+              --lcov --output-path lcov-${{ matrix.target.name }}.info
       - name: Clippy
         run: cargo clippy -- -D warnings
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: lcov-${{ matrix.target.name }}.info
+          path: lcov-${{ matrix.target.name }}.info
+
+  upload_coverage:
+    needs: build_test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Download coverage reports
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: lcov
+          pattern: lcov-*.info
+          merge-multiple: true
+      - name: Merge coverage reports
+        run: |
+          sed -i 's#SF:/Users/#SF:/home/#g' lcov/*apple-darwin*.info
+          npx lcov-result-merger 'lcov/lcov-*.info' lcov.info
       - name: Upload coverage
         uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.6
         continue-on-error: true
