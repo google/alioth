@@ -22,7 +22,6 @@ use crate::pci::cap::{
     MsiMsgCtrl, MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
     MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList,
 };
-use crate::pci::config::PciConfigArea;
 
 #[rstest]
 #[case(0x0, 1, 0x0)]

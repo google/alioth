@@ -28,7 +28,7 @@ use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::Error;
-use crate::pci::config::{DeviceHeader, PciConfigArea};
+use crate::pci::config::DeviceHeader;
 use crate::utils::truncate_u64;
 use crate::{align_up, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
 
@@ -165,8 +165,9 @@ impl Default for MsixTableEntry {
     }
 }
 
-pub trait PciCap: PciConfigArea {
+pub trait PciCap: Mmio {
     fn set_next(&mut self, val: u8);
+    fn reset(&self);
 }
 
 impl SlotBackend for Box<dyn PciCap> {
@@ -287,17 +288,15 @@ impl Mmio for MsixCapMmio {
     }
 }
 
-impl PciConfigArea for MsixCapMmio {
+impl PciCap for MsixCapMmio {
+    fn set_next(&mut self, val: u8) {
+        self.cap.write().header.next = val;
+    }
+
     fn reset(&self) {
         let mut cap = self.cap.write();
         cap.control.set_enabled(false);
         cap.control.set_masked(false);
-    }
-}
-
-impl PciCap for MsixCapMmio {
-    fn set_next(&mut self, val: u8) {
-        self.cap.write().header.next = val;
     }
 }
 
@@ -474,8 +473,6 @@ impl PciCap for NullCap {
     fn set_next(&mut self, val: u8) {
         self.next = val;
     }
-}
 
-impl PciConfigArea for NullCap {
     fn reset(&self) {}
 }
