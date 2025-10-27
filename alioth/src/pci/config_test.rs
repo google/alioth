@@ -20,9 +20,11 @@ use rstest::rstest;
 
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, IoRegion, MemRegion, MemRegionType};
+use crate::pci::cap::{MsixCap, MsixCapMmio, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList};
 use crate::pci::config::{
     BAR_IO, BAR_MEM32, BAR_MEM64, Command, CommonHeader, ConfigHeader, DeviceHeader,
-    EmulatedHeader, MoveBarCallback, Status, UpdateCommandCallback, offset_bar,
+    EmulatedConfig, EmulatedHeader, MoveBarCallback, PciConfig, Status, UpdateCommandCallback,
+    offset_bar,
 };
 use crate::pci::{Bdf, PciBar};
 
@@ -200,4 +202,50 @@ fn test_emulated_header_write_status(
         .unwrap() as u16;
 
     assert_eq!(got, expected.bits())
+}
+
+#[test]
+fn test_emulated_config() {
+    let header = DeviceHeader::default();
+    let bars = [const { PciBar::Empty }; 6];
+
+    let caps: Vec<Box<dyn PciCap>> = vec![
+        Box::new(MsixCapMmio::new(MsixCap {
+            header: PciCapHdr {
+                id: PciCapId::MSIX,
+                next: 0,
+            },
+            ..Default::default()
+        })),
+        Box::new(NullCap { size: 16, next: 0 }),
+    ];
+
+    let cap_list = PciCapList::try_from(caps).unwrap();
+
+    let config = EmulatedConfig::new_device(header, bars, cap_list);
+
+    assert_eq!(config.size(), 4096);
+
+    assert_matches!(config.read(CommonHeader::OFFSET_STATUS as u64, 2), Ok(v) if v as u16 & Status::CAP.bits() != 0);
+    assert_matches!(
+        config.read(DeviceHeader::OFFSET_CAPABILITY_POINTER as u64, 1),
+        Ok(0x40)
+    );
+
+    assert_matches!(
+        config.write(offset_bar(0) as u64, 4, 0xee00_0000),
+        Ok(Action::None)
+    );
+    assert_matches!(config.read(offset_bar(0) as u64, 4), Ok(0));
+
+    assert_matches!(config.read(0x40, 1), Ok(0x11));
+    assert_matches!(config.read(0x41, 1), Ok(0x4c));
+    assert_matches!(config.write(0x42, 2, 0xc001), Ok(Action::None));
+    assert_matches!(config.read(0x42, 2), Ok(0xc000));
+
+    assert_matches!(config.read(0x4c, 1), Ok(0x0));
+    assert_matches!(config.read(0x4d, 1), Ok(0x0));
+
+    config.reset();
+    assert_matches!(config.read(0x42, 2), Ok(0));
 }
