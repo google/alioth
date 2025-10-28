@@ -26,7 +26,7 @@ use crate::mem::emulated::{Action, Mmio};
 #[cfg(target_arch = "x86_64")]
 use crate::pci::host_bridge::HostBridge;
 use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, PciDevice, Result};
+use crate::pci::{Bdf, Pci, Result};
 
 bitfield! {
     #[derive(Copy, Clone, Default)]
@@ -113,10 +113,7 @@ impl PciBus {
         let segment = Arc::new(PciSegment::new());
 
         #[cfg(target_arch = "x86_64")]
-        segment.add(
-            Bdf::new(0, 0, 0),
-            PciDevice::new("host_bridge", Arc::new(HostBridge::new())),
-        );
+        segment.add(Bdf::new(0, 0, 0), Arc::new(HostBridge::new()));
 
         PciBus {
             io_bus: Arc::new(PciIoBus {
@@ -131,7 +128,7 @@ impl PciBus {
         self.segment.reserve(bdf)
     }
 
-    pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {
+    pub fn add(&self, bdf: Bdf, dev: Arc<dyn Pci>) -> Option<Arc<dyn Pci>> {
         self.segment.add(bdf, dev)
     }
 }

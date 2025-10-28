@@ -23,6 +23,8 @@ use crate::pci::host_bridge::HostBridge;
 fn test_host_bridge() {
     let bridge = HostBridge::default();
 
+    assert_matches!(bridge.name(), "host_bridge");
+
     let config = bridge.config();
 
     let header = config.get_header();

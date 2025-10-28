@@ -52,6 +52,10 @@ impl HostBridge {
 }
 
 impl Pci for HostBridge {
+    fn name(&self) -> &str {
+        "host_bridge"
+    }
+
     fn config(&self) -> &dyn PciConfig {
         &self.config
     }

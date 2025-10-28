@@ -45,7 +45,7 @@ use crate::loader::Payload;
 use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
 use crate::mem::{MemRegion, MemRegionType};
-use crate::pci::{Bdf, PciDevice};
+use crate::pci::{Bdf, Pci};
 #[cfg(target_os = "linux")]
 use crate::sys::vfio::VfioIommu;
 #[cfg(target_os = "linux")]
@@ -200,22 +200,21 @@ where
         ));
     }
 
-    pub fn add_pci_dev(&self, bdf: Option<Bdf>, dev: PciDevice) -> Result<(), Error> {
-        let name = dev.name.clone();
+    pub fn add_pci_dev(&self, bdf: Option<Bdf>, dev: Arc<dyn Pci>) -> Result<(), Error> {
         let bdf = if let Some(bdf) = bdf {
             bdf
         } else {
             self.board.pci_bus.reserve(None).unwrap()
         };
-        dev.dev.config().get_header().set_bdf(bdf);
+        dev.config().get_header().set_bdf(bdf);
+        log::info!("{bdf}: device: {}", dev.name());
         self.board.pci_bus.add(bdf, dev);
-        log::info!("{bdf}: device: {name}");
         Ok(())
     }
 
     pub fn add_pvpanic(&self) -> Result<(), Error> {
         let dev = PvPanic::new();
-        let pci_dev = PciDevice::new("pvpanic", Arc::new(dev));
+        let pci_dev = Arc::new(dev);
         self.add_pci_dev(None, pci_dev)
     }
 
@@ -271,8 +270,7 @@ where
         )?;
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender, registry)?;
         let dev = Arc::new(dev);
-        let pci_dev = PciDevice::new(name.clone(), dev.clone());
-        self.add_pci_dev(Some(bdf), pci_dev)?;
+        self.add_pci_dev(Some(bdf), dev.clone())?;
         Ok(dev)
     }
 
@@ -363,8 +361,7 @@ impl Machine<Kvm> {
             u32::from(bdf.0),
         )?;
         let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
-        let pci_dev = PciDevice::new(name, Arc::new(dev));
-        self.add_pci_dev(Some(bdf), pci_dev)?;
+        self.add_pci_dev(Some(bdf), Arc::new(dev))?;
         Ok(())
     }
 
@@ -427,7 +424,6 @@ impl Machine<Kvm> {
             u32::from(bdf.0),
         )?;
         let dev = VfioPciDev::new(name.clone(), devfd, msi_sender)?;
-        let pci_dev = PciDevice::new(name, Arc::new(dev));
-        self.add_pci_dev(Some(bdf), pci_dev)
+        self.add_pci_dev(Some(bdf), Arc::new(dev))
     }
 }

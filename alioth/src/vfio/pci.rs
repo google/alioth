@@ -334,6 +334,10 @@ where
     D: Device,
     M: MsiSender,
 {
+    fn name(&self) -> &str {
+        &self.config.dev.name
+    }
+
     fn config(&self) -> &dyn PciConfig {
         &self.config
     }

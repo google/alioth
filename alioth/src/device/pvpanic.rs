@@ -97,6 +97,10 @@ impl Default for PvPanic {
 }
 
 impl Pci for PvPanic {
+    fn name(&self) -> &str {
+        "pvpanic"
+    }
+
     fn config(&self) -> &dyn PciConfig {
         &self.config
     }

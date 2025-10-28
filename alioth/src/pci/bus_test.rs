@@ -19,10 +19,10 @@ use assert_matches::assert_matches;
 
 use crate::device::pvpanic::{PVPANIC_DEVICE_ID, PVPANIC_VENDOR_ID, PvPanic};
 use crate::mem::emulated::{Action, Mmio};
+use crate::pci::Bdf;
 use crate::pci::bus::{Address, PciBus, PciIoBus};
 use crate::pci::config::{BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, offset_bar};
 use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, PciDevice};
 
 #[test]
 fn test_pci_bus() {
@@ -32,19 +32,13 @@ fn test_pci_bus() {
         pci_bus.reserve(Some(Bdf::new(0, 1, 0))),
         Some(Bdf::new(0, 1, 0))
     );
-    let test_dev = PciDevice {
-        name: "test".into(),
-        dev: Arc::new(PvPanic::new()),
-    };
+    let test_dev = Arc::new(PvPanic::new());
     assert_matches!(pci_bus.add(Bdf::new(0, 1, 0), test_dev), None);
 }
 
 #[test]
 fn test_pci_io_bus() {
-    let test_dev = PciDevice {
-        name: "test".into(),
-        dev: Arc::new(PvPanic::new()),
-    };
+    let test_dev = Arc::new(PvPanic::new());
 
     let segment = PciSegment::new();
     assert_matches!(segment.add(Bdf::new(0, 1, 0), test_dev), None);
@@ -92,10 +86,7 @@ fn test_pci_io_bus_unaligned_address_access() {
 
 #[test]
 fn test_pci_io_bus_disabled_address() {
-    let test_dev = PciDevice {
-        name: "test".into(),
-        dev: Arc::new(PvPanic::new()),
-    };
+    let test_dev = Arc::new(PvPanic::new());
 
     let segment = PciSegment::new();
     assert_matches!(segment.add(Bdf::new(0, 1, 0), test_dev), None);

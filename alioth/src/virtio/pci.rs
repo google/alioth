@@ -913,6 +913,10 @@ where
     M: MsiSender,
     E: IoeventFd,
 {
+    fn name(&self) -> &str {
+        &self.dev.name
+    }
+
     fn config(&self) -> &dyn PciConfig {
         &self.config
     }

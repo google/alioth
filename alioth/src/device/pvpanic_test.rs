@@ -36,6 +36,7 @@ use crate::pci::config::{BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, HeaderType, 
 fn test_pvpanic_read_config(#[case] offset: usize, #[case] size: u8, #[case] value: u64) {
     let dev = PvPanic::default();
     assert_matches!(dev.reset(), Ok(_));
+    assert_matches!(dev.name(), "pvpanic");
 
     let config = dev.config();
     assert_eq!(config.read(offset as u64, size).unwrap(), value);

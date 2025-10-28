@@ -24,13 +24,17 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::config::{BAR_IO, BAR_MEM64, BAR_PREFETCHABLE, PciConfig};
-use crate::pci::{Bdf, Pci, PciDevice, Result};
+use crate::pci::{Bdf, Pci, Result};
 use crate::{align_up, mem};
 
 #[derive(Debug)]
 struct EmptyDevice;
 
 impl Pci for EmptyDevice {
+    fn name(&self) -> &str {
+        "empty_device"
+    }
+
     fn config(&self) -> &dyn PciConfig {
         unreachable!()
     }
@@ -42,7 +46,7 @@ impl Pci for EmptyDevice {
 
 #[derive(Debug)]
 pub struct PciSegment {
-    devices: RwLock<HashMap<Bdf, PciDevice>>,
+    devices: RwLock<HashMap<Bdf, Arc<dyn Pci>>>,
     next_bdf: Mutex<Bdf>,
     placeholder: Arc<dyn Pci>,
 }
@@ -61,10 +65,10 @@ impl PciSegment {
         devices.keys().map(|bdf| bdf.bus()).max()
     }
 
-    pub fn add(&self, bdf: Bdf, dev: PciDevice) -> Option<PciDevice> {
+    pub fn add(&self, bdf: Bdf, dev: Arc<dyn Pci>) -> Option<Arc<dyn Pci>> {
         let mut configs = self.devices.write();
         if let Some(exist_dev) = configs.insert(bdf, dev) {
-            if Arc::ptr_eq(&exist_dev.dev, &self.placeholder) {
+            if Arc::ptr_eq(&exist_dev, &self.placeholder) {
                 None
             } else {
                 configs.insert(bdf, exist_dev)
@@ -75,10 +79,7 @@ impl PciSegment {
     }
 
     pub fn reserve(&self, bdf: Option<Bdf>) -> Option<Bdf> {
-        let mut empty_dev = PciDevice {
-            name: "Place Holder".into(),
-            dev: self.placeholder.clone(),
-        };
+        let mut empty_dev = self.placeholder.clone();
         match bdf {
             Some(bdf) => {
                 if self.add(bdf, empty_dev).is_none() {
@@ -119,7 +120,7 @@ impl PciSegment {
         let mut bar_lists = [const { vec![] }; 4];
         let devices = self.devices.read();
         for (bdf, dev) in devices.iter() {
-            let config = dev.dev.config();
+            let config = dev.config();
             let header = config.get_header().data.read();
             let mut index = 0;
             while index < 6 {
@@ -155,7 +156,7 @@ impl PciSegment {
         for (bar_list, (start, end)) in zip(bar_lists, resources) {
             let mut addr = *start;
             for (bdf, dev, index, size) in bar_list {
-                let config = dev.dev.config();
+                let config = dev.config();
                 let mut header = config.get_header().data.write();
                 let aligned_addr = align_up!(addr, size.trailing_zeros());
                 if aligned_addr + size > *end {
@@ -176,8 +177,8 @@ impl PciSegment {
     pub fn reset(&self) -> Result<()> {
         let devices = self.devices.read();
         for (_, dev) in devices.iter() {
-            dev.dev.reset()?;
-            dev.dev.config().reset();
+            dev.reset()?;
+            dev.config().reset();
         }
         Ok(())
     }
@@ -197,9 +198,9 @@ impl Mmio for PciSegment {
 
     fn read(&self, offset: u64, size: u8) -> Result<u64, mem::Error> {
         let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.devices.read();
-        if let Some(config) = configs.get(&bdf) {
-            config.dev.config().read(offset & 0xfff, size)
+        let devices = self.devices.read();
+        if let Some(dev) = devices.get(&bdf) {
+            dev.config().read(offset & 0xfff, size)
         } else {
             Ok(u64::MAX)
         }
@@ -207,9 +208,9 @@ impl Mmio for PciSegment {
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.devices.read();
-        if let Some(config) = configs.get(&bdf) {
-            config.dev.config().write(offset & 0xfff, size, val)
+        let devices = self.devices.read();
+        if let Some(dev) = devices.get(&bdf) {
+            dev.config().write(offset & 0xfff, size, val)
         } else {
             Ok(Action::None)
         }

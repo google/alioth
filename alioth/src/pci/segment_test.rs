@@ -19,9 +19,9 @@ use rstest::rstest;
 
 use crate::device::pvpanic::{PVPANIC_DEVICE_ID, PVPANIC_VENDOR_ID, PvPanic};
 use crate::mem::emulated::{Action, Mmio};
+use crate::pci::Bdf;
 use crate::pci::config::{BAR_MEM_MASK, CommonHeader, offset_bar};
 use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, PciDevice};
 
 #[rstest]
 #[case(vec![], None, Some(Bdf::new(0, 0, 0)))]
@@ -35,21 +35,15 @@ fn test_pci_segment_reserve(
 ) {
     let segment = PciSegment::default();
     for bdf in devices {
-        let test_dev = PciDevice {
-            name: format!("{bdf:?}").into(),
-            dev: Arc::new(PvPanic::new()),
-        };
-        assert_matches!(segment.add(bdf, test_dev), None);
+        let test_dev = Arc::new(PvPanic::new());
+        assert_matches!(segment.add(bdf, test_dev.clone()), None);
     }
 
     assert_eq!(segment.reserve(reserve_bdf), expected);
 
     if let Some(bdf) = expected {
-        let test_dev = PciDevice {
-            name: format!("{bdf:?}").into(),
-            dev: Arc::new(PvPanic::new()),
-        };
-        assert_matches!(segment.add(bdf, test_dev), None);
+        let test_dev = Arc::new(PvPanic::new());
+        assert_matches!(segment.add(bdf, test_dev.clone()), None);
     }
 }
 
@@ -62,10 +56,7 @@ fn test_pci_segment_mmio() {
     assert_matches!(segment.write(0, 1, 0), Ok(Action::None));
 
     let base = 8 * (4 << 10);
-    let test_dev = PciDevice {
-        name: "test".into(),
-        dev: Arc::new(PvPanic::new()),
-    };
+    let test_dev = Arc::new(PvPanic::new());
 
     assert_matches!(segment.add(Bdf::new(0, 1, 0), test_dev), None);
 
@@ -92,10 +83,7 @@ fn test_pci_segment_next_bdf_wrapping() {
     let segment = PciSegment::new();
 
     for bdf in [Bdf::new(0, 0, 0), Bdf::new(255, 31, 0)] {
-        let test_dev = PciDevice {
-            name: "test".into(),
-            dev: Arc::new(PvPanic::new()),
-        };
+        let test_dev = Arc::new(PvPanic::new());
         assert_matches!(segment.add(bdf, test_dev), None);
     }
 

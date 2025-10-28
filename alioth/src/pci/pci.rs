@@ -60,6 +60,7 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub trait Pci: Debug + Send + Sync + 'static {
+    fn name(&self) -> &str;
     fn config(&self) -> &dyn PciConfig;
     fn reset(&self) -> Result<()>;
 }
@@ -69,19 +70,4 @@ pub enum PciBar {
     Empty,
     Mem(Arc<MemRegion>),
     Io(Arc<IoRegion>),
-}
-
-#[derive(Debug)]
-pub struct PciDevice {
-    pub name: Arc<str>,
-    pub dev: Arc<dyn Pci>,
-}
-
-impl PciDevice {
-    pub fn new(name: impl Into<Arc<str>>, dev: Arc<dyn Pci>) -> PciDevice {
-        PciDevice {
-            name: name.into(),
-            dev,
-        }
-    }
 }
