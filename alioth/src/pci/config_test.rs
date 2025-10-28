@@ -22,7 +22,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, IoRegion, MemRegion, MemRegionType};
 use crate::pci::cap::{MsixCap, MsixCapMmio, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList};
 use crate::pci::config::{
-    BAR_IO, BAR_MEM32, BAR_MEM64, Command, CommonHeader, ConfigHeader, DeviceHeader,
+    BAR_IO, BAR_MEM32, BAR_MEM64, BarCallback, Command, CommonHeader, ConfigHeader, DeviceHeader,
     EmulatedConfig, EmulatedHeader, MoveBarCallback, PciConfig, Status, UpdateCommandCallback,
     offset_bar,
 };
@@ -85,6 +85,23 @@ fn test_emulated_header_masks() {
         data.bar_masks,
         [0xffff_f000, 0x0, 0xc000_0000, 0xffff_ffff, 0x0, 0xffff_fffc,]
     );
+}
+
+#[test]
+fn test_emulated_header_bar_callbacks() {
+    let header = fixture_emulated_header();
+    for (i, bar) in header.bars.iter().enumerate() {
+        let callbacks = match bar {
+            PciBar::Empty => continue,
+            PciBar::Io(region) => region.callbacks.lock(),
+            PciBar::Mem(region) => region.callbacks.lock(),
+        };
+        let callback = callbacks.last().unwrap();
+        assert_matches!(
+            <dyn Any>::downcast_ref::<BarCallback>(&**callback),
+            Some(BarCallback { index, .. }) if *index == i as u8
+        );
+    }
 }
 
 #[rstest]

@@ -26,6 +26,7 @@ use bitflags::bitflags;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use crate::mem::MemRegionCallback;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
@@ -404,6 +405,24 @@ impl HeaderData {
 }
 
 #[derive(Debug)]
+struct BarCallback {
+    index: u8,
+    header: Arc<RwLock<HeaderData>>,
+}
+
+impl MemRegionCallback for BarCallback {
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
+        let mut header = self.header.write();
+        let (old, _) = header.get_bar(self.index as usize);
+        header.set_bar(self.index as usize, addr as u32);
+        if old & BAR_MEM64 == BAR_MEM64 {
+            header.set_bar(self.index as usize + 1, (addr >> 32) as u32);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct EmulatedHeader {
     pub data: Arc<RwLock<HeaderData>>,
     pub bars: [PciBar; 6],
@@ -435,14 +454,26 @@ impl EmulatedHeader {
                 }
             }
         }
-        Self {
-            data: Arc::new(RwLock::new(HeaderData {
-                header,
-                bar_masks,
-                bdf: Bdf(0),
-            })),
-            bars,
+
+        let data = Arc::new(RwLock::new(HeaderData {
+            header,
+            bar_masks,
+            bdf: Bdf(0),
+        }));
+
+        for (index, bar) in bars.iter().enumerate() {
+            let callbacks = match bar {
+                PciBar::Empty => continue,
+                PciBar::Mem(region) => &region.callbacks,
+                PciBar::Io(region) => &region.callbacks,
+            };
+            callbacks.lock().push(Box::new(BarCallback {
+                index: index as u8,
+                header: data.clone(),
+            }));
         }
+
+        Self { data, bars }
     }
 
     pub fn set_bdf(&self, bdf: Bdf) {

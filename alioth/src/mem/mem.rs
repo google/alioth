@@ -16,7 +16,7 @@ pub mod addressable;
 pub mod emulated;
 pub mod mapped;
 
-use std::any::type_name;
+use std::any::{Any, type_name};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ pub struct MemRegionEntry {
     pub type_: MemRegionType,
 }
 
-pub trait MemRegionCallback: Debug + Send + Sync + 'static {
+pub trait MemRegionCallback: Debug + Send + Sync + Any + 'static {
     fn mapped(&self, addr: u64) -> Result<()>;
     fn unmapped(&self) -> Result<()> {
         log::debug!("{} unmapped", type_name::<Self>());

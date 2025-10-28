@@ -22,14 +22,12 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 use bitfield::bitfield;
-use parking_lot::RwLock;
 use snafu::Snafu;
 
 use crate::errors::{DebugTrace, trace_error};
-use crate::mem;
-use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
+use crate::mem::{IoRegion, MemRegion};
 
-use self::config::{BAR_MEM64, HeaderData, PciConfig};
+use self::config::PciConfig;
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -74,24 +72,6 @@ pub enum PciBar {
 }
 
 #[derive(Debug)]
-struct BarCallback {
-    index: u8,
-    header: Arc<RwLock<HeaderData>>,
-}
-
-impl MemRegionCallback for BarCallback {
-    fn mapped(&self, addr: u64) -> mem::Result<()> {
-        let mut header = self.header.write();
-        let (old, _) = header.get_bar(self.index as usize);
-        header.set_bar(self.index as usize, addr as u32);
-        if old & BAR_MEM64 == BAR_MEM64 {
-            header.set_bar(self.index as usize + 1, (addr >> 32) as u32);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
 pub struct PciDevice {
     pub name: Arc<str>,
     pub dev: Arc<dyn Pci>,
@@ -99,22 +79,6 @@ pub struct PciDevice {
 
 impl PciDevice {
     pub fn new(name: impl Into<Arc<str>>, dev: Arc<dyn Pci>) -> PciDevice {
-        let config = dev.config();
-        let dev_bars = &config.get_header().bars;
-        for (index, dev_bar) in dev_bars.iter().enumerate() {
-            let header = config.get_header().data.clone();
-            match dev_bar {
-                PciBar::Empty => {}
-                PciBar::Mem(region) => region.callbacks.lock().push(Box::new(BarCallback {
-                    index: index as u8,
-                    header,
-                })),
-                PciBar::Io(region) => region.callbacks.lock().push(Box::new(BarCallback {
-                    index: index as u8,
-                    header,
-                })),
-            }
-        }
         PciDevice {
             name: name.into(),
             dev,
