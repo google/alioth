@@ -64,8 +64,9 @@ jobs:
         env:
           RUST_LOG: "trace"
         run: |
+          cargo +nightly llvm-cov clean --workspace
           cargo +nightly llvm-cov --branch \
-              --workspace --ignore-filename-regex '.*_test.rs$' \
+              --no-clean --workspace --ignore-filename-regex '.*_test.rs$' \
               --lcov --output-path lcov-${{ matrix.target.name }}.info
       - name: Clippy
         run: cargo clippy -- -D warnings
