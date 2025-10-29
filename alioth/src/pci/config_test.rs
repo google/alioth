@@ -18,8 +18,9 @@ use std::sync::Arc;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
+use crate::hv::{self, MemMapOption, VmMemory};
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::{self, IoRegion, MemRegion, MemRegionType};
+use crate::mem::{self, IoRegion, MemRegion, MemRegionEntry, MemRegionType, Memory};
 use crate::pci::cap::{MsixCap, MsixCapMmio, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList};
 use crate::pci::config::{
     BAR_IO, BAR_MEM32, BAR_MEM64, BarCallback, Command, CommonHeader, ConfigHeader, DeviceHeader,
@@ -265,4 +266,116 @@ fn test_emulated_config() {
 
     config.reset();
     assert_matches!(config.read(0x42, 2), Ok(0));
+}
+
+#[derive(Debug)]
+struct FakeVmMemory;
+
+impl VmMemory for FakeVmMemory {
+    fn mem_map(&self, _gpa: u64, _size: u64, _hva: usize, _option: MemMapOption) -> hv::Result<()> {
+        unreachable!()
+    }
+
+    fn unmap(&self, _gpa: u64, _size: u64) -> hv::Result<()> {
+        unreachable!()
+    }
+
+    fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> hv::Result<()> {
+        unreachable!()
+    }
+
+    fn reset(&self) -> hv::Result<()> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn test_mem_bar_layout_change() {
+    let memory = Memory::new(FakeVmMemory);
+    let header = fixture_emulated_header();
+
+    let callback = assert_matches!(
+        header.write(
+            CommonHeader::OFFSET_COMMAND as u64,
+            2,
+            Command::MEM.bits() as u64,
+        ),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(
+        &memory.mem_region_entries()[..],
+        [
+            (0xe000_0000, MemRegionEntry { size: 0x400, .. }),
+            (
+                0x1_0000_0000,
+                MemRegionEntry {
+                    size: 0x4000_0000,
+                    ..
+                }
+            )
+        ]
+    );
+
+    let callback = assert_matches!(
+        header.write(offset_bar(0) as u64, 4, 0xe001_0000),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    let callback = assert_matches!(
+        header.write(offset_bar(3) as u64, 4, 0x2),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(
+        &memory.mem_region_entries()[..],
+        [
+            (0xe001_0000, MemRegionEntry { size: 0x400, .. }),
+            (
+                0x2_0000_0000,
+                MemRegionEntry {
+                    size: 0x4000_0000,
+                    ..
+                }
+            )
+        ]
+    );
+
+    let callback = assert_matches!(
+        header.write(CommonHeader::OFFSET_COMMAND as u64, 2, 0),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(&memory.mem_region_entries()[..], []);
+}
+
+#[test]
+fn test_io_bar_layout_change() {
+    let memory = Memory::new(FakeVmMemory);
+    let header = fixture_emulated_header();
+
+    let callback = assert_matches!(
+        header.write(
+            CommonHeader::OFFSET_COMMAND as u64,
+            2,
+            Command::IO.bits() as u64,
+        ),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(&memory.io_region_entries()[..], [(0xe000, 0x2)]);
+
+    let callback = assert_matches!(
+        header.write(offset_bar(5) as u64, 4, 0xe100),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(&memory.io_region_entries()[..], [(0xe100, 0x2)]);
+
+    let callback = assert_matches!(
+        header.write(CommonHeader::OFFSET_COMMAND as u64, 2, 0),
+        Ok(Action::ChangeLayout { callback } ) => callback
+    );
+    assert_matches!(callback.change(&memory), Ok(()));
+    assert_matches!(&memory.io_region_entries()[..], []);
 }

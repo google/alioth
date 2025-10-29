@@ -450,6 +450,15 @@ impl Memory {
         entries
     }
 
+    pub fn io_region_entries(&self) -> Vec<(u64, u64)> {
+        let mut entries = vec![];
+        let regions = self.io_regions.lock();
+        for (start, region) in regions.iter() {
+            entries.push((start, region.size()));
+        }
+        entries
+    }
+
     pub fn add_io_dev(&self, port: u16, dev: MmioRange) -> Result<()> {
         self.add_io_region(port, Arc::new(IoRegion::new(dev)))
     }
