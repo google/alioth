@@ -28,7 +28,7 @@ assert_matches = "1"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 quote = { version = "1" }
-rstest = "0.23"
+rstest = "0.26"
 tempfile = "3"
 
 [profile.release]
