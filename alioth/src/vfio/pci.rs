@@ -453,11 +453,7 @@ where
             };
             cdev.dev.set_irqs(&set_eventfd)?;
 
-            let msi_cap_mmio = MsiCapMmio::<M, D> {
-                cap: RwLock::new((hdr, MsiCapBody { data: [0; 4] })),
-                dev: cdev.clone(),
-                irqfds,
-            };
+            let msi_cap_mmio = MsiCapMmio::new(cdev.name.clone(), hdr, irqfds);
             masked_caps.push((offset as u64, Box::new(msi_cap_mmio)));
         }
 
@@ -705,20 +701,24 @@ struct MsiCapBody {
 impl_mmio_for_zerocopy!(MsiCapBody);
 
 #[derive(Debug)]
-struct MsiCapMmio<M, D>
-where
-    M: MsiSender,
-{
+struct MsiCapMmio<F> {
+    name: Arc<str>,
     cap: RwLock<(MsiCapHdr, MsiCapBody)>,
-    dev: Arc<VfioDev<D>>,
-    irqfds: Box<[M::IrqFd]>,
+    irqfds: Box<[F]>,
 }
 
-impl<M, D> MsiCapMmio<M, D>
+impl<F> MsiCapMmio<F>
 where
-    M: MsiSender,
-    D: Device,
+    F: IrqFd,
 {
+    fn new(name: Arc<str>, hdr: MsiCapHdr, irqfds: Box<[F]>) -> Self {
+        Self {
+            name,
+            cap: RwLock::new((hdr, MsiCapBody::default())),
+            irqfds,
+        }
+    }
+
     fn update_msi(&self) -> Result<()> {
         let (hdr, body) = &*self.cap.read();
         let ctrl = &hdr.control;
@@ -757,10 +757,9 @@ where
     }
 }
 
-impl<M, D> Mmio for MsiCapMmio<M, D>
+impl<F> Mmio for MsiCapMmio<F>
 where
-    D: Device,
-    M: MsiSender,
+    F: IrqFd,
 {
     fn size(&self) -> u64 {
         let (hdr, _) = &*self.cap.read();
@@ -803,7 +802,7 @@ where
             }
             _ => log::error!(
                 "{}: write 0x{val:0width$x} to invalid offset 0x{offset:x}.",
-                self.dev.name,
+                self.name,
                 width = 2 * size as usize
             ),
         }
@@ -815,10 +814,9 @@ where
     }
 }
 
-impl<M, D> PciConfigArea for MsiCapMmio<M, D>
+impl<F> PciConfigArea for MsiCapMmio<F>
 where
-    D: Device,
-    M: MsiSender,
+    F: IrqFd,
 {
     fn reset(&self) {
         {
@@ -826,7 +824,7 @@ where
             hdr.control.set_enable(false);
         }
         if let Err(e) = self.update_msi() {
-            log::error!("{}: failed to reset: {e:?}", self.dev.name);
+            log::error!("{}: failed to reset: {e:?}", self.name);
         }
     }
 }
