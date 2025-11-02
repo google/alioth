@@ -180,12 +180,10 @@ where
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
         let (hdr, body) = &*self.cap.read();
-        let ctrl = hdr.control;
-        match offset {
-            0..4 => hdr.read(offset, size),
-            0x10 if ctrl.per_vector_masking_cap() && !ctrl.addr_64_cap() => Ok(0),
-            0x14 if ctrl.per_vector_masking_cap() && ctrl.addr_64_cap() => Ok(0),
-            _ => body.read(offset - size_of_val(hdr) as u64, size),
+        if offset < 4 {
+            hdr.read(offset, size)
+        } else {
+            body.read(offset - size_of_val(hdr) as u64, size)
         }
     }
 
@@ -193,9 +191,11 @@ where
         let mut need_update = false;
         let mut cap = self.cap.write();
         let (hdr, body) = &mut *cap;
-        match (offset as usize, size) {
-            (0x2, 2) => {
-                let ctrl = &mut hdr.control;
+        let ctrl = &mut hdr.control;
+        let addr_64_cap = ctrl.addr_64_cap();
+        let per_vector_masking_cap = ctrl.per_vector_masking_cap();
+        match (offset, size, addr_64_cap, per_vector_masking_cap) {
+            (0x2, 2, _, _) => {
                 let new_ctrl = MsiMsgCtrl(val as u16);
 
                 if !ctrl.enable() || !new_ctrl.enable() {
@@ -210,11 +210,23 @@ where
                 need_update |= ctrl.enable() != new_ctrl.enable();
                 ctrl.set_enable(new_ctrl.enable());
             }
-            (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
+            (0x4, 4, _, _) | (0x8, 4, true, _) | (0xc, 4, false, true) | (0x10, 4, true, true) => {
                 let data_offset = (offset as usize - size_of::<MsiCapHdr>()) >> 2;
                 let reg = &mut body.data[data_offset];
                 need_update = hdr.control.enable() && *reg != val as u32;
                 *reg = val as u32;
+            }
+            (0x8, 2 | 4, false, _) | (0xc, 2 | 4, true, _) => {
+                let data_offset = (offset as usize - size_of::<MsiCapHdr>()) >> 2;
+                let reg = &mut body.data[data_offset];
+                let mask = if size == 4 && hdr.control.ext_msg_data_cap() {
+                    0xffff_ffff
+                } else {
+                    0xffff
+                };
+                let new_val = mask_bits!(*reg, val as u32, mask);
+                need_update = hdr.control.enable() && *reg != new_val;
+                *reg = new_val;
             }
             _ => log::error!(
                 "MsiCapMmio: write 0x{val:0width$x} to invalid offset 0x{offset:x}.",
