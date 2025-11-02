@@ -195,8 +195,8 @@ where
         let addr_64_cap = ctrl.addr_64_cap();
         let per_vector_masking_cap = ctrl.per_vector_masking_cap();
         match (offset, size, addr_64_cap, per_vector_masking_cap) {
-            (0x2, 2, _, _) => {
-                let new_ctrl = MsiMsgCtrl(val as u16);
+            (0x2, 2, _, _) | (0x0, 4, _, _) => {
+                let new_ctrl = MsiMsgCtrl((val >> ((2 - offset) << 3)) as u16);
 
                 if !ctrl.enable() || !new_ctrl.enable() {
                     let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
