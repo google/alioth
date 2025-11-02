@@ -77,7 +77,7 @@ impl IrqFd for TestIrqFd {
     fn set_masked(&self, val: bool) -> Result<bool> {
         let masked = &mut self.inner.write().masked;
         let changed = *masked != val;
-        println!("val: {}, masked: {}, changed: {}", val, *masked, changed);
+        log::debug!("val: {}, masked: {}, changed: {}", val, *masked, changed);
         *masked = val;
         Ok(changed)
     }

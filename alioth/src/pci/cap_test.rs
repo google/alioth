@@ -16,11 +16,13 @@ use assert_matches::assert_matches;
 use parking_lot::RwLock;
 use rstest::rstest;
 
+use crate::hv::IrqFd;
 use crate::hv::tests::TestIrqFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::{
-    MsiMsgCtrl, MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio,
-    MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList,
+    MsiCapMmio, MsiMsgCtrl, MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry,
+    MsixTableMmio, MsixTableMmioEntry, MsixVectorCtrl, NullCap, PciCap, PciCapHdr, PciCapId,
+    PciCapList,
 };
 use crate::pci::config::PciConfigArea;
 
@@ -56,6 +58,145 @@ fn test_msi_msg_ctrl_cap_size(
     ctrl.set_addr_64_cap(addr_64_cap);
     ctrl.set_per_vector_masking_cap(per_vector_masking_cap);
     assert_eq!(ctrl.cap_size(), expected_size);
+}
+#[test]
+fn test_msi_cap_mmio_32() {
+    let mut ctrl = MsiMsgCtrl::default();
+    ctrl.set_multi_msg_cap(3);
+    ctrl.set_addr_64_cap(false);
+    ctrl.set_per_vector_masking_cap(false);
+    ctrl.set_ext_msg_data_cap(false);
+    let irqfds = (0..8).map(|_| TestIrqFd::default()).collect();
+    let mut msi_cap = MsiCapMmio::new(ctrl, irqfds);
+
+    msi_cap.set_next(0x80);
+    assert_matches!(msi_cap.read(1, 1), Ok(0x80));
+
+    assert_eq!(msi_cap.size(), 12);
+
+    assert_matches!(msi_cap.write(0xc, 4, 0xaabb_ccdd), Ok(_));
+
+    assert_matches!(msi_cap.write(0x4, 4, 0xc000_d000), Ok(_));
+    assert_matches!(msi_cap.read(0x4, 4), Ok(0xc000_d000));
+
+    let mut ctrl = MsiMsgCtrl(0);
+    ctrl.set_enable(true);
+    ctrl.set_multi_msg(5);
+    ctrl.set_ext_msg_data(true);
+    assert_matches!(msi_cap.write(0x2, 2, ctrl.0 as u64), Ok(_));
+    assert_matches!(msi_cap.read(2, 2), Ok(v) => {
+        let ctrl = MsiMsgCtrl(v as u16);
+        assert_eq!(ctrl.enable(), true);
+        assert_eq!(ctrl.multi_msg(), 3);
+        assert_eq!(ctrl.ext_msg_data(), false);
+    });
+
+    assert_matches!(msi_cap.write(0x8, 4, 0xaa_cc00), Ok(_));
+    assert_matches!(msi_cap.read(0x8, 4), Ok(0xcc00));
+
+    for (index, irqfd) in msi_cap.irqfds.iter().enumerate() {
+        assert_eq!(irqfd.get_addr_hi(), 0x0);
+        assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
+        assert_eq!(irqfd.get_data(), 0xcc00 + index as u32);
+        assert_eq!(irqfd.get_masked(), false);
+    }
+
+    ctrl.set_enable(false);
+    assert_matches!(msi_cap.write(0x2, 2, ctrl.0 as u64), Ok(_));
+    for irqfd in &msi_cap.irqfds {
+        assert!(irqfd.get_masked());
+    }
+}
+
+#[test]
+fn test_msi_cap_mmio_32_pvm() {
+    let mut ctrl = MsiMsgCtrl::default();
+    ctrl.set_multi_msg_cap(4);
+    ctrl.set_addr_64_cap(false);
+    ctrl.set_per_vector_masking_cap(true);
+    ctrl.set_ext_msg_data_cap(true);
+    let irqfds = (0..16).map(|_| TestIrqFd::default()).collect();
+    let msi_cap = MsiCapMmio::new(ctrl, irqfds);
+
+    assert_eq!(msi_cap.size(), 20);
+
+    assert_matches!(msi_cap.write(0x4, 4, 0xc000_d000), Ok(_));
+    assert_matches!(msi_cap.read(0x4, 4), Ok(0xc000_d000));
+
+    let mut ctrl = MsiMsgCtrl(0);
+    ctrl.set_enable(true);
+    ctrl.set_multi_msg(3);
+    ctrl.set_ext_msg_data(false);
+    assert_matches!(msi_cap.write(0x0, 4, (ctrl.0 as u64) << 16), Ok(_));
+    assert_matches!(msi_cap.read(2, 2), Ok(v) => {
+        let ctrl = MsiMsgCtrl(v as u16);
+        assert_eq!(ctrl.enable(), true);
+        assert_eq!(ctrl.multi_msg(), 3);
+        assert_eq!(ctrl.ext_msg_data(), false);
+    });
+
+    assert_matches!(msi_cap.write(0x8, 4, 0xaa_cc00), Ok(_));
+    assert_matches!(msi_cap.read(0x8, 4), Ok(0xaa_cc00));
+
+    assert_matches!(msi_cap.write(0xc, 4, 0b1), Ok(_));
+    for (index, irqfd) in msi_cap.irqfds.iter().enumerate() {
+        if index == 0 || index >= 8 {
+            assert!(irqfd.get_masked());
+            continue;
+        }
+        assert_eq!(irqfd.get_addr_hi(), 0x0);
+        assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
+        assert_eq!(irqfd.get_data(), 0xcc00 + index as u32);
+        assert_eq!(irqfd.get_masked(), false);
+    }
+}
+
+#[test]
+fn test_msi_cap_mmio_64_pvm() {
+    let mut ctrl = MsiMsgCtrl::default();
+    ctrl.set_multi_msg_cap(4);
+    ctrl.set_addr_64_cap(true);
+    ctrl.set_per_vector_masking_cap(true);
+    ctrl.set_ext_msg_data_cap(true);
+    let irqfds = (0..16).map(|_| TestIrqFd::default()).collect();
+    let msi_cap = MsiCapMmio::new(ctrl, irqfds);
+
+    assert_eq!(msi_cap.size(), 24);
+
+    assert_matches!(msi_cap.write(0x4, 4, 0xc000_d000), Ok(_));
+    assert_matches!(msi_cap.write(0x8, 4, 0x1), Ok(_));
+
+    let mut ctrl = MsiMsgCtrl(0);
+    ctrl.set_enable(true);
+    ctrl.set_multi_msg(3);
+    ctrl.set_ext_msg_data(true);
+    assert_matches!(msi_cap.write(0x2, 2, ctrl.0 as u64), Ok(_));
+    assert_matches!(msi_cap.read(2, 2), Ok(v) => {
+        let ctrl = MsiMsgCtrl(v as u16);
+        assert_eq!(ctrl.enable(), true);
+        assert_eq!(ctrl.multi_msg(), 3);
+        assert_eq!(ctrl.ext_msg_data(), true);
+    });
+
+    assert_matches!(msi_cap.write(0xc, 4, 0xaa_cc00), Ok(_));
+    assert_matches!(msi_cap.write(0x10, 4, 0b10), Ok(_));
+
+    for (index, irqfd) in msi_cap.irqfds.iter().enumerate() {
+        if index == 1 || index >= 8 {
+            assert!(irqfd.get_masked());
+            continue;
+        }
+        assert_eq!(irqfd.get_addr_hi(), 0x1);
+        assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
+        assert_eq!(irqfd.get_data(), 0xaa_cc00 + index as u32);
+        assert_eq!(irqfd.get_masked(), false);
+    }
+
+    assert_matches!(msi_cap.reset(), Ok(_));
+    assert_matches!(msi_cap.read(2, 2), Ok(v) if !MsiMsgCtrl(v as u16).enable());
+    for irqfd in &msi_cap.irqfds {
+        assert!(irqfd.get_masked());
+    }
 }
 
 #[rstest]
