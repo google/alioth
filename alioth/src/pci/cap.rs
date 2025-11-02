@@ -27,8 +27,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::hv::IrqFd;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
-use crate::pci::Error;
 use crate::pci::config::{DeviceHeader, PciConfigArea};
+use crate::pci::{self, Error, Result};
 use crate::utils::truncate_u64;
 use crate::{align_up, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
 
@@ -210,11 +210,14 @@ impl PciCapList {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+}
 
-    pub fn reset(&self) {
+impl PciConfigArea for PciCapList {
+    fn reset(&self) -> Result<()> {
         for (_, cap) in self.inner.inner.iter() {
-            cap.reset();
+            cap.reset()?;
         }
+        Ok(())
     }
 }
 
@@ -288,10 +291,11 @@ impl Mmio for MsixCapMmio {
 }
 
 impl PciConfigArea for MsixCapMmio {
-    fn reset(&self) {
+    fn reset(&self) -> pci::Result<()> {
         let mut cap = self.cap.write();
         cap.control.set_enabled(false);
         cap.control.set_masked(false);
+        Ok(())
     }
 }
 
@@ -477,5 +481,7 @@ impl PciCap for NullCap {
 }
 
 impl PciConfigArea for NullCap {
-    fn reset(&self) {}
+    fn reset(&self) -> Result<()> {
+        Ok(())
+    }
 }

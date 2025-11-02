@@ -178,7 +178,7 @@ impl PciSegment {
         let devices = self.devices.read();
         for (_, dev) in devices.iter() {
             dev.reset()?;
-            dev.config().reset();
+            dev.config().reset()?;
         }
         Ok(())
     }

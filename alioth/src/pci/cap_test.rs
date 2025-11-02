@@ -101,7 +101,7 @@ fn test_msix_cap_mmio() {
     assert_matches!(msix.write(0, 1, 0), Ok(Action::None));
     assert_matches!(msix.write(2, 1, 0), Ok(Action::None));
 
-    msix.reset();
+    assert_matches!(msix.reset(), Ok(()));
     assert_matches!(msix.read(2, 2), Ok(0b1));
 }
 
@@ -196,7 +196,7 @@ fn test_pci_cap_list() {
     assert_matches!(cap_list.read(0x4c, 1), Ok(0x0));
     assert_matches!(cap_list.read(0x4d, 1), Ok(0x0));
 
-    cap_list.reset();
+    assert_matches!(cap_list.reset(), Ok(()));
     assert_matches!(cap_list.read(0x42, 2), Ok(0));
 }
 

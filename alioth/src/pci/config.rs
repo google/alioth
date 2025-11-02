@@ -30,11 +30,11 @@ use crate::mem::MemRegionCallback;
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
-use crate::pci::{Bdf, PciBar};
+use crate::pci::{Bdf, PciBar, Result};
 use crate::{assign_bits, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
 
 pub trait PciConfigArea: Mmio {
-    fn reset(&self);
+    fn reset(&self) -> Result<()>;
 }
 
 impl Mmio for Box<dyn PciConfigArea> {
@@ -509,15 +509,16 @@ impl Mmio for EmulatedHeader {
 }
 
 impl PciConfigArea for EmulatedHeader {
-    fn reset(&self) {
+    fn reset(&self) -> Result<()> {
         let mut header = self.data.write();
         header.set_command(Command::empty());
+        Ok(())
     }
 }
 
 pub trait PciConfig: Mmio {
     fn get_header(&self) -> &EmulatedHeader;
-    fn reset(&self);
+    fn reset(&self) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -570,8 +571,8 @@ impl PciConfig for EmulatedConfig {
         &self.header
     }
 
-    fn reset(&self) {
-        self.header.reset();
-        self.caps.reset();
+    fn reset(&self) -> Result<()> {
+        self.header.reset()?;
+        self.caps.reset()
     }
 }

@@ -264,7 +264,7 @@ fn test_emulated_config() {
     assert_matches!(config.read(0x4c, 1), Ok(0x0));
     assert_matches!(config.read(0x4d, 1), Ok(0x0));
 
-    config.reset();
+    assert_matches!(config.reset(), Ok(()));
     assert_matches!(config.read(0x42, 2), Ok(0));
 }
 

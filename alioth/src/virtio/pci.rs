@@ -609,7 +609,9 @@ pub struct VirtioPciCap {
 impl_mmio_for_zerocopy!(VirtioPciCap);
 
 impl PciConfigArea for VirtioPciCap {
-    fn reset(&self) {}
+    fn reset(&self) -> pci::Result<()> {
+        Ok(())
+    }
 }
 
 impl PciCap for VirtioPciCap {
@@ -628,7 +630,9 @@ pub struct VirtioPciCap64 {
 impl_mmio_for_zerocopy!(VirtioPciCap64);
 
 impl PciConfigArea for VirtioPciCap64 {
-    fn reset(&self) {}
+    fn reset(&self) -> pci::Result<()> {
+        Ok(())
+    }
 }
 
 impl PciCap for VirtioPciCap64 {
@@ -646,7 +650,9 @@ pub struct VirtioPciNotifyCap {
 impl_mmio_for_zerocopy!(VirtioPciNotifyCap);
 
 impl PciConfigArea for VirtioPciNotifyCap {
-    fn reset(&self) {}
+    fn reset(&self) -> pci::Result<()> {
+        Ok(())
+    }
 }
 
 impl PciCap for VirtioPciNotifyCap {

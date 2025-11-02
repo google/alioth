@@ -236,7 +236,9 @@ impl<D> PciConfigArea for PthConfigArea<D>
 where
     D: Device,
 {
-    fn reset(&self) {}
+    fn reset(&self) -> pci::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -279,11 +281,12 @@ where
         &self.header
     }
 
-    fn reset(&self) {
-        self.header.reset();
+    fn reset(&self) -> pci::Result<()> {
+        self.header.reset()?;
         for (_, area) in self.extra.inner.iter() {
-            area.reset();
+            area.reset()?;
         }
+        Ok(())
     }
 }
 
@@ -820,13 +823,11 @@ where
     D: Device,
     M: MsiSender,
 {
-    fn reset(&self) {
+    fn reset(&self) -> pci::Result<()> {
         {
             let (hdr, _) = &mut *self.cap.write();
             hdr.control.set_enable(false);
         }
-        if let Err(e) = self.update_msi() {
-            log::error!("{}: failed to reset: {e:?}", self.dev.name);
-        }
+        self.update_msi().box_trace(pci::error::Reset)
     }
 }
