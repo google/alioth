@@ -33,7 +33,7 @@ use crate::pci::cap::{
 };
 use crate::pci::config::{
     BAR_MEM32, BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType,
-    PciConfig, PciConfigArea,
+    PciConfig,
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::sync::notifier::Notifier;
@@ -608,14 +608,12 @@ pub struct VirtioPciCap {
 }
 impl_mmio_for_zerocopy!(VirtioPciCap);
 
-impl PciConfigArea for VirtioPciCap {
-    fn reset(&self) {}
-}
-
 impl PciCap for VirtioPciCap {
     fn set_next(&mut self, val: u8) {
         self.header.next = val
     }
+
+    fn reset(&self) {}
 }
 
 #[repr(C, align(4))]
@@ -627,14 +625,12 @@ pub struct VirtioPciCap64 {
 }
 impl_mmio_for_zerocopy!(VirtioPciCap64);
 
-impl PciConfigArea for VirtioPciCap64 {
-    fn reset(&self) {}
-}
-
 impl PciCap for VirtioPciCap64 {
     fn set_next(&mut self, val: u8) {
         PciCap::set_next(&mut self.cap, val)
     }
+
+    fn reset(&self) {}
 }
 
 #[repr(C, align(4))]
@@ -645,14 +641,12 @@ pub struct VirtioPciNotifyCap {
 }
 impl_mmio_for_zerocopy!(VirtioPciNotifyCap);
 
-impl PciConfigArea for VirtioPciNotifyCap {
-    fn reset(&self) {}
-}
-
 impl PciCap for VirtioPciNotifyCap {
     fn set_next(&mut self, val: u8) {
         self.cap.header.next = val;
     }
+
+    fn reset(&self) {}
 }
 
 #[derive(Debug)]
