@@ -16,6 +16,7 @@
 #[path = "cap_test.rs"]
 mod tests;
 
+use std::cmp::min;
 use std::fmt::Debug;
 use std::mem::size_of;
 
@@ -24,7 +25,8 @@ use bitfield::bitfield;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::hv::IrqFd;
+use crate::errors::BoxTrace;
+use crate::hv::{self, IrqFd};
 use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::pci::config::{DeviceHeader, PciConfigArea};
@@ -93,6 +95,158 @@ pub struct MsiCapHdr {
     pub control: MsiMsgCtrl,
 }
 impl_mmio_for_zerocopy!(MsiCapHdr);
+
+#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
+#[repr(C)]
+struct MsiCapBody {
+    data: [u32; 4],
+}
+impl_mmio_for_zerocopy!(MsiCapBody);
+
+#[derive(Debug)]
+pub struct MsiCapMmio<F>
+where
+    F: IrqFd,
+{
+    cap: RwLock<(MsiCapHdr, MsiCapBody)>,
+    irqfds: Box<[F]>,
+}
+
+impl<F> MsiCapMmio<F>
+where
+    F: IrqFd,
+{
+    pub fn new(ctrl: MsiMsgCtrl, irqfds: Box<[F]>) -> Self {
+        debug_assert_eq!(irqfds.len(), 1 << ctrl.multi_msg_cap());
+        let cap = RwLock::new((
+            MsiCapHdr {
+                header: PciCapHdr {
+                    id: PciCapId::MSI,
+                    next: 0,
+                },
+                control: ctrl,
+            },
+            MsiCapBody::default(),
+        ));
+        Self { cap, irqfds }
+    }
+
+    fn update_msi(&self) -> hv::Result<()> {
+        let (hdr, body) = &*self.cap.read();
+        let ctrl = &hdr.control;
+        let data = &body.data;
+        let msg_mask = if ctrl.ext_msg_data() {
+            0xffff_ffff
+        } else {
+            0xffff
+        };
+        let (addr, msg) = if ctrl.addr_64_cap() {
+            (
+                ((data[1] as u64) << 32) | data[0] as u64,
+                data[2] & msg_mask,
+            )
+        } else {
+            (data[0] as u64, data[1] & msg_mask)
+        };
+        let mask = match (ctrl.addr_64_cap(), ctrl.per_vector_masking_cap()) {
+            (true, true) => data[3],
+            (false, true) => data[2],
+            (_, false) => 0,
+        };
+        let count = 1 << ctrl.multi_msg();
+        for (index, irqfd) in self.irqfds.iter().enumerate() {
+            irqfd.set_masked(true)?;
+            if !ctrl.enable() || index >= count || mask & (1 << index) > 0 {
+                continue;
+            }
+            let msg = msg | index as u32;
+            irqfd.set_addr_hi((addr >> 32) as u32)?;
+            irqfd.set_addr_lo(addr as u32)?;
+            irqfd.set_data(msg)?;
+            irqfd.set_masked(false)?;
+        }
+        Ok(())
+    }
+}
+
+impl<F> Mmio for MsiCapMmio<F>
+where
+    F: IrqFd,
+{
+    fn size(&self) -> u64 {
+        let (hdr, _) = &*self.cap.read();
+        hdr.control.cap_size() as u64
+    }
+
+    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let (hdr, body) = &*self.cap.read();
+        let ctrl = hdr.control;
+        match offset {
+            0..4 => hdr.read(offset, size),
+            0x10 if ctrl.per_vector_masking_cap() && !ctrl.addr_64_cap() => Ok(0),
+            0x14 if ctrl.per_vector_masking_cap() && ctrl.addr_64_cap() => Ok(0),
+            _ => body.read(offset - size_of_val(hdr) as u64, size),
+        }
+    }
+
+    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
+        let mut need_update = false;
+        let mut cap = self.cap.write();
+        let (hdr, body) = &mut *cap;
+        match (offset as usize, size) {
+            (0x2, 2) => {
+                let ctrl = &mut hdr.control;
+                let new_ctrl = MsiMsgCtrl(val as u16);
+                if !ctrl.enable() || !new_ctrl.enable() {
+                    let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
+                    ctrl.set_multi_msg(multi_msg);
+                }
+                need_update = ctrl.enable() != new_ctrl.enable()
+                    || (new_ctrl.enable() && ctrl.ext_msg_data() != new_ctrl.ext_msg_data());
+                ctrl.set_ext_msg_data(new_ctrl.ext_msg_data());
+                ctrl.set_enable(new_ctrl.enable());
+            }
+            (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
+                let data_offset = (offset as usize - size_of::<MsiCapHdr>()) >> 2;
+                let reg = &mut body.data[data_offset];
+                need_update = hdr.control.enable() && *reg != val as u32;
+                *reg = val as u32;
+            }
+            _ => log::error!(
+                "MsiCapMmio: write 0x{val:0width$x} to invalid offset 0x{offset:x}.",
+                width = 2 * size as usize
+            ),
+        }
+        drop(cap);
+        if need_update {
+            self.update_msi().box_trace(mem::error::Mmio)?;
+        }
+        Ok(Action::None)
+    }
+}
+
+impl<F> PciCap for MsiCapMmio<F>
+where
+    F: IrqFd,
+{
+    fn set_next(&mut self, val: u8) {
+        let (hdr, _) = self.cap.get_mut();
+        hdr.header.next = val;
+    }
+}
+
+impl<F> PciConfigArea for MsiCapMmio<F>
+where
+    F: IrqFd,
+{
+    fn reset(&self) -> pci::Result<()> {
+        {
+            let (hdr, _) = &mut *self.cap.write();
+            hdr.control.set_enable(false);
+        }
+        self.update_msi().box_trace(pci::error::Reset)
+    }
+}
 
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]

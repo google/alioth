@@ -22,10 +22,9 @@ use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use alioth_macros::Layout;
 use libc::{PROT_READ, PROT_WRITE};
 use parking_lot::{Mutex, RwLock};
-use zerocopy::{FromBytes, Immutable, IntoBytes, transmute};
+use zerocopy::{FromBytes, transmute};
 
 use crate::errors::BoxTrace;
 use crate::hv::{IrqFd, MsiSender};
@@ -33,8 +32,8 @@ use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{IoRegion, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::pci::cap::{
-    MsiCapHdr, MsiMsgCtrl, MsixCap, MsixCapMmio, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry,
-    NullCap, PciCapHdr, PciCapId,
+    MsiCapHdr, MsiCapMmio, MsixCap, MsixCapMmio, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry,
+    NullCap, PciCap, PciCapHdr, PciCapId,
 };
 use crate::pci::config::{
     BAR_IO, Command, CommonHeader, ConfigHeader, DeviceHeader, EmulatedHeader, HeaderType,
@@ -47,7 +46,7 @@ use crate::sys::vfio::{
 };
 use crate::vfio::device::Device;
 use crate::vfio::{Result, error};
-use crate::{align_down, align_up, impl_mmio_for_zerocopy, mem};
+use crate::{align_down, align_up, mem};
 
 fn round_up_range(range: Range<usize>) -> Range<usize> {
     (align_down!(range.start, 12))..(align_up!(range.end, 12))
@@ -456,11 +455,8 @@ where
             };
             cdev.dev.set_irqs(&set_eventfd)?;
 
-            let msi_cap_mmio = MsiCapMmio::<M, D> {
-                cap: RwLock::new((hdr, MsiCapBody { data: [0; 4] })),
-                dev: cdev.clone(),
-                irqfds,
-            };
+            let mut msi_cap_mmio = MsiCapMmio::new(hdr.control, irqfds);
+            msi_cap_mmio.set_next(hdr.header.next);
             masked_caps.push((offset as u64, Box::new(msi_cap_mmio)));
         }
 
@@ -697,137 +693,5 @@ where
                 .write(self.cdev_offset + offset as u64, size, val)?;
         }
         Ok(Action::None)
-    }
-}
-
-#[derive(Debug, Default, Clone, FromBytes, Immutable, IntoBytes, Layout)]
-#[repr(C)]
-struct MsiCapBody {
-    data: [u32; 4],
-}
-impl_mmio_for_zerocopy!(MsiCapBody);
-
-#[derive(Debug)]
-struct MsiCapMmio<M, D>
-where
-    M: MsiSender,
-{
-    cap: RwLock<(MsiCapHdr, MsiCapBody)>,
-    dev: Arc<VfioDev<D>>,
-    irqfds: Box<[M::IrqFd]>,
-}
-
-impl<M, D> MsiCapMmio<M, D>
-where
-    M: MsiSender,
-    D: Device,
-{
-    fn update_msi(&self) -> Result<()> {
-        let (hdr, body) = &*self.cap.read();
-        let ctrl = &hdr.control;
-        let data = &body.data;
-        let msg_mask = if ctrl.ext_msg_data() {
-            u32::MAX
-        } else {
-            0xffff
-        };
-        let (addr, msg) = if ctrl.addr_64_cap() {
-            (
-                ((data[1] as u64) << 32) | data[0] as u64,
-                data[2] & msg_mask,
-            )
-        } else {
-            (data[0] as u64, data[1] & msg_mask)
-        };
-        let mask = match (ctrl.addr_64_cap(), ctrl.per_vector_masking_cap()) {
-            (true, true) => data[3],
-            (false, true) => data[2],
-            (_, false) => 0,
-        };
-        let count = 1 << ctrl.multi_msg();
-        for (index, irqfd) in self.irqfds.iter().enumerate() {
-            irqfd.set_masked(true)?;
-            if !ctrl.enable() || index >= count || mask & (1 << index) > 0 {
-                continue;
-            }
-            let msg = msg | index as u32;
-            irqfd.set_addr_hi((addr >> 32) as u32)?;
-            irqfd.set_addr_lo(addr as u32)?;
-            irqfd.set_data(msg)?;
-            irqfd.set_masked(false)?;
-        }
-        Ok(())
-    }
-}
-
-impl<M, D> Mmio for MsiCapMmio<M, D>
-where
-    D: Device,
-    M: MsiSender,
-{
-    fn size(&self) -> u64 {
-        let (hdr, _) = &*self.cap.read();
-        hdr.control.cap_size() as u64
-    }
-
-    fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
-        let (hdr, body) = &*self.cap.read();
-        let ctrl = hdr.control;
-        match offset {
-            0..4 => hdr.read(offset, size),
-            0x10 if ctrl.per_vector_masking_cap() && !ctrl.addr_64_cap() => Ok(0),
-            0x14 if ctrl.per_vector_masking_cap() && ctrl.addr_64_cap() => Ok(0),
-            _ => body.read(offset - size_of_val(hdr) as u64, size),
-        }
-    }
-
-    fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        let mut need_update = false;
-        let mut cap = self.cap.write();
-        let (hdr, body) = &mut *cap;
-        match (offset as usize, size) {
-            (0x2, 2) => {
-                let ctrl = &mut hdr.control;
-                let new_ctrl = MsiMsgCtrl(val as u16);
-                if !ctrl.enable() || !new_ctrl.enable() {
-                    let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
-                    ctrl.set_multi_msg(multi_msg);
-                }
-                need_update = ctrl.enable() != new_ctrl.enable()
-                    || (new_ctrl.enable() && ctrl.ext_msg_data() != new_ctrl.ext_msg_data());
-                ctrl.set_ext_msg_data(new_ctrl.ext_msg_data());
-                ctrl.set_enable(new_ctrl.enable());
-            }
-            (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
-                let data_offset = (offset as usize - size_of_val(hdr)) >> 2;
-                let reg = &mut body.data[data_offset];
-                need_update = hdr.control.enable() && *reg != val as u32;
-                *reg = val as u32;
-            }
-            _ => log::error!(
-                "{}: write 0x{val:0width$x} to invalid offset 0x{offset:x}.",
-                self.dev.name,
-                width = 2 * size as usize
-            ),
-        }
-        drop(cap);
-        if need_update {
-            self.update_msi().box_trace(mem::error::Mmio)?;
-        }
-        Ok(Action::None)
-    }
-}
-
-impl<M, D> PciConfigArea for MsiCapMmio<M, D>
-where
-    D: Device,
-    M: MsiSender,
-{
-    fn reset(&self) -> pci::Result<()> {
-        {
-            let (hdr, _) = &mut *self.cap.write();
-            hdr.control.set_enable(false);
-        }
-        self.update_msi().box_trace(pci::error::Reset)
     }
 }
