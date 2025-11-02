@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "pci_test.rs"]
+mod tests;
+
 use std::cmp::min;
 use std::fs::File;
 use std::iter::zip;
@@ -453,11 +457,7 @@ where
             };
             cdev.dev.set_irqs(&set_eventfd)?;
 
-            let msi_cap_mmio = MsiCapMmio::<M, D> {
-                cap: RwLock::new((hdr, MsiCapBody { data: [0; 4] })),
-                dev: cdev.clone(),
-                irqfds,
-            };
+            let msi_cap_mmio = MsiCapMmio::new(cdev.name.clone(), hdr, irqfds);
             masked_caps.push((offset as u64, Box::new(msi_cap_mmio)));
         }
 
@@ -705,20 +705,25 @@ struct MsiCapBody {
 impl_mmio_for_zerocopy!(MsiCapBody);
 
 #[derive(Debug)]
-struct MsiCapMmio<M, D>
-where
-    M: MsiSender,
-{
+struct MsiCapMmio<F> {
+    name: Arc<str>,
     cap: RwLock<(MsiCapHdr, MsiCapBody)>,
-    dev: Arc<VfioDev<D>>,
-    irqfds: Box<[M::IrqFd]>,
+    irqfds: Box<[F]>,
 }
 
-impl<M, D> MsiCapMmio<M, D>
+impl<F> MsiCapMmio<F>
 where
-    M: MsiSender,
-    D: Device,
+    F: IrqFd,
 {
+    fn new(name: Arc<str>, hdr: MsiCapHdr, irqfds: Box<[F]>) -> Self {
+        debug_assert_eq!(1 << hdr.control.multi_msg_cap(), irqfds.len());
+        Self {
+            name,
+            cap: RwLock::new((hdr, MsiCapBody::default())),
+            irqfds,
+        }
+    }
+
     fn update_msi(&self) -> Result<()> {
         let (hdr, body) = &*self.cap.read();
         let ctrl = &hdr.control;
@@ -757,10 +762,9 @@ where
     }
 }
 
-impl<M, D> Mmio for MsiCapMmio<M, D>
+impl<F> Mmio for MsiCapMmio<F>
 where
-    D: Device,
-    M: MsiSender,
+    F: IrqFd,
 {
     fn size(&self) -> u64 {
         let (hdr, _) = &*self.cap.read();
@@ -786,13 +790,16 @@ where
             (0x2, 2) => {
                 let ctrl = &mut hdr.control;
                 let new_ctrl = MsiMsgCtrl(val as u16);
-                if !ctrl.enable() || !new_ctrl.enable() {
-                    let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
-                    ctrl.set_multi_msg(multi_msg);
-                }
-                need_update = ctrl.enable() != new_ctrl.enable()
-                    || (new_ctrl.enable() && ctrl.ext_msg_data() != new_ctrl.ext_msg_data());
-                ctrl.set_ext_msg_data(new_ctrl.ext_msg_data());
+
+                let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
+                let ext_msg_data = ctrl.ext_msg_data_cap() && new_ctrl.ext_msg_data();
+
+                need_update = ctrl.enable() != new_ctrl.enable();
+                need_update |= new_ctrl.enable()
+                    && (ctrl.ext_msg_data() != ext_msg_data || ctrl.multi_msg() != multi_msg);
+
+                ctrl.set_ext_msg_data(ext_msg_data);
+                ctrl.set_multi_msg(multi_msg);
                 ctrl.set_enable(new_ctrl.enable());
             }
             (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
@@ -803,7 +810,7 @@ where
             }
             _ => log::error!(
                 "{}: write 0x{val:0width$x} to invalid offset 0x{offset:x}.",
-                self.dev.name,
+                self.name,
                 width = 2 * size as usize
             ),
         }
@@ -815,10 +822,9 @@ where
     }
 }
 
-impl<M, D> PciConfigArea for MsiCapMmio<M, D>
+impl<F> PciConfigArea for MsiCapMmio<F>
 where
-    D: Device,
-    M: MsiSender,
+    F: IrqFd,
 {
     fn reset(&self) {
         {
@@ -826,7 +832,7 @@ where
             hdr.control.set_enable(false);
         }
         if let Err(e) = self.update_msi() {
-            log::error!("{}: failed to reset: {e:?}", self.dev.name);
+            log::error!("{}: failed to reset: {e:?}", self.name);
         }
     }
 }
