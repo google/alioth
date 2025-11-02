@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "pci_test.rs"]
+mod tests;
+
 use std::cmp::min;
 use std::fs::File;
 use std::iter::zip;
@@ -712,6 +716,7 @@ where
     F: IrqFd,
 {
     fn new(name: Arc<str>, hdr: MsiCapHdr, irqfds: Box<[F]>) -> Self {
+        debug_assert_eq!(1 << hdr.control.multi_msg_cap(), irqfds.len());
         Self {
             name,
             cap: RwLock::new((hdr, MsiCapBody::default())),
@@ -785,13 +790,16 @@ where
             (0x2, 2) => {
                 let ctrl = &mut hdr.control;
                 let new_ctrl = MsiMsgCtrl(val as u16);
-                if !ctrl.enable() || !new_ctrl.enable() {
-                    let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
-                    ctrl.set_multi_msg(multi_msg);
-                }
-                need_update = ctrl.enable() != new_ctrl.enable()
-                    || (new_ctrl.enable() && ctrl.ext_msg_data() != new_ctrl.ext_msg_data());
-                ctrl.set_ext_msg_data(new_ctrl.ext_msg_data());
+
+                let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
+                let ext_msg_data = ctrl.ext_msg_data_cap() && new_ctrl.ext_msg_data();
+
+                need_update = ctrl.enable() != new_ctrl.enable();
+                need_update |= new_ctrl.enable()
+                    && (ctrl.ext_msg_data() != ext_msg_data || ctrl.multi_msg() != multi_msg);
+
+                ctrl.set_ext_msg_data(ext_msg_data);
+                ctrl.set_multi_msg(multi_msg);
                 ctrl.set_enable(new_ctrl.enable());
             }
             (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
