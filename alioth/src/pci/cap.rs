@@ -197,13 +197,17 @@ where
             (0x2, 2) => {
                 let ctrl = &mut hdr.control;
                 let new_ctrl = MsiMsgCtrl(val as u16);
+
                 if !ctrl.enable() || !new_ctrl.enable() {
                     let multi_msg = min(ctrl.multi_msg_cap(), new_ctrl.multi_msg());
                     ctrl.set_multi_msg(multi_msg);
                 }
-                need_update = ctrl.enable() != new_ctrl.enable()
-                    || (new_ctrl.enable() && ctrl.ext_msg_data() != new_ctrl.ext_msg_data());
-                ctrl.set_ext_msg_data(new_ctrl.ext_msg_data());
+
+                let ext_msg_data = ctrl.ext_msg_data_cap() && new_ctrl.ext_msg_data();
+                need_update |= new_ctrl.enable() && ctrl.ext_msg_data() != ext_msg_data;
+                ctrl.set_ext_msg_data(ext_msg_data);
+
+                need_update |= ctrl.enable() != new_ctrl.enable();
                 ctrl.set_enable(new_ctrl.enable());
             }
             (0x4 | 0x8 | 0xc | 0x10, 2 | 4) => {
