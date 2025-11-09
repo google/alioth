@@ -106,5 +106,6 @@ macro_rules! endian_type {
     };
 }
 
+endian_type!(u16, Lu16, Bu16);
 endian_type!(u32, Lu32, Bu32);
 endian_type!(u64, Lu64, Bu64);

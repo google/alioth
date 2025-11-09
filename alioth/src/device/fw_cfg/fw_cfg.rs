@@ -49,6 +49,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 #[cfg(target_arch = "x86_64")]
 use crate::mem::{MemRegionEntry, MemRegionType};
+use crate::utils::endian::{Bu16, Bu32, Bu64, Lu32};
 
 #[cfg(target_arch = "x86_64")]
 use self::acpi::create_acpi_loader;
@@ -101,7 +102,7 @@ pub enum FwCfgContent {
     Bytes(Vec<u8>),
     Slice(&'static [u8]),
     File(u64, File),
-    U32(u32),
+    Lu32(Lu32),
 }
 
 struct FwCfgContentAccess<'a> {
@@ -124,7 +125,7 @@ impl Read for FwCfgContentAccess<'_> {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
-            FwCfgContent::U32(n) => match n.to_le_bytes().get(self.offset as usize..) {
+            FwCfgContent::Lu32(n) => match n.as_bytes().get(self.offset as usize..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
@@ -144,7 +145,7 @@ impl FwCfgContent {
             FwCfgContent::Bytes(v) => v.len(),
             FwCfgContent::File(offset, f) => (f.metadata()?.len() - offset) as usize,
             FwCfgContent::Slice(s) => s.len(),
-            FwCfgContent::U32(n) => size_of_val(n),
+            FwCfgContent::Lu32(n) => size_of_val(n),
         };
         u32::try_from(ret).map_err(|_| std::io::ErrorKind::InvalidInput.into())
     }
@@ -177,9 +178,9 @@ pub struct FwCfg {
 #[repr(C)]
 #[derive(Debug, IntoBytes, FromBytes, Immutable, Layout)]
 struct FwCfgDmaAccess {
-    control_be: u32,
-    length_be: u32,
-    address_be: u64,
+    control: Bu32,
+    length: Bu32,
+    address: Bu64,
 }
 
 bitfield! {
@@ -196,14 +197,14 @@ bitfield! {
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable)]
 struct FwCfgFilesHeader {
-    count_be: u32,
+    count: Bu32,
 }
 
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable)]
 struct FwCfgFile {
-    size_be: u32,
-    select_be: u16,
+    size: Bu32,
+    select: Bu16,
     _reserved: u16,
     name: [u8; FILE_NAME_SIZE],
 }
@@ -214,7 +215,7 @@ impl FwCfg {
         let mut known_items = [DEFAULT_ITEM; FW_CFG_KNOWN_ITEMS];
         known_items[FW_CFG_SIGNATURE as usize] = FwCfgContent::Slice(&FW_CFG_DMA_SIGNATURE);
         known_items[FW_CFG_ID as usize] = FwCfgContent::Slice(&FW_CFG_FEATURE);
-        let file_buf = Vec::from(FwCfgFilesHeader { count_be: 0 }.as_bytes());
+        let file_buf = Vec::from(FwCfgFilesHeader { count: 0.into() }.as_bytes());
         known_items[FW_CFG_FILE_DIR as usize] = FwCfgContent::Bytes(file_buf);
 
         let mut dev = Self {
@@ -240,7 +241,7 @@ impl FwCfg {
 
     fn update_count(&mut self) {
         let header = FwCfgFilesHeader {
-            count_be: (self.items.len() as u32).to_be(),
+            count: (self.items.len() as u32).into(),
         };
         self.get_file_dir_mut()[0..4].copy_from_slice(header.as_bytes());
     }
@@ -288,25 +289,27 @@ impl FwCfg {
         }
         bp.hdr.type_of_loader = 0xff;
         let kernel_start = (bp.hdr.setup_sects as usize + 1) * 512;
-        self.known_items[FW_CFG_SETUP_SIZE as usize] = FwCfgContent::U32(buffer.len() as u32);
+        self.known_items[FW_CFG_SETUP_SIZE as usize] =
+            FwCfgContent::Lu32((buffer.len() as u32).into());
         self.known_items[FW_CFG_SETUP_DATA as usize] = FwCfgContent::Bytes(buffer);
         self.known_items[FW_CFG_KERNEL_SIZE as usize] =
-            FwCfgContent::U32(file.metadata()?.len() as u32 - kernel_start as u32);
+            FwCfgContent::Lu32((file.metadata()?.len() as u32 - kernel_start as u32).into());
         self.known_items[FW_CFG_KERNEL_DATA as usize] =
             FwCfgContent::File(kernel_start as u64, file);
         Ok(())
     }
 
     pub fn add_initramfs_data(&mut self, file: File) -> Result<()> {
-        let initramfs_size = file.metadata()?.len();
-        self.known_items[FW_CFG_INITRD_SIZE as usize] = FwCfgContent::U32(initramfs_size as _);
+        let initramfs_size = file.metadata()?.len() as u32;
+        self.known_items[FW_CFG_INITRD_SIZE as usize] = FwCfgContent::Lu32(initramfs_size.into());
         self.known_items[FW_CFG_INITRD_DATA as usize] = FwCfgContent::File(0, file);
         Ok(())
     }
 
     pub fn add_kernel_cmdline(&mut self, s: CString) {
         let bytes = s.into_bytes_with_nul();
-        self.known_items[FW_CFG_CMDLINE_SIZE as usize] = FwCfgContent::U32(bytes.len() as u32);
+        self.known_items[FW_CFG_CMDLINE_SIZE as usize] =
+            FwCfgContent::Lu32((bytes.len() as u32).into());
         self.known_items[FW_CFG_CMDLINE_DATA as usize] = FwCfgContent::Bytes(bytes);
     }
 
@@ -315,8 +318,8 @@ impl FwCfg {
         let c_name = create_file_name(&item.name);
         let size = item.content.size()?;
         let cfg_file = FwCfgFile {
-            size_be: size.to_be(),
-            select_be: (FW_CFG_FILE_FIRST + index as u16).to_be(),
+            size: size.into(),
+            select: (FW_CFG_FILE_FIRST + index as u16).into(),
             _reserved: 0,
             name: c_name,
         };
@@ -374,12 +377,12 @@ impl FwCfg {
                 return;
             }
         };
-        let control = AccessControl(u32::from_be(dma_access.control_be));
+        let control = AccessControl(dma_access.control.into());
         if control.select() {
             self.selector = control.select() as u16;
         }
-        let len = u32::from_be(dma_access.length_be);
-        let addr = u64::from_be(dma_access.address_be);
+        let len = dma_access.length.to_ne();
+        let addr = dma_access.address.to_ne();
         let ret = if control.read() {
             self.dma_read(self.selector, len, addr)
         } else if control.write() {
@@ -395,9 +398,9 @@ impl FwCfg {
             log::error!("fw_cfg: dma operation {dma_access:x?}: {e:x?}");
             access_resp.set_error(true);
         }
-        if let Err(e) = self.memory.write(
-            dma_address + FwCfgDmaAccess::OFFSET_CONTROL_BE as u64,
-            &access_resp.0.to_be_bytes(),
+        if let Err(e) = self.memory.write_t(
+            dma_address + FwCfgDmaAccess::OFFSET_CONTROL as u64,
+            &Bu32::from(access_resp.0),
         ) {
             log::error!("fw_cfg: finishing dma: {e:?}")
         }
@@ -417,7 +420,7 @@ impl FwCfg {
                     }
                 }
             }
-            FwCfgContent::U32(n) => n.to_le_bytes().get(offset as usize).copied(),
+            FwCfgContent::Lu32(n) => n.as_bytes().get(offset as usize).copied(),
         }
     }
 
