@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "fw_cfg_test.rs"]
+mod tests;
+
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;
 
@@ -154,6 +158,24 @@ impl FwCfgContent {
         FwCfgContentAccess {
             content: self,
             offset,
+        }
+    }
+
+    fn read(&self, offset: u32) -> Option<u8> {
+        match self {
+            FwCfgContent::Bytes(b) => b.get(offset as usize).copied(),
+            FwCfgContent::Slice(s) => s.get(offset as usize).copied(),
+            FwCfgContent::File(o, f) => {
+                let mut buf = [0u8];
+                match f.read_exact_at(&mut buf, o + offset as u64) {
+                    Ok(_) => Some(buf[0]),
+                    Err(e) => {
+                        log::error!("fw_cfg: reading {f:?}: {e:?}");
+                        None
+                    }
+                }
+            }
+            FwCfgContent::Lu32(n) => n.as_bytes().get(offset as usize).copied(),
         }
     }
 }
@@ -406,29 +428,11 @@ impl FwCfg {
         }
     }
 
-    fn read_content(content: &FwCfgContent, offset: u32) -> Option<u8> {
-        match content {
-            FwCfgContent::Bytes(b) => b.get(offset as usize).copied(),
-            FwCfgContent::Slice(s) => s.get(offset as usize).copied(),
-            FwCfgContent::File(o, f) => {
-                let mut buf = [0u8];
-                match f.read_exact_at(&mut buf, o + offset as u64) {
-                    Ok(_) => Some(buf[0]),
-                    Err(e) => {
-                        log::error!("fw_cfg: reading {f:?}: {e:?}");
-                        None
-                    }
-                }
-            }
-            FwCfgContent::Lu32(n) => n.as_bytes().get(offset as usize).copied(),
-        }
-    }
-
     fn read_data(&mut self) -> u8 {
         let ret = if let Some(content) = self.known_items.get(self.selector as usize) {
-            Self::read_content(content, self.data_offset)
+            content.read(self.data_offset)
         } else if let Some(item) = self.items.get((self.selector - FW_CFG_FILE_FIRST) as usize) {
-            Self::read_content(&item.content, self.data_offset)
+            item.content.read(self.data_offset)
         } else {
             log::error!("fw_cfg: selector {:#x} does not exist.", self.selector);
             None
