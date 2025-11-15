@@ -45,7 +45,7 @@ esac
 alioth -l info --log-to-file \
     boot \
     --kernel /path/to/vmlinuz \
-    --cmd-line "console=$CONSOLE" \
+    --cmdline "console=$CONSOLE" \
     --initramfs /path/to/initramfs \
     --memory size=4G \
     --num-cpu 2

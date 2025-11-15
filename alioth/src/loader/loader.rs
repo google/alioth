@@ -37,7 +37,7 @@ pub struct Payload {
     pub executable: PathBuf,
     pub exec_type: ExecType,
     pub initramfs: Option<PathBuf>,
-    pub cmd_line: Option<String>,
+    pub cmdline: Option<String>,
 }
 
 #[derive(Debug)]

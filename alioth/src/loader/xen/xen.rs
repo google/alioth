@@ -24,7 +24,7 @@ use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::align_up;
 use crate::arch::layout::{
-    BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
+    BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMDLINE_LIMIT, KERNEL_CMDLINE_START,
 };
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::elf::{
@@ -101,7 +101,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    cmd_line: Option<&str>,
+    cmdline: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
     let access_kernel = error::AccessFile {
@@ -191,7 +191,7 @@ pub fn load<P: AsRef<Path>>(
         start_info: HvmStartInfo {
             magic: XEN_HVM_START_MAGIC_VALUE,
             version: XEN_HVM_START_INFO_V1,
-            cmdline_paddr: KERNEL_CMD_LINE_START,
+            cmdline_paddr: KERNEL_CMDLINE_START,
             rsdp_paddr: EBDA_START,
             ..Default::default()
         },
@@ -199,20 +199,20 @@ pub fn load<P: AsRef<Path>>(
     };
 
     // load cmd line
-    if let Some(cmd_line) = cmd_line {
-        if cmd_line.len() as u64 > KERNEL_CMD_LINE_LIMIT {
+    if let Some(cmdline) = cmdline {
+        if cmdline.len() as u64 > KERNEL_CMDLINE_LIMIT {
             return error::CmdLineTooLong {
-                len: cmd_line.len(),
-                limit: KERNEL_CMD_LINE_LIMIT,
+                len: cmdline.len(),
+                limit: KERNEL_CMDLINE_LIMIT,
             }
             .fail();
         }
         memory.write_range(
-            KERNEL_CMD_LINE_START,
-            cmd_line.len() as u64,
-            cmd_line.as_bytes(),
+            KERNEL_CMDLINE_START,
+            cmdline.len() as u64,
+            cmdline.as_bytes(),
         )?;
-        start_info_page.start_info.cmdline_paddr = KERNEL_CMD_LINE_START;
+        start_info_page.start_info.cmdline_paddr = KERNEL_CMDLINE_START;
     }
 
     // load initramfs

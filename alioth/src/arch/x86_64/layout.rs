@@ -25,8 +25,8 @@ pub const BOOT_IDT_LIMIT: u64 = 0xa00;
 pub const LINUX_BOOT_PARAMS_START: u64 = 0x1000; // size: 4KiB
 pub const HVM_START_INFO_START: u64 = 0x1000; // size: 4KiB
 
-pub const KERNEL_CMD_LINE_START: u64 = 0x2000;
-pub const KERNEL_CMD_LINE_LIMIT: u64 = 0x1000;
+pub const KERNEL_CMDLINE_START: u64 = 0x2000;
+pub const KERNEL_CMDLINE_LIMIT: u64 = 0x1000;
 
 pub const BOOT_PAGING_START: u64 = 0x3000;
 pub const BOOT_PAGING_LIMIT: u64 = 0x4000;

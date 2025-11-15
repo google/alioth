@@ -27,7 +27,7 @@ To launch an SEV guest,
        --memory size=1G \
        --num-cpu 2 \
        --kernel /path/to/vmlinuz \
-       --cmd-line "console=ttyS0" \
+       --cmdline "console=ttyS0" \
        --initramfs /path/to/initramfs \
        --coco sev,policy=$POLICY
    ```

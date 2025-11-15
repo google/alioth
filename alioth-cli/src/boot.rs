@@ -191,8 +191,8 @@ pub struct BootArgs {
     firmware: Option<PathBuf>,
 
     /// Command line to pass to the kernel, e.g. `console=ttyS0`.
-    #[arg(short, long, value_name = "ARGS")]
-    cmd_line: Option<String>,
+    #[arg(short, long, alias = "cmd-line", value_name = "ARGS")]
+    cmdline: Option<String>,
 
     /// Path to an initramfs image.
     #[arg(short, long, value_name = "PATH")]
@@ -431,7 +431,7 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             )
             .context(error::FwCfg)?;
         }
-        if let Some(cmdline) = &args.cmd_line {
+        if let Some(cmdline) = &args.cmdline {
             let Ok(cmdline_c) = CString::new(cmdline.as_str()) else {
                 return error::CreateCString {
                     s: cmdline.to_owned(),
@@ -511,14 +511,14 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             executable: fw,
             exec_type: ExecType::Firmware,
             initramfs: None,
-            cmd_line: None,
+            cmdline: None,
         })
     } else if let Some(kernel) = args.kernel {
         Some(Payload {
             exec_type: ExecType::Linux,
             executable: kernel,
             initramfs: args.initramfs,
-            cmd_line: args.cmd_line,
+            cmdline: args.cmdline,
         })
     } else {
         #[cfg(target_arch = "x86_64")]
@@ -527,7 +527,7 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
                 executable: pvh_kernel,
                 exec_type: ExecType::Pvh,
                 initramfs: args.initramfs,
-                cmd_line: args.cmd_line,
+                cmdline: args.cmdline,
             })
         } else {
             None

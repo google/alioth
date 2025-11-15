@@ -203,7 +203,7 @@ where
                 &self.memory.ram_bus(),
                 &mem_regions,
                 &payload.executable,
-                payload.cmd_line.as_deref(),
+                payload.cmdline.as_deref(),
                 payload.initramfs.as_ref(),
             )?,
             #[cfg(target_arch = "x86_64")]
@@ -211,7 +211,7 @@ where
                 &self.memory.ram_bus(),
                 &mem_regions,
                 &payload.executable,
-                payload.cmd_line.as_deref(),
+                payload.cmdline.as_deref(),
                 payload.initramfs.as_ref(),
             )?,
             ExecType::Firmware => {

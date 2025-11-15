@@ -46,7 +46,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    _cmd_line: Option<&str>,
+    _cmdline: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
     let access_kernel = error::AccessFile {

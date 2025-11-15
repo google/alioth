@@ -21,7 +21,7 @@ use snafu::ResultExt;
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::arch::layout::{
-    BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
+    BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMDLINE_LIMIT, KERNEL_CMDLINE_START,
     KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
 use crate::arch::msr::Efer;
@@ -45,7 +45,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    cmd_line: Option<&str>,
+    cmdline: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState, Error> {
     let mut boot_params = BootParams::new_zeroed();
@@ -102,23 +102,23 @@ pub fn load<P: AsRef<Path>>(
     boot_params.hdr.type_of_loader = 0xff;
 
     // load cmd line
-    if let Some(cmd_line) = cmd_line {
-        let cmd_line_limit =
-            std::cmp::min(boot_params.hdr.cmdline_size as u64, KERNEL_CMD_LINE_LIMIT);
-        if cmd_line.len() as u64 > cmd_line_limit {
+    if let Some(cmdline) = cmdline {
+        let cmdline_limit =
+            std::cmp::min(boot_params.hdr.cmdline_size as u64, KERNEL_CMDLINE_LIMIT);
+        if cmdline.len() as u64 > cmdline_limit {
             return error::CmdLineTooLong {
-                len: cmd_line.len(),
-                limit: cmd_line_limit,
+                len: cmdline.len(),
+                limit: cmdline_limit,
             }
             .fail();
         }
         memory.write_range(
-            KERNEL_CMD_LINE_START,
-            cmd_line.len() as u64,
-            cmd_line.as_bytes(),
+            KERNEL_CMDLINE_START,
+            cmdline.len() as u64,
+            cmdline.as_bytes(),
         )?;
-        boot_params.hdr.cmd_line_ptr = KERNEL_CMD_LINE_START as u32;
-        boot_params.ext_cmd_line_ptr = (KERNEL_CMD_LINE_START >> 32) as u32;
+        boot_params.hdr.cmdline_ptr = KERNEL_CMDLINE_START as u32;
+        boot_params.ext_cmdline_ptr = (KERNEL_CMDLINE_START >> 32) as u32;
     }
 
     // load kernel image
@@ -192,7 +192,7 @@ pub fn load<P: AsRef<Path>>(
         runtime_start + boot_params.hdr.init_size as u64,
         std::cmp::max(
             LINUX_BOOT_PARAMS_START + size_of::<BootParams>() as u64,
-            KERNEL_CMD_LINE_START + KERNEL_CMD_LINE_LIMIT,
+            KERNEL_CMDLINE_START + KERNEL_CMDLINE_LIMIT,
         ),
     );
     let num_page = (max_addr + (1 << 30) - 1) >> 30;
