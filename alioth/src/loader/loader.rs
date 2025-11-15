@@ -21,6 +21,7 @@ pub mod linux;
 #[path = "xen/xen.rs"]
 pub mod xen;
 
+use std::ffi::CString;
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -37,7 +38,7 @@ pub struct Payload {
     pub executable: PathBuf,
     pub exec_type: ExecType,
     pub initramfs: Option<PathBuf>,
-    pub cmdline: Option<String>,
+    pub cmdline: Option<CString>,
 }
 
 #[derive(Debug)]

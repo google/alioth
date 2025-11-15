@@ -14,6 +14,7 @@
 
 pub mod start_info;
 
+use std::ffi::CStr;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{offset_of, size_of, size_of_val};
@@ -101,7 +102,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    cmdline: Option<&str>,
+    cmdline: Option<&CStr>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
     let access_kernel = error::AccessFile {
@@ -200,6 +201,7 @@ pub fn load<P: AsRef<Path>>(
 
     // load cmd line
     if let Some(cmdline) = cmdline {
+        let cmdline = cmdline.to_bytes_with_nul();
         if cmdline.len() as u64 > KERNEL_CMDLINE_LIMIT {
             return error::CmdLineTooLong {
                 len: cmdline.len(),
@@ -207,11 +209,7 @@ pub fn load<P: AsRef<Path>>(
             }
             .fail();
         }
-        memory.write_range(
-            KERNEL_CMDLINE_START,
-            cmdline.len() as u64,
-            cmdline.as_bytes(),
-        )?;
+        memory.write_range(KERNEL_CMDLINE_START, cmdline.len() as u64, cmdline)?;
         start_info_page.start_info.cmdline_paddr = KERNEL_CMDLINE_START;
     }
 

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ffi::CStr;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -46,7 +47,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    _cmdline: Option<&str>,
+    _cmdline: Option<&CStr>,
     initramfs: Option<P>,
 ) -> Result<InitState> {
     let access_kernel = error::AccessFile {

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-#[cfg(target_arch = "x86_64")]
 use std::ffi::CString;
 #[cfg(target_arch = "x86_64")]
 use std::fs::File;
@@ -84,9 +83,6 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to configure the fw-cfg device"))]
     FwCfg { error: std::io::Error },
-    #[cfg(target_arch = "x86_64")]
-    #[snafu(display("{s} is not a valid CString"))]
-    CreateCString { s: String },
     #[snafu(display("Failed to boot a VM"))]
     BootVm { source: alioth::vm::Error },
     #[snafu(display("VM did not shutdown peacefully"))]
@@ -192,7 +188,7 @@ pub struct BootArgs {
 
     /// Command line to pass to the kernel, e.g. `console=ttyS0`.
     #[arg(short, long, alias = "cmd-line", value_name = "ARGS")]
-    cmdline: Option<String>,
+    cmdline: Option<CString>,
 
     /// Path to an initramfs image.
     #[arg(short, long, value_name = "PATH")]
@@ -432,13 +428,7 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             .context(error::FwCfg)?;
         }
         if let Some(cmdline) = &args.cmdline {
-            let Ok(cmdline_c) = CString::new(cmdline.as_str()) else {
-                return error::CreateCString {
-                    s: cmdline.to_owned(),
-                }
-                .fail();
-            };
-            dev.add_kernel_cmdline(cmdline_c);
+            dev.add_kernel_cmdline(cmdline.clone());
         }
     };
 

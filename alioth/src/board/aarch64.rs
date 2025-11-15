@@ -178,8 +178,8 @@ where
         }
         let mut node = Node::default();
         if let Some(cmdline) = &payload.cmdline {
-            node.props
-                .insert("bootargs", PropVal::String(cmdline.clone()));
+            let bytes = cmdline.as_bytes_with_nul().to_owned();
+            node.props.insert("bootargs", PropVal::Bytes(bytes));
         }
         if let Some(initramfs_range) = &init_state.initramfs {
             node.props.insert(
