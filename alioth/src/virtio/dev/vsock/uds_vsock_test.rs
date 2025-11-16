@@ -120,7 +120,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
     const GUEST_CID: u32 = 3;
     let param = UdsVsockParam {
         cid: GUEST_CID,
-        path: sock_path.clone(),
+        path: sock_path.clone().into(),
     };
     let dev = param.build("vsock").unwrap();
 

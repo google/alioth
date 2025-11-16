@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -432,7 +432,7 @@ impl VirtioMio for VuFrontend {
 }
 
 pub struct VuFrontendParam {
-    pub socket: PathBuf,
+    pub socket: Box<Path>,
     pub id: DeviceId,
 }
 

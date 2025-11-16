@@ -27,7 +27,7 @@ use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem::size_of;
 use std::mem::size_of_val;
 use std::os::unix::fs::FileExt;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use alioth_macros::Layout;
@@ -517,7 +517,7 @@ impl Mmio for Mutex<FwCfg> {
 pub enum FwCfgContentParam {
     /// Path to a file with binary contents.
     #[serde(alias = "file")]
-    File(PathBuf),
+    File(Box<Path>),
     /// A UTF-8 encoded string.
     #[serde(alias = "string")]
     String(String),

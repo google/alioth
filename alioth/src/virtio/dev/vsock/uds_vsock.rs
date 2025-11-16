@@ -24,7 +24,7 @@ use std::mem::size_of_val;
 use std::num::Wrapping;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -57,7 +57,7 @@ pub struct UdsVsockParam {
     /// Vsock context id.
     pub cid: u32,
     /// Host-side Unix domain socket path.
-    pub path: PathBuf,
+    pub path: Box<Path>,
 }
 
 impl DevParam for UdsVsockParam {
@@ -72,7 +72,7 @@ impl DevParam for UdsVsockParam {
 pub struct UdsVsock {
     name: Arc<str>,
     config: Arc<VsockConfig>,
-    path: PathBuf,
+    path: Box<Path>,
     listener: UnixListener,
     connections: HashMap<(u32, u32), Connection>,
     ports: HashMap<Token, (u32, u32)>,

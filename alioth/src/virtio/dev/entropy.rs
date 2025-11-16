@@ -19,7 +19,7 @@ mod tests;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -174,7 +174,7 @@ impl VirtioMio for Entropy {
 #[derive(Debug, Default, Deserialize, Clone, Help)]
 pub struct EntropyParam {
     /// Source of entropy [default: /dev/urandom]
-    pub source: Option<PathBuf>,
+    pub source: Option<Box<Path>>,
 }
 
 impl DevParam for EntropyParam {

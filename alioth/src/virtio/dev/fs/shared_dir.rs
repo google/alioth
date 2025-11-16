@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::cmp::min;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -29,7 +29,7 @@ pub struct SharedDirParam {
     /// Mount tag seen by the guest.
     pub tag: String,
     /// Path to the shared dir.
-    pub path: PathBuf,
+    pub path: Box<Path>,
     /// Size of memory region for DAX in bytes.
     /// 0 means no DAX. [default: 0]
     #[serde(default)]

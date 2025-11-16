@@ -31,7 +31,7 @@ pub mod worker;
 
 use std::fmt::Debug;
 use std::os::fd::BorrowedFd;
-use std::path::PathBuf;
+use std::path::Path;
 
 use bitflags::bitflags;
 use snafu::Snafu;
@@ -50,7 +50,7 @@ pub enum Error {
     PciBus { source: crate::pci::Error },
     #[snafu(display("Cannot access file {path:?}"))]
     AccessFile {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Error from OS"), context(false))]

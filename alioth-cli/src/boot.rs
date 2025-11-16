@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 #[cfg(target_arch = "x86_64")]
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use alioth::board::BoardConfig;
 #[cfg(target_arch = "x86_64")]
@@ -48,6 +48,7 @@ use alioth::virtio::dev::vsock::UdsVsockParam;
 use alioth::virtio::dev::vsock::VhostVsockParam;
 #[cfg(target_os = "linux")]
 use alioth::virtio::vu::frontend::VuFrontendParam;
+use alioth::virtio::worker::WorkerApi;
 use alioth::vm::Machine;
 use clap::Args;
 use serde::Deserialize;
@@ -77,7 +78,7 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to open {path:?}"))]
     OpenFile {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[cfg(target_arch = "x86_64")]
@@ -135,7 +136,7 @@ enum VsockParam {
 #[cfg(target_os = "linux")]
 #[derive(Deserialize, Help)]
 struct VuSocket {
-    socket: PathBuf,
+    socket: Box<Path>,
 }
 
 #[derive(Deserialize, Help)]
@@ -175,16 +176,16 @@ pub struct BootArgs {
 
     /// Path to a Linux kernel image.
     #[arg(short, long, value_name = "PATH")]
-    kernel: Option<PathBuf>,
+    kernel: Option<Box<Path>>,
 
     /// Path to an ELF kernel with PVH note.
     #[cfg(target_arch = "x86_64")]
     #[arg(long, value_name = "PATH")]
-    pvh: Option<PathBuf>,
+    pvh: Option<Box<Path>>,
 
     /// Path to a firmware image.
     #[arg(long, short, value_name = "PATH")]
-    firmware: Option<PathBuf>,
+    firmware: Option<Box<Path>>,
 
     /// Command line to pass to the kernel, e.g. `console=ttyS0`.
     #[arg(short, long, alias = "cmd-line", value_name = "ARGS")]
@@ -192,7 +193,7 @@ pub struct BootArgs {
 
     /// Path to an initramfs image.
     #[arg(short, long, value_name = "PATH")]
-    initramfs: Option<PathBuf>,
+    initramfs: Option<Box<Path>>,
 
     /// Number of VCPUs assigned to the guest.
     #[arg(long, default_value_t = 1)]
@@ -330,8 +331,9 @@ where
                 Err(_) => {
                     eprintln!("Please update the cmd line to --blk file,path={opt}");
                     BlkParam::File(BlkFileParam {
-                        path: opt.into(),
-                        ..Default::default()
+                        path: PathBuf::from(opt).into(),
+                        readonly: false,
+                        api: WorkerApi::Mio,
                     })
                 }
             },
@@ -418,13 +420,15 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
         let mut dev = fw_cfg.lock();
 
         if let Some(kernel) = &args.kernel {
-            dev.add_kernel_data(File::open(kernel).context(error::OpenFile { path: kernel })?)
-                .context(error::FwCfg)?
+            dev.add_kernel_data(File::open(kernel).context(error::OpenFile {
+                path: kernel.to_owned(),
+            })?)
+            .context(error::FwCfg)?
         }
         if let Some(initramfs) = &args.initramfs {
-            dev.add_initramfs_data(
-                File::open(initramfs).context(error::OpenFile { path: initramfs })?,
-            )
+            dev.add_initramfs_data(File::open(initramfs).context(error::OpenFile {
+                path: initramfs.to_owned(),
+            })?)
             .context(error::FwCfg)?;
         }
         if let Some(cmdline) = &args.cmdline {

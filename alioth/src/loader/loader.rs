@@ -23,7 +23,7 @@ pub mod xen;
 
 use std::ffi::CString;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::Path;
 
 use snafu::Snafu;
 
@@ -35,9 +35,9 @@ use crate::mem::{MemRegionEntry, MemRegionType};
 
 #[derive(Debug)]
 pub struct Payload {
-    pub executable: PathBuf,
+    pub executable: Box<Path>,
     pub exec_type: ExecType,
-    pub initramfs: Option<PathBuf>,
+    pub initramfs: Option<Box<Path>>,
     pub cmdline: Option<CString>,
 }
 
@@ -66,7 +66,7 @@ pub struct InitState {
 pub enum Error {
     #[snafu(display("Cannot access file {path:?}"))]
     AccessFile {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Firmware image size is not 4-KiB aligned"))]

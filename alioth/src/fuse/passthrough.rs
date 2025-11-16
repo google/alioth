@@ -24,7 +24,7 @@ use std::marker::PhantomData;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirEntryExt, FileTypeExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -107,10 +107,10 @@ pub struct Passthrough {
 }
 
 impl Passthrough {
-    pub fn new(path: PathBuf) -> Result<Self> {
+    pub fn new(path: Box<Path>) -> Result<Self> {
         let node = Node {
             lookup_count: 1,
-            path: path.into(),
+            path,
             handle: None,
         };
         let nodes = HashMap::from([(FUSE_ROOT_ID, node)]);

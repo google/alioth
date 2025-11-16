@@ -17,7 +17,7 @@ pub mod bindings;
 pub mod conn;
 pub mod frontend;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use snafu::Snafu;
 
@@ -30,7 +30,7 @@ use crate::virtio::vu::bindings::VuFeature;
 pub enum Error {
     #[snafu(display("Cannot access socket {path:?}"))]
     AccessSocket {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Error from OS"), context(false))]

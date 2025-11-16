@@ -17,7 +17,7 @@ use std::io::ErrorKind;
 use std::iter::zip;
 use std::mem::size_of_val;
 use std::os::fd::{AsFd, AsRawFd};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -105,7 +105,7 @@ impl VuFs {
 #[derive(Debug, Clone, Deserialize, Help)]
 pub struct VuFsParam {
     /// Path to the vhost-user UNIX domain socket.
-    pub socket: PathBuf,
+    pub socket: Box<Path>,
     /// Mount tag seen by the guest.
     pub tag: Option<String>,
     /// Size of memory region for DAX in bytes.

@@ -17,7 +17,7 @@ mod objects;
 #[cfg(target_os = "linux")]
 mod vu;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use clap::{Parser, Subcommand};
 use flexi_logger::{FileSpec, Logger};
@@ -46,7 +46,7 @@ struct Cli {
 
     /// Path to a directory where the log file is stored.
     #[arg(long, value_name = "PATH")]
-    pub log_dir: Option<PathBuf>,
+    pub log_dir: Option<Box<Path>>,
 
     #[command(subcommand)]
     pub cmd: Command,

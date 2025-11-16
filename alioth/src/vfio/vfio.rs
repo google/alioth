@@ -19,7 +19,7 @@ pub mod group;
 pub mod iommu;
 pub mod pci;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_aco::Help;
@@ -40,7 +40,7 @@ pub enum Error {
     System { error: std::io::Error },
     #[snafu(display("Cannot access device {path:?}"))]
     AccessDevice {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Not supported PCI header type {ty:#x}"))]

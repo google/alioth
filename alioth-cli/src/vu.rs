@@ -14,7 +14,7 @@
 
 use std::marker::PhantomData;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::spawn;
 
@@ -45,7 +45,7 @@ pub enum Error {
     ParseObjects { source: crate::objects::Error },
     #[snafu(display("Failed to bind socket {socket:?}"))]
     Bind {
-        socket: PathBuf,
+        socket: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Failed to accept connections"))]
@@ -96,7 +96,7 @@ pub enum DevType {
 pub struct VuArgs {
     /// Path to a Unix domain socket to listen on.
     #[arg(short, long, value_name = "PATH")]
-    pub socket: PathBuf,
+    pub socket: Box<Path>,
 
     #[command(subcommand)]
     pub ty: DevType,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -44,7 +44,7 @@ pub struct VhostVsockParam {
     /// Vsock context id.
     pub cid: u32,
     /// Path to the host device file. [default: /dev/vhost-vsock]
-    pub dev: Option<PathBuf>,
+    pub dev: Option<Box<Path>>,
 }
 
 impl DevParam for VhostVsockParam {

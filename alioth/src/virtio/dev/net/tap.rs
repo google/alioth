@@ -19,7 +19,7 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroU16;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -59,7 +59,7 @@ pub struct Net {
     tap_sockets: Vec<File>,
     feature: NetFeature,
     driver_feature: NetFeature,
-    dev_tap: Option<PathBuf>,
+    dev_tap: Option<Box<Path>>,
     if_name: Option<String>,
     api: WorkerApi,
 }
@@ -77,7 +77,7 @@ pub struct NetTapParam {
     ///
     /// Required for MacVTap and IPVTap, e.g. /dev/tapX.
     /// Optional for TUN/TAP. [default: /dev/net/tun]
-    pub tap: Option<PathBuf>,
+    pub tap: Option<Box<Path>>,
     /// Name of a tap interface, e.g. tapX.
     ///
     /// Required for TUN/TAP. Optional for MacVTap and IPVTap.

@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use snafu::{ResultExt, Snafu};
@@ -38,7 +38,7 @@ pub enum Error {
     System { error: std::io::Error },
     #[snafu(display("Cannot access device {path:?}"))]
     AccessDevice {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("vhost backend is missing device feature {feature:#x}"))]

@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -81,7 +81,7 @@ pub enum KvmError {
     KvmApi { error: std::io::Error },
     #[snafu(display("Failed to open {path:?}"))]
     OpenFile {
-        path: PathBuf,
+        path: Box<Path>,
         error: std::io::Error,
     },
     #[snafu(display("Invalid memory map option {option:?}"))]
@@ -121,10 +121,10 @@ pub struct Kvm {
 #[derive(Debug, Deserialize, Default, Clone, Help)]
 pub struct KvmConfig {
     /// Path to the KVM device. [default: /dev/kvm]
-    pub dev_kvm: Option<PathBuf>,
+    pub dev_kvm: Option<Box<Path>>,
     /// Path to the AMD SEV device. [default: /dev/sev]
     #[cfg(target_arch = "x86_64")]
-    pub dev_sev: Option<PathBuf>,
+    pub dev_sev: Option<Box<Path>>,
 }
 
 extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
@@ -132,7 +132,7 @@ extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut 
 impl Kvm {
     pub fn new(config: KvmConfig) -> Result<Self> {
         let path = match &config.dev_kvm {
-            Some(dev_kvm) => dev_kvm.as_path(),
+            Some(dev_kvm) => dev_kvm,
             None => Path::new("/dev/kvm"),
         };
         let kvm_file = File::open(path).context(kvm_error::OpenFile { path })?;

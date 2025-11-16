@@ -17,7 +17,7 @@ use std::io::{IoSlice, IoSliceMut, Read, Write};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -140,10 +140,10 @@ pub struct BlockConfig {
 }
 impl_mmio_for_zerocopy!(BlockConfig);
 
-#[derive(Debug, Clone, Deserialize, Help, Default)]
+#[derive(Debug, Clone, Deserialize, Help)]
 pub struct BlkFileParam {
     /// Path to a raw-formatted disk image.
-    pub path: PathBuf,
+    pub path: Box<Path>,
     /// Set the device as readonly. [default: false]
     #[serde(default)]
     pub readonly: bool,
@@ -191,7 +191,7 @@ pub struct Block {
 impl Block {
     pub fn new(param: BlkFileParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let access_disk = error::AccessFile {
-            path: param.path.as_path(),
+            path: param.path.as_ref(),
         };
         let disk = OpenOptions::new()
             .read(true)

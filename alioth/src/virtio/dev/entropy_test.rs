@@ -68,7 +68,7 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     ffi!(unsafe { libc::mkfifo(pipe_path_c.as_ptr(), 0o600) }).unwrap();
 
     let param = EntropyParam {
-        source: Some(pipe_path.clone()),
+        source: Some(pipe_path.clone().into()),
     };
     let dev = param.build("entropy").unwrap();
 
