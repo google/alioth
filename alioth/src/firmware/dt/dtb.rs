@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+#[path = "dtb_test.rs"]
+mod tests;
+
 use std::collections::HashMap;
 use std::mem::size_of;
 
@@ -54,7 +58,10 @@ impl PropVal {
             PropVal::U64(n) => data.extend(n.to_be_bytes()),
             PropVal::String(s) => push_string_align(data, s),
             PropVal::Str(s) => push_string_align(data, s),
-            PropVal::PropSpec(d) => data.extend(d),
+            PropVal::Bytes(d) => {
+                data.extend(d);
+                pad_data(data);
+            }
             PropVal::StringList(list) => {
                 for s in list {
                     data.extend(s.as_bytes());
@@ -201,22 +208,5 @@ impl DeviceTree {
         };
         header.write_to_prefix(&mut data).unwrap();
         data
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::StringBlock;
-
-    #[test]
-    fn test_string_block() {
-        let mut block = StringBlock::new();
-        assert_eq!(block.add("name1"), 0);
-        assert_eq!(block.add("name2"), 6);
-        assert_eq!(block.add("name1"), 0);
-        assert_eq!(block.add("name3"), 12);
-        let mut blob = vec![];
-        block.write_as_blob(&mut blob);
-        assert_eq!(blob, b"name1\0name2\0name3\0\0\0");
     }
 }

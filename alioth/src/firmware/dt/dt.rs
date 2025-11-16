@@ -28,7 +28,7 @@ pub enum PropVal {
     StringList(Vec<String>),
     U32List(Vec<u32>),
     U64List(Vec<u64>),
-    PropSpec(Vec<u8>),
+    Bytes(Vec<u8>),
 }
 
 impl PropVal {
@@ -39,7 +39,7 @@ impl PropVal {
             PropVal::U64(_) => 8,
             PropVal::String(s) => s.len() + 1,
             PropVal::Str(s) => s.len() + 1,
-            PropVal::PropSpec(d) => d.len(),
+            PropVal::Bytes(d) => d.len(),
             PropVal::U32List(r) => size_of_val(r.as_slice()),
             PropVal::U64List(r) => size_of_val(r.as_slice()),
             PropVal::StringList(l) => l.iter().map(|s| s.len() + 1).sum(),
@@ -84,6 +84,6 @@ mod test {
         );
         assert_eq!(PropVal::U32List(vec![1, 2]).size(), 8);
         assert_eq!(PropVal::U64List(vec![1, 3]).size(), 16);
-        assert_eq!(PropVal::PropSpec(vec![1, 2, 3, 4]).size(), 4);
+        assert_eq!(PropVal::Bytes(vec![1, 2, 3, 4]).size(), 4);
     }
 }
