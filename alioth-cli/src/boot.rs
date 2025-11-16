@@ -14,8 +14,6 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-#[cfg(target_arch = "x86_64")]
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use alioth::board::BoardConfig;
@@ -27,7 +25,7 @@ use alioth::hv::Hvf;
 use alioth::hv::{self, Coco};
 #[cfg(target_os = "linux")]
 use alioth::hv::{Kvm, KvmConfig};
-use alioth::loader::{ExecType, Payload};
+use alioth::loader::{Executable, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
 use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
@@ -75,15 +73,6 @@ pub enum Error {
     CreateVm { source: alioth::vm::Error },
     #[snafu(display("Failed to create a device"))]
     CreateDevice { source: alioth::vm::Error },
-    #[cfg(target_arch = "x86_64")]
-    #[snafu(display("Failed to open {path:?}"))]
-    OpenFile {
-        path: Box<Path>,
-        error: std::io::Error,
-    },
-    #[cfg(target_arch = "x86_64")]
-    #[snafu(display("Failed to configure the fw-cfg device"))]
-    FwCfg { error: std::io::Error },
     #[snafu(display("Failed to boot a VM"))]
     BootVm { source: alioth::vm::Error },
     #[snafu(display("VM did not shutdown peacefully"))]
@@ -414,26 +403,8 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             .into_iter()
             .map(|s| serde_aco::from_args(&s, &objects).context(error::ParseArg { arg: s }))
             .collect::<Result<Vec<_>, _>>()?;
-        let fw_cfg = vm
-            .add_fw_cfg(params.into_iter())
+        vm.add_fw_cfg(params.into_iter())
             .context(error::CreateDevice)?;
-        let mut dev = fw_cfg.lock();
-
-        if let Some(kernel) = &args.kernel {
-            dev.add_kernel_data(File::open(kernel).context(error::OpenFile {
-                path: kernel.to_owned(),
-            })?)
-            .context(error::FwCfg)?
-        }
-        if let Some(initramfs) = &args.initramfs {
-            dev.add_initramfs_data(File::open(initramfs).context(error::OpenFile {
-                path: initramfs.to_owned(),
-            })?)
-            .context(error::FwCfg)?;
-        }
-        if let Some(cmdline) = &args.cmdline {
-            dev.add_kernel_cmdline(cmdline.clone());
-        }
     };
 
     if args.entropy {
@@ -500,38 +471,18 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             .context(error::CreateDevice)?;
     }
 
-    let payload = if let Some(fw) = args.firmware {
-        Some(Payload {
-            executable: fw,
-            exec_type: ExecType::Firmware,
-            initramfs: None,
-            cmdline: None,
-        })
-    } else if let Some(kernel) = args.kernel {
-        Some(Payload {
-            exec_type: ExecType::Linux,
-            executable: kernel,
-            initramfs: args.initramfs,
-            cmdline: args.cmdline,
-        })
-    } else {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(pvh_kernel) = args.pvh {
-            Some(Payload {
-                executable: pvh_kernel,
-                exec_type: ExecType::Pvh,
-                initramfs: args.initramfs,
-                cmdline: args.cmdline,
-            })
-        } else {
-            None
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        None
+    let mut payload = Payload {
+        firmware: args.firmware,
+        initramfs: args.initramfs,
+        cmdline: args.cmdline,
+        ..Default::default()
     };
-    if let Some(payload) = payload {
-        vm.add_payload(payload);
+    payload.executable = args.kernel.map(Executable::Linux);
+    #[cfg(target_arch = "x86_64")]
+    if payload.executable.is_none() {
+        payload.executable = args.pvh.map(Executable::Pvh);
     }
+    vm.add_payload(payload);
 
     vm.boot().context(error::BootVm)?;
     vm.wait().context(error::WaitVm)?;

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -28,8 +29,7 @@ use crate::arch::reg::SReg;
 use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
-use crate::loader::{ExecType, InitState};
-use crate::mem::mapped::ArcMemPages;
+use crate::loader::{Executable, InitState, Payload};
 use crate::mem::{MemRegion, MemRegionType};
 
 enum Gic<V>
@@ -99,7 +99,7 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub fn setup_firmware(&self, _fw: &mut ArcMemPages) -> Result<()> {
+    pub fn setup_firmware(&self, _: &Path, _: &Payload) -> Result<InitState> {
         unimplemented!()
     }
 
@@ -173,7 +173,7 @@ where
         let Some(payload) = payload.as_ref() else {
             return;
         };
-        if !matches!(payload.exec_type, ExecType::Linux) {
+        if !matches!(payload.executable, Some(Executable::Linux(_))) {
             return;
         }
         let mut node = Node::default();

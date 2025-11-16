@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::iter::zip;
 use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -41,7 +42,7 @@ use crate::firmware::acpi::{
     AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
 };
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
-use crate::loader::InitState;
+use crate::loader::{Executable, InitState, Payload, firmware};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
@@ -168,7 +169,24 @@ where
         Ok(())
     }
 
-    pub fn setup_firmware(&self, fw: &mut ArcMemPages) -> Result<()> {
+    fn setup_fw_cfg(&self, payload: &Payload) -> Result<()> {
+        let Some(dev) = &*self.fw_cfg.lock() else {
+            return Ok(());
+        };
+        let mut dev = dev.lock();
+        if let Some(Executable::Linux(image)) = &payload.executable {
+            dev.add_kernel_data(image).context(error::Firmware)?;
+        };
+        if let Some(cmdline) = &payload.cmdline {
+            dev.add_kernel_cmdline(cmdline.to_owned());
+        };
+        if let Some(initramfs) = &payload.initramfs {
+            dev.add_initramfs_data(initramfs).context(error::Firmware)?;
+        };
+        Ok(())
+    }
+
+    fn setup_coco(&self, fw: &mut ArcMemPages) -> Result<()> {
         let Some(coco) = &self.config.coco else {
             return Ok(());
         };
@@ -199,6 +217,13 @@ where
             }
         }
         Ok(())
+    }
+
+    pub fn setup_firmware(&self, fw: &Path, payload: &Payload) -> Result<InitState> {
+        let (init_state, mut rom) = firmware::load(&self.memory, fw)?;
+        self.setup_coco(&mut rom)?;
+        self.setup_fw_cfg(payload)?;
+        Ok(init_state)
     }
 
     pub fn init_ap(&self, id: u32, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {

@@ -41,7 +41,7 @@ use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::loader::xen;
-use crate::loader::{ExecType, InitState, Payload, firmware, linux};
+use crate::loader::{Executable, InitState, Payload, linux};
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
@@ -85,6 +85,8 @@ pub enum Error {
     ResetPci { source: Box<crate::pci::Error> },
     #[snafu(display("Failed to configure firmware"))]
     Firmware { error: std::io::Error },
+    #[snafu(display("Missing payload"))]
+    MissingPayload,
     #[snafu(display("Failed to notify the VMM thread"))]
     NotifyVmm,
     #[snafu(display("Another VCPU thread has signaled failure"))]
@@ -195,31 +197,34 @@ where
     fn load_payload(&self) -> Result<InitState, Error> {
         let payload = self.payload.read();
         let Some(payload) = payload.as_ref() else {
-            return Ok(InitState::default());
+            return error::MissingPayload.fail();
+        };
+
+        if let Some(fw) = payload.firmware.as_ref() {
+            return self.setup_firmware(fw, payload);
+        }
+
+        let Some(exec) = &payload.executable else {
+            return error::MissingPayload.fail();
         };
         let mem_regions = self.memory.mem_region_entries();
-        let init_state = match payload.exec_type {
-            ExecType::Linux => linux::load(
+        let init_state = match exec {
+            Executable::Linux(image) => linux::load(
                 &self.memory.ram_bus(),
                 &mem_regions,
-                &payload.executable,
+                image.as_ref(),
                 payload.cmdline.as_deref(),
-                payload.initramfs.as_ref(),
-            )?,
+                payload.initramfs.as_deref(),
+            ),
             #[cfg(target_arch = "x86_64")]
-            ExecType::Pvh => xen::load(
+            Executable::Pvh(image) => xen::load(
                 &self.memory.ram_bus(),
                 &mem_regions,
-                &payload.executable,
+                image.as_ref(),
                 payload.cmdline.as_deref(),
-                payload.initramfs.as_ref(),
-            )?,
-            ExecType::Firmware => {
-                let (init_state, mut rom) = firmware::load(&self.memory, &payload.executable)?;
-                self.setup_firmware(&mut rom)?;
-                init_state
-            }
-        };
+                payload.initramfs.as_deref(),
+            ),
+        }?;
         Ok(init_state)
     }
 

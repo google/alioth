@@ -33,20 +33,19 @@ use crate::arch::reg::{Reg, SReg};
 use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Payload {
-    pub executable: Box<Path>,
-    pub exec_type: ExecType,
+    pub firmware: Option<Box<Path>>,
+    pub executable: Option<Executable>,
     pub initramfs: Option<Box<Path>>,
     pub cmdline: Option<CString>,
 }
 
 #[derive(Debug)]
-pub enum ExecType {
-    Linux,
+pub enum Executable {
+    Linux(Box<Path>),
     #[cfg(target_arch = "x86_64")]
-    Pvh,
-    Firmware,
+    Pvh(Box<Path>),
 }
 
 #[derive(Debug, Clone, Default)]

@@ -27,6 +27,7 @@ use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem::size_of;
 use std::mem::size_of_val;
 use std::os::unix::fs::FileExt;
+#[cfg(target_arch = "x86_64")]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -302,7 +303,8 @@ impl FwCfg {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub fn add_kernel_data(&mut self, file: File) -> Result<()> {
+    pub fn add_kernel_data(&mut self, p: &Path) -> Result<()> {
+        let file = File::open(p)?;
         let mut buffer = vec![0u8; size_of::<BootParams>()];
         file.read_exact_at(&mut buffer, 0)?;
         let bp = BootParams::mut_from_bytes(&mut buffer).unwrap();
@@ -321,7 +323,8 @@ impl FwCfg {
         Ok(())
     }
 
-    pub fn add_initramfs_data(&mut self, file: File) -> Result<()> {
+    pub fn add_initramfs_data(&mut self, p: &Path) -> Result<()> {
+        let file = File::open(p)?;
         let initramfs_size = file.metadata()?.len() as u32;
         self.known_items[FW_CFG_INITRD_SIZE as usize] = FwCfgContent::Lu32(initramfs_size.into());
         self.known_items[FW_CFG_INITRD_DATA as usize] = FwCfgContent::File(0, file);
