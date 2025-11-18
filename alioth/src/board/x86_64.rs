@@ -59,6 +59,23 @@ impl<V: Vm> ArchBoard<V> {
         H: Hypervisor<Vm = V>,
     {
         let mut cpuids = hv.get_supported_cpuids()?;
+
+        let leafs = [
+            (0x0, 0, 1, 1 << 8),
+            (0x1, 7, config.num_cpu, (2 << 8) | 1),
+            (0x2, 0, 1, 2),
+        ];
+        for (index, eax, ebx, ecx) in leafs {
+            let edx = 0; // patched later in init_vcpu()
+            cpuids.insert(
+                CpuidIn {
+                    func: 0xb,
+                    index: Some(index),
+                },
+                CpuidResult { eax, ebx, ecx, edx },
+            );
+        }
+
         for (in_, out) in &mut cpuids {
             if in_.func == 0x1 {
                 out.ecx |= (1 << 24) | (1 << 31);
