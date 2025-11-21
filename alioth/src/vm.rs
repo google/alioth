@@ -137,7 +137,7 @@ where
         let (event_tx, event_rx) = mpsc::channel();
 
         let mut vcpus = board.vcpus.write();
-        for index in 0..board.config.num_cpu {
+        for index in 0..board.config.cpu.count {
             let (boot_tx, boot_rx) = mpsc::channel();
             let event_tx = event_tx.clone();
             let board = board.clone();

@@ -59,7 +59,7 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.num_cpu) {
+        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.cpu.count) {
             Ok(v3) => Gic::V3(v3),
             Err(e) => {
                 log::error!("Cannot create GIC v3: {e:?}trying v2...");
@@ -222,7 +222,7 @@ where
     }
 
     pub fn create_cpu_nodes(&self, root: &mut Node) {
-        let mut cpu_nodes: Vec<_> = (0..(self.config.num_cpu))
+        let mut cpu_nodes: Vec<_> = (0..(self.config.cpu.count))
             .map(|index| {
                 let mpidr = self.encode_cpu_identity(index);
                 (
@@ -240,7 +240,7 @@ where
                 )
             })
             .collect();
-        let cores = (0..(self.config.num_cpu))
+        let cores = (0..(self.config.cpu.count))
             .map(|index| {
                 (
                     format!("core{index}"),
@@ -335,7 +335,7 @@ where
         let ppi = 1;
         let level_trigger = 4;
         let cpu_mask = match self.arch.gic {
-            Gic::V2(_) => (1 << self.config.num_cpu) - 1,
+            Gic::V2(_) => (1 << self.config.cpu.count) - 1,
             Gic::V3 { .. } => 0,
         };
         for pin in irq_pins {
@@ -422,7 +422,7 @@ where
                             GIC_DIST_START,
                             64 << 10,
                             GIC_V3_REDIST_START,
-                            self.config.num_cpu as u64 * (128 << 10),
+                            self.config.cpu.count as u64 * (128 << 10),
                         ]),
                     ),
                     ("phandle", PropVal::U32(PHANDLE_GIC)),
