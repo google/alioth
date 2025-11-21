@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use alioth::board::BoardConfig;
+use alioth::board::{BoardConfig, CpuConfig};
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::FwCfgItemParam;
 use alioth::errors::{DebugTrace, trace_error};
@@ -184,9 +184,14 @@ pub struct BootArgs {
     #[arg(short, long, value_name = "PATH")]
     initramfs: Option<Box<Path>>,
 
-    /// Number of VCPUs assigned to the guest.
+    /// DEPRECATED: Use --cpu instead.
     #[arg(long, default_value_t = 1)]
     num_cpu: u16,
+
+    #[arg(short('p'), long, help(
+        help_text::<CpuConfig>("Configure the VCPUs of the guest.")
+    ))]
+    cpu: Option<Box<str>>,
 
     /// DEPRECATED: Use --memory instead.
     #[arg(long, default_value = "1G")]
@@ -379,9 +384,17 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
             ..Default::default()
         }
     };
+    let cpu_config = if let Some(s) = args.cpu {
+        serde_aco::from_args(&s, &objects).context(error::ParseArg { arg: s })?
+    } else {
+        eprintln!("Please update the cmd line to --cpu count={}", args.num_cpu);
+        CpuConfig {
+            count: args.num_cpu,
+        }
+    };
     let board_config = BoardConfig {
         mem: mem_config,
-        num_cpu: args.num_cpu,
+        cpu: cpu_config,
         coco,
     };
     let vm = Machine::new(hypervisor, board_config).context(error::CreateVm)?;

@@ -404,7 +404,7 @@ where
 
         let offset_madt = offset_fadt + size_of_val(&fadt);
         debug_assert_eq!(offset_madt % 4, 0);
-        let apci_ids: Vec<u32> = (0..self.config.num_cpu)
+        let apci_ids: Vec<u32> = (0..self.config.cpu.count)
             .map(|index| self.encode_cpu_identity(index) as u32)
             .collect();
         let (madt, madt_ioapic, madt_apics) = create_madt(&apci_ids);
