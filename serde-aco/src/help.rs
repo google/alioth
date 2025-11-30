@@ -134,6 +134,11 @@ fn add_value_type(s: &mut String, v: &TypedHelp) {
 }
 
 fn add_extra_help<'a>(extra: &mut ExtraHelp<'a>, v: &'a TypedHelp) {
+    let v = match v {
+        TypedHelp::Array(t) => t,
+        TypedHelp::Option(t) => t,
+        _ => v,
+    };
     let (TypedHelp::Enum {
         name,
         variants: fields,
