@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "virtio_test.rs"]
-mod tests;
-
 #[path = "dev/dev.rs"]
 pub mod dev;
 pub mod pci;
@@ -134,3 +130,7 @@ pub trait IrqSender: Send + Sync + Debug + 'static {
     where
         F: FnOnce(BorrowedFd) -> Result<T>;
 }
+
+#[cfg(test)]
+#[path = "virtio_test.rs"]
+mod tests;

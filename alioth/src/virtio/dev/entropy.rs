@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "entropy_test.rs"]
-mod tests;
-
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
@@ -184,3 +180,7 @@ impl DevParam for EntropyParam {
         Entropy::new(self, name)
     }
 }
+
+#[cfg(test)]
+#[path = "entropy_test.rs"]
+mod tests;

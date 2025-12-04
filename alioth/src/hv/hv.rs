@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "hv_test.rs"]
-pub(crate) mod tests;
-
 #[cfg(target_os = "macos")]
 #[path = "hvf/hvf.rs"]
 mod hvf;
@@ -393,3 +389,7 @@ pub enum VmEntry {
     Io { data: Option<u32> },
     Mmio { data: u64 },
 }
+
+#[cfg(test)]
+#[path = "hv_test.rs"]
+pub(crate) mod tests;

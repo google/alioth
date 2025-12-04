@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "cap_test.rs"]
-mod tests;
-
 use std::cmp::min;
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -655,3 +651,7 @@ impl PciConfigArea for NullCap {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "cap_test.rs"]
+mod tests;

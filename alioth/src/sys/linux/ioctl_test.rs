@@ -12,18 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "notifier_linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "notifier_macos.rs"]
-mod macos;
+use super::{ioctl_io, ioctl_ior, ioctl_iow, ioctl_iowr};
 
-#[cfg(target_os = "linux")]
-pub use linux::Notifier;
-#[cfg(target_os = "macos")]
-pub use macos::Notifier;
-
-#[cfg(test)]
-#[path = "notifier_test.rs"]
-mod tests;
+#[test]
+fn test_codes() {
+    const KVMIO: u8 = 0xAE;
+    assert_eq!(ioctl_io(KVMIO, 0x01), 0xae01);
+    assert_eq!(ioctl_ior::<[u8; 320]>(KVMIO, 0xcc), 0x8140aecc);
+    assert_eq!(ioctl_iow::<[u8; 320]>(KVMIO, 0xcd), 0x4140aecd);
+    assert_eq!(ioctl_iowr::<[u8; 8]>(KVMIO, 0x05), 0xc008ae05);
+}

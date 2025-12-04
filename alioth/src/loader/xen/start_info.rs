@@ -59,15 +59,5 @@ pub struct HvmMemmapTableEntry {
 }
 
 #[cfg(test)]
-mod test {
-    use std::mem::size_of;
-
-    use super::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
-
-    #[test]
-    fn test_size() {
-        assert_eq!(size_of::<HvmStartInfo>(), 0x38);
-        assert_eq!(size_of::<HvmModlistEntry>(), 0x20);
-        assert_eq!(size_of::<HvmMemmapTableEntry>(), 0x18);
-    }
-}
+#[path = "start_info_test.rs"]
+mod tests;

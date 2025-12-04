@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "xpc_test.rs"]
-mod tests;
-
 use libc::{c_char, c_void};
 
 #[repr(transparent)]
@@ -35,3 +31,7 @@ unsafe extern "C" {
     pub fn xpc_dictionary_get_uint64(xdict: *const XpcObject, key: *const c_char) -> u64;
     pub fn xpc_dictionary_get_string(xdict: *const XpcObject, key: *const c_char) -> *const c_char;
 }
+
+#[cfg(test)]
+#[path = "xpc_test.rs"]
+mod tests;

@@ -250,15 +250,5 @@ macro_rules! ioctl_read {
 }
 
 #[cfg(test)]
-mod test {
-    use crate::sys::ioctl::{ioctl_io, ioctl_ior, ioctl_iow, ioctl_iowr};
-
-    #[test]
-    fn test_codes() {
-        const KVMIO: u8 = 0xAE;
-        assert_eq!(ioctl_io(KVMIO, 0x01), 0xae01);
-        assert_eq!(ioctl_ior::<[u8; 320]>(KVMIO, 0xcc), 0x8140aecc);
-        assert_eq!(ioctl_iow::<[u8; 320]>(KVMIO, 0xcd), 0x4140aecd);
-        assert_eq!(ioctl_iowr::<[u8; 8]>(KVMIO, 0x05), 0xc008ae05);
-    }
-}
+#[path = "ioctl_test.rs"]
+mod tests;

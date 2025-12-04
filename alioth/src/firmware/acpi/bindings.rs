@@ -237,26 +237,5 @@ bitfield! {
 }
 
 #[cfg(test)]
-mod test {
-    use std::mem::size_of;
-
-    use super::{
-        AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation, AcpiTableFadt,
-        AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg1, AcpiTableRsdp, AcpiTableXsdt,
-    };
-
-    #[test]
-    fn test_size() {
-        assert_eq!(size_of::<AcpiTableRsdp>(), 36);
-        assert_eq!(size_of::<AcpiTableHeader>(), 36);
-        assert_eq!(size_of::<AcpiGenericAddress>(), 12);
-        assert_eq!(size_of::<AcpiTableFadt>(), 276);
-        assert_eq!(size_of::<AcpiTableMadt>(), 44);
-        assert_eq!(size_of::<AcpiMadtIoApic>(), 12);
-        assert_eq!(size_of::<AcpiMadtLocalX2apic>(), 16);
-        assert_eq!(size_of::<AcpiMcfgAllocation>(), 16);
-        assert_eq!(size_of::<AcpiTableMcfg1>(), 60);
-        assert_eq!(size_of::<AcpiTableXsdt<0>>(), 36);
-        assert_eq!(size_of::<AcpiTableXsdt<4>>(), 36 + 4 * 8);
-    }
-}
+#[path = "bindings_test.rs"]
+mod tests;

@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "fw_cfg_test.rs"]
-mod tests;
-
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;
 
@@ -613,3 +609,7 @@ impl FwCfgItemParam {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "fw_cfg_test.rs"]
+mod tests;

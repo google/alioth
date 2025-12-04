@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "queue_test.rs"]
-pub(in crate::virtio) mod tests;
-
 pub mod packed;
 pub mod split;
 
@@ -219,3 +215,7 @@ pub fn copy_to_writer(mut writer: impl Write) -> impl FnMut(&mut DescChain) -> R
         }
     }
 }
+
+#[cfg(test)]
+#[path = "queue_test.rs"]
+pub(in crate::virtio) mod tests;

@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "pvpanic_test.rs"]
-mod tests;
-
 use std::sync::Arc;
 
 use bitflags::bitflags;
@@ -109,3 +105,7 @@ impl Pci for PvPanic {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "pvpanic_test.rs"]
+mod tests;

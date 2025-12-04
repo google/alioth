@@ -175,14 +175,5 @@ macro_rules! c_enum {
 }
 
 #[cfg(test)]
-mod test {
-    #[test]
-    fn test_align_up() {
-        assert_eq!(align_up!(0u64, 2), 0);
-        assert_eq!(align_up!(1u64, 2), 4);
-        assert_eq!(align_up!(3u64, 2), 4);
-
-        assert_eq!(align_up!(u64::MAX, 0), u64::MAX);
-        assert_eq!(align_up!(u64::MAX, 2), 0);
-    }
-}
+#[path = "utils_test.rs"]
+mod tests;

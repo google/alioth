@@ -159,15 +159,5 @@ pub fn create_acpi_loader(mut acpi_table: AcpiTable) -> [FwCfgItem; 3] {
 }
 
 #[cfg(test)]
-mod test {
-    use std::mem::size_of;
-
-    use super::{AddChecksum, AddPointer, Allocate};
-
-    #[test]
-    fn test_size() {
-        assert_eq!(size_of::<Allocate>(), 128);
-        assert_eq!(size_of::<AddChecksum>(), 128);
-        assert_eq!(size_of::<AddPointer>(), 128);
-    }
-}
+#[path = "acpi_test.rs"]
+mod tests;

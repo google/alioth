@@ -84,15 +84,5 @@ pub struct Elf64Note {
 }
 
 #[cfg(test)]
-mod test {
-    use std::mem::size_of;
-
-    use super::{Elf64Header, Elf64ProgramHeader, Elf64SectionHeader};
-
-    #[test]
-    fn test_size() {
-        assert_eq!(size_of::<Elf64Header>(), 0x40);
-        assert_eq!(size_of::<Elf64ProgramHeader>(), 0x38);
-        assert_eq!(size_of::<Elf64SectionHeader>(), 0x40);
-    }
-}
+#[path = "elf_test.rs"]
+mod tests;

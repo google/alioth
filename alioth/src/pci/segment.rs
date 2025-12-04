@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "segment_test.rs"]
-mod tests;
-
 use std::collections::HashMap;
 use std::iter::zip;
 use std::sync::Arc;
@@ -216,3 +212,7 @@ impl Mmio for PciSegment {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "segment_test.rs"]
+mod tests;

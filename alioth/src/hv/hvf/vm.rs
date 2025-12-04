@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "vm_test.rs"]
-mod tests;
-
 use std::cmp;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -420,3 +416,7 @@ impl Vm for HvfVm {
         Err(ErrorKind::Unsupported.into()).context(error::CreateDevice)
     }
 }
+
+#[cfg(test)]
+#[path = "vm_test.rs"]
+mod tests;

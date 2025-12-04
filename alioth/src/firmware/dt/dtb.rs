@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "dtb_test.rs"]
-mod tests;
-
 use std::collections::HashMap;
 use std::mem::size_of;
 
@@ -210,3 +206,7 @@ impl DeviceTree {
         data
     }
 }
+
+#[cfg(test)]
+#[path = "dtb_test.rs"]
+mod tests;

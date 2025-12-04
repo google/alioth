@@ -12,18 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "notifier_linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "notifier_macos.rs"]
-mod macos;
+use std::mem::size_of;
 
-#[cfg(target_os = "linux")]
-pub use linux::Notifier;
-#[cfg(target_os = "macos")]
-pub use macos::Notifier;
+use super::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
 
-#[cfg(test)]
-#[path = "notifier_test.rs"]
-mod tests;
+#[test]
+fn test_size() {
+    assert_eq!(size_of::<HvmStartInfo>(), 0x38);
+    assert_eq!(size_of::<HvmModlistEntry>(), 0x20);
+    assert_eq!(size_of::<HvmMemmapTableEntry>(), 0x18);
+}

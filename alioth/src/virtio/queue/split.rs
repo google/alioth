@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "split_test.rs"]
-#[cfg(test)]
-mod tests;
-
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::atomic::{Ordering, fence};
@@ -264,3 +260,7 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
         index.wrapping_add(1)
     }
 }
+
+#[cfg(test)]
+#[path = "split_test.rs"]
+mod tests;

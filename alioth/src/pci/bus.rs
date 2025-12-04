@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "bus_test.rs"]
-mod tests;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -138,3 +134,7 @@ impl Default for PciBus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+#[path = "bus_test.rs"]
+mod tests;

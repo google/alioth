@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "packed_test.rs"]
-mod tests;
-
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 
@@ -222,3 +218,7 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
         index.wrapping_add(delta, self.size)
     }
 }
+
+#[cfg(test)]
+#[path = "packed_test.rs"]
+mod tests;

@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "endian_test.rs"]
-mod tests;
-
 macro_rules! endian_impl {
     ($ne_type:ident, $ed_type:ident, $endian:expr, $opposite:expr) => {
         #[repr(transparent)]
@@ -109,3 +105,7 @@ macro_rules! endian_type {
 endian_type!(u16, Lu16, Bu16);
 endian_type!(u32, Lu32, Bu32);
 endian_type!(u64, Lu64, Bu64);
+
+#[cfg(test)]
+#[path = "endian_test.rs"]
+mod tests;

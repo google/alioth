@@ -12,18 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "linux")]
-#[path = "notifier_linux.rs"]
-mod linux;
-#[cfg(target_os = "macos")]
-#[path = "notifier_macos.rs"]
-mod macos;
+use std::mem::size_of;
 
-#[cfg(target_os = "linux")]
-pub use linux::Notifier;
-#[cfg(target_os = "macos")]
-pub use macos::Notifier;
+use super::{Elf64Header, Elf64ProgramHeader, Elf64SectionHeader};
 
-#[cfg(test)]
-#[path = "notifier_test.rs"]
-mod tests;
+#[test]
+fn test_size() {
+    assert_eq!(size_of::<Elf64Header>(), 0x40);
+    assert_eq!(size_of::<Elf64ProgramHeader>(), 0x38);
+    assert_eq!(size_of::<Elf64SectionHeader>(), 0x40);
+}

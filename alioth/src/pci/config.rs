@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-#[path = "config_test.rs"]
-mod tests;
-
 use std::cmp::max;
 use std::iter::zip;
 use std::mem::size_of;
@@ -576,3 +572,7 @@ impl PciConfig for EmulatedConfig {
         self.caps.reset()
     }
 }
+
+#[cfg(test)]
+#[path = "config_test.rs"]
+mod tests;
