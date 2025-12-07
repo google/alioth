@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #[cfg(target_arch = "aarch64")]
+#[path = "vm_aarch64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
+#[path = "vm_x86_64.rs"]
 mod x86_64;
 
 use std::collections::HashMap;
