@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::os::fd::OwnedFd;
+
 use crate::hv::kvm::Result;
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
-use crate::hv::{GicV2, GicV2m, GicV3, Its};
+use crate::hv::{GicV2, GicV2m, GicV3, Its, Kvm, VmConfig};
 use crate::sys::kvm::{
     KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
+    KvmVmType,
 };
 
 #[derive(Debug)]
@@ -32,6 +35,24 @@ impl GicV2m for KvmGicV2m {
 #[derive(Debug)]
 pub struct KvmGicV2 {
     dev: KvmDevice,
+}
+
+impl KvmGicV2 {
+    pub fn new(vm: &KvmVm, distributor_base: u64, cpu_interface_base: u64) -> Result<Self> {
+        let dev = KvmDevice::new(vm, KvmDevType::ARM_VGIC_V2)?;
+        let gic = KvmGicV2 { dev };
+        gic.dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::DIST_V2.raw(),
+            &distributor_base,
+        )?;
+        gic.dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::CPU_V2.raw(),
+            &cpu_interface_base,
+        )?;
+        Ok(gic)
+    }
 }
 
 impl GicV2 for KvmGicV2 {
@@ -82,52 +103,19 @@ impl GicV2 for KvmGicV2 {
     }
 }
 
-impl KvmVm {
-    pub fn kvm_create_gic_v2(
-        &self,
-        distributor_base: u64,
-        cpu_interface_base: u64,
-    ) -> Result<KvmGicV2> {
-        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_VGIC_V2)?;
-        let gic = KvmGicV2 { dev };
-        gic.dev.set_attr(
-            KvmDevArmVgicGrp::ADDR.raw(),
-            KvmVgicAddrType::DIST_V2.raw(),
-            &distributor_base,
-        )?;
-        gic.dev.set_attr(
-            KvmDevArmVgicGrp::ADDR.raw(),
-            KvmVgicAddrType::CPU_V2.raw(),
-            &cpu_interface_base,
-        )?;
-        Ok(gic)
-    }
-}
-
 #[derive(Debug)]
 pub struct KvmGicV3 {
     dev: KvmDevice,
 }
 
-impl GicV3 for KvmGicV3 {
-    fn init(&self) -> Result<()> {
-        self.dev.set_attr(
-            KvmDevArmVgicGrp::CTL.raw(),
-            KvmDevArmVgicCtrl::INIT.raw(),
-            &(),
-        )?;
-        Ok(())
-    }
-}
-
-impl KvmVm {
-    pub fn kvm_create_gic_v3(
-        &self,
+impl KvmGicV3 {
+    pub fn new(
+        vm: &KvmVm,
         distributor_base: u64,
         redistributor_base: u64,
         redistributor_count: u32,
-    ) -> Result<KvmGicV3> {
-        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_VGIC_V3)?;
+    ) -> Result<Self> {
+        let dev = KvmDevice::new(vm, KvmDevType::ARM_VGIC_V3)?;
         dev.set_attr(
             KvmDevArmVgicGrp::ADDR.raw(),
             KvmVgicAddrType::DIST_V3.raw(),
@@ -144,9 +132,32 @@ impl KvmVm {
     }
 }
 
+impl GicV3 for KvmGicV3 {
+    fn init(&self) -> Result<()> {
+        self.dev.set_attr(
+            KvmDevArmVgicGrp::CTL.raw(),
+            KvmDevArmVgicCtrl::INIT.raw(),
+            &(),
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct KvmIts {
     dev: KvmDevice,
+}
+
+impl KvmIts {
+    pub fn new(vm: &KvmVm, base: u64) -> Result<Self> {
+        let dev = KvmDevice::new(vm, KvmDevType::ARM_ITS)?;
+        dev.set_attr(
+            KvmDevArmVgicGrp::ADDR.raw(),
+            KvmVgicAddrType::ITS.raw(),
+            &base,
+        )?;
+        Ok(KvmIts { dev })
+    }
 }
 
 impl Its for KvmIts {
@@ -160,14 +171,25 @@ impl Its for KvmIts {
     }
 }
 
+#[derive(Debug)]
+pub struct VmArch;
+
+impl VmArch {
+    pub fn new(_kvm: &Kvm, _config: &VmConfig) -> Result<Self> {
+        Ok(VmArch)
+    }
+}
+
 impl KvmVm {
-    pub fn kvm_create_its(&self, base: u64) -> Result<KvmIts> {
-        let dev = KvmDevice::new(&self.vm.fd, KvmDevType::ARM_ITS)?;
-        dev.set_attr(
-            KvmDevArmVgicGrp::ADDR.raw(),
-            KvmVgicAddrType::ITS.raw(),
-            &base,
-        )?;
-        Ok(KvmIts { dev })
+    pub fn determine_vm_type(_config: &VmConfig) -> KvmVmType {
+        KvmVmType(0)
+    }
+
+    pub fn create_guest_memfd(_config: &VmConfig, _fd: &OwnedFd) -> Result<Option<OwnedFd>> {
+        Ok(None)
+    }
+
+    pub fn init(&self, _config: &VmConfig) -> Result<()> {
+        Ok(())
     }
 }
