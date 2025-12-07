@@ -16,18 +16,11 @@
 mod vcpu;
 mod vm;
 
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::io::ErrorKind;
 use std::os::raw::c_void;
-use std::ptr::null_mut;
-use std::sync::Arc;
 
-use parking_lot::Mutex;
-use snafu::ResultExt;
-
-use crate::hv::{Hypervisor, Result, VmConfig, error};
-use crate::sys::hvf::hv_vm_create;
+use crate::hv::{Hypervisor, Result, VmConfig};
 use crate::sys::os::os_release;
 
 use self::vm::HvfVm;
@@ -89,12 +82,6 @@ impl Hypervisor for Hvf {
     type Vm = HvfVm;
 
     fn create_vm(&self, _config: &VmConfig) -> Result<Self::Vm> {
-        let ret = unsafe { hv_vm_create(null_mut()) };
-        check_ret(ret).context(error::CreateVm)?;
-        Ok(HvfVm {
-            gic_config: Mutex::new((OsObject { addr: 0 }, false)),
-            vcpus: Mutex::new(HashMap::new()),
-            senders: Arc::new(Mutex::new(HashMap::new())),
-        })
+        HvfVm::new()
     }
 }

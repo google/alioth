@@ -17,30 +17,38 @@ mod vmexit;
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::sync::Arc;
+use std::ptr::null_mut;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, mpsc};
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::arch::reg::{MpidrEl1, Reg, SReg};
 use crate::hv::hvf::check_ret;
-use crate::hv::hvf::vm::VcpuEvent;
+use crate::hv::hvf::vm::{HvfVm, VcpuEvent};
 use crate::hv::{Result, Vcpu, VmEntry, VmExit, error};
 use crate::sys::hvf::{
-    HvExitReason, HvReg, HvVcpuExit, hv_vcpu_destroy, hv_vcpu_get_reg, hv_vcpu_get_sys_reg,
-    hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
+    HvExitReason, HvReg, HvVcpuExit, hv_vcpu_create, hv_vcpu_destroy, hv_vcpu_get_reg,
+    hv_vcpu_get_sys_reg, hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
 };
+
+pub fn encode_mpidr(id: u32) -> MpidrEl1 {
+    let mut mpidr = MpidrEl1(0);
+    mpidr.set_aff1(id as u64 >> 3);
+    mpidr.set_aff0(id as u64 & 0x7);
+    mpidr
+}
 
 #[derive(Debug)]
 pub struct HvfVcpu {
-    pub exit: *mut HvVcpuExit,
-    pub vcpu_id: u64,
-    pub vmexit: Option<VmExit>,
-    pub exit_reg: Option<HvReg>,
-    pub senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
-    pub receiver: Receiver<VcpuEvent>,
-    pub power_on: bool,
+    exit: *mut HvVcpuExit,
+    vcpu_id: u64,
+    vmexit: Option<VmExit>,
+    exit_reg: Option<HvReg>,
+    senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
+    receiver: Receiver<VcpuEvent>,
+    power_on: bool,
 }
 
 impl HvfVcpu {
@@ -53,6 +61,32 @@ impl HvfVcpu {
             VcpuEvent::PowerOff => self.power_on = false,
         }
         Ok(())
+    }
+
+    pub fn new(vm: &HvfVm, id: u32) -> Result<Self> {
+        let mut exit = null_mut();
+        let mut vcpu_id = 0;
+        let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
+        check_ret(ret).context(error::CreateVcpu)?;
+
+        let mpidr = encode_mpidr(id);
+        let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
+        check_ret(ret).context(error::VcpuReg)?;
+
+        let (sender, receiver) = mpsc::channel();
+        vm.senders.lock().insert(mpidr, sender);
+
+        vm.vcpus.lock().insert(id, vcpu_id);
+
+        Ok(HvfVcpu {
+            exit,
+            vcpu_id,
+            vmexit: None,
+            exit_reg: None,
+            senders: vm.senders.clone(),
+            receiver,
+            power_on: false,
+        })
     }
 }
 

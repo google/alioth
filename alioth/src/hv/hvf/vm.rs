@@ -17,15 +17,15 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::null_mut;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::arch::reg::{MpidrEl1, SReg};
-use crate::hv::hvf::vcpu::HvfVcpu;
+use crate::arch::reg::MpidrEl1;
+use crate::hv::hvf::vcpu::{HvfVcpu, encode_mpidr};
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
@@ -35,16 +35,9 @@ use crate::sys::hvf::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
     hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
     hv_gic_config_set_redistributor_base, hv_gic_create, hv_gic_get_spi_interrupt_range,
-    hv_gic_send_msi, hv_gic_set_spi, hv_vcpu_create, hv_vcpu_set_sys_reg, hv_vcpus_exit,
-    hv_vm_destroy, hv_vm_map, hv_vm_unmap,
+    hv_gic_send_msi, hv_gic_set_spi, hv_vcpus_exit, hv_vm_create, hv_vm_destroy, hv_vm_map,
+    hv_vm_unmap,
 };
-
-fn encode_mpidr(id: u32) -> MpidrEl1 {
-    let mut mpidr = MpidrEl1(0);
-    mpidr.set_aff1(id as u64 >> 3);
-    mpidr.set_aff0(id as u64 & 0x7);
-    mpidr
-}
 
 #[derive(Debug)]
 pub struct HvfMemory;
@@ -264,9 +257,21 @@ pub enum VcpuEvent {
 
 #[derive(Debug)]
 pub struct HvfVm {
-    pub(super) gic_config: Mutex<(OsObject, bool)>,
-    pub(super) vcpus: Mutex<HashMap<u32, u64>>,
-    pub(super) senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
+    gic_config: Mutex<(OsObject, bool)>,
+    pub vcpus: Mutex<HashMap<u32, u64>>,
+    pub senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
+}
+
+impl HvfVm {
+    pub fn new() -> Result<Self> {
+        let ret = unsafe { hv_vm_create(null_mut()) };
+        check_ret(ret).context(error::CreateVm)?;
+        Ok(HvfVm {
+            gic_config: Mutex::new((OsObject { addr: 0 }, false)),
+            vcpus: Mutex::new(HashMap::new()),
+            senders: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
 }
 
 impl Drop for HvfVm {
@@ -305,28 +310,7 @@ impl Vm for HvfVm {
             *created = true;
         }
 
-        let mut exit = null_mut();
-        let mut vcpu_id = 0;
-        let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
-        check_ret(ret).context(error::CreateVcpu)?;
-
-        let mpidr = encode_mpidr(id);
-        let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
-        check_ret(ret).context(error::VcpuReg)?;
-
-        let (sender, receiver) = mpsc::channel();
-        self.senders.lock().insert(mpidr, sender);
-
-        self.vcpus.lock().insert(id, vcpu_id);
-        Ok(HvfVcpu {
-            exit,
-            vcpu_id,
-            vmexit: None,
-            exit_reg: None,
-            senders: self.senders.clone(),
-            receiver,
-            power_on: false,
-        })
+        HvfVcpu::new(self, id)
     }
 
     fn create_vm_memory(&mut self) -> Result<Self::Memory> {
