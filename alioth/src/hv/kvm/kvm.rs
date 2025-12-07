@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "aarch64")]
-#[path = "kvm_aarch64.rs"]
-mod aarch64;
 #[cfg(target_arch = "x86_64")]
 #[path = "kvm_x86_64.rs"]
 mod x86_64;
@@ -27,23 +24,18 @@ mod sev;
 mod vcpu;
 #[path = "vm/vm.rs"]
 mod vm;
-mod vmentry;
-mod vmexit;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::CpuidResult;
+#[cfg(target_arch = "x86_64")]
 use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::ptr::null_mut;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 
 use libc::SIGRTMIN;
-use parking_lot::Mutex;
-use parking_lot::lock_api::RwLock;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
@@ -57,13 +49,11 @@ use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
 use crate::sys::kvm::KvmDevType;
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::kvm_get_supported_cpuid;
-use crate::sys::kvm::{
-    KVM_API_VERSION, kvm_create_vm, kvm_get_api_version, kvm_get_vcpu_mmap_size,
-};
+use crate::sys::kvm::{KVM_API_VERSION, kvm_get_api_version};
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
 
-use self::vm::{KvmVm, VmInner};
+use self::vm::KvmVm;
 
 #[trace_error]
 #[derive(DebugTrace, Snafu)]
@@ -164,30 +154,7 @@ impl Hypervisor for Kvm {
     type Vm = KvmVm;
 
     fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm> {
-        let vcpu_mmap_size =
-            unsafe { kvm_get_vcpu_mmap_size(&self.fd) }.context(error::CreateVm)? as usize;
-        let kvm_vm_type = Self::determine_vm_type(config)?;
-        let vm_fd = unsafe { kvm_create_vm(&self.fd, kvm_vm_type) }.context(error::CreateVm)?;
-        let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
-        #[cfg(target_arch = "x86_64")]
-        let kvm_vm_arch = self.create_vm_arch(config)?;
-        let memfd = self.create_guest_memfd(config, &fd)?;
-        let kvm_vm = KvmVm {
-            vm: Arc::new(VmInner {
-                fd,
-                memfd,
-                ioeventfds: Mutex::new(HashMap::new()),
-                msi_table: RwLock::new(HashMap::new()),
-                next_msi_gsi: AtomicU32::new(0),
-                pin_map: AtomicU32::new(0),
-                #[cfg(target_arch = "x86_64")]
-                arch: kvm_vm_arch,
-            }),
-            vcpu_mmap_size,
-            memory_created: false,
-        };
-        self.vm_init_arch(config, &kvm_vm)?;
-        Ok(kvm_vm)
+        KvmVm::new(self, config)
     }
 
     #[cfg(target_arch = "x86_64")]

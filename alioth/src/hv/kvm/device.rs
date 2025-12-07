@@ -18,6 +18,7 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use snafu::ResultExt;
 
 use crate::hv::kvm::kvm_error;
+use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{KvmError, Result};
 use crate::sys::kvm::{
     KvmCreateDevice, KvmDevType, KvmDeviceAttr, kvm_create_device, kvm_get_device_attr,
@@ -28,13 +29,13 @@ use crate::sys::kvm::{
 pub(super) struct KvmDevice(pub OwnedFd);
 
 impl KvmDevice {
-    pub fn new(vm_fd: &impl AsFd, type_: KvmDevType) -> Result<KvmDevice, KvmError> {
+    pub fn new(vm: &KvmVm, type_: KvmDevType) -> Result<KvmDevice, KvmError> {
         let mut create_device = KvmCreateDevice {
             type_,
             fd: 0,
             flags: 0,
         };
-        unsafe { kvm_create_device(vm_fd, &mut create_device) }
+        unsafe { kvm_create_device(&vm.vm.fd, &mut create_device) }
             .context(kvm_error::CreateDevice { type_ })?;
         Ok(KvmDevice(unsafe { OwnedFd::from_raw_fd(create_device.fd) }))
     }

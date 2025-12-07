@@ -19,13 +19,16 @@ mod aarch64;
 #[path = "vcpu_x86_64.rs"]
 mod x86_64;
 
+mod vmentry;
+mod vmexit;
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::CpuidResult;
 #[cfg(target_arch = "x86_64")]
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::ops::{Deref, DerefMut};
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
@@ -38,18 +41,18 @@ use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 use crate::ffi;
-use crate::hv::kvm::vm::VmInner;
+use crate::hv::kvm::vm::{KvmVm, VmInner};
 use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{Error, Result, Vcpu, VmEntry, VmExit, error};
-use crate::sys::kvm::{KvmExit, KvmRun, kvm_run};
+use crate::sys::kvm::{KvmExit, KvmRun, kvm_create_vcpu, kvm_run};
 
-pub(super) struct KvmRunBlock {
+struct KvmRunBlock {
     addr: usize,
     size: usize,
 }
 
 impl KvmRunBlock {
-    pub unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, KvmError> {
+    unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, KvmError> {
         let prot = PROT_READ | PROT_WRITE;
         let addr = ffi!(
             unsafe { mmap(null_mut(), mmap_size, prot, MAP_SHARED, fd, 0,) },
@@ -62,11 +65,11 @@ impl KvmRunBlock {
         })
     }
 
-    pub(super) unsafe fn data_slice<T>(&self, offset: usize, count: usize) -> &[T] {
+    unsafe fn data_slice<T>(&self, offset: usize, count: usize) -> &[T] {
         unsafe { std::slice::from_raw_parts((self.addr + offset) as *const T, count) }
     }
 
-    pub(super) unsafe fn data_slice_mut<T>(&mut self, offset: usize, count: usize) -> &mut [T] {
+    unsafe fn data_slice_mut<T>(&mut self, offset: usize, count: usize) -> &mut [T] {
         unsafe { std::slice::from_raw_parts_mut((self.addr + offset) as *mut T, count) }
     }
 }
@@ -94,11 +97,24 @@ impl Drop for KvmRunBlock {
 }
 
 pub struct KvmVcpu {
-    pub(super) kvm_run: KvmRunBlock,
-    pub(super) fd: OwnedFd,
-    pub(super) io_index: usize,
+    kvm_run: KvmRunBlock,
+    fd: OwnedFd,
+    io_index: usize,
     #[allow(dead_code)]
-    pub(super) vm: Arc<VmInner>,
+    vm: Arc<VmInner>,
+}
+
+impl KvmVcpu {
+    pub fn new(vm: &KvmVm, id: u32) -> Result<Self> {
+        let vcpu_fd = unsafe { kvm_create_vcpu(&vm.vm.fd, id) }.context(error::CreateVcpu)?;
+        let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, vm.vm.vcpu_mmap_size) }?;
+        Ok(KvmVcpu {
+            fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
+            kvm_run,
+            vm: vm.vm.clone(),
+            io_index: 0,
+        })
+    }
 }
 
 impl Vcpu for KvmVcpu {

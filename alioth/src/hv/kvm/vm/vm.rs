@@ -35,11 +35,11 @@ use snafu::ResultExt;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 use crate::ffi;
-use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
+use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{
-    Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, MemMapOption, MsiSender, Result, Vm,
-    VmMemory, error,
+    Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Kvm, MemMapOption, MsiSender, Result,
+    Vm, VmConfig, VmMemory, error,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
@@ -49,25 +49,28 @@ use crate::sys::kvm::{
     KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEncRegion, KvmIoEventFd,
     KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
     KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
-    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_check_extension, kvm_create_vcpu,
-    kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region,
-    kvm_set_gsi_routing, kvm_set_memory_attributes, kvm_set_user_memory_region,
-    kvm_set_user_memory_region2, kvm_signal_msi,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_check_extension, kvm_create_vm,
+    kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
+    kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing, kvm_set_memory_attributes,
+    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
 };
 
+#[cfg(target_arch = "aarch64")]
+pub use self::aarch64::VmArch;
 #[cfg(target_arch = "x86_64")]
 pub use self::x86_64::VmArch;
 
 #[derive(Debug)]
-pub(super) struct VmInner {
-    pub(super) fd: OwnedFd,
-    pub(super) memfd: Option<OwnedFd>,
-    pub(super) ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
-    pub(super) msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
-    pub(super) next_msi_gsi: AtomicU32,
-    pub(super) pin_map: AtomicU32,
-    #[cfg(target_arch = "x86_64")]
-    pub(super) arch: VmArch,
+pub struct VmInner {
+    pub fd: OwnedFd,
+    pub vcpu_mmap_size: usize,
+    memfd: Option<OwnedFd>,
+    ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
+    msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
+    next_msi_gsi: AtomicU32,
+    pin_map: AtomicU32,
+    #[allow(dead_code)]
+    arch: VmArch,
 }
 
 impl VmInner {
@@ -135,12 +138,6 @@ impl Display for VmInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "kvm-{}", self.fd.as_raw_fd())
     }
-}
-
-pub struct KvmVm {
-    pub(super) vm: Arc<VmInner>,
-    pub(super) vcpu_mmap_size: usize,
-    pub(super) memory_created: bool,
 }
 
 type MemSlots = (u32, HashMap<(u64, u64), u32>);
@@ -596,6 +593,38 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
     }
 }
 
+pub struct KvmVm {
+    pub vm: Arc<VmInner>,
+    memory_created: bool,
+}
+
+impl KvmVm {
+    pub fn new(kvm: &Kvm, config: &VmConfig) -> Result<Self> {
+        let vcpu_mmap_size =
+            unsafe { kvm_get_vcpu_mmap_size(&kvm.fd) }.context(error::CreateVm)? as usize;
+        let kvm_vm_type = Self::determine_vm_type(config);
+        let vm_fd = unsafe { kvm_create_vm(&kvm.fd, kvm_vm_type) }.context(error::CreateVm)?;
+        let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
+        let arch = VmArch::new(kvm, config)?;
+        let memfd = Self::create_guest_memfd(config, &fd)?;
+        let kvm_vm = KvmVm {
+            vm: Arc::new(VmInner {
+                fd,
+                vcpu_mmap_size,
+                memfd,
+                ioeventfds: Mutex::new(HashMap::new()),
+                msi_table: RwLock::new(HashMap::new()),
+                next_msi_gsi: AtomicU32::new(0),
+                pin_map: AtomicU32::new(0),
+                arch,
+            }),
+            memory_created: false,
+        };
+        kvm_vm.init(config)?;
+        Ok(kvm_vm)
+    }
+}
+
 impl Vm for KvmVm {
     #[cfg(target_arch = "aarch64")]
     type GicV2 = aarch64::KvmGicV2;
@@ -612,14 +641,7 @@ impl Vm for KvmVm {
     type Vcpu = KvmVcpu;
 
     fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
-        let vcpu_fd = unsafe { kvm_create_vcpu(&self.vm.fd, id) }.context(error::CreateVcpu)?;
-        let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
-        Ok(KvmVcpu {
-            fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
-            kvm_run,
-            vm: self.vm.clone(),
-            io_index: 0,
-        })
+        KvmVcpu::new(self, id)
     }
 
     fn stop_vcpu<T>(&self, _id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
@@ -730,7 +752,7 @@ impl Vm for KvmVm {
 
     #[cfg(target_arch = "aarch64")]
     fn create_gic_v2(&self, distributor_base: u64, cpu_interface_base: u64) -> Result<Self::GicV2> {
-        self.kvm_create_gic_v2(distributor_base, cpu_interface_base)
+        aarch64::KvmGicV2::new(self, distributor_base, cpu_interface_base)
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -745,12 +767,17 @@ impl Vm for KvmVm {
         redistributor_base: u64,
         redistributor_count: u32,
     ) -> Result<Self::GicV3> {
-        self.kvm_create_gic_v3(distributor_base, redistributor_base, redistributor_count)
+        aarch64::KvmGicV3::new(
+            self,
+            distributor_base,
+            redistributor_base,
+            redistributor_count,
+        )
     }
 
     #[cfg(target_arch = "aarch64")]
     fn create_its(&self, base: u64) -> Result<Self::Its> {
-        self.kvm_create_its(base)
+        aarch64::KvmIts::new(self, base)
     }
 }
 
