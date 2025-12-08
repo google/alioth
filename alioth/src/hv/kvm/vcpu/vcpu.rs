@@ -28,7 +28,7 @@ use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::ops::{Deref, DerefMut};
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ use crate::ffi;
 use crate::hv::kvm::vm::{KvmVm, VmInner};
 use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{Error, Result, Vcpu, VmEntry, VmExit, error};
-use crate::sys::kvm::{KvmExit, KvmRun, kvm_create_vcpu, kvm_run};
+use crate::sys::kvm::{KvmExit, KvmRun, kvm_run};
 
 #[cfg(target_arch = "aarch64")]
 use self::aarch64::VcpuArch;
@@ -57,10 +57,10 @@ struct KvmRunBlock {
 }
 
 impl KvmRunBlock {
-    unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, KvmError> {
+    unsafe fn new(fd: &OwnedFd, mmap_size: usize) -> Result<KvmRunBlock, KvmError> {
         let prot = PROT_READ | PROT_WRITE;
         let addr = ffi!(
-            unsafe { mmap(null_mut(), mmap_size, prot, MAP_SHARED, fd, 0,) },
+            unsafe { mmap(null_mut(), mmap_size, prot, MAP_SHARED, fd.as_raw_fd(), 0,) },
             MAP_FAILED
         )
         .context(kvm_error::MmapVcpuFd)?;
@@ -113,12 +113,12 @@ pub struct KvmVcpu {
 }
 
 impl KvmVcpu {
-    pub fn new(vm: &KvmVm, id: u32) -> Result<Self> {
-        let vcpu_fd = unsafe { kvm_create_vcpu(&vm.vm.fd, id) }.context(error::CreateVcpu)?;
-        let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, vm.vm.vcpu_mmap_size) }?;
-        let arch = VcpuArch::new(id);
+    pub fn new(vm: &KvmVm, index: u16, identity: u64) -> Result<Self> {
+        let vcpu_fd = Self::create_vcpu(vm, index, identity)?;
+        let kvm_run = unsafe { KvmRunBlock::new(&vcpu_fd, vm.vm.vcpu_mmap_size) }?;
+        let arch = VcpuArch::new(identity);
         Ok(KvmVcpu {
-            fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
+            fd: vcpu_fd,
             kvm_run,
             vm: vm.vm.clone(),
             arch,

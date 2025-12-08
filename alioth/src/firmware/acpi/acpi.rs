@@ -117,10 +117,10 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
 
 // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
 #[cfg(target_arch = "x86_64")]
-pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
+pub fn create_madt(apic_ids: &[u32]) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
     let total_length = size_of::<AcpiTableMadt>()
         + size_of::<AcpiMadtIoApic>()
-        + num_cpu as usize * size_of::<AcpiMadtLocalX2apic>();
+        + apic_ids.len() * size_of::<AcpiMadtLocalX2apic>();
     let mut checksum = 0u8;
 
     let mut madt = AcpiTableMadt {
@@ -148,14 +148,14 @@ pub fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadt
     checksum = checksum.wrapping_sub(wrapping_sum(io_apic.as_bytes()));
 
     let mut x2apics = vec![];
-    for i in 0..num_cpu {
+    for (index, apci_id) in apic_ids.iter().enumerate() {
         let x2apic = AcpiMadtLocalX2apic {
             header: AcpiSubtableHeader {
                 type_: MADT_LOCAL_X2APIC,
                 length: size_of::<AcpiMadtLocalX2apic>() as u8,
             },
-            local_apic_id: i,
-            uid: i,
+            local_apic_id: *apci_id,
+            uid: index as u32,
             lapic_flags: 1,
             ..Default::default()
         };

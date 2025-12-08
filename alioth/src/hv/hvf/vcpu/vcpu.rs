@@ -33,11 +33,10 @@ use crate::sys::hvf::{
     hv_vcpu_get_sys_reg, hv_vcpu_run, hv_vcpu_set_reg, hv_vcpu_set_sys_reg,
 };
 
-pub fn encode_mpidr(id: u32) -> MpidrEl1 {
-    let mut mpidr = MpidrEl1(0);
-    mpidr.set_aff1(id as u64 >> 3);
-    mpidr.set_aff0(id as u64 & 0x7);
-    mpidr
+#[derive(Debug)]
+pub struct VcpuHandle {
+    pub vcpu_id: u64,
+    pub sender: Sender<VcpuEvent>,
 }
 
 #[derive(Debug)]
@@ -46,7 +45,7 @@ pub struct HvfVcpu {
     vcpu_id: u64,
     vmexit: Option<VmExit>,
     exit_reg: Option<HvReg>,
-    senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
+    vcpus: Arc<Mutex<HashMap<MpidrEl1, VcpuHandle>>>,
     receiver: Receiver<VcpuEvent>,
     power_on: bool,
 }
@@ -63,27 +62,28 @@ impl HvfVcpu {
         Ok(())
     }
 
-    pub fn new(vm: &HvfVm, id: u32) -> Result<Self> {
+    pub fn new(vm: &HvfVm, _: u16, identity: u64) -> Result<Self> {
         let mut exit = null_mut();
         let mut vcpu_id = 0;
         let ret = unsafe { hv_vcpu_create(&mut vcpu_id, &mut exit, null_mut()) };
         check_ret(ret).context(error::CreateVcpu)?;
 
-        let mpidr = encode_mpidr(id);
+        let mpidr = MpidrEl1(identity);
         let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
         check_ret(ret).context(error::VcpuReg)?;
 
         let (sender, receiver) = mpsc::channel();
-        vm.senders.lock().insert(mpidr, sender);
 
-        vm.vcpus.lock().insert(id, vcpu_id);
+        let handle = VcpuHandle { vcpu_id, sender };
+
+        vm.vcpus.lock().insert(mpidr, handle);
 
         Ok(HvfVcpu {
             exit,
             vcpu_id,
             vmexit: None,
             exit_reg: None,
-            senders: vm.senders.clone(),
+            vcpus: vm.vcpus.clone(),
             receiver,
             power_on: false,
         })

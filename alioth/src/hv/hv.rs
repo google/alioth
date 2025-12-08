@@ -290,7 +290,7 @@ pub trait Vm {
     type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
-    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
+    fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu, Error>;
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(
         &self,
@@ -298,7 +298,7 @@ pub trait Vm {
     ) -> Result<Self::MsiSender>;
     fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
     fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
-    fn stop_vcpu<T>(&self, id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
+    fn stop_vcpu<T>(&self, identity: u64, handle: &JoinHandle<T>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_start(&self, policy: SevPolicy) -> Result<()>;
@@ -336,7 +336,7 @@ pub trait Vm {
         &self,
         distributor_base: u64,
         redistributor_base: u64,
-        redistributor_count: u32,
+        redistributor_count: u16,
     ) -> Result<Self::GicV3>;
 
     #[cfg(target_arch = "aarch64")]
