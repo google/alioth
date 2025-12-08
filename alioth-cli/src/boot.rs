@@ -186,7 +186,7 @@ pub struct BootArgs {
 
     /// Number of VCPUs assigned to the guest.
     #[arg(long, default_value_t = 1)]
-    num_cpu: u32,
+    num_cpu: u16,
 
     /// DEPRECATED: Use --memory instead.
     #[arg(long, default_value = "1G")]

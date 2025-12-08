@@ -18,14 +18,13 @@ use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::ptr::null_mut;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::arch::reg::MpidrEl1;
-use crate::hv::hvf::vcpu::{HvfVcpu, encode_mpidr};
+use crate::hv::hvf::vcpu::{HvfVcpu, VcpuHandle};
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
@@ -258,8 +257,7 @@ pub enum VcpuEvent {
 #[derive(Debug)]
 pub struct HvfVm {
     gic_config: Mutex<(OsObject, bool)>,
-    pub vcpus: Mutex<HashMap<u32, u64>>,
-    pub senders: Arc<Mutex<HashMap<MpidrEl1, Sender<VcpuEvent>>>>,
+    pub vcpus: Arc<Mutex<HashMap<MpidrEl1, VcpuHandle>>>,
 }
 
 impl HvfVm {
@@ -268,8 +266,7 @@ impl HvfVm {
         check_ret(ret).context(error::CreateVm)?;
         Ok(HvfVm {
             gic_config: Mutex::new((OsObject { addr: 0 }, false)),
-            vcpus: Mutex::new(HashMap::new()),
-            senders: Arc::new(Mutex::new(HashMap::new())),
+            vcpus: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -302,7 +299,7 @@ impl Vm for HvfVm {
         Ok(HvfMsiSender)
     }
 
-    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu> {
+    fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu> {
         let (config, created) = &mut *self.gic_config.lock();
         if config.addr != 0 && !*created {
             let ret = unsafe { hv_gic_create(config.addr as *mut _) };
@@ -310,27 +307,25 @@ impl Vm for HvfVm {
             *created = true;
         }
 
-        HvfVcpu::new(self, id)
+        HvfVcpu::new(self, index, identity)
     }
 
     fn create_vm_memory(&mut self) -> Result<Self::Memory> {
         Ok(HvfMemory)
     }
 
-    fn stop_vcpu<T>(&self, id: u32, _handle: &JoinHandle<T>) -> Result<()> {
+    fn stop_vcpu<T>(&self, identity: u64, _handle: &JoinHandle<T>) -> Result<()> {
+        let mpidr = MpidrEl1(identity);
+
         let vcpus = self.vcpus.lock();
-        let senders = self.senders.lock();
-        let Some(vcpu_id) = vcpus.get(&id) else {
+        let Some(vcpu) = vcpus.get(&mpidr) else {
             return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
         };
-        let mpidr = encode_mpidr(id);
-        let Some(sender) = senders.get(&mpidr) else {
-            return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
-        };
-        if sender.send(VcpuEvent::PowerOff).is_err() {
+
+        if vcpu.sender.send(VcpuEvent::PowerOff).is_err() {
             return Err(ErrorKind::BrokenPipe.into()).context(error::StopVcpu);
         };
-        let ret = unsafe { hv_vcpus_exit(vcpu_id, 1) };
+        let ret = unsafe { hv_vcpus_exit(&vcpu.vcpu_id, 1) };
         check_ret(ret).context(error::StopVcpu)
     }
 
@@ -356,7 +351,7 @@ impl Vm for HvfVm {
         &self,
         distributor_base: u64,
         redistributor_base: u64,
-        _redistributor_count: u32,
+        _redistributor_count: u16,
     ) -> Result<Self::GicV3> {
         let (config, _) = &mut *self.gic_config.lock();
         if config.addr == 0 {
@@ -400,7 +395,3 @@ impl Vm for HvfVm {
         Err(ErrorKind::Unsupported.into()).context(error::CreateDevice)
     }
 }
-
-#[cfg(test)]
-#[path = "vm_test.rs"]
-mod tests;

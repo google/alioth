@@ -94,8 +94,10 @@ impl HvfVcpu {
                 let mpidr = self.get_reg(Reg::X1)?;
                 let pc = self.get_reg(Reg::X2)?;
                 let context = self.get_reg(Reg::X3)?;
-                if let Some(sender) = self.senders.lock().get(&MpidrEl1(mpidr)) {
-                    sender.send(VcpuEvent::PowerOn { pc, context }).unwrap();
+                if let Some(vcpu) = self.vcpus.lock().get(&MpidrEl1(mpidr)) {
+                    vcpu.sender
+                        .send(VcpuEvent::PowerOn { pc, context })
+                        .unwrap();
                     0
                 } else {
                     log::error!("Failed to find CPU with mpidr {mpidr:#x}");

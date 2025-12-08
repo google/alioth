@@ -113,7 +113,7 @@ impl KvmGicV3 {
         vm: &KvmVm,
         distributor_base: u64,
         redistributor_base: u64,
-        redistributor_count: u32,
+        redistributor_count: u16,
     ) -> Result<Self> {
         let dev = KvmDevice::new(vm, KvmDevType::ARM_VGIC_V3)?;
         dev.set_attr(

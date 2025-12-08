@@ -68,19 +68,19 @@ pub enum Error {
     Memory { source: Box<crate::mem::Error> },
     #[snafu(display("Failed to load payload"), context(false))]
     Loader { source: Box<crate::loader::Error> },
-    #[snafu(display("Failed to create VCPU-{id}"))]
+    #[snafu(display("Failed to create VCPU-{index}"))]
     CreateVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
-    #[snafu(display("Failed to run VCPU-{id}"))]
+    #[snafu(display("Failed to run VCPU-{index}"))]
     RunVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
-    #[snafu(display("Failed to stop VCPU-{id}"))]
+    #[snafu(display("Failed to stop VCPU-{index}"))]
     StopVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
     #[snafu(display("Failed to reset PCI devices"))]
@@ -109,14 +109,14 @@ enum BoardState {
 struct MpSync {
     state: BoardState,
     fatal: bool,
-    count: u32,
+    count: u16,
 }
 
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
 pub struct BoardConfig {
     pub mem: MemConfig,
-    pub num_cpu: u32,
+    pub num_cpu: u16,
     pub coco: Option<Coco>,
 }
 
@@ -257,16 +257,16 @@ where
         Ok(())
     }
 
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
+    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, index: u16) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
-            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { id })?;
+            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { index })?;
             vm_entry = match vm_exit {
                 #[cfg(target_arch = "x86_64")]
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
                 VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
                 VmExit::Shutdown => {
-                    log::info!("vcpu {id} requested shutdown");
+                    log::info!("VCPU-{index} requested shutdown");
                     break Ok(false);
                 }
                 VmExit::Reboot => {
@@ -295,7 +295,7 @@ where
         }
 
         mp_sync.count += 1;
-        if mp_sync.count == vcpus.len() as u32 {
+        if mp_sync.count == vcpus.len() as u16 {
             mp_sync.count = 0;
             self.cond_var.notify_all();
         } else {
@@ -311,19 +311,19 @@ where
 
     fn run_vcpu_inner(
         &self,
-        id: u32,
+        index: u16,
         vcpu: &mut V::Vcpu,
         boot_rx: &Receiver<()>,
     ) -> Result<(), Error> {
-        self.init_vcpu(id, vcpu)?;
+        self.init_vcpu(index, vcpu)?;
         boot_rx.recv().unwrap();
         if self.mp_sync.lock().state != BoardState::Running {
             return Ok(());
         }
         loop {
             let vcpus = self.vcpus.read();
-            self.coco_init(id)?;
-            if id == 0 {
+            self.coco_init(index)?;
+            if index == 0 {
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(*port, dev.clone())?;
@@ -337,12 +337,12 @@ where
                 self.init_boot_vcpu(vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
-            self.init_ap(id, vcpu, &vcpus)?;
-            self.coco_finalize(id, &vcpus)?;
+            self.init_ap(index, vcpu, &vcpus)?;
+            self.coco_finalize(index, &vcpus)?;
             self.sync_vcpus(&vcpus)?;
             drop(vcpus);
 
-            let maybe_reboot = self.vcpu_loop(vcpu, id);
+            let maybe_reboot = self.vcpu_loop(vcpu, index);
 
             let vcpus = self.vcpus.read();
             let mut mp_sync = self.mp_sync.lock();
@@ -352,23 +352,26 @@ where
                 } else {
                     BoardState::Shutdown
                 };
-                for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
-                    if id != vcpu_id as u32 {
-                        log::info!("VCPU-{id}: stopping VCPU-{vcpu_id}");
-                        self.vm
-                            .stop_vcpu(vcpu_id as u32, handle)
-                            .context(error::StopVcpu { id })?;
+                for (another, (handle, _)) in vcpus.iter().enumerate() {
+                    if index == another as u16 {
+                        continue;
                     }
+                    log::info!("VCPU-{index}: stopping VCPU-{another}");
+                    self.vm
+                        .stop_vcpu(self.encode_cpu_identity(another as u16), handle)
+                        .context(error::StopVcpu {
+                            index: another as u16,
+                        })?;
                 }
             }
             drop(mp_sync);
             self.sync_vcpus(&vcpus)?;
 
-            if id == 0 {
+            if index == 0 {
                 self.pci_bus.segment.reset().context(error::ResetPci)?;
                 self.memory.reset()?;
             }
-            self.reset_vcpu(id, vcpu)?;
+            self.reset_vcpu(index, vcpu)?;
 
             if let Err(e) = maybe_reboot {
                 break Err(e);
@@ -382,9 +385,13 @@ where
         }
     }
 
-    fn create_vcpu(&self, id: u32, event_tx: &Sender<u32>) -> Result<V::Vcpu> {
-        let vcpu = self.vm.create_vcpu(id).context(error::CreateVcpu { id })?;
-        if event_tx.send(id).is_err() {
+    fn create_vcpu(&self, index: u16, event_tx: &Sender<u16>) -> Result<V::Vcpu> {
+        let identity = self.encode_cpu_identity(index);
+        let vcpu = self
+            .vm
+            .create_vcpu(index, identity)
+            .context(error::CreateVcpu { index })?;
+        if event_tx.send(index).is_err() {
             error::NotifyVmm.fail()
         } else {
             Ok(vcpu)
@@ -393,20 +400,20 @@ where
 
     pub fn run_vcpu(
         &self,
-        id: u32,
-        event_tx: Sender<u32>,
+        index: u16,
+        event_tx: Sender<u16>,
         boot_rx: Receiver<()>,
     ) -> Result<(), Error> {
-        let mut vcpu = self.create_vcpu(id, &event_tx)?;
+        let mut vcpu = self.create_vcpu(index, &event_tx)?;
 
-        let ret = self.run_vcpu_inner(id, &mut vcpu, &boot_rx);
-        event_tx.send(id).unwrap();
+        let ret = self.run_vcpu_inner(index, &mut vcpu, &boot_rx);
+        event_tx.send(index).unwrap();
 
         if matches!(ret, Ok(_) | Err(Error::PeerFailure { .. })) {
             return Ok(());
         }
 
-        log::warn!("VCPU-{id} reported error, unblocking other VCPUs...");
+        log::warn!("VCPU-{index} reported error, unblocking other VCPUs...");
         let mut mp_sync = self.mp_sync.lock();
         mp_sync.fatal = true;
         if mp_sync.count > 0 {

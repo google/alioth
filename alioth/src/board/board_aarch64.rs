@@ -16,8 +16,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_DIST_START, GIC_MSI_START,
     GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, IO_END, IO_START, MEM_64_START,
@@ -25,7 +23,7 @@ use crate::arch::layout::{
     PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, PL031_START,
     RAM_32_SIZE, RAM_32_START,
 };
-use crate::arch::reg::SReg;
+use crate::arch::reg::MpidrEl1;
 use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
@@ -54,7 +52,6 @@ where
 {
     gic: Gic<V>,
     msi: Option<Msi<V>>,
-    mpidrs: Mutex<Vec<u64>>,
 }
 
 impl<V: Vm> ArchBoard<V> {
@@ -90,20 +87,33 @@ impl<V: Vm> ArchBoard<V> {
             create_gic_v2m()
         };
 
-        let mpidrs = Mutex::new(vec![u64::MAX; config.num_cpu as usize]);
-        Ok(ArchBoard { gic, msi, mpidrs })
+        Ok(ArchBoard { gic, msi })
     }
+}
+
+fn encode_mpidr(index: u16) -> MpidrEl1 {
+    let mut mpidr = MpidrEl1(0);
+    let index = index as u64;
+    mpidr.set_aff0(index & 0xf);
+    mpidr.set_aff1(index >> 4);
+    mpidr.set_aff2(index >> 12);
+    mpidr.set_aff3(index >> 20);
+    mpidr
 }
 
 impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn encode_cpu_identity(&self, index: u16) -> u64 {
+        encode_mpidr(index).0
+    }
+
     pub fn setup_firmware(&self, _: &Path, _: &Payload) -> Result<InitState> {
         unimplemented!()
     }
 
-    pub fn init_ap(&self, _id: u32, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
+    pub fn init_ap(&self, _id: u16, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
         Ok(())
     }
 
@@ -113,14 +123,12 @@ where
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
-        vcpu.reset(id == 0)?;
-        self.arch.mpidrs.lock()[id as usize] = vcpu.get_sreg(SReg::MPIDR_EL1)?;
-        Ok(())
+    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
+        self.reset_vcpu(index, vcpu)
     }
 
-    pub fn reset_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
-        vcpu.reset(id == 0)?;
+    pub fn reset_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
+        vcpu.reset(index == 0)?;
         Ok(())
     }
 
@@ -147,11 +155,11 @@ where
         Ok(())
     }
 
-    pub fn coco_init(&self, _id: u32) -> Result<()> {
+    pub fn coco_init(&self, _id: u16) -> Result<()> {
         Ok(())
     }
 
-    pub fn coco_finalize(&self, _id: u32, _vcpus: &VcpuGuard) -> Result<()> {
+    pub fn coco_finalize(&self, _id: u16, _vcpus: &VcpuGuard) -> Result<()> {
         Ok(())
     }
 
@@ -214,21 +222,17 @@ where
     }
 
     pub fn create_cpu_nodes(&self, root: &mut Node) {
-        let mpidrs = self.arch.mpidrs.lock();
-
-        let mut cpu_nodes: Vec<_> = mpidrs
-            .iter()
-            .enumerate()
-            .map(|(index, mpidr)| {
-                let reg = mpidr & 0xff_00ff_ffff;
+        let mut cpu_nodes: Vec<_> = (0..(self.config.num_cpu))
+            .map(|index| {
+                let mpidr = self.encode_cpu_identity(index);
                 (
-                    format!("cpu@{reg:x}"),
+                    format!("cpu@{mpidr:x}"),
                     Node {
                         props: HashMap::from([
                             ("device_type", PropVal::Str("cpu")),
                             ("compatible", PropVal::Str("arm,arm-v8")),
                             ("enable-method", PropVal::Str("psci")),
-                            ("reg", PropVal::U64(reg)),
+                            ("reg", PropVal::U64(mpidr)),
                             ("phandle", PropVal::PHandle(PHANDLE_CPU | index as u32)),
                         ]),
                         nodes: Vec::new(),
@@ -236,7 +240,7 @@ where
                 )
             })
             .collect();
-        let cores = (0..mpidrs.len())
+        let cores = (0..(self.config.num_cpu))
             .map(|index| {
                 (
                     format!("core{index}"),
@@ -545,3 +549,7 @@ const PHANDLE_GIC: u32 = 1;
 const PHANDLE_CLOCK: u32 = 2;
 const PHANDLE_MSI: u32 = 3;
 const PHANDLE_CPU: u32 = 1 << 31;
+
+#[cfg(test)]
+#[path = "board_aarch64_test.rs"]
+mod tests;

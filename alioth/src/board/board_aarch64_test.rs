@@ -14,12 +14,13 @@
 
 use rstest::rstest;
 
-use crate::hv::hvf::vm::encode_mpidr;
+use crate::arch::reg::MpidrEl1;
+use crate::board::aarch64::encode_mpidr;
 
 #[rstest]
 #[case(1, 1)]
-#[case(8, 1 << 8)]
-#[case(23, (2 << 8) | 7)]
-fn test_encode_mpidr(#[case] id: u32, #[case] mpidr: u64) {
-    assert_eq!(encode_mpidr(id).0, mpidr);
+#[case(8, 8)]
+#[case(23, (1 << 8) | 7)]
+fn test_encode_mpidr(#[case] index: u16, #[case] mpidr: u64) {
+    assert_eq!(encode_mpidr(index), MpidrEl1(mpidr));
 }

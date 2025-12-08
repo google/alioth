@@ -36,7 +36,7 @@ fn test_vcpu_regs() {
     let kvm = Kvm::new(KvmConfig::default()).unwrap();
     let vm_config = VmConfig { coco: None };
     let vm = kvm.create_vm(&vm_config).unwrap();
-    let mut vcpu = vm.create_vcpu(0).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     let regs = [
         (Reg::Rax, 0xa93f90f6ce9c8040),
         (Reg::Rbx, 0xacbfb3f1f6f9cc1a),
@@ -238,7 +238,7 @@ fn test_kvm_run() {
     let pde = (Entry::P | Entry::RW | Entry::PS).bits() as u64;
     unsafe { ((user_mem as usize + 0x4000) as *mut u64).write(pde) }
 
-    let mut vcpu = vm.create_vcpu(0).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     let cs = SegRegVal {
         selector: 0x10,
         base: 0,
