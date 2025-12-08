@@ -12,22 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::os::fd::{FromRawFd, OwnedFd};
+
 use snafu::ResultExt;
 
 use crate::arch::reg::{Reg, SReg};
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::{Result, error};
+use crate::hv::kvm::vm::KvmVm;
+use crate::hv::{Result, Vcpu, error};
 use crate::sys::kvm::{
     KvmArmVcpuFeature, KvmCap, KvmOneReg, kvm_arm_preferred_target, kvm_arm_vcpu_init,
-    kvm_get_one_reg, kvm_set_one_reg,
+    kvm_create_vcpu, kvm_get_one_reg, kvm_set_one_reg,
 };
 
 #[derive(Debug)]
-pub struct VcpuArch;
+pub struct VcpuArch {
+    mpidr: u64,
+}
 
 impl VcpuArch {
-    pub fn new(_id: u32) -> Self {
-        VcpuArch
+    pub fn new(id: u64) -> Self {
+        VcpuArch { mpidr: id }
     }
 }
 
@@ -40,7 +45,12 @@ const fn encode_system_reg(reg: SReg) -> u64 {
 }
 
 impl KvmVcpu {
-    pub fn kvm_vcpu_init(&self, is_bsp: bool) -> Result<()> {
+    pub fn create_vcpu(vm: &KvmVm, index: u16, _: u64) -> Result<OwnedFd> {
+        let fd = unsafe { kvm_create_vcpu(&vm.vm.fd, index as u32) }.context(error::CreateVcpu)?;
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    pub fn kvm_vcpu_init(&mut self, is_bsp: bool) -> Result<()> {
         let mut arm_cpu_init =
             unsafe { kvm_arm_preferred_target(&self.vm.fd) }.context(error::CreateVcpu)?;
         if self.vm.check_extension(KvmCap::ARM_PSCI_0_2)? == 1 {
@@ -50,7 +60,7 @@ impl KvmVcpu {
             arm_cpu_init.features[0] |= KvmArmVcpuFeature::POWER_OFF.bits();
         }
         unsafe { kvm_arm_vcpu_init(&self.fd, &arm_cpu_init) }.context(error::CreateVcpu)?;
-        Ok(())
+        self.set_sregs(&[(SReg::MPIDR_EL1, self.arch.mpidr)])
     }
 
     fn get_one_reg(&self, reg: u64) -> Result<u64> {

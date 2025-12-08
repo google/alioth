@@ -101,6 +101,10 @@ impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn encode_cpu_identity(&self, index: u16) -> u64 {
+        index as u64
+    }
+
     fn fill_snp_cpuid(&self, entries: &mut [SnpCpuidFunc]) {
         for ((in_, out), dst) in zip(self.arch.cpuids.iter(), entries.iter_mut()) {
             dst.eax_in = in_.func;
@@ -226,14 +230,14 @@ where
         Ok(init_state)
     }
 
-    pub fn init_ap(&self, id: u32, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
+    pub fn init_ap(&self, index: u16, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
         match &self.config.coco {
             Some(Coco::AmdSev { policy }) if policy.es() => {}
             Some(Coco::AmdSnp { .. }) => {}
             _ => return Ok(()),
         }
         self.sync_vcpus(vcpus)?;
-        if id == 0 {
+        if index == 0 {
             return Ok(());
         }
         let eip = self.arch.sev_ap_eip.load(Ordering::Acquire);
@@ -260,14 +264,14 @@ where
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
+    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
         for (in_, out) in &mut cpuids {
             if in_.func == 0x1 {
                 out.ebx &= 0x00ff_ffff;
-                out.ebx |= id << 24;
+                out.ebx |= (index as u32) << 24;
             } else if in_.func == 0xb || in_.func == 0x1f {
-                out.edx = id;
+                out.edx = self.encode_cpu_identity(index) as u32;
             }
         }
         vcpu.set_cpuids(cpuids)?;
@@ -275,7 +279,7 @@ where
         Ok(())
     }
 
-    pub fn reset_vcpu(&self, _id: u32, _vcpu: &mut V::Vcpu) -> Result<()> {
+    pub fn reset_vcpu(&self, _index: u16, _vcpu: &mut V::Vcpu) -> Result<()> {
         Ok(())
     }
 
@@ -329,8 +333,8 @@ where
         Ok(())
     }
 
-    pub fn coco_init(&self, id: u32) -> Result<()> {
-        if id != 0 {
+    pub fn coco_init(&self, index: u16) -> Result<()> {
+        if index != 0 {
             return Ok(());
         }
         if let Some(coco) = &self.config.coco {
@@ -342,10 +346,10 @@ where
         Ok(())
     }
 
-    pub fn coco_finalize(&self, id: u32, vcpus: &VcpuGuard) -> Result<()> {
+    pub fn coco_finalize(&self, index: u16, vcpus: &VcpuGuard) -> Result<()> {
         if let Some(coco) = &self.config.coco {
             self.sync_vcpus(vcpus)?;
-            if id == 0 {
+            if index == 0 {
                 match coco {
                     Coco::AmdSev { policy } => {
                         if policy.es() {
@@ -400,7 +404,10 @@ where
 
         let offset_madt = offset_fadt + size_of_val(&fadt);
         debug_assert_eq!(offset_madt % 4, 0);
-        let (madt, madt_ioapic, madt_apics) = create_madt(self.config.num_cpu);
+        let apci_ids: Vec<u32> = (0..self.config.num_cpu)
+            .map(|index| self.encode_cpu_identity(index) as u32)
+            .collect();
+        let (madt, madt_ioapic, madt_apics) = create_madt(&apci_ids);
         table_bytes.extend(madt.as_bytes());
         table_bytes.extend(madt_ioapic.as_bytes());
         for apic in madt_apics {
