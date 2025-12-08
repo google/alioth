@@ -29,6 +29,17 @@ use crate::sys::kvm::{
     kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
 };
 
+#[derive(Debug)]
+pub struct VcpuArch {
+    pub io_index: usize,
+}
+
+impl VcpuArch {
+    pub fn new(_id: u32) -> Self {
+        Self { io_index: 0 }
+    }
+}
+
 macro_rules! set_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident, $val:expr) => {
         match $sreg {

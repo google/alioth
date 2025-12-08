@@ -570,6 +570,7 @@ impl Memory {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn handle_io(&self, port: u16, write: Option<u32>, size: u8) -> Result<VmEntry> {
         let io_bus = self.io_bus.read();
         if let Some(val) = write {

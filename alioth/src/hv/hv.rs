@@ -361,6 +361,7 @@ pub trait Hypervisor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmExit {
+    #[cfg(target_arch = "x86_64")]
     Io {
         port: u16,
         write: Option<u32>,
@@ -386,8 +387,13 @@ pub enum VmEntry {
     None,
     Shutdown,
     Reboot,
-    Io { data: Option<u32> },
-    Mmio { data: u64 },
+    #[cfg(target_arch = "x86_64")]
+    Io {
+        data: Option<u32>,
+    },
+    Mmio {
+        data: u64,
+    },
 }
 
 #[cfg(test)]
