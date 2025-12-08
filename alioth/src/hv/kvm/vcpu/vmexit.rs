@@ -14,7 +14,9 @@
 
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, VmExit, error};
-use crate::sys::kvm::{KVM_HC_MAP_GPA_RANGE, KvmExitIo, KvmMapGpaRangeFlag, KvmSystemEvent};
+#[cfg(target_arch = "x86_64")]
+use crate::sys::kvm::KvmExitIo;
+use crate::sys::kvm::{KVM_HC_MAP_GPA_RANGE, KvmMapGpaRangeFlag, KvmSystemEvent};
 
 impl KvmVcpu {
     #[cfg(target_endian = "little")]
@@ -32,11 +34,12 @@ impl KvmVcpu {
         Ok(exit)
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub(super) fn handle_io(&mut self) -> VmExit {
         let kvm_io = unsafe { self.kvm_run.exit.io };
         let offset = kvm_io.data_offset as usize;
         let count = kvm_io.count as usize;
-        let index = self.io_index;
+        let index = self.arch.io_index;
         let write = if kvm_io.direction == KvmExitIo::IN {
             None
         } else {

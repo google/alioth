@@ -22,6 +22,15 @@ use crate::sys::kvm::{
     kvm_get_one_reg, kvm_set_one_reg,
 };
 
+#[derive(Debug)]
+pub struct VcpuArch;
+
+impl VcpuArch {
+    pub fn new(_id: u32) -> Self {
+        VcpuArch
+    }
+}
+
 const fn encode_reg(reg: Reg) -> u64 {
     0x6030_0000_0010_0000 | ((reg as u64) << 1)
 }

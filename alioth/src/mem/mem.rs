@@ -266,6 +266,7 @@ pub struct Memory {
     mmio_bus: RwLock<MmioBus>,
     vm_memory: Box<dyn VmMemory>,
 
+    #[cfg(target_arch = "x86_64")]
     io_bus: RwLock<MmioBus>,
     io_regions: Mutex<Addressable<Arc<IoRegion>>>,
 }
@@ -278,6 +279,7 @@ impl Memory {
             ram_bus: Arc::new(RamBus::new()),
             mmio_bus: RwLock::new(MmioBus::new()),
             vm_memory: Box::new(vm_memory),
+            #[cfg(target_arch = "x86_64")]
             io_bus: RwLock::new(MmioBus::new()),
             io_regions: Mutex::new(Addressable::new()),
         }
@@ -585,6 +587,7 @@ impl Memory {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     pub fn handle_io(&self, port: u16, write: Option<u32>, size: u8) -> Result<VmEntry> {
         let io_bus = self.io_bus.read();
         if let Some(val) = write {

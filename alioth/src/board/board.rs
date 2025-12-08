@@ -262,6 +262,7 @@ where
         loop {
             let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { id })?;
             vm_entry = match vm_exit {
+                #[cfg(target_arch = "x86_64")]
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
                 VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
                 VmExit::Shutdown => {

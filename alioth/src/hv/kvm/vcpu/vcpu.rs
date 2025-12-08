@@ -46,6 +46,11 @@ use crate::hv::kvm::{KvmError, kvm_error};
 use crate::hv::{Error, Result, Vcpu, VmEntry, VmExit, error};
 use crate::sys::kvm::{KvmExit, KvmRun, kvm_create_vcpu, kvm_run};
 
+#[cfg(target_arch = "aarch64")]
+use self::aarch64::VcpuArch;
+#[cfg(target_arch = "x86_64")]
+use self::x86_64::VcpuArch;
+
 struct KvmRunBlock {
     addr: usize,
     size: usize,
@@ -65,10 +70,12 @@ impl KvmRunBlock {
         })
     }
 
+    #[cfg(target_arch = "x86_64")]
     unsafe fn data_slice<T>(&self, offset: usize, count: usize) -> &[T] {
         unsafe { std::slice::from_raw_parts((self.addr + offset) as *const T, count) }
     }
 
+    #[cfg(target_arch = "x86_64")]
     unsafe fn data_slice_mut<T>(&mut self, offset: usize, count: usize) -> &mut [T] {
         unsafe { std::slice::from_raw_parts_mut((self.addr + offset) as *mut T, count) }
     }
@@ -99,7 +106,8 @@ impl Drop for KvmRunBlock {
 pub struct KvmVcpu {
     kvm_run: KvmRunBlock,
     fd: OwnedFd,
-    io_index: usize,
+    #[allow(dead_code)]
+    arch: VcpuArch,
     #[allow(dead_code)]
     vm: Arc<VmInner>,
 }
@@ -108,11 +116,12 @@ impl KvmVcpu {
     pub fn new(vm: &KvmVm, id: u32) -> Result<Self> {
         let vcpu_fd = unsafe { kvm_create_vcpu(&vm.vm.fd, id) }.context(error::CreateVcpu)?;
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, vm.vm.vcpu_mmap_size) }?;
+        let arch = VcpuArch::new(id);
         Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
             kvm_run,
             vm: vm.vm.clone(),
-            io_index: 0,
+            arch,
         })
     }
 }
@@ -163,6 +172,7 @@ impl Vcpu for KvmVcpu {
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
         match entry {
             VmEntry::None => {}
+            #[cfg(target_arch = "x86_64")]
             VmEntry::Io { data } => {
                 let r = self.entry_io(data);
                 if let Some(exit) = r {
@@ -188,6 +198,7 @@ impl Vcpu for KvmVcpu {
                 _ => Err(e).context(error::RunVcpu),
             },
             Ok(_) => match self.kvm_run.exit_reason {
+                #[cfg(target_arch = "x86_64")]
                 KvmExit::IO => Ok(self.handle_io()),
                 KvmExit::HYPERCALL => self.handle_hypercall(),
                 KvmExit::MMIO => self.handle_mmio(),
