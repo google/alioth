@@ -218,31 +218,33 @@ where
 
         let mut cpu_nodes = mpidrs
             .iter()
-            .map(|mpidr| {
+            .enumerate()
+            .map(|(index, mpidr)| {
                 let reg = mpidr & 0xff_00ff_ffff;
                 (
-                    format!("cpu@{reg}"),
+                    format!("cpu@{reg:x}"),
                     Node {
                         props: HashMap::from([
                             ("device_type", PropVal::Str("cpu")),
                             ("compatible", PropVal::Str("arm,arm-v8")),
                             ("enable-method", PropVal::Str("psci")),
-                            ("reg", PropVal::U32(reg as u32)),
-                            ("phandle", PropVal::PHandle(reg as u32 | (1 << 16))),
+                            ("reg", PropVal::U64(reg)),
+                            ("phandle", PropVal::PHandle(PHANDLE_CPU | index as u32)),
                         ]),
                         nodes: HashMap::new(),
                     },
                 )
             })
             .collect::<HashMap<_, _>>();
-        let cores = mpidrs
-            .iter()
-            .map(|mpidr| {
-                let reg = mpidr & 0xff_00ff_ffff;
+        let cores = (0..mpidrs.len())
+            .map(|index| {
                 (
-                    format!("core{reg}"),
+                    format!("core{index}"),
                     Node {
-                        props: HashMap::from([("cpu", PropVal::PHandle(reg as u32 | (1 << 16)))]),
+                        props: HashMap::from([(
+                            "cpu",
+                            PropVal::PHandle(PHANDLE_CPU | index as u32),
+                        )]),
                         nodes: HashMap::new(),
                     },
                 )
@@ -267,7 +269,7 @@ where
         cpu_nodes.insert("cpu-map".to_owned(), cpu_map);
         let cpus = Node {
             props: HashMap::from([
-                ("#address-cells", PropVal::U32(1)),
+                ("#address-cells", PropVal::U32(2)),
                 ("#size-cells", PropVal::U32(0)),
             ]),
             nodes: cpu_nodes,
@@ -534,3 +536,4 @@ where
 const PHANDLE_GIC: u32 = 1;
 const PHANDLE_CLOCK: u32 = 2;
 const PHANDLE_MSI: u32 = 3;
+const PHANDLE_CPU: u32 = 1 << 31;
