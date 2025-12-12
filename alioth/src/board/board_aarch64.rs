@@ -20,8 +20,8 @@ use parking_lot::Mutex;
 
 use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_DIST_START, GIC_MSI_START,
-    GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, MEM_64_START, PCIE_CONFIG_START,
-    PCIE_MMIO_32_NON_PREFETCHABLE_END, PCIE_MMIO_32_NON_PREFETCHABLE_START,
+    GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, IO_END, IO_START, MEM_64_START,
+    PCIE_CONFIG_START, PCIE_MMIO_32_NON_PREFETCHABLE_END, PCIE_MMIO_32_NON_PREFETCHABLE_START,
     PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, PL031_START,
     RAM_32_SIZE, RAM_32_START,
 };
@@ -450,6 +450,7 @@ where
         };
         let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
         let prefetchable = 1 << 30;
+        let io = 0b01 << 24;
         let mem_32 = 0b10 << 24;
         let mem_64 = 0b11 << 24;
         let node = Node {
@@ -463,6 +464,13 @@ where
                 (
                     "ranges",
                     PropVal::U32List(vec![
+                        io,
+                        0,
+                        0,
+                        0,
+                        IO_START as u32,
+                        0,
+                        (IO_END - IO_START) as u32,
                         mem_32 | prefetchable,
                         0,
                         PCIE_MMIO_32_PREFETCHABLE_START as u32,

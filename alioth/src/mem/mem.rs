@@ -25,6 +25,8 @@ use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
 
+#[cfg(target_arch = "aarch64")]
+use crate::arch::layout::IO_START;
 use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{MemMapOption, VmEntry, VmMemory};
 
@@ -426,13 +428,10 @@ impl Memory {
         for (addr, region) in regions {
             self.unmap_region(addr, &region)?;
         }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let mut io_regions = self.io_regions.lock();
-            let io_regions = io_regions.drain(..);
-            for (port, io_region) in io_regions {
-                self.unmap_io_region(port as u16, &io_region)?;
-            }
+        let mut io_regions = self.io_regions.lock();
+        let io_regions = io_regions.drain(..);
+        for (port, io_region) in io_regions {
+            self.unmap_io_region(port as u16, &io_region)?;
         }
         Ok(())
     }
@@ -466,8 +465,16 @@ impl Memory {
     pub fn add_io_region(&self, port: u16, region: Arc<IoRegion>) -> Result<()> {
         let mut regions = self.io_regions.lock();
         regions.add(port as u64, region.clone())?;
-        let mut io_bus = self.io_bus.write();
-        io_bus.add(port as u64, region.range.clone())?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut io_bus = self.io_bus.write();
+            io_bus.add(port as u64, region.range.clone())?;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut mmio_bus = self.mmio_bus.write();
+            mmio_bus.add(IO_START + port as u64, region.range.clone())?;
+        }
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.mapped(port as u64)?;
@@ -476,8 +483,16 @@ impl Memory {
     }
 
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
-        let mut io_bus = self.io_bus.write();
-        io_bus.remove(port as u64)?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut io_bus = self.io_bus.write();
+            io_bus.remove(port as u64)?;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut mmio_bus = self.mmio_bus.write();
+            mmio_bus.remove(IO_START + port as u64)?;
+        }
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.unmapped()?;

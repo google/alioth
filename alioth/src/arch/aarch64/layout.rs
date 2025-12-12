@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub const IO_START: u64 = 0x0fff_0000;
+pub const IO_END: u64 = 0x1000_0000; // 256 MiB, size = 64 KiB
+
 pub const MMIO_32_START: u64 = 0x1000_0000; // 256 MiB
 
 pub const GIC_MSI_START: u64 = 0x1000_0000; // 64 KiB for GICv2m, 128 KiB for GICv3, 192 KiB for GICv4.1
