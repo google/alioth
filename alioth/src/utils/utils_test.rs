@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::align_up;
-
 #[test]
 fn test_align_up() {
     assert_eq!(align_up!(0u64, 2), 0);
