@@ -53,19 +53,6 @@ pub struct ArchBoard<V> {
     _phantom: PhantomData<V>,
 }
 
-fn encode_x2apic_id(topology: &CpuTopology, index: u16) -> u32 {
-    let total_cores = topology.cores as u32 * topology.sockets as u32;
-    let thread_id = index as u32 / total_cores;
-    let core_id = index as u32 % total_cores % topology.cores as u32;
-    let socket_id = index as u32 % total_cores / topology.cores as u32;
-
-    let thread_width = topology.smt as u32;
-    let cores_per_socket = topology.cores as u32;
-    let core_width = cores_per_socket.next_power_of_two().trailing_zeros();
-
-    socket_id << (core_width + thread_width) | core_id << thread_width | thread_id
-}
-
 fn add_topology(cpuids: &mut HashMap<CpuidIn, CpuidResult>, func: u32, levels: &[(u8, u16)]) {
     let edx = 0; // patched later in init_vcpu()
     for (index, (level, count)) in levels.iter().chain(&[(0, 0)]).enumerate() {
@@ -166,6 +153,18 @@ impl<V: Vm> ArchBoard<V> {
             _phantom: PhantomData,
         })
     }
+}
+
+fn encode_x2apic_id(topology: &CpuTopology, index: u16) -> u32 {
+    let (thread_id, core_id, socket_id) = topology.encode(index);
+
+    let thread_width = topology.smt as u32;
+    let cores_per_socket = topology.cores as u32;
+    let core_width = cores_per_socket.next_power_of_two().trailing_zeros();
+
+    (socket_id as u32) << (core_width + thread_width)
+        | (core_id as u32) << thread_width
+        | (thread_id as u32)
 }
 
 impl<V> Board<V>

@@ -114,6 +114,16 @@ pub struct CpuTopology {
     pub sockets: u8,
 }
 
+impl CpuTopology {
+    pub fn encode(&self, index: u16) -> (u8, u16, u8) {
+        let total_cores = self.cores * self.sockets as u16;
+        let thread_id = index / total_cores;
+        let core_id = index % total_cores % self.cores;
+        let socket_id = index % total_cores / self.cores;
+        (thread_id as u8, core_id, socket_id as u8)
+    }
+}
+
 const fn default_cpu_count() -> u16 {
     1
 }
