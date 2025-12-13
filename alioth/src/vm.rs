@@ -123,7 +123,9 @@ impl<H> Machine<H>
 where
     H: Hypervisor + 'static,
 {
-    pub fn new(hv: H, config: BoardConfig) -> Result<Self> {
+    pub fn new(hv: H, mut config: BoardConfig) -> Result<Self> {
+        config.config_fixup()?;
+
         let vm_config = VmConfig {
             coco: config.coco.clone(),
         };

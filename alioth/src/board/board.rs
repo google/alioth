@@ -70,6 +70,8 @@ pub enum Error {
     Memory { source: Box<crate::mem::Error> },
     #[snafu(display("Failed to load payload"), context(false))]
     Loader { source: Box<crate::loader::Error> },
+    #[snafu(display("Invalid CPU topology"))]
+    InvalidCpuTopology,
     #[snafu(display("Failed to create VCPU-{index}"))]
     CreateVcpu {
         index: u16,
@@ -99,6 +101,19 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Default, Help)]
+pub struct CpuTopology {
+    #[serde(default)]
+    /// Enable SMT (Hyperthreading)
+    pub smt: bool,
+    #[serde(default)]
+    /// Number of cores per socket.
+    pub cores: u16,
+    #[serde(default)]
+    /// Number of sockets.
+    pub sockets: u8,
+}
+
 const fn default_cpu_count() -> u16 {
     1
 }
@@ -108,6 +123,9 @@ pub struct CpuConfig {
     /// Number of VCPUs assigned to the guest. [default: 1]
     #[serde(default = "default_cpu_count")]
     pub count: u16,
+    /// Architecture specific CPU topology
+    #[serde(default)]
+    pub topology: CpuTopology,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +154,23 @@ pub struct BoardConfig {
 impl BoardConfig {
     pub fn pcie_mmio_64_start(&self) -> u64 {
         (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
+    }
+
+    pub fn config_fixup(&mut self) -> Result<()> {
+        if self.cpu.topology.sockets == 0 {
+            self.cpu.topology.sockets = 1;
+        }
+        let vcpus_per_core = 1 + self.cpu.topology.smt as u16;
+        if self.cpu.topology.cores == 0 {
+            self.cpu.topology.cores =
+                self.cpu.count / self.cpu.topology.sockets as u16 / vcpus_per_core;
+        }
+        let vcpus_per_socket = self.cpu.topology.cores * vcpus_per_core;
+        let count = self.cpu.topology.sockets as u16 * vcpus_per_socket;
+        if count != self.cpu.count {
+            return error::InvalidCpuTopology.fail();
+        }
+        Ok(())
     }
 }
 
