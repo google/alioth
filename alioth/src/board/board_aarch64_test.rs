@@ -15,12 +15,13 @@
 use rstest::rstest;
 
 use crate::arch::reg::MpidrEl1;
+use crate::board::CpuTopology;
 use crate::board::aarch64::encode_mpidr;
 
 #[rstest]
-#[case(1, 1)]
-#[case(8, 8)]
-#[case(23, (1 << 8) | 7)]
-fn test_encode_mpidr(#[case] index: u16, #[case] mpidr: u64) {
-    assert_eq!(encode_mpidr(index), MpidrEl1(mpidr));
+#[case(CpuTopology{smt: false, cores: 1, sockets: 1}, 1, 1)]
+#[case(CpuTopology{smt: true, cores: 8, sockets: 1}, 8, 1)]
+#[case(CpuTopology{smt: true, cores: 8, sockets: 4}, 45, (1 << 16) | (5 << 8) | 1)]
+fn test_encode_mpidr(#[case] topology: CpuTopology, #[case] index: u16, #[case] mpidr: u64) {
+    assert_eq!(encode_mpidr(&topology, index), MpidrEl1(mpidr));
 }

@@ -70,6 +70,8 @@ pub enum Error {
     Memory { source: Box<crate::mem::Error> },
     #[snafu(display("Failed to load payload"), context(false))]
     Loader { source: Box<crate::loader::Error> },
+    #[snafu(display("Invalid CPU topology"))]
+    InvalidCpuTopology,
     #[snafu(display("Failed to create VCPU-{index}"))]
     CreateVcpu {
         index: u16,
@@ -99,6 +101,29 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Default, Help)]
+pub struct CpuTopology {
+    #[serde(default)]
+    /// Enable SMT (Hyperthreading).
+    pub smt: bool,
+    #[serde(default)]
+    /// Number of cores per socket.
+    pub cores: u16,
+    #[serde(default)]
+    /// Number of sockets.
+    pub sockets: u8,
+}
+
+impl CpuTopology {
+    pub fn encode(&self, index: u16) -> (u8, u16, u8) {
+        let total_cores = self.cores * self.sockets as u16;
+        let thread_id = index / total_cores;
+        let core_id = index % total_cores % self.cores;
+        let socket_id = index % total_cores / self.cores;
+        (thread_id as u8, core_id, socket_id as u8)
+    }
+}
+
 const fn default_cpu_count() -> u16 {
     1
 }
@@ -108,6 +133,27 @@ pub struct CpuConfig {
     /// Number of VCPUs assigned to the guest. [default: 1]
     #[serde(default = "default_cpu_count")]
     pub count: u16,
+    /// Architecture specific CPU topology.
+    #[serde(default)]
+    pub topology: CpuTopology,
+}
+
+impl CpuConfig {
+    pub fn fixup(&mut self) -> Result<()> {
+        if self.topology.sockets == 0 {
+            self.topology.sockets = 1;
+        }
+        let vcpus_per_core = 1 + self.topology.smt as u16;
+        if self.topology.cores == 0 {
+            self.topology.cores = self.count / self.topology.sockets as u16 / vcpus_per_core;
+        }
+        let vcpus_per_socket = self.topology.cores * vcpus_per_core;
+        let count = self.topology.sockets as u16 * vcpus_per_socket;
+        if count != self.count {
+            return error::InvalidCpuTopology.fail();
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +182,10 @@ pub struct BoardConfig {
 impl BoardConfig {
     pub fn pcie_mmio_64_start(&self) -> u64 {
         (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
+    }
+
+    pub fn config_fixup(&mut self) -> Result<()> {
+        self.cpu.fixup()
     }
 }
 
@@ -457,3 +507,7 @@ where
         Ok(pages)
     }
 }
+
+#[cfg(test)]
+#[path = "board_test.rs"]
+mod tests;

@@ -390,6 +390,7 @@ pub fn boot(args: BootArgs) -> Result<(), Error> {
         eprintln!("Please update the cmd line to --cpu count={}", args.num_cpu);
         CpuConfig {
             count: args.num_cpu,
+            ..Default::default()
         }
     };
     let board_config = BoardConfig {

@@ -24,7 +24,7 @@ use crate::arch::layout::{
     RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::MpidrEl1;
-use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
+use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{Executable, InitState, Payload};
@@ -91,14 +91,51 @@ impl<V: Vm> ArchBoard<V> {
     }
 }
 
-fn encode_mpidr(index: u16) -> MpidrEl1 {
+fn encode_mpidr(topology: &CpuTopology, index: u16) -> MpidrEl1 {
+    let (thread_id, core_id, socket_id) = topology.encode(index);
     let mut mpidr = MpidrEl1(0);
-    let index = index as u64;
-    mpidr.set_aff0(index & 0xf);
-    mpidr.set_aff1(index >> 4);
-    mpidr.set_aff2(index >> 12);
-    mpidr.set_aff3(index >> 20);
+    mpidr.set_aff0(thread_id);
+    mpidr.set_aff1(core_id as u8);
+    mpidr.set_aff2(socket_id);
     mpidr
+}
+
+fn dt_cpu_node(topology: &CpuTopology, socket: u8, core: u16) -> Node {
+    let mut mpidr = MpidrEl1(0);
+    mpidr.set_aff1(core as u8);
+    mpidr.set_aff2(socket);
+    if topology.smt {
+        Node {
+            props: HashMap::new(),
+            nodes: vec![
+                (
+                    "thread0".to_owned(),
+                    Node {
+                        props: HashMap::from([(
+                            "cpu",
+                            PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32),
+                        )]),
+                        nodes: Vec::new(),
+                    },
+                ),
+                (
+                    "thread1".to_owned(),
+                    Node {
+                        props: HashMap::from([(
+                            "cpu",
+                            PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32 | 1),
+                        )]),
+                        nodes: Vec::new(),
+                    },
+                ),
+            ],
+        }
+    } else {
+        Node {
+            nodes: Vec::new(),
+            props: HashMap::from([("cpu", PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32))]),
+        }
+    }
 }
 
 impl<V> Board<V>
@@ -106,7 +143,7 @@ where
     V: Vm,
 {
     pub fn encode_cpu_identity(&self, index: u16) -> u64 {
-        encode_mpidr(index).0
+        encode_mpidr(&self.config.cpu.topology, index).0
     }
 
     pub fn setup_firmware(&self, _: &Path, _: &Payload) -> Result<InitState> {
@@ -233,42 +270,44 @@ where
                             ("compatible", PropVal::Str("arm,arm-v8")),
                             ("enable-method", PropVal::Str("psci")),
                             ("reg", PropVal::U64(mpidr)),
-                            ("phandle", PropVal::PHandle(PHANDLE_CPU | index as u32)),
+                            ("phandle", PropVal::PHandle(PHANDLE_CPU | mpidr as u32)),
                         ]),
                         nodes: Vec::new(),
                     },
                 )
             })
             .collect();
-        let cores = (0..(self.config.cpu.count))
-            .map(|index| {
-                (
-                    format!("core{index}"),
-                    Node {
-                        props: HashMap::from([(
-                            "cpu",
-                            PropVal::PHandle(PHANDLE_CPU | index as u32),
-                        )]),
-                        nodes: Vec::new(),
-                    },
-                )
-            })
-            .collect();
+
         let cpu_map = Node {
             props: HashMap::new(),
-            nodes: vec![(
-                "socket0".to_owned(),
-                Node {
-                    props: HashMap::new(),
-                    nodes: vec![(
-                        "cluster0".to_owned(),
+            nodes: (0..self.config.cpu.topology.sockets)
+                .map(|socket| {
+                    (
+                        format!("socket{socket}",),
                         Node {
                             props: HashMap::new(),
-                            nodes: cores,
+                            nodes: vec![(
+                                "cluster0".to_owned(),
+                                Node {
+                                    props: HashMap::new(),
+                                    nodes: (0..self.config.cpu.topology.cores)
+                                        .map(|core| {
+                                            (
+                                                format!("core{core}"),
+                                                dt_cpu_node(
+                                                    &self.config.cpu.topology,
+                                                    socket,
+                                                    core,
+                                                ),
+                                            )
+                                        })
+                                        .collect(),
+                                },
+                            )],
                         },
-                    )],
-                },
-            )],
+                    )
+                })
+                .collect(),
         };
         cpu_nodes.push(("cpu-map".to_owned(), cpu_map));
         let cpus = Node {
