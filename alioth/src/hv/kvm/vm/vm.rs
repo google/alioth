@@ -640,11 +640,11 @@ impl Vm for KvmVm {
     type MsiSender = KvmMsiSender;
     type Vcpu = KvmVcpu;
 
-    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
-        KvmVcpu::new(self, id)
+    fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu, Error> {
+        KvmVcpu::new(self, index, identity)
     }
 
-    fn stop_vcpu<T>(&self, _id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
+    fn stop_vcpu<T>(&self, _identity: u64, handle: &JoinHandle<T>) -> Result<(), Error> {
         ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })
             .context(error::StopVcpu)?;
         Ok(())
@@ -765,7 +765,7 @@ impl Vm for KvmVm {
         &self,
         distributor_base: u64,
         redistributor_base: u64,
-        redistributor_count: u32,
+        redistributor_count: u16,
     ) -> Result<Self::GicV3> {
         aarch64::KvmGicV3::new(
             self,

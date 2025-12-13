@@ -16,8 +16,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::arch::layout::{
     DEVICE_TREE_LIMIT, DEVICE_TREE_START, GIC_DIST_START, GIC_MSI_START,
     GIC_V2_CPU_INTERFACE_START, GIC_V3_REDIST_START, IO_END, IO_START, MEM_64_START,
@@ -25,8 +23,8 @@ use crate::arch::layout::{
     PCIE_MMIO_32_PREFETCHABLE_END, PCIE_MMIO_32_PREFETCHABLE_START, PL011_START, PL031_START,
     RAM_32_SIZE, RAM_32_START,
 };
-use crate::arch::reg::SReg;
-use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
+use crate::arch::reg::MpidrEl1;
+use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
 use crate::loader::{Executable, InitState, Payload};
@@ -54,7 +52,6 @@ where
 {
     gic: Gic<V>,
     msi: Option<Msi<V>>,
-    mpidrs: Mutex<Vec<u64>>,
 }
 
 impl<V: Vm> ArchBoard<V> {
@@ -62,7 +59,7 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.num_cpu) {
+        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.cpu.count) {
             Ok(v3) => Gic::V3(v3),
             Err(e) => {
                 log::error!("Cannot create GIC v3: {e:?}trying v2...");
@@ -90,8 +87,54 @@ impl<V: Vm> ArchBoard<V> {
             create_gic_v2m()
         };
 
-        let mpidrs = Mutex::new(vec![u64::MAX; config.num_cpu as usize]);
-        Ok(ArchBoard { gic, msi, mpidrs })
+        Ok(ArchBoard { gic, msi })
+    }
+}
+
+fn encode_mpidr(topology: &CpuTopology, index: u16) -> MpidrEl1 {
+    let (thread_id, core_id, socket_id) = topology.encode(index);
+    let mut mpidr = MpidrEl1(0);
+    mpidr.set_aff0(thread_id);
+    mpidr.set_aff1(core_id as u8);
+    mpidr.set_aff2(socket_id);
+    mpidr
+}
+
+fn dt_cpu_node(topology: &CpuTopology, socket: u8, core: u16) -> Node {
+    let mut mpidr = MpidrEl1(0);
+    mpidr.set_aff1(core as u8);
+    mpidr.set_aff2(socket);
+    if topology.smt {
+        Node {
+            props: HashMap::new(),
+            nodes: vec![
+                (
+                    "thread0".to_owned(),
+                    Node {
+                        props: HashMap::from([(
+                            "cpu",
+                            PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32),
+                        )]),
+                        nodes: Vec::new(),
+                    },
+                ),
+                (
+                    "thread1".to_owned(),
+                    Node {
+                        props: HashMap::from([(
+                            "cpu",
+                            PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32 | 1),
+                        )]),
+                        nodes: Vec::new(),
+                    },
+                ),
+            ],
+        }
+    } else {
+        Node {
+            nodes: Vec::new(),
+            props: HashMap::from([("cpu", PropVal::PHandle(PHANDLE_CPU | mpidr.0 as u32))]),
+        }
     }
 }
 
@@ -99,11 +142,15 @@ impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn encode_cpu_identity(&self, index: u16) -> u64 {
+        encode_mpidr(&self.config.cpu.topology, index).0
+    }
+
     pub fn setup_firmware(&self, _: &Path, _: &Payload) -> Result<InitState> {
         unimplemented!()
     }
 
-    pub fn init_ap(&self, _id: u32, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
+    pub fn init_ap(&self, _id: u16, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
         Ok(())
     }
 
@@ -113,14 +160,12 @@ where
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
-        vcpu.reset(id == 0)?;
-        self.arch.mpidrs.lock()[id as usize] = vcpu.get_sreg(SReg::MPIDR_EL1)?;
-        Ok(())
+    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
+        self.reset_vcpu(index, vcpu)
     }
 
-    pub fn reset_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
-        vcpu.reset(id == 0)?;
+    pub fn reset_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
+        vcpu.reset(index == 0)?;
         Ok(())
     }
 
@@ -147,11 +192,11 @@ where
         Ok(())
     }
 
-    pub fn coco_init(&self, _id: u32) -> Result<()> {
+    pub fn coco_init(&self, _id: u16) -> Result<()> {
         Ok(())
     }
 
-    pub fn coco_finalize(&self, _id: u32, _vcpus: &VcpuGuard) -> Result<()> {
+    pub fn coco_finalize(&self, _id: u16, _vcpus: &VcpuGuard) -> Result<()> {
         Ok(())
     }
 
@@ -193,7 +238,7 @@ where
             "stdout-path",
             PropVal::String(format!("/pl011@{PL011_START:x}")),
         );
-        root.nodes.insert("chosen".to_owned(), node);
+        root.nodes.push(("chosen".to_owned(), node));
     }
 
     pub fn create_memory_node(&self, root: &mut Node) {
@@ -207,66 +252,64 @@ where
                     ("device_type", PropVal::Str("memory")),
                     ("reg", PropVal::U64List(vec![start, region.size])),
                 ]),
-                nodes: HashMap::new(),
+                nodes: Vec::new(),
             };
-            root.nodes.insert(format!("memory@{start:x}"), node);
+            root.nodes.push((format!("memory@{start:x}"), node));
         }
     }
 
     pub fn create_cpu_nodes(&self, root: &mut Node) {
-        let mpidrs = self.arch.mpidrs.lock();
-
-        let mut cpu_nodes = mpidrs
-            .iter()
-            .enumerate()
-            .map(|(index, mpidr)| {
-                let reg = mpidr & 0xff_00ff_ffff;
+        let mut cpu_nodes: Vec<_> = (0..(self.config.cpu.count))
+            .map(|index| {
+                let mpidr = self.encode_cpu_identity(index);
                 (
-                    format!("cpu@{reg:x}"),
+                    format!("cpu@{mpidr:x}"),
                     Node {
                         props: HashMap::from([
                             ("device_type", PropVal::Str("cpu")),
                             ("compatible", PropVal::Str("arm,arm-v8")),
                             ("enable-method", PropVal::Str("psci")),
-                            ("reg", PropVal::U64(reg)),
-                            ("phandle", PropVal::PHandle(PHANDLE_CPU | index as u32)),
+                            ("reg", PropVal::U64(mpidr)),
+                            ("phandle", PropVal::PHandle(PHANDLE_CPU | mpidr as u32)),
                         ]),
-                        nodes: HashMap::new(),
-                    },
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let cores = (0..mpidrs.len())
-            .map(|index| {
-                (
-                    format!("core{index}"),
-                    Node {
-                        props: HashMap::from([(
-                            "cpu",
-                            PropVal::PHandle(PHANDLE_CPU | index as u32),
-                        )]),
-                        nodes: HashMap::new(),
+                        nodes: Vec::new(),
                     },
                 )
             })
             .collect();
+
         let cpu_map = Node {
             props: HashMap::new(),
-            nodes: HashMap::from([(
-                "socket0".to_owned(),
-                Node {
-                    props: HashMap::new(),
-                    nodes: HashMap::from([(
-                        "cluster0".to_owned(),
+            nodes: (0..self.config.cpu.topology.sockets)
+                .map(|socket| {
+                    (
+                        format!("socket{socket}",),
                         Node {
                             props: HashMap::new(),
-                            nodes: cores,
+                            nodes: vec![(
+                                "cluster0".to_owned(),
+                                Node {
+                                    props: HashMap::new(),
+                                    nodes: (0..self.config.cpu.topology.cores)
+                                        .map(|core| {
+                                            (
+                                                format!("core{core}"),
+                                                dt_cpu_node(
+                                                    &self.config.cpu.topology,
+                                                    socket,
+                                                    core,
+                                                ),
+                                            )
+                                        })
+                                        .collect(),
+                                },
+                            )],
                         },
-                    )]),
-                },
-            )]),
+                    )
+                })
+                .collect(),
         };
-        cpu_nodes.insert("cpu-map".to_owned(), cpu_map);
+        cpu_nodes.push(("cpu-map".to_owned(), cpu_map));
         let cpus = Node {
             props: HashMap::from([
                 ("#address-cells", PropVal::U32(2)),
@@ -274,7 +317,7 @@ where
             ]),
             nodes: cpu_nodes,
         };
-        root.nodes.insert("cpus".to_owned(), cpus);
+        root.nodes.push(("cpus".to_owned(), cpus));
     }
 
     fn create_clock_node(&self, root: &mut Node) {
@@ -286,9 +329,9 @@ where
                 ("phandle", PropVal::PHandle(PHANDLE_CLOCK)),
                 ("#clock-cells", PropVal::U32(0)),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("apb-pclk".to_owned(), node);
+        root.nodes.push(("apb-pclk".to_owned(), node));
     }
 
     fn create_pl011_node(&self, root: &mut Node) {
@@ -306,9 +349,9 @@ where
                     PropVal::U32List(vec![PHANDLE_CLOCK, PHANDLE_CLOCK]),
                 ),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert(format!("pl011@{PL011_START:x}"), node);
+        root.nodes.push((format!("pl011@{PL011_START:x}"), node));
     }
 
     fn create_pl031_node(&self, root: &mut Node) {
@@ -319,9 +362,9 @@ where
                 ("clock-names", PropVal::Str("apb_pclk")),
                 ("clocks", PropVal::U32List(vec![PHANDLE_CLOCK])),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert(format!("pl031@{PL031_START:x}"), node);
+        root.nodes.push((format!("pl031@{PL031_START:x}"), node));
     }
 
     // Documentation/devicetree/bindings/timer/arm,arch_timer.yaml
@@ -331,7 +374,7 @@ where
         let ppi = 1;
         let level_trigger = 4;
         let cpu_mask = match self.arch.gic {
-            Gic::V2(_) => (1 << self.config.num_cpu) - 1,
+            Gic::V2(_) => (1 << self.config.cpu.count) - 1,
             Gic::V3 { .. } => 0,
         };
         for pin in irq_pins {
@@ -343,14 +386,14 @@ where
                 ("interrupts", PropVal::U32List(interrupts)),
                 ("always-on", PropVal::Empty),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("timer".to_owned(), node);
+        root.nodes.push(("timer".to_owned(), node));
     }
 
-    fn create_gic_msi_node(&self) -> HashMap<String, Node> {
+    fn create_gic_msi_node(&self) -> Vec<(String, Node)> {
         let Some(msi) = &self.arch.msi else {
-            return HashMap::new();
+            return Vec::new();
         };
         match msi {
             Msi::Its(_) => {
@@ -362,9 +405,9 @@ where
                         ("reg", PropVal::U64List(vec![GIC_MSI_START, 128 << 10])),
                         ("phandle", PropVal::PHandle(PHANDLE_MSI)),
                     ]),
-                    nodes: HashMap::new(),
+                    nodes: Vec::new(),
                 };
-                HashMap::from([(format!("its@{GIC_MSI_START:x}"), node)])
+                vec![(format!("its@{GIC_MSI_START:x}"), node)]
             }
             Msi::V2m(_) => {
                 let node = Node {
@@ -374,9 +417,9 @@ where
                         ("reg", PropVal::U64List(vec![GIC_MSI_START, 64 << 10])),
                         ("phandle", PropVal::PHandle(PHANDLE_MSI)),
                     ]),
-                    nodes: HashMap::new(),
+                    nodes: Vec::new(),
                 };
-                HashMap::from([(format!("v2m@{GIC_MSI_START:x}"), node)])
+                vec![(format!("v2m@{GIC_MSI_START:x}"), node)]
             }
         }
     }
@@ -418,7 +461,7 @@ where
                             GIC_DIST_START,
                             64 << 10,
                             GIC_V3_REDIST_START,
-                            self.config.num_cpu as u64 * (128 << 10),
+                            self.config.cpu.count as u64 * (128 << 10),
                         ]),
                     ),
                     ("phandle", PropVal::U32(PHANDLE_GIC)),
@@ -426,7 +469,7 @@ where
                 nodes: msi,
             },
         };
-        root.nodes.insert(format!("intc@{GIC_DIST_START:x}"), node);
+        root.nodes.push((format!("intc@{GIC_DIST_START:x}"), node));
     }
 
     // Documentation/devicetree/bindings/arm/psci.yaml
@@ -436,9 +479,9 @@ where
                 ("method", PropVal::Str("hvc")),
                 ("compatible", PropVal::Str("arm,psci-0.2\0arm,psci")),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("psci".to_owned(), node);
+        root.nodes.push(("psci".to_owned(), node));
     }
 
     // https://elinux.org/Device_Tree_Usage#PCI_Host_Bridge
@@ -503,10 +546,10 @@ where
                 ),
                 ("msi-parent", PropVal::PHandle(PHANDLE_MSI)),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
         root.nodes
-            .insert(format!("pci@{PCIE_CONFIG_START:x}"), node);
+            .push((format!("pci@{PCIE_CONFIG_START:x}"), node));
     }
 
     pub fn create_firmware_data(&self, init_state: &InitState) -> Result<()> {

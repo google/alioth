@@ -27,7 +27,7 @@ fn test_vcpu_regs() {
     let hvf = Hvf {};
     let config = VmConfig { coco: None };
     let vm = hvf.create_vm(&config).unwrap();
-    let mut vcpu = vm.create_vcpu(0).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     let regs = [
         (Reg::X0, 0),
         (Reg::X1, 1),
@@ -104,7 +104,7 @@ fn test_vcpu_run() {
     ];
     unsafe { ((user_mem as usize + 0x1000) as *mut [u8; 20]).write(CODE) };
 
-    let mut vcpu = vm.create_vcpu(0).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     vcpu.reset(true).unwrap();
     vcpu.set_regs(&[(Reg::Pc, 0x1000)]).unwrap();
     assert_matches!(

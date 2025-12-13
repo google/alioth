@@ -28,6 +28,8 @@ use std::thread::JoinHandle;
 
 use libc::{MAP_PRIVATE, MAP_SHARED};
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
+use serde::Deserialize;
+use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "x86_64")]
@@ -68,19 +70,21 @@ pub enum Error {
     Memory { source: Box<crate::mem::Error> },
     #[snafu(display("Failed to load payload"), context(false))]
     Loader { source: Box<crate::loader::Error> },
-    #[snafu(display("Failed to create VCPU-{id}"))]
+    #[snafu(display("Invalid CPU topology"))]
+    InvalidCpuTopology,
+    #[snafu(display("Failed to create VCPU-{index}"))]
     CreateVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
-    #[snafu(display("Failed to run VCPU-{id}"))]
+    #[snafu(display("Failed to run VCPU-{index}"))]
     RunVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
-    #[snafu(display("Failed to stop VCPU-{id}"))]
+    #[snafu(display("Failed to stop VCPU-{index}"))]
     StopVcpu {
-        id: u32,
+        index: u16,
         source: Box<crate::hv::Error>,
     },
     #[snafu(display("Failed to reset PCI devices"))]
@@ -97,6 +101,43 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Default, Help)]
+pub struct CpuTopology {
+    #[serde(default)]
+    /// Enable SMT (Hyperthreading)
+    pub smt: bool,
+    #[serde(default)]
+    /// Number of cores per socket.
+    pub cores: u16,
+    #[serde(default)]
+    /// Number of sockets.
+    pub sockets: u8,
+}
+
+impl CpuTopology {
+    pub fn encode(&self, index: u16) -> (u8, u16, u8) {
+        let total_cores = self.cores * self.sockets as u16;
+        let thread_id = index / total_cores;
+        let core_id = index % total_cores % self.cores;
+        let socket_id = index % total_cores / self.cores;
+        (thread_id as u8, core_id, socket_id as u8)
+    }
+}
+
+const fn default_cpu_count() -> u16 {
+    1
+}
+
+#[derive(Debug, Deserialize, Default, Help)]
+pub struct CpuConfig {
+    /// Number of VCPUs assigned to the guest. [default: 1]
+    #[serde(default = "default_cpu_count")]
+    pub count: u16,
+    /// Architecture specific CPU topology
+    #[serde(default)]
+    pub topology: CpuTopology,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoardState {
     Created,
@@ -109,20 +150,37 @@ enum BoardState {
 struct MpSync {
     state: BoardState,
     fatal: bool,
-    count: u32,
+    count: u16,
 }
 
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
 pub struct BoardConfig {
     pub mem: MemConfig,
-    pub num_cpu: u32,
+    pub cpu: CpuConfig,
     pub coco: Option<Coco>,
 }
 
 impl BoardConfig {
     pub fn pcie_mmio_64_start(&self) -> u64 {
         (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
+    }
+
+    pub fn config_fixup(&mut self) -> Result<()> {
+        if self.cpu.topology.sockets == 0 {
+            self.cpu.topology.sockets = 1;
+        }
+        let vcpus_per_core = 1 + self.cpu.topology.smt as u16;
+        if self.cpu.topology.cores == 0 {
+            self.cpu.topology.cores =
+                self.cpu.count / self.cpu.topology.sockets as u16 / vcpus_per_core;
+        }
+        let vcpus_per_socket = self.cpu.topology.cores * vcpus_per_core;
+        let count = self.cpu.topology.sockets as u16 * vcpus_per_socket;
+        if count != self.cpu.count {
+            return error::InvalidCpuTopology.fail();
+        }
+        Ok(())
     }
 }
 
@@ -257,16 +315,16 @@ where
         Ok(())
     }
 
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
+    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, index: u16) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
-            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { id })?;
+            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { index })?;
             vm_entry = match vm_exit {
                 #[cfg(target_arch = "x86_64")]
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
                 VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
                 VmExit::Shutdown => {
-                    log::info!("vcpu {id} requested shutdown");
+                    log::info!("VCPU-{index} requested shutdown");
                     break Ok(false);
                 }
                 VmExit::Reboot => {
@@ -295,7 +353,7 @@ where
         }
 
         mp_sync.count += 1;
-        if mp_sync.count == vcpus.len() as u32 {
+        if mp_sync.count == vcpus.len() as u16 {
             mp_sync.count = 0;
             self.cond_var.notify_all();
         } else {
@@ -311,19 +369,19 @@ where
 
     fn run_vcpu_inner(
         &self,
-        id: u32,
+        index: u16,
         vcpu: &mut V::Vcpu,
         boot_rx: &Receiver<()>,
     ) -> Result<(), Error> {
-        self.init_vcpu(id, vcpu)?;
+        self.init_vcpu(index, vcpu)?;
         boot_rx.recv().unwrap();
         if self.mp_sync.lock().state != BoardState::Running {
             return Ok(());
         }
         loop {
             let vcpus = self.vcpus.read();
-            self.coco_init(id)?;
-            if id == 0 {
+            self.coco_init(index)?;
+            if index == 0 {
                 self.create_ram()?;
                 for (port, dev) in self.io_devs.read().iter() {
                     self.memory.add_io_dev(*port, dev.clone())?;
@@ -337,12 +395,12 @@ where
                 self.init_boot_vcpu(vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
-            self.init_ap(id, vcpu, &vcpus)?;
-            self.coco_finalize(id, &vcpus)?;
+            self.init_ap(index, vcpu, &vcpus)?;
+            self.coco_finalize(index, &vcpus)?;
             self.sync_vcpus(&vcpus)?;
             drop(vcpus);
 
-            let maybe_reboot = self.vcpu_loop(vcpu, id);
+            let maybe_reboot = self.vcpu_loop(vcpu, index);
 
             let vcpus = self.vcpus.read();
             let mut mp_sync = self.mp_sync.lock();
@@ -352,23 +410,26 @@ where
                 } else {
                     BoardState::Shutdown
                 };
-                for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
-                    if id != vcpu_id as u32 {
-                        log::info!("VCPU-{id}: stopping VCPU-{vcpu_id}");
-                        self.vm
-                            .stop_vcpu(vcpu_id as u32, handle)
-                            .context(error::StopVcpu { id })?;
+                for (another, (handle, _)) in vcpus.iter().enumerate() {
+                    if index == another as u16 {
+                        continue;
                     }
+                    log::info!("VCPU-{index}: stopping VCPU-{another}");
+                    self.vm
+                        .stop_vcpu(self.encode_cpu_identity(another as u16), handle)
+                        .context(error::StopVcpu {
+                            index: another as u16,
+                        })?;
                 }
             }
             drop(mp_sync);
             self.sync_vcpus(&vcpus)?;
 
-            if id == 0 {
+            if index == 0 {
                 self.pci_bus.segment.reset().context(error::ResetPci)?;
                 self.memory.reset()?;
             }
-            self.reset_vcpu(id, vcpu)?;
+            self.reset_vcpu(index, vcpu)?;
 
             if let Err(e) = maybe_reboot {
                 break Err(e);
@@ -382,9 +443,13 @@ where
         }
     }
 
-    fn create_vcpu(&self, id: u32, event_tx: &Sender<u32>) -> Result<V::Vcpu> {
-        let vcpu = self.vm.create_vcpu(id).context(error::CreateVcpu { id })?;
-        if event_tx.send(id).is_err() {
+    fn create_vcpu(&self, index: u16, event_tx: &Sender<u16>) -> Result<V::Vcpu> {
+        let identity = self.encode_cpu_identity(index);
+        let vcpu = self
+            .vm
+            .create_vcpu(index, identity)
+            .context(error::CreateVcpu { index })?;
+        if event_tx.send(index).is_err() {
             error::NotifyVmm.fail()
         } else {
             Ok(vcpu)
@@ -393,20 +458,20 @@ where
 
     pub fn run_vcpu(
         &self,
-        id: u32,
-        event_tx: Sender<u32>,
+        index: u16,
+        event_tx: Sender<u16>,
         boot_rx: Receiver<()>,
     ) -> Result<(), Error> {
-        let mut vcpu = self.create_vcpu(id, &event_tx)?;
+        let mut vcpu = self.create_vcpu(index, &event_tx)?;
 
-        let ret = self.run_vcpu_inner(id, &mut vcpu, &boot_rx);
-        event_tx.send(id).unwrap();
+        let ret = self.run_vcpu_inner(index, &mut vcpu, &boot_rx);
+        event_tx.send(index).unwrap();
 
         if matches!(ret, Ok(_) | Err(Error::PeerFailure { .. })) {
             return Ok(());
         }
 
-        log::warn!("VCPU-{id} reported error, unblocking other VCPUs...");
+        log::warn!("VCPU-{index} reported error, unblocking other VCPUs...");
         let mut mp_sync = self.mp_sync.lock();
         mp_sync.fatal = true;
         if mp_sync.count > 0 {

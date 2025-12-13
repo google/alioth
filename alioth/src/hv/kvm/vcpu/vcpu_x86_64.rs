@@ -15,6 +15,7 @@
 use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
@@ -22,11 +23,12 @@ use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
+use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_msrs,
-    kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2,
+    kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
 };
 
 #[derive(Debug)]
@@ -35,7 +37,7 @@ pub struct VcpuArch {
 }
 
 impl VcpuArch {
-    pub fn new(_id: u32) -> Self {
+    pub fn new(_id: u64) -> Self {
         Self { io_index: 0 }
     }
 }
@@ -150,6 +152,12 @@ macro_rules! get_kvm_seg_reg {
 }
 
 impl KvmVcpu {
+    pub fn create_vcpu(vm: &KvmVm, _: u16, identity: u64) -> Result<OwnedFd> {
+        let apic_id = identity as u32;
+        let fd = unsafe { kvm_create_vcpu(&vm.vm.fd, apic_id) }.context(error::CreateVcpu)?;
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
     fn get_kvm_regs(&self) -> Result<KvmRegs> {
         let kvm_regs = unsafe { kvm_get_regs(&self.fd) }.context(error::VcpuReg)?;
         Ok(kvm_regs)

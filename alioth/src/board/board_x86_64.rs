@@ -33,7 +33,7 @@ use crate::arch::layout::{
 use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
-use crate::board::{Board, BoardConfig, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
+use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
 };
@@ -53,12 +53,63 @@ pub struct ArchBoard<V> {
     _phantom: PhantomData<V>,
 }
 
+fn add_topology(cpuids: &mut HashMap<CpuidIn, CpuidResult>, func: u32, levels: &[(u8, u16)]) {
+    let edx = 0; // patched later in init_vcpu()
+    for (index, (level, count)) in levels.iter().chain(&[(0, 0)]).enumerate() {
+        let eax = count.next_power_of_two().trailing_zeros();
+        let ebx = *count as u32;
+        let ecx = ((*level as u32) << 8) | (index as u32);
+        cpuids.insert(
+            CpuidIn {
+                func,
+                index: Some(index as u32),
+            },
+            CpuidResult { eax, ebx, ecx, edx },
+        );
+    }
+}
+
 impl<V: Vm> ArchBoard<V> {
     pub fn new<H>(hv: &H, _vm: &V, config: &BoardConfig) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
         let mut cpuids = hv.get_supported_cpuids()?;
+
+        let threads_per_core = 1 + config.cpu.topology.smt as u16;
+        let threads_per_socket = config.cpu.topology.cores * threads_per_core;
+
+        add_topology(
+            &mut cpuids,
+            0xb,
+            &[(1, threads_per_core), (2, threads_per_socket)],
+        );
+        let leaf0 = CpuidIn {
+            func: 0,
+            index: None,
+        };
+        if let Some(func0) = cpuids.get(&leaf0) {
+            let vendor = [func0.ebx, func0.edx, func0.ecx];
+            match vendor.as_bytes() {
+                b"GenuineIntel" => add_topology(
+                    &mut cpuids,
+                    0x1f,
+                    &[(1, threads_per_core), (2, threads_per_socket)],
+                ),
+                b"AuthenticAMD" => add_topology(
+                    &mut cpuids,
+                    0x8000_0026,
+                    &[
+                        (1, threads_per_core),
+                        (2, threads_per_socket),
+                        (3, threads_per_socket),
+                        (4, threads_per_socket),
+                    ],
+                ),
+                _ => {}
+            }
+        }
+
         for (in_, out) in &mut cpuids {
             if in_.func == 0x1 {
                 out.ecx |= (1 << 24) | (1 << 31);
@@ -81,11 +132,18 @@ impl<V: Vm> ArchBoard<V> {
                 }
             }
         }
-        let highest = unsafe { __cpuid(0x8000_0000) }.eax;
+        let leaf_8000_0000 = unsafe { __cpuid(0x8000_0000) };
+        cpuids.insert(
+            CpuidIn {
+                func: 0x8000_0000,
+                index: None,
+            },
+            leaf_8000_0000,
+        );
         // 0x8000_0002 to 0x8000_0004: processor name
         // 0x8000_0005: L1 cache/LTB
         // 0x8000_0006: L2 cache/TLB and L3 cache
-        for func in 0x8000_0002..=std::cmp::min(highest, 0x8000_0006) {
+        for func in 0x8000_0002..=0x8000_0006 {
             let host_cpuid = unsafe { __cpuid(func) };
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
@@ -97,10 +155,26 @@ impl<V: Vm> ArchBoard<V> {
     }
 }
 
+fn encode_x2apic_id(topology: &CpuTopology, index: u16) -> u32 {
+    let (thread_id, core_id, socket_id) = topology.encode(index);
+
+    let thread_width = topology.smt as u32;
+    let cores_per_socket = topology.cores as u32;
+    let core_width = cores_per_socket.next_power_of_two().trailing_zeros();
+
+    (socket_id as u32) << (core_width + thread_width)
+        | (core_id as u32) << thread_width
+        | (thread_id as u32)
+}
+
 impl<V> Board<V>
 where
     V: Vm,
 {
+    pub fn encode_cpu_identity(&self, index: u16) -> u64 {
+        encode_x2apic_id(&self.config.cpu.topology, index) as u64
+    }
+
     fn fill_snp_cpuid(&self, entries: &mut [SnpCpuidFunc]) {
         for ((in_, out), dst) in zip(self.arch.cpuids.iter(), entries.iter_mut()) {
             dst.eax_in = in_.func;
@@ -226,14 +300,14 @@ where
         Ok(init_state)
     }
 
-    pub fn init_ap(&self, id: u32, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
+    pub fn init_ap(&self, index: u16, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
         match &self.config.coco {
             Some(Coco::AmdSev { policy }) if policy.es() => {}
             Some(Coco::AmdSnp { .. }) => {}
             _ => return Ok(()),
         }
         self.sync_vcpus(vcpus)?;
-        if id == 0 {
+        if index == 0 {
             return Ok(());
         }
         let eip = self.arch.sev_ap_eip.load(Ordering::Acquire);
@@ -260,14 +334,15 @@ where
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
+    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
+        let apic_id = encode_x2apic_id(&self.config.cpu.topology, index);
         for (in_, out) in &mut cpuids {
             if in_.func == 0x1 {
                 out.ebx &= 0x00ff_ffff;
-                out.ebx |= id << 24;
-            } else if in_.func == 0xb || in_.func == 0x1f {
-                out.edx = id;
+                out.ebx |= apic_id << 24;
+            } else if in_.func == 0xb || in_.func == 0x1f || in_.func == 0x80000026 {
+                out.edx = apic_id;
             }
         }
         vcpu.set_cpuids(cpuids)?;
@@ -275,7 +350,7 @@ where
         Ok(())
     }
 
-    pub fn reset_vcpu(&self, _id: u32, _vcpu: &mut V::Vcpu) -> Result<()> {
+    pub fn reset_vcpu(&self, _index: u16, _vcpu: &mut V::Vcpu) -> Result<()> {
         Ok(())
     }
 
@@ -329,8 +404,8 @@ where
         Ok(())
     }
 
-    pub fn coco_init(&self, id: u32) -> Result<()> {
-        if id != 0 {
+    pub fn coco_init(&self, index: u16) -> Result<()> {
+        if index != 0 {
             return Ok(());
         }
         if let Some(coco) = &self.config.coco {
@@ -342,10 +417,10 @@ where
         Ok(())
     }
 
-    pub fn coco_finalize(&self, id: u32, vcpus: &VcpuGuard) -> Result<()> {
+    pub fn coco_finalize(&self, index: u16, vcpus: &VcpuGuard) -> Result<()> {
         if let Some(coco) = &self.config.coco {
             self.sync_vcpus(vcpus)?;
-            if id == 0 {
+            if index == 0 {
                 match coco {
                     Coco::AmdSev { policy } => {
                         if policy.es() {
@@ -400,7 +475,10 @@ where
 
         let offset_madt = offset_fadt + size_of_val(&fadt);
         debug_assert_eq!(offset_madt % 4, 0);
-        let (madt, madt_ioapic, madt_apics) = create_madt(self.config.num_cpu);
+        let apci_ids: Vec<u32> = (0..self.config.cpu.count)
+            .map(|index| self.encode_cpu_identity(index) as u32)
+            .collect();
+        let (madt, madt_ioapic, madt_apics) = create_madt(&apci_ids);
         table_bytes.extend(madt.as_bytes());
         table_bytes.extend(madt_ioapic.as_bytes());
         for apic in madt_apics {
@@ -579,3 +657,7 @@ pub struct SnpCpuidInfo {
     pub _reserved2: u64,
     pub entries: [SnpCpuidFunc; 64],
 }
+
+#[cfg(test)]
+#[path = "board_x86_64_test.rs"]
+mod tests;
