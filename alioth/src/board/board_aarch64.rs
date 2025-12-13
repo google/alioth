@@ -193,7 +193,7 @@ where
             "stdout-path",
             PropVal::String(format!("/pl011@{PL011_START:x}")),
         );
-        root.nodes.insert("chosen".to_owned(), node);
+        root.nodes.push(("chosen".to_owned(), node));
     }
 
     pub fn create_memory_node(&self, root: &mut Node) {
@@ -207,16 +207,16 @@ where
                     ("device_type", PropVal::Str("memory")),
                     ("reg", PropVal::U64List(vec![start, region.size])),
                 ]),
-                nodes: HashMap::new(),
+                nodes: Vec::new(),
             };
-            root.nodes.insert(format!("memory@{start:x}"), node);
+            root.nodes.push((format!("memory@{start:x}"), node));
         }
     }
 
     pub fn create_cpu_nodes(&self, root: &mut Node) {
         let mpidrs = self.arch.mpidrs.lock();
 
-        let mut cpu_nodes = mpidrs
+        let mut cpu_nodes: Vec<_> = mpidrs
             .iter()
             .enumerate()
             .map(|(index, mpidr)| {
@@ -231,11 +231,11 @@ where
                             ("reg", PropVal::U64(reg)),
                             ("phandle", PropVal::PHandle(PHANDLE_CPU | index as u32)),
                         ]),
-                        nodes: HashMap::new(),
+                        nodes: Vec::new(),
                     },
                 )
             })
-            .collect::<HashMap<_, _>>();
+            .collect();
         let cores = (0..mpidrs.len())
             .map(|index| {
                 (
@@ -245,28 +245,28 @@ where
                             "cpu",
                             PropVal::PHandle(PHANDLE_CPU | index as u32),
                         )]),
-                        nodes: HashMap::new(),
+                        nodes: Vec::new(),
                     },
                 )
             })
             .collect();
         let cpu_map = Node {
             props: HashMap::new(),
-            nodes: HashMap::from([(
+            nodes: vec![(
                 "socket0".to_owned(),
                 Node {
                     props: HashMap::new(),
-                    nodes: HashMap::from([(
+                    nodes: vec![(
                         "cluster0".to_owned(),
                         Node {
                             props: HashMap::new(),
                             nodes: cores,
                         },
-                    )]),
+                    )],
                 },
-            )]),
+            )],
         };
-        cpu_nodes.insert("cpu-map".to_owned(), cpu_map);
+        cpu_nodes.push(("cpu-map".to_owned(), cpu_map));
         let cpus = Node {
             props: HashMap::from([
                 ("#address-cells", PropVal::U32(2)),
@@ -274,7 +274,7 @@ where
             ]),
             nodes: cpu_nodes,
         };
-        root.nodes.insert("cpus".to_owned(), cpus);
+        root.nodes.push(("cpus".to_owned(), cpus));
     }
 
     fn create_clock_node(&self, root: &mut Node) {
@@ -286,9 +286,9 @@ where
                 ("phandle", PropVal::PHandle(PHANDLE_CLOCK)),
                 ("#clock-cells", PropVal::U32(0)),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("apb-pclk".to_owned(), node);
+        root.nodes.push(("apb-pclk".to_owned(), node));
     }
 
     fn create_pl011_node(&self, root: &mut Node) {
@@ -306,9 +306,9 @@ where
                     PropVal::U32List(vec![PHANDLE_CLOCK, PHANDLE_CLOCK]),
                 ),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert(format!("pl011@{PL011_START:x}"), node);
+        root.nodes.push((format!("pl011@{PL011_START:x}"), node));
     }
 
     fn create_pl031_node(&self, root: &mut Node) {
@@ -319,9 +319,9 @@ where
                 ("clock-names", PropVal::Str("apb_pclk")),
                 ("clocks", PropVal::U32List(vec![PHANDLE_CLOCK])),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert(format!("pl031@{PL031_START:x}"), node);
+        root.nodes.push((format!("pl031@{PL031_START:x}"), node));
     }
 
     // Documentation/devicetree/bindings/timer/arm,arch_timer.yaml
@@ -343,14 +343,14 @@ where
                 ("interrupts", PropVal::U32List(interrupts)),
                 ("always-on", PropVal::Empty),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("timer".to_owned(), node);
+        root.nodes.push(("timer".to_owned(), node));
     }
 
-    fn create_gic_msi_node(&self) -> HashMap<String, Node> {
+    fn create_gic_msi_node(&self) -> Vec<(String, Node)> {
         let Some(msi) = &self.arch.msi else {
-            return HashMap::new();
+            return Vec::new();
         };
         match msi {
             Msi::Its(_) => {
@@ -362,9 +362,9 @@ where
                         ("reg", PropVal::U64List(vec![GIC_MSI_START, 128 << 10])),
                         ("phandle", PropVal::PHandle(PHANDLE_MSI)),
                     ]),
-                    nodes: HashMap::new(),
+                    nodes: Vec::new(),
                 };
-                HashMap::from([(format!("its@{GIC_MSI_START:x}"), node)])
+                vec![(format!("its@{GIC_MSI_START:x}"), node)]
             }
             Msi::V2m(_) => {
                 let node = Node {
@@ -374,9 +374,9 @@ where
                         ("reg", PropVal::U64List(vec![GIC_MSI_START, 64 << 10])),
                         ("phandle", PropVal::PHandle(PHANDLE_MSI)),
                     ]),
-                    nodes: HashMap::new(),
+                    nodes: Vec::new(),
                 };
-                HashMap::from([(format!("v2m@{GIC_MSI_START:x}"), node)])
+                vec![(format!("v2m@{GIC_MSI_START:x}"), node)]
             }
         }
     }
@@ -426,7 +426,7 @@ where
                 nodes: msi,
             },
         };
-        root.nodes.insert(format!("intc@{GIC_DIST_START:x}"), node);
+        root.nodes.push((format!("intc@{GIC_DIST_START:x}"), node));
     }
 
     // Documentation/devicetree/bindings/arm/psci.yaml
@@ -436,9 +436,9 @@ where
                 ("method", PropVal::Str("hvc")),
                 ("compatible", PropVal::Str("arm,psci-0.2\0arm,psci")),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
-        root.nodes.insert("psci".to_owned(), node);
+        root.nodes.push(("psci".to_owned(), node));
     }
 
     // https://elinux.org/Device_Tree_Usage#PCI_Host_Bridge
@@ -503,10 +503,10 @@ where
                 ),
                 ("msi-parent", PropVal::PHandle(PHANDLE_MSI)),
             ]),
-            nodes: HashMap::new(),
+            nodes: Vec::new(),
         };
         root.nodes
-            .insert(format!("pci@{PCIE_CONFIG_START:x}"), node);
+            .push((format!("pci@{PCIE_CONFIG_START:x}"), node));
     }
 
     pub fn create_firmware_data(&self, init_state: &InitState) -> Result<()> {

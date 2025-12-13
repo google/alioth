@@ -50,7 +50,7 @@ impl PropVal {
 #[derive(Debug, Clone, Default)]
 pub struct Node {
     pub props: HashMap<&'static str, PropVal>,
-    pub nodes: HashMap<String, Node>,
+    pub nodes: Vec<(String, Node)>,
 }
 
 #[derive(Debug, Clone, Default)]
