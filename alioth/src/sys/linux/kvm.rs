@@ -526,7 +526,6 @@ pub struct KvmEncRegion {
     pub size: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmEnableCap {
@@ -688,7 +687,6 @@ ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 #[cfg(target_arch = "x86_64")]
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
 
-#[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 

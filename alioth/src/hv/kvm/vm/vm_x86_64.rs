@@ -21,9 +21,8 @@ use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
-    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, kvm_check_extension,
-    kvm_create_guest_memfd, kvm_create_irqchip, kvm_enable_cap, kvm_memory_encrypt_op,
-    kvm_set_identity_map_addr, kvm_set_tss_addr,
+    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, kvm_create_guest_memfd,
+    kvm_create_irqchip, kvm_memory_encrypt_op, kvm_set_identity_map_addr, kvm_set_tss_addr,
 };
 use crate::sys::sev::{
     KvmSevCmd, KvmSevCmdId, KvmSevInit, KvmSevLaunchMeasure, KvmSevLaunchStart,
@@ -85,24 +84,14 @@ impl KvmVm {
                     }
                 }
                 Some(Coco::AmdSnp { .. }) => {
-                    let bitmap =
-                        unsafe { kvm_check_extension(&self.vm.fd, KvmCap::EXIT_HYPERCALL) }
-                            .context(kvm_error::CheckExtension {
-                                ext: "KVM_CAP_EXIT_HYPERCALL",
-                            })?;
-                    if bitmap != 0 {
-                        let request = KvmEnableCap {
-                            cap: KvmCap::EXIT_HYPERCALL,
-                            args: [bitmap as _, 0, 0, 0],
-                            flags: 0,
-                            pad: [0; 64],
-                        };
-                        unsafe { kvm_enable_cap(&self.vm.fd, &request) }.context(
-                            kvm_error::EnableCap {
-                                cap: "KVM_CAP_EXIT_HYPERCALL",
-                            },
-                        )?;
-                    }
+                    let bitmap = self.vm.check_extension(KvmCap::EXIT_HYPERCALL)?;
+                    let request = KvmEnableCap {
+                        cap: KvmCap::EXIT_HYPERCALL,
+                        args: [bitmap as _, 0, 0, 0],
+                        flags: 0,
+                        pad: [0; 64],
+                    };
+                    self.vm.enable_cap(&request)?;
                     let mut init = KvmSevInit::default();
                     self.sev_op(KvmSevCmdId::INIT2, Some(&mut init))?;
                     log::debug!("{}: snp init: {init:#x?}", self.vm);

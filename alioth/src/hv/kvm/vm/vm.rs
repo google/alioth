@@ -46,13 +46,14 @@ use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
 #[cfg(target_arch = "aarch64")]
 use crate::sys::kvm::KvmMsiFlag;
 use crate::sys::kvm::{
-    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEncRegion, KvmIoEventFd,
+    KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEnableCap, KvmEncRegion, KvmIoEventFd,
     KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
     KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
     KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_check_extension, kvm_create_vm,
-    kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
-    kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing, kvm_set_memory_attributes,
-    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
+    kvm_enable_cap, kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_irqfd,
+    kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing,
+    kvm_set_memory_attributes, kvm_set_user_memory_region, kvm_set_user_memory_region2,
+    kvm_signal_msi,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -122,15 +123,18 @@ impl VmInner {
         Ok(())
     }
 
-    pub fn check_extension(&self, id: KvmCap) -> Result<i32, Error> {
-        let ret = unsafe { kvm_check_extension(&self.fd, id) };
-        match ret {
-            Ok(num) => Ok(num),
-            Err(_) => error::Capability {
-                cap: "KVM_CAP_CHECK_EXTENSION_VM",
-            }
-            .fail(),
+    pub fn check_extension(&self, id: KvmCap) -> Result<i32, KvmError> {
+        let ret = unsafe { kvm_check_extension(&self.fd, id) }.context(kvm_error::CheckCap)?;
+        if ret == 0 {
+            kvm_error::NotSupported { ext: id }.fail()
+        } else {
+            Ok(ret)
         }
+    }
+
+    pub fn enable_cap(&self, cap: &KvmEnableCap) -> Result<(), KvmError> {
+        unsafe { kvm_enable_cap(&self.fd, cap) }.context(kvm_error::EnableCap { cap: cap.cap })?;
+        Ok(())
     }
 }
 
@@ -665,12 +669,7 @@ impl Vm for KvmVm {
         if self.vm.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {
             return Err(std::io::ErrorKind::AlreadyExists.into()).context(error::CreateIrq { pin });
         }
-        if self.vm.check_extension(KvmCap::IRQFD)? == 0 {
-            return error::Capability {
-                cap: "KVM_CAP_IRQFD",
-            }
-            .fail();
-        }
+        self.vm.check_extension(KvmCap::IRQFD)?;
         let event_fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })
             .context(error::CreateIrq { pin })?;
         let request = KvmIrqfd {

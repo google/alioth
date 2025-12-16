@@ -53,9 +53,8 @@ impl KvmVcpu {
     pub fn kvm_vcpu_init(&mut self, is_bsp: bool) -> Result<()> {
         let mut arm_cpu_init =
             unsafe { kvm_arm_preferred_target(&self.vm.fd) }.context(error::CreateVcpu)?;
-        if self.vm.check_extension(KvmCap::ARM_PSCI_0_2)? == 1 {
-            arm_cpu_init.features[0] |= KvmArmVcpuFeature::PSCI_0_2.bits();
-        }
+        self.vm.check_extension(KvmCap::ARM_PSCI_0_2)?;
+        arm_cpu_init.features[0] |= KvmArmVcpuFeature::PSCI_0_2.bits();
         if !is_bsp {
             arm_cpu_init.features[0] |= KvmArmVcpuFeature::POWER_OFF.bits();
         }

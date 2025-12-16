@@ -49,7 +49,7 @@ use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
 use crate::sys::kvm::KvmDevType;
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::kvm_get_supported_cpuid;
-use crate::sys::kvm::{KVM_API_VERSION, kvm_get_api_version};
+use crate::sys::kvm::{KVM_API_VERSION, KvmCap, kvm_get_api_version};
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
 
@@ -80,16 +80,12 @@ pub enum KvmError {
     MmapOption { option: MemMapOption },
     #[snafu(display("Failed to mmap a VCPU fd"))]
     MmapVcpuFd { error: std::io::Error },
-    #[snafu(display("Failed to check extension {ext}"))]
-    CheckExtension {
-        ext: &'static str,
-        error: std::io::Error,
-    },
-    #[snafu(display("Failed to enable capability {cap}"))]
-    EnableCap {
-        cap: &'static str,
-        error: std::io::Error,
-    },
+    #[snafu(display("Failed to check KVM capability"))]
+    CheckCap { error: std::io::Error },
+    #[snafu(display("KVM Capability {ext:?} not supported"))]
+    NotSupported { ext: KvmCap },
+    #[snafu(display("Failed to enable capability {cap:?}"))]
+    EnableCap { cap: KvmCap, error: std::io::Error },
     #[snafu(display("Failed to create guest memfd"))]
     GuestMemfd { error: std::io::Error },
     #[cfg(target_arch = "aarch64")]
