@@ -21,7 +21,7 @@ use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
-    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, kvm_create_guest_memfd,
+    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
     kvm_create_irqchip, kvm_memory_encrypt_op, kvm_set_identity_map_addr, kvm_set_tss_addr,
 };
 use crate::sys::sev::{
@@ -98,6 +98,18 @@ impl KvmVm {
                 }
                 _ => {}
             }
+        }
+
+        let x2apic_caps =
+            KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK;
+        let request = KvmEnableCap {
+            cap: KvmCap::X2APIC_API,
+            args: [x2apic_caps.bits(), 0, 0, 0],
+            flags: 0,
+            pad: [0; 64],
+        };
+        if let Err(e) = self.vm.enable_cap(&request) {
+            log::error!("Failed to enable KVM_CAP_X2APIC_API: {e:?}");
         }
         unsafe { kvm_create_irqchip(&self.vm.fd) }.context(error::CreateDevice)?;
         // TODO should be in parameters

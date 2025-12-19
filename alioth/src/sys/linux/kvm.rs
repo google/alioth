@@ -482,9 +482,18 @@ c_enum! {
         IRQFD = 32;
         SIGNAL_MSI = 77;
         ARM_PSCI_0_2 = 102;
+        X2APIC_API = 129;
         EXIT_HYPERCALL = 201;
         // GUEST_MEMFD = 234;
         // VM_TYPES = 235;
+    }
+}
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct KvmX2apicApiFlag: u64 {
+        const USE_32BIT_IDS = 1 << 0;
+        const DISABLE_BROADCAST_QUIRK = 1 << 1;
     }
 }
 
