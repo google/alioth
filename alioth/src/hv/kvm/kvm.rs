@@ -47,11 +47,7 @@ use crate::ffi;
 use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
 #[cfg(target_arch = "aarch64")]
 use crate::sys::kvm::KvmDevType;
-#[cfg(target_arch = "x86_64")]
-use crate::sys::kvm::kvm_get_supported_cpuid;
-use crate::sys::kvm::{KVM_API_VERSION, KvmCap, kvm_get_api_version};
-#[cfg(target_arch = "x86_64")]
-use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
+use crate::sys::kvm::{KVM_API_VERSION, KvmCap, kvm_check_extension, kvm_get_api_version};
 
 use self::vm::KvmVm;
 
@@ -144,6 +140,15 @@ impl Kvm {
             config,
         })
     }
+
+    pub fn check_extension(&self, id: KvmCap) -> Result<i32, KvmError> {
+        let ret = unsafe { kvm_check_extension(&self.fd, id) }.context(kvm_error::CheckCap)?;
+        if ret == 0 {
+            kvm_error::NotSupported { ext: id }.fail()
+        } else {
+            Ok(ret)
+        }
+    }
 }
 
 impl Hypervisor for Kvm {
@@ -155,33 +160,6 @@ impl Hypervisor for Kvm {
 
     #[cfg(target_arch = "x86_64")]
     fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
-        let mut kvm_cpuid2 = KvmCpuid2 {
-            nent: KVM_MAX_CPUID_ENTRIES as u32,
-            padding: 0,
-            entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
-        };
-        unsafe { kvm_get_supported_cpuid(&self.fd, &mut kvm_cpuid2) }.context(error::GuestCpuid)?;
-        let map_f = |e: &KvmCpuidEntry2| {
-            let in_ = CpuidIn {
-                func: e.function,
-                index: if e.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX) {
-                    Some(e.index)
-                } else {
-                    None
-                },
-            };
-            let out = CpuidResult {
-                eax: e.eax,
-                ebx: e.ebx,
-                ecx: e.ecx,
-                edx: e.edx,
-            };
-            (in_, out)
-        };
-        let cpuids = kvm_cpuid2.entries[0..kvm_cpuid2.nent as usize]
-            .iter()
-            .map(map_f)
-            .collect();
-        Ok(cpuids)
+        Kvm::get_supported_cpuids(self)
     }
 }

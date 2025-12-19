@@ -16,6 +16,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
 
+use crate::arch::intr::{MsiAddrHi, MsiAddrLo};
 use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
@@ -28,6 +29,18 @@ use crate::sys::sev::{
     KvmSevCmd, KvmSevCmdId, KvmSevInit, KvmSevLaunchMeasure, KvmSevLaunchStart,
     KvmSevLaunchUpdateData, KvmSevSnpLaunchFinish, KvmSevSnpLaunchStart, KvmSevSnpLaunchUpdate,
 };
+
+pub fn translate_msi_addr(addr_lo: u32, addr_hi: u32) -> (u32, u32) {
+    let mut addr_lo = MsiAddrLo(addr_lo);
+    if addr_lo.reserved() == 0 || addr_lo.remappable() || addr_hi != 0 {
+        return (addr_lo.0, addr_hi);
+    }
+
+    let mut addr_hi = MsiAddrHi(0);
+    addr_hi.set_dest_id(addr_lo.reserved());
+    addr_lo.set_reserved(0);
+    (addr_lo.0, addr_hi.0)
+}
 
 #[derive(Debug)]
 pub struct VmArch {
@@ -209,3 +222,7 @@ impl KvmVm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "vm_x86_64_test.rs"]
+mod test;

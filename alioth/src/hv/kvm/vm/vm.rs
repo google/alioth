@@ -57,9 +57,9 @@ use crate::sys::kvm::{
 };
 
 #[cfg(target_arch = "aarch64")]
-use self::aarch64::VmArch;
+use self::aarch64::{VmArch, translate_msi_addr};
 #[cfg(target_arch = "x86_64")]
-use self::x86_64::VmArch;
+use self::x86_64::{VmArch, translate_msi_addr};
 
 #[derive(Debug)]
 pub struct VmInner {
@@ -102,9 +102,10 @@ impl VmInner {
             {
                 entries[index].flags = KvmMsiFlag::VALID_DEVID;
             }
+            let (lo, hi) = translate_msi_addr(entry.addr_lo, entry.addr_hi);
             entries[index].routing.msi = KvmIrqRoutingMsi {
-                address_hi: entry.addr_hi,
-                address_lo: entry.addr_lo,
+                address_hi: hi,
+                address_lo: lo,
                 data: entry.data,
                 #[cfg(target_arch = "aarch64")]
                 devid: entry.devid,
@@ -474,9 +475,10 @@ impl MsiSender for KvmMsiSender {
     type IrqFd = KvmIrqFd;
 
     fn send(&self, addr: u64, data: u32) -> Result<()> {
+        let (lo, hi) = translate_msi_addr(addr as u32, (addr >> 32) as u32);
         let kvm_msi = KvmMsi {
-            address_lo: addr as u32,
-            address_hi: (addr >> 32) as u32,
+            address_lo: lo,
+            address_hi: hi,
             data,
             #[cfg(target_arch = "aarch64")]
             devid: self.devid,

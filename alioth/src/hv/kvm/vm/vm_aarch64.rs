@@ -23,6 +23,10 @@ use crate::sys::kvm::{
     KvmVmType,
 };
 
+pub fn translate_msi_addr(addr_lo: u32, addr_hi: u32) -> (u32, u32) {
+    (addr_lo, addr_hi)
+}
+
 #[derive(Debug)]
 pub struct KvmGicV2m;
 

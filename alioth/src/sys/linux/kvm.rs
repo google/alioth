@@ -79,6 +79,32 @@ pub struct KvmCpuid2<const N: usize> {
     pub entries: [KvmCpuidEntry2; N],
 }
 
+pub const KVM_CPUID_SIGNATURE: u32 = 0x4000_0000;
+pub const KVM_CPUID_FEATURES: u32 = 0x4000_0001;
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct KvmCpuidFeature: u32 {
+        const CLOCKSOURCE = 1 << 0;
+        const NOP_IO_DELAY = 1 << 1;
+        const MMU_OP = 1 << 2;
+        const CLOCKSOURCE2 = 1 << 3;
+        const ASYNC_PF = 1 << 4;
+        const STEAL_TIME = 1 << 5;
+        const PV_EOI = 1 << 6;
+        const PV_UNHALT = 1 << 7;
+        const PV_TLB_FLUSH = 1 << 9;
+        const ASYNC_PF_VMEXIT = 1 << 10;
+        const PV_SEND_IPI = 1 << 11;
+        const POLL_CONTROL = 1 << 12;
+        const PV_SCHED_YIELD = 1 << 13;
+        const ASYNC_PF_INT = 1 << 14;
+        const MSI_EXT_DEST_ID = 1 << 15;
+        const HC_MAP_GPA_RANGE = 1 << 16;
+        const MIGRATION_CONTROL = 1 << 17;
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
