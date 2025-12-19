@@ -25,8 +25,10 @@ use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::align_up;
 use crate::arch::layout::{
-    BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMDLINE_LIMIT, KERNEL_CMDLINE_START,
+    APIC_START, BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMDLINE_LIMIT,
+    KERNEL_CMDLINE_START,
 };
+use crate::arch::msr::ApicBase;
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::elf::{
     ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,
@@ -304,6 +306,11 @@ pub fn load<P: AsRef<Path>>(
 
     let idtr = DtRegVal { base: 0, limit: 0 };
 
+    let mut apic_base = ApicBase(APIC_START);
+    apic_base.set_bsp(true);
+    apic_base.set_xapic(true);
+    apic_base.set_x2apic(true);
+
     Ok(InitState {
         regs: vec![
             (Reg::Rbx, HVM_START_INFO_START),
@@ -314,6 +321,7 @@ pub fn load<P: AsRef<Path>>(
             (SReg::Cr0, Cr0::PE.bits() as u64),
             (SReg::Cr4, 0),
             (SReg::Efer, 0),
+            (SReg::ApicBase, apic_base.0),
         ],
         seg_regs: vec![
             (SegReg::Cs, boot_cs),

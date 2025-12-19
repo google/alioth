@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bitfield::bitfield;
 use bitflags::bitflags;
 
 // Intel Vol.4, Table 2-2.
@@ -46,4 +47,14 @@ bitflags! {
         /// Enable Fast-Strings
         const FAST_STRINGS = 1 << 0;
     }
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct ApicBase(u64);
+    impl Debug;
+    pub bsp, set_bsp : 8;
+    pub x2apic, set_x2apic : 10;
+    pub xapic, set_xapic : 11;
+    pub base, set_base : 35, 12;
 }

@@ -22,10 +22,10 @@ use snafu::ResultExt;
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::arch::layout::{
-    BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMDLINE_LIMIT, KERNEL_CMDLINE_START,
-    KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
+    APIC_START, BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMDLINE_LIMIT,
+    KERNEL_CMDLINE_START, KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
-use crate::arch::msr::Efer;
+use crate::arch::msr::{ApicBase, Efer};
 use crate::arch::paging::Entry;
 use crate::arch::reg::{
     Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
@@ -239,6 +239,11 @@ pub fn load<P: AsRef<Path>>(
     let idtr = DtRegVal { base: 0, limit: 0 };
     memory.write_t(BOOT_GDT_START, &gdt)?;
 
+    let mut apic_base = ApicBase(APIC_START);
+    apic_base.set_bsp(true);
+    apic_base.set_xapic(true);
+    apic_base.set_x2apic(true);
+
     Ok(InitState {
         regs: vec![
             (Reg::Rsi, LINUX_BOOT_PARAMS_START),
@@ -250,6 +255,7 @@ pub fn load<P: AsRef<Path>>(
             (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits() as u64),
             (SReg::Cr3, pml4_start),
             (SReg::Cr4, Cr4::PAE.bits() as u64),
+            (SReg::ApicBase, apic_base.0),
         ],
         seg_regs: vec![
             (SegReg::Cs, boot_cs),
