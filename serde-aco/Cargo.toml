@@ -1,6 +1,6 @@
 [package]
 name = "serde-aco"
-version = "0.8.0"
+version = "0.10.0"
 edition.workspace = true
 description = "Serialization and deserialization library for Alioth command-line options."
 authors.workspace = true

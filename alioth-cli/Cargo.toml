@@ -1,6 +1,6 @@
 [package]
 name = "alioth-cli"
-version = "0.9.0"
+version = "0.10.0"
 edition.workspace = true
 description = "Command-line interface for Alioth, an experimental Type-2 hypervisor."
 repository.workspace = true
