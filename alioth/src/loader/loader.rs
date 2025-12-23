@@ -25,6 +25,7 @@ use std::ffi::CString;
 use std::ops::Range;
 use std::path::Path;
 
+use serde::Deserialize;
 use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
@@ -33,7 +34,7 @@ use crate::arch::reg::{Reg, SReg};
 use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Payload {
     pub firmware: Option<Box<Path>>,
     pub executable: Option<Executable>,
@@ -41,7 +42,7 @@ pub struct Payload {
     pub cmdline: Option<CString>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub enum Executable {
     Linux(Box<Path>),
     #[cfg(target_arch = "x86_64")]

@@ -16,6 +16,7 @@ pub mod console;
 #[cfg(target_arch = "x86_64")]
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
+pub mod net;
 #[cfg(target_arch = "aarch64")]
 pub mod pl011;
 #[cfg(target_arch = "aarch64")]

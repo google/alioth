@@ -107,6 +107,27 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Debug, Deserialize, Clone, Help)]
+#[cfg_attr(target_os = "macos", derive(Default))]
+pub enum HvConfig {
+    /// KVM backed by the Linux kernel.
+    #[cfg(target_os = "linux")]
+    #[serde(alias = "kvm")]
+    Kvm(KvmConfig),
+    /// macOS Hypervisor Framework.
+    #[cfg(target_os = "macos")]
+    #[default]
+    #[serde(alias = "hvf")]
+    Hvf,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for HvConfig {
+    fn default() -> Self {
+        HvConfig::Kvm(KvmConfig::default())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemMapOption {
     pub read: bool,

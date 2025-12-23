@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod mac_addr;
 #[cfg(target_os = "linux")]
 pub mod tap;
 #[cfg(target_os = "macos")]
@@ -23,9 +22,8 @@ use std::fmt::Debug;
 use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use crate::device::net::MacAddr;
 use crate::{c_enum, impl_mmio_for_zerocopy};
-
-use self::mac_addr::MacAddr;
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]

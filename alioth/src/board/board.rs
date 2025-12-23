@@ -175,6 +175,7 @@ struct MpSync {
 
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
+#[derive(Debug, Deserialize, Default)]
 pub struct BoardConfig {
     pub mem: MemConfig,
     pub cpu: CpuConfig,

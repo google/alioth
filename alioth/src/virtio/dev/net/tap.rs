@@ -35,11 +35,11 @@ use serde::Deserialize;
 use serde_aco::Help;
 use zerocopy::{FromBytes, IntoBytes};
 
+use crate::device::net::MacAddr;
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::if_tun::{TunFeature, tun_set_iff, tun_set_offload, tun_set_vnet_hdr_sz};
-use crate::virtio::dev::net::mac_addr::MacAddr;
 use crate::virtio::dev::net::{
     CtrlAck, CtrlClass, CtrlHdr, CtrlMq, CtrlMqParisSet, NetConfig, NetFeature, VirtioNetHdr,
 };

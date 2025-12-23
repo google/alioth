@@ -42,6 +42,7 @@ pub(crate) mod utils;
 pub mod vfio;
 #[path = "virtio/virtio.rs"]
 pub mod virtio;
+#[path = "vm/vm.rs"]
 pub mod vm;
 
 #[cfg(test)]
