@@ -162,12 +162,12 @@ enum BoardState {
     Running,
     Shutdown,
     RebootPending,
+    Fatal,
 }
 
 #[derive(Debug)]
 struct MpSync {
     state: BoardState,
-    fatal: bool,
     count: u16,
 }
 
@@ -243,7 +243,6 @@ where
             mp_sync: Mutex::new(MpSync {
                 state: BoardState::Created,
                 count: 0,
-                fatal: false,
             }),
             cond_var: Condvar::new(),
         }
@@ -353,7 +352,7 @@ where
 
     fn sync_vcpus(&self, vcpus: &VcpuGuard) -> Result<()> {
         let mut mp_sync = self.mp_sync.lock();
-        if mp_sync.fatal {
+        if mp_sync.state == BoardState::Fatal {
             return error::PeerFailure.fail();
         }
 
@@ -365,7 +364,7 @@ where
             self.cond_var.wait(&mut mp_sync)
         }
 
-        if mp_sync.fatal {
+        if mp_sync.state == BoardState::Fatal {
             return error::PeerFailure.fail();
         }
 
@@ -478,7 +477,7 @@ where
 
         log::warn!("VCPU-{index} reported error, unblocking other VCPUs...");
         let mut mp_sync = self.mp_sync.lock();
-        mp_sync.fatal = true;
+        mp_sync.state = BoardState::Fatal;
         if mp_sync.count > 0 {
             self.cond_var.notify_all();
         }
