@@ -19,7 +19,7 @@ pub mod mio;
 use serde::Deserialize;
 use serde_aco::Help;
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Help)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Help)]
 pub enum WorkerApi {
     /// I/O event queue backed by epoll/kqeueu.
     #[default]

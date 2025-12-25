@@ -102,7 +102,7 @@ impl VuFs {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct VuFsParam {
     /// Path to the vhost-user UNIX domain socket.
     pub socket: Box<Path>,

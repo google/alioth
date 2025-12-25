@@ -39,7 +39,7 @@ use crate::virtio::vhost::{UpdateVsockMem, VhostDev, error};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct VhostVsockParam {
     /// Vsock context id.
     pub cid: u32,

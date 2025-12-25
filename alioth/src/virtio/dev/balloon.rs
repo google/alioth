@@ -316,7 +316,7 @@ impl VirtioMio for Balloon {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Help, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct BalloonParam {
     /// Enable free page reporting. [default: false]
     #[serde(default)]

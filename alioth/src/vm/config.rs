@@ -36,12 +36,12 @@ use crate::{
 };
 
 #[cfg(target_os = "linux")]
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub struct VuSocket {
     pub socket: Box<Path>,
 }
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub enum NetParam {
     /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
     #[cfg(target_os = "linux")]
@@ -57,7 +57,7 @@ pub enum NetParam {
     Vu(VuSocket),
 }
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub enum BlkParam {
     /// VirtIO block device backed a disk image file.
     #[serde(alias = "file")]
@@ -68,7 +68,7 @@ pub enum BlkParam {
     Vu(VuSocket),
 }
 
-#[derive(Debug, Deserialize, Clone, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Clone, Help)]
 pub enum FsParam {
     /// VirtIO FS device backed by a shared directory.
     #[serde(alias = "dir")]
@@ -79,7 +79,7 @@ pub enum FsParam {
     Vu(VuFsParam),
 }
 
-#[derive(Debug, Deserialize, Clone, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub enum VsockParam {
     #[cfg(target_os = "linux")]
     /// Vsock device backed by host kernel vhost-vsock module.
@@ -90,7 +90,7 @@ pub enum VsockParam {
     Uds(UdsVsockParam),
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Config {
     pub board: BoardConfig,
 

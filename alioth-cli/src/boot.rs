@@ -64,7 +64,7 @@ pub enum Error {
     WaitVm { source: alioth::vm::Error },
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 #[command(arg_required_else_help = true, alias("run"))]
 pub struct BootArgs {
     #[arg(long, help(
@@ -362,3 +362,7 @@ pub fn boot(mut args: BootArgs) -> Result<(), Error> {
     vm.wait().context(error::WaitVm)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "boot_test.rs"]
+mod tests;

@@ -167,7 +167,7 @@ impl VirtioMio for Entropy {
     fn reset(&mut self, _registry: &Registry) {}
 }
 
-#[derive(Debug, Default, Deserialize, Clone, Help)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct EntropyParam {
     /// Source of entropy [default: /dev/urandom]
     pub source: Option<Box<Path>>,

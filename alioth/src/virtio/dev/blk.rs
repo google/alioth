@@ -140,7 +140,7 @@ pub struct BlockConfig {
 }
 impl_mmio_for_zerocopy!(BlockConfig);
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct BlkFileParam {
     /// Path to a raw-formatted disk image.
     pub path: Box<Path>,

@@ -48,7 +48,7 @@ use zerocopy::{FromBytes, IntoBytes};
 const HEADER_SIZE: usize = size_of::<VsockHeader>();
 const SOCKET_TYPE: VsockType = VsockType::STREAM;
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct UdsVsockParam {
     /// Vsock context id.
     pub cid: u32,

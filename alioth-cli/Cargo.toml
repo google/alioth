@@ -20,3 +20,9 @@ serde-aco.workspace = true
 [[bin]]
 path = "src/main.rs"
 name = "alioth"
+
+[dev-dependencies]
+assert_matches.workspace = true
+ctor.workspace = true
+rstest.workspace = true
+pretty_assertions.workspace = true

@@ -280,7 +280,7 @@ pub trait Its: Debug + Send + Sync + 'static {
     fn init(&self) -> Result<()>;
 }
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub enum Coco {
     /// Enable AMD SEV or SEV-ES.
     #[cfg(target_arch = "x86_64")]

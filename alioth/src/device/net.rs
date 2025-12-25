@@ -21,7 +21,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct MacAddr([u8; 6]);
+pub struct MacAddr(pub [u8; 6]);
 
 #[derive(Debug)]
 pub enum Error {

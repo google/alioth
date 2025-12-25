@@ -51,7 +51,7 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub struct CdevParam {
     /// Path to a VFIO cdev, e.g. /dev/vfio/devices/vfio0.
     pub path: Box<Path>,
@@ -59,7 +59,7 @@ pub struct CdevParam {
     pub ioas: Option<Box<str>>,
 }
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub struct IoasParam {
     /// Name of the IO Address space.
     pub name: Box<str>,
@@ -67,7 +67,7 @@ pub struct IoasParam {
     pub dev_iommu: Option<Box<Path>>,
 }
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub struct GroupParam {
     /// Path to a VFIO group file, e.g. /dev/vfio/12.
     pub path: Box<Path>,
@@ -78,7 +78,7 @@ pub struct GroupParam {
     pub container: Option<Box<str>>,
 }
 
-#[derive(Debug, Deserialize, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub struct ContainerParam {
     /// Name of the Container.
     pub name: Box<str>,

@@ -34,7 +34,7 @@ use crate::arch::reg::{Reg, SReg};
 use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct Payload {
     pub firmware: Option<Box<Path>>,
     pub executable: Option<Executable>,
@@ -42,7 +42,7 @@ pub struct Payload {
     pub cmdline: Option<CString>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
 pub enum Executable {
     Linux(Box<Path>),
     #[cfg(target_arch = "x86_64")]

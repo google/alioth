@@ -81,7 +81,7 @@ fn default_memory_size() -> u64 {
     1 << 30
 }
 
-#[derive(Debug, Deserialize, Default, Help)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct MemConfig {
     /// Total guest memory size in bytes. [default: 1G]
     #[serde(default = "default_memory_size")]
@@ -99,7 +99,7 @@ pub struct MemConfig {
     pub transparent_hugepage: bool,
 }
 
-#[derive(Debug, Deserialize, Default, Help)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub enum MemBackend {
     /// Anonymous memory by MAP_ANONYMOUS.
     #[default]

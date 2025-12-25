@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp::max;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, IoSlice};
 use std::mem::MaybeUninit;
-use std::num::NonZeroU16;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::Path;
@@ -64,15 +64,15 @@ pub struct Net {
     api: WorkerApi,
 }
 
-#[derive(Debug, Deserialize, Clone, Help)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct NetTapParam {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
     /// Maximum transmission unit.
     pub mtu: u16,
     /// Number of pairs of transmit/receive queues. [default: 1]
-    #[serde(alias = "qp")]
-    pub queue_pairs: Option<NonZeroU16>,
+    #[serde(alias = "qp", default)]
+    pub queue_pairs: u16,
     /// Path to the character device file of a tap interface.
     ///
     /// Required for MacVTap and IPVTap, e.g. /dev/tapX.
@@ -113,7 +113,7 @@ impl Net {
             param.tap.as_deref(),
             matches!(param.api, WorkerApi::IoUring),
         )?;
-        let max_queue_pairs = param.queue_pairs.map(From::from).unwrap_or(1);
+        let max_queue_pairs = max(param.queue_pairs, 1);
         setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
         let mut dev_feat = NetFeature::MAC
             | NetFeature::MTU

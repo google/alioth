@@ -24,7 +24,7 @@ use crate::virtio::Result;
 use crate::virtio::dev::DevParam;
 use crate::virtio::dev::fs::{Fs, FsConfig};
 
-#[derive(Debug, Clone, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct SharedDirParam {
     /// Mount tag seen by the guest.
     pub tag: String,

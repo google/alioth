@@ -512,7 +512,7 @@ impl Mmio for Mutex<FwCfg> {
     }
 }
 
-#[derive(Deserialize, Debug, Help)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub enum FwCfgContentParam {
     /// Path to a file with binary contents.
     #[serde(alias = "file")]
@@ -522,7 +522,7 @@ pub enum FwCfgContentParam {
     String(String),
 }
 
-#[derive(Debug, Help)]
+#[derive(Debug, PartialEq, Eq, Help)]
 pub struct FwCfgItemParam {
     /// Selector key of an item.
     pub name: String,

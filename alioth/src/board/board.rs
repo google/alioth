@@ -103,7 +103,7 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Default, Help)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct CpuTopology {
     #[serde(default)]
     /// Enable SMT (Hyperthreading).
@@ -130,7 +130,7 @@ const fn default_cpu_count() -> u16 {
     1
 }
 
-#[derive(Debug, Deserialize, Default, Help)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
 pub struct CpuConfig {
     /// Number of VCPUs assigned to the guest. [default: 1]
     #[serde(default = "default_cpu_count")]
@@ -175,7 +175,7 @@ struct MpSync {
 
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct BoardConfig {
     pub mem: MemConfig,
     pub cpu: CpuConfig,

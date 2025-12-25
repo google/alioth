@@ -30,6 +30,7 @@ syn = { version = "2", features = ["full"] }
 quote = { version = "1" }
 rstest = "0.26"
 tempfile = "3"
+pretty_assertions = "1"
 
 [profile.release]
 lto = true

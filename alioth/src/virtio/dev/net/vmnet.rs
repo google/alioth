@@ -495,7 +495,7 @@ fn write_to_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) 
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct NetVmnetParam {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: Option<MacAddr>,

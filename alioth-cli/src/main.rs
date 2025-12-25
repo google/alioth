@@ -82,3 +82,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[ctor::ctor]
+fn global_setup() {
+    flexi_logger::init();
+}
