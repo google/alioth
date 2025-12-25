@@ -506,6 +506,7 @@ c_enum! {
     pub struct KvmCap(u32);
     {
         IRQFD = 32;
+        KVMCLOCK_CTRL = 76;
         SIGNAL_MSI = 77;
         ARM_PSCI_0_2 = 102;
         X2APIC_API = 129;
@@ -729,6 +730,8 @@ ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
 #[cfg(not(target_arch = "x86_64"))]
 ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
+
+ioctl_none!(kvm_kvmclock_ctrl, KVMIO, 0xad);
 
 #[cfg(target_arch = "aarch64")]
 ioctl_write_ptr!(kvm_arm_vcpu_init, KVMIO, 0xae, KvmVcpuInit);
