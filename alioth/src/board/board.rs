@@ -23,7 +23,7 @@ mod x86_64;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
 use libc::{MAP_PRIVATE, MAP_SHARED};
@@ -97,6 +97,8 @@ pub enum Error {
     NotifyVmm,
     #[snafu(display("Another VCPU thread has signaled failure"))]
     PeerFailure,
+    #[snafu(display("Unexpected state: {state:?}, want {want:?}"))]
+    UnexpectedState { state: BoardState, want: BoardState },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -157,7 +159,7 @@ impl CpuConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoardState {
+pub enum BoardState {
     Created,
     Running,
     Shutdown,
@@ -189,8 +191,8 @@ impl BoardConfig {
     }
 }
 
-type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
-type VcpuHandle = (JoinHandle<Result<()>>, Sender<()>);
+type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<VcpuHandle>>;
+type VcpuHandle = JoinHandle<Result<()>>;
 
 pub struct Board<V>
 where
@@ -249,12 +251,17 @@ where
     }
 
     pub fn boot(&self) -> Result<()> {
-        let vcpus = self.vcpus.read();
         let mut mp_sync = self.mp_sync.lock();
-        mp_sync.state = BoardState::Running;
-        for (_, boot_tx) in vcpus.iter() {
-            boot_tx.send(()).unwrap();
+        if mp_sync.state == BoardState::Created {
+            mp_sync.state = BoardState::Running;
+        } else {
+            return error::UnexpectedState {
+                state: mp_sync.state,
+                want: BoardState::Created,
+            }
+            .fail();
         }
+        self.cond_var.notify_all();
         Ok(())
     }
 
@@ -371,17 +378,28 @@ where
         Ok(())
     }
 
-    fn run_vcpu_inner(
-        &self,
-        index: u16,
-        vcpu: &mut V::Vcpu,
-        boot_rx: &Receiver<()>,
-    ) -> Result<(), Error> {
-        self.init_vcpu(index, vcpu)?;
-        boot_rx.recv().unwrap();
-        if self.mp_sync.lock().state != BoardState::Running {
+    fn notify_vmm(&self, index: u16, event_tx: &Sender<u16>) -> Result<()> {
+        if event_tx.send(index).is_err() {
+            error::NotifyVmm.fail()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn run_vcpu_inner(&self, index: u16, event_tx: &Sender<u16>) -> Result<(), Error> {
+        let mut vcpu = self.create_vcpu(index)?;
+        self.notify_vmm(index, event_tx)?;
+        self.init_vcpu(index, &mut vcpu)?;
+
+        let mut mp_sync = self.mp_sync.lock();
+        while mp_sync.state == BoardState::Created {
+            self.cond_var.wait(&mut mp_sync);
+        }
+        if mp_sync.state != BoardState::Running {
             return Ok(());
         }
+        drop(mp_sync);
+
         loop {
             let vcpus = self.vcpus.read();
             self.coco_init(index)?;
@@ -396,15 +414,15 @@ where
                 }
                 self.add_pci_devs()?;
                 let init_state = self.load_payload()?;
-                self.init_boot_vcpu(vcpu, &init_state)?;
+                self.init_boot_vcpu(&mut vcpu, &init_state)?;
                 self.create_firmware_data(&init_state)?;
             }
-            self.init_ap(index, vcpu, &vcpus)?;
+            self.init_ap(index, &mut vcpu, &vcpus)?;
             self.coco_finalize(index, &vcpus)?;
             self.sync_vcpus(&vcpus)?;
             drop(vcpus);
 
-            let maybe_reboot = self.vcpu_loop(vcpu, index);
+            let maybe_reboot = self.vcpu_loop(&mut vcpu, index);
 
             let vcpus = self.vcpus.read();
             let mut mp_sync = self.mp_sync.lock();
@@ -414,7 +432,7 @@ where
                 } else {
                     BoardState::Shutdown
                 };
-                for (another, (handle, _)) in vcpus.iter().enumerate() {
+                for (another, handle) in vcpus.iter().enumerate() {
                     if index == another as u16 {
                         continue;
                     }
@@ -433,7 +451,7 @@ where
                 self.pci_bus.segment.reset().context(error::ResetPci)?;
                 self.memory.reset()?;
             }
-            self.reset_vcpu(index, vcpu)?;
+            self.reset_vcpu(index, &mut vcpu)?;
 
             if let Err(e) = maybe_reboot {
                 break Err(e);
@@ -447,29 +465,19 @@ where
         }
     }
 
-    fn create_vcpu(&self, index: u16, event_tx: &Sender<u16>) -> Result<V::Vcpu> {
+    fn create_vcpu(&self, index: u16) -> Result<V::Vcpu> {
         let identity = self.encode_cpu_identity(index);
         let vcpu = self
             .vm
             .create_vcpu(index, identity)
             .context(error::CreateVcpu { index })?;
-        if event_tx.send(index).is_err() {
-            error::NotifyVmm.fail()
-        } else {
-            Ok(vcpu)
-        }
+        Ok(vcpu)
     }
 
-    pub fn run_vcpu(
-        &self,
-        index: u16,
-        event_tx: Sender<u16>,
-        boot_rx: Receiver<()>,
-    ) -> Result<(), Error> {
-        let mut vcpu = self.create_vcpu(index, &event_tx)?;
+    pub fn run_vcpu(&self, index: u16, event_tx: Sender<u16>) -> Result<(), Error> {
+        let ret = self.run_vcpu_inner(index, &event_tx);
 
-        let ret = self.run_vcpu_inner(index, &mut vcpu, &boot_rx);
-        event_tx.send(index).unwrap();
+        let _ = self.notify_vmm(index, &event_tx);
 
         if matches!(ret, Ok(_) | Err(Error::PeerFailure { .. })) {
             return Ok(());

@@ -140,18 +140,17 @@ where
 
         let mut vcpus = board.vcpus.write();
         for index in 0..board.config.cpu.count {
-            let (boot_tx, boot_rx) = mpsc::channel();
             let event_tx = event_tx.clone();
             let board = board.clone();
             let handle = thread::Builder::new()
                 .name(format!("vcpu_{index}"))
-                .spawn(move || board.run_vcpu(index, event_tx, boot_rx))
+                .spawn(move || board.run_vcpu(index, event_tx))
                 .context(error::VcpuThread { index })?;
             if event_rx.recv_timeout(Duration::from_secs(2)).is_err() {
                 let err = std::io::ErrorKind::TimedOut.into();
                 Err(err).context(error::VcpuThread { index })?;
             }
-            vcpus.push((handle, boot_tx));
+            vcpus.push(handle);
         }
         drop(vcpus);
 
@@ -294,7 +293,7 @@ where
         drop(vcpus);
         let mut vcpus = self.board.vcpus.write();
         let mut ret = Ok(());
-        for (index, (handle, _)) in vcpus.drain(..).enumerate() {
+        for (index, handle) in vcpus.drain(..).enumerate() {
             let Ok(r) = handle.join() else {
                 log::error!("Cannot join VCPU-{index}");
                 continue;
