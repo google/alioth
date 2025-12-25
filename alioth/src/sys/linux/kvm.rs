@@ -20,9 +20,9 @@ use bitflags::bitflags;
 
 #[cfg(target_arch = "x86_64")]
 use crate::ioctl_writeread_buf;
+use crate::sys::ioctl::ioctl_ior;
 #[cfg(target_arch = "x86_64")]
 use crate::sys::ioctl::ioctl_iowr;
-use crate::sys::ioctl::{ioctl_io, ioctl_ior};
 use crate::{
     c_enum, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
     ioctl_writeread,
@@ -675,14 +675,14 @@ bitflags! {
     }
 }
 
-ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
-ioctl_write_val!(kvm_create_vm, ioctl_io(KVMIO, 0x01), KvmVmType);
-ioctl_write_val!(kvm_check_extension, ioctl_io(KVMIO, 0x03), KvmCap);
-ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04, 0);
+ioctl_none!(kvm_get_api_version, KVMIO, 0x00);
+ioctl_write_val!(kvm_create_vm, KVMIO, 0x01, KvmVmType);
+ioctl_write_val!(kvm_check_extension, KVMIO, 0x03, KvmCap);
+ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04);
 #[cfg(target_arch = "x86_64")]
 ioctl_writeread_buf!(kvm_get_supported_cpuid, KVMIO, 0x05, KvmCpuid2);
 
-ioctl_write_val!(kvm_create_vcpu, ioctl_io(KVMIO, 0x41), u32);
+ioctl_write_val!(kvm_create_vcpu, KVMIO, 0x41, u32);
 ioctl_write_ptr!(
     kvm_set_user_memory_region,
     KVMIO,
@@ -690,7 +690,7 @@ ioctl_write_ptr!(
     KvmUserspaceMemoryRegion
 );
 #[cfg(target_arch = "x86_64")]
-ioctl_write_val!(kvm_set_tss_addr, ioctl_io(KVMIO, 0x47));
+ioctl_write_val!(kvm_set_tss_addr, KVMIO, 0x47, u64);
 #[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_identity_map_addr, KVMIO, 0x48, u64);
 ioctl_write_ptr!(
@@ -701,13 +701,13 @@ ioctl_write_ptr!(
 );
 
 #[cfg(target_arch = "x86_64")]
-ioctl_none!(kvm_create_irqchip, KVMIO, 0x60, 0);
+ioctl_none!(kvm_create_irqchip, KVMIO, 0x60);
 ioctl_write_buf!(kvm_set_gsi_routing, KVMIO, 0x6a, KvmIrqRouting);
 
 ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
 ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, KvmIoEventFd);
 
-ioctl_none!(kvm_run, KVMIO, 0x80, 0);
+ioctl_none!(kvm_run, KVMIO, 0x80);
 #[cfg(target_arch = "x86_64")]
 ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
 #[cfg(target_arch = "x86_64")]

@@ -443,17 +443,17 @@ fn detect_tap_offload(tap: &impl AsFd) -> NetFeature {
         | NetFeature::GUEST_UFO
         | NetFeature::GUEST_USO4
         | NetFeature::GUEST_USO6;
-    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+    if unsafe { tun_set_offload(tap, tap_feature) }.is_ok() {
         return dev_feat;
     }
     tap_feature &= !(TunFeature::USO4 | TunFeature::USO6);
     dev_feat &= !(NetFeature::GUEST_USO4 | NetFeature::GUEST_USO6);
-    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+    if unsafe { tun_set_offload(tap, tap_feature) }.is_ok() {
         return dev_feat;
     }
     tap_feature &= !(TunFeature::UFO);
     dev_feat &= !NetFeature::GUEST_UFO;
-    if unsafe { tun_set_offload(tap, tap_feature.bits()) }.is_ok() {
+    if unsafe { tun_set_offload(tap, tap_feature) }.is_ok() {
         return dev_feat;
     }
     NetFeature::empty()
@@ -482,6 +482,6 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> Result<()> {
     if feature.contains(NetFeature::GUEST_USO6) {
         tap_feature |= TunFeature::USO6;
     }
-    unsafe { tun_set_offload(tap, tap_feature.bits()) }?;
+    unsafe { tun_set_offload(tap, tap_feature) }?;
     Ok(())
 }

@@ -301,7 +301,7 @@ ioctl_writeread!(
 
 ioctl_write_buf!(vfio_device_set_irqs, ioctl_io(VFIO_TYPE, 110), VfioIrqSet);
 
-ioctl_none!(vfio_device_reset, VFIO_TYPE, 111, 0);
+ioctl_none!(vfio_device_reset, VFIO_TYPE, 111);
 
 ioctl_write_ptr!(
     vfio_device_bind_iommufd,

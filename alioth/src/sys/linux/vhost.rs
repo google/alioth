@@ -73,7 +73,7 @@ bitflags! {
 
 ioctl_read!(vhost_get_features, VHOST_VIRTIO, 0x00, u64);
 ioctl_write_ptr!(vhost_set_features, VHOST_VIRTIO, 0x00, u64);
-ioctl_none!(vhost_set_owner, VHOST_VIRTIO, 0x01, 0);
+ioctl_none!(vhost_set_owner, VHOST_VIRTIO, 0x01);
 
 ioctl_write_buf!(
     vhost_set_mem_table,

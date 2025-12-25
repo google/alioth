@@ -22,7 +22,7 @@ use crate::{ioctl_read, ioctl_write_ptr, ioctl_write_val};
 
 ioctl_write_ptr!(tun_set_iff, ioctl_iow::<c_int>(b'T', 202), ifreq);
 
-ioctl_write_val!(tun_set_offload, ioctl_iow::<c_uint>(b'T', 208));
+ioctl_write_val!(tun_set_offload, ioctl_iow::<c_uint>(b'T', 208), TunFeature);
 
 ioctl_read!(tun_get_vnet_hdr_sz, b'T', 215, c_int);
 
