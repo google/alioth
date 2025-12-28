@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::bindings::{
-    KVMIO, KvmCpuid2, KvmEncRegion, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs, KvmSregs2,
-    KvmUserspaceMemoryRegion,
+use crate::hv::kvm::bindings::{
+    KvmCpuid2, KvmEncRegion, KvmIrqfd, KvmMsi, KvmRegs, KvmSregs, KvmSregs2,
+    KvmUserspaceMemoryRegion, KVMIO,
 };
 use crate::utils::ioctls::{ioctl_io, ioctl_ior};
 use crate::{

@@ -112,7 +112,12 @@ pub struct DeviceHeader {
 pub const OFFSET_BAR0: usize = DeviceHeader::OFFSET_BARS;
 pub const OFFSET_BAR5: usize = OFFSET_BAR0 + 5 * size_of::<u32>();
 
+pub const BAR_PREFETCHABLE: u32 = 0b1000;
 pub const BAR_MEM64: u32 = 0b0100;
+pub const BAR_MEM32: u32 = 0b0000;
+pub const BAR_IO: u32 = 0b01;
+
+pub const BAR_IO_MASK: u32 = 0b11;
 pub const BAR_MEM_MASK: u32 = 0b1111;
 
 #[derive(Debug)]
@@ -131,15 +136,32 @@ struct UpdateCommandCallback {
 impl ChangeLayout for UpdateCommandCallback {
     fn change(&self, memory: &mem::Memory) -> mem::Result<()> {
         for (i, (pci_bar, bar)) in zip(&self.pci_bars, self.bars).enumerate() {
-            if let PciBar::Mem64(region) = pci_bar {
-                if !self.changed.contains(Command::MEM) {
-                    continue;
+            match pci_bar {
+                PciBar::Empty => {}
+                PciBar::Mem32(region) | PciBar::Mem64(region) => {
+                    if !self.changed.contains(Command::MEM) {
+                        continue;
+                    }
+                    let mut addr = (bar & !BAR_MEM_MASK) as usize;
+                    if matches!(pci_bar, PciBar::Mem64(_)) {
+                        addr |= (self.bars[i + 1] as usize) << 32;
+                    }
+                    if self.current.contains(Command::MEM) {
+                        memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
+                    } else {
+                        memory.remove_region(addr)?;
+                    }
                 }
-                let addr = (bar & !BAR_MEM_MASK) as usize | ((self.bars[i + 1] as usize) << 32);
-                if self.current.contains(Command::MEM) {
-                    memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
-                } else {
-                    memory.remove_region(addr)?;
+                PciBar::Io(region) => {
+                    if !self.changed.contains(Command::IO) {
+                        continue;
+                    }
+                    let port = (bar & !BAR_IO_MASK) as u16;
+                    if self.current.contains(Command::IO) {
+                        memory.add_io_region(Some(port), region.clone())?;
+                    } else {
+                        memory.remove_io_region(port)?;
+                    }
                 }
             }
         }
@@ -162,10 +184,17 @@ impl ChangeLayout for MoveBarCallback {
             self.src,
             self.dst
         );
-        let src_addr = self.src & !(BAR_MEM_MASK as u64);
-        let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
-        let region = memory.remove_region(src_addr as usize)?;
-        memory.add_region(AddrOpt::Fixed(dst_addr as usize), region)?;
+        if self.src as u32 & BAR_IO == BAR_IO {
+            let src_port = self.src & !(BAR_IO_MASK as u64);
+            let dst_port = self.dst & !(BAR_IO_MASK as u64);
+            let region = memory.remove_io_region(src_port as u16)?;
+            memory.add_io_region(Some(dst_port as u16), region)?;
+        } else {
+            let src_addr = self.src & !(BAR_MEM_MASK as u64);
+            let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
+            let region = memory.remove_region(src_addr as usize)?;
+            memory.add_region(AddrOpt::Fixed(dst_addr as usize), region)?;
+        }
         Ok(())
     }
 }
@@ -252,6 +281,20 @@ impl HeaderData {
                     );
                     let command = header.common.command;
                     match &pci_bars[bar_index] {
+                        PciBar::Io(_) if command.contains(Command::IO) => {
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: old_val as u64,
+                                dst: masked_val as u64,
+                            }))
+                        }
+                        PciBar::Mem32(_) if command.contains(Command::MEM) => {
+                            Some(Box::new(MoveBarCallback {
+                                bdf,
+                                src: old_val as u64,
+                                dst: masked_val as u64,
+                            }))
+                        }
                         PciBar::Mem64(_) if command.contains(Command::MEM) => {
                             let hi_32 = (header.bars[bar_index + 1] as u64) << 32;
                             Some(Box::new(MoveBarCallback {

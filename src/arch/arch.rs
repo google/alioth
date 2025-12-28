@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod layout;
-pub mod msr;
-pub mod paging;
-pub mod reg;
+#[cfg(target_arch = "x86_64")]
+#[path = "x86_64/x86_64.rs"]
+mod x86_64;
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::*;

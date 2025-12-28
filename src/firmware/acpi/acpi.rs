@@ -16,7 +16,7 @@ pub mod bindings;
 
 use std::mem::{offset_of, size_of, size_of_val};
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes, transmute};
+use zerocopy::{transmute, AsBytes, FromBytes, FromZeroes};
 
 use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]

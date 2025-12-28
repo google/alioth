@@ -47,7 +47,7 @@ pub trait LockedQueue<'g> {
 }
 
 pub trait QueueGuard {
-    fn queue(&self) -> Result<impl LockedQueue<'_>>;
+    fn queue(&self) -> Result<impl LockedQueue>;
 }
 
 pub trait VirtQueue {

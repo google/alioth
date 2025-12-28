@@ -21,7 +21,7 @@ use bitflags::bitflags;
 use derive_layout::Layout;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::mem::{Memory, MemoryReadGuard};
+use crate::mem::mapped::{RamBus, RamLayoutGuard};
 use crate::virtio::queue::{Descriptor, LockedQueue, Queue, QueueGuard, VirtQueue};
 use crate::virtio::{Error, Result, VirtioFeature};
 
@@ -89,17 +89,17 @@ struct Register {
 
 #[derive(Debug)]
 pub struct SplitQueue {
-    pub memory: Arc<Memory>,
+    pub memory: Arc<RamBus>,
     register: Register,
 }
 
 struct SplitQueueGuard<'m, 'q> {
-    guard: MemoryReadGuard<'m>,
+    guard: RamLayoutGuard<'m>,
     register: &'q Register,
 }
 
 struct SplitLayout<'g, 'm> {
-    guard: &'g MemoryReadGuard<'m>,
+    guard: &'g RamLayoutGuard<'m>,
 
     avail: &'g UnsafeCell<AvailHeader>,
     avail_ring: &'g [UnsafeCell<u16>],
@@ -274,7 +274,7 @@ impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
 }
 
 impl<'m, 'q> QueueGuard for SplitQueueGuard<'m, 'q> {
-    fn queue(&self) -> Result<impl LockedQueue<'_>> {
+    fn queue(&self) -> Result<impl LockedQueue> {
         let mut avail_event = None;
         let mut used_event = None;
         let queue_size = self.register.size as usize;
@@ -311,7 +311,7 @@ impl<'m, 'q> QueueGuard for SplitQueueGuard<'m, 'q> {
 }
 
 impl SplitQueue {
-    pub fn new(reg: &Queue, memory: Arc<Memory>, feature: u64) -> Self {
+    pub fn new(reg: &Queue, memory: Arc<RamBus>, feature: u64) -> Self {
         let register = if reg.enabled.load(Ordering::Acquire) {
             Register {
                 size: reg.size.load(Ordering::Acquire),

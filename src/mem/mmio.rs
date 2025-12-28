@@ -1,6 +1,6 @@
 // Copyright 2024 Google LLC
 //
-// Licensed under the // License, Version 2.0 (the "License");
+// Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
@@ -16,7 +16,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::mem::Result;
-use crate::mem::addressable::SlotBackend;
+use crate::mem::addressable::{Addressable, SlotBackend};
+use parking_lot::RwLock;
 
 pub trait Mmio: Debug + Send + Sync + 'static {
     fn read(&self, offset: usize, size: u8) -> Result<u64>;
@@ -84,4 +85,63 @@ macro_rules! impl_mmio_for_zerocopy {
             }
         }
     };
+}
+
+#[derive(Debug)]
+pub struct MmioBus<R = MmioRange>
+where
+    R: Debug + SlotBackend,
+{
+    inner: RwLock<Addressable<R>>,
+}
+
+impl<R> Default for MmioBus<R>
+where
+    R: Debug + SlotBackend + Mmio,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R> MmioBus<R>
+where
+    R: Debug + SlotBackend + Mmio,
+{
+    pub fn new() -> MmioBus<R> {
+        Self {
+            inner: RwLock::new(Addressable::new()),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().is_empty()
+    }
+
+    pub fn add(&self, addr: usize, range: R) -> Result<()> {
+        let mut inner = self.inner.write();
+        inner.add(addr, range)?;
+        Ok(())
+    }
+
+    pub(super) fn remove(&self, addr: usize) -> Result<R> {
+        let mut inner = self.inner.write();
+        inner.remove(addr)
+    }
+
+    pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
+        let inner = self.inner.read();
+        match inner.search(addr) {
+            Some((start, dev)) => dev.read(addr - start, size),
+            None => Ok(0),
+        }
+    }
+
+    pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
+        let inner = self.inner.read();
+        match inner.search(addr) {
+            Some((start, dev)) => dev.write(addr - start, size, val),
+            None => Ok(()),
+        }
+    }
 }

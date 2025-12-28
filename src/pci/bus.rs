@@ -23,6 +23,7 @@ use crate::mem;
 use crate::mem::mmio::Mmio;
 use crate::pci::config::PciConfig;
 use crate::pci::host_bridge::HostBridge;
+use crate::pci::segment::PciSegment;
 use crate::pci::{Bdf, Error, Pci, Result};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
@@ -44,50 +45,6 @@ impl Address {
     pub fn to_ecam_addr(self) -> usize {
         let v = self.0 as usize;
         ((v & 0xff_ff00) << 4) | (v & 0xfc)
-    }
-}
-
-#[derive(Debug)]
-pub struct PciSegment {
-    pub(super) configs: RwLock<HashMap<Bdf, Arc<dyn PciConfig>>>,
-}
-
-impl PciSegment {
-    pub fn add(&self, bdf: Bdf, config: Arc<dyn PciConfig>) -> Result<()> {
-        let mut configs = self.configs.write();
-        if let Some(c) = configs.insert(bdf, config) {
-            configs.insert(bdf, c);
-            Err(Error::BdfExists(bdf))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Mmio for PciSegment {
-    fn size(&self) -> usize {
-        // 256 MiB: 256 buses, 32 devices, 8 functions
-        256 * 32 * 8 * 4096
-    }
-
-    fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
-        let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.configs.read();
-        if let Some(config) = configs.get(&bdf) {
-            config.read(offset & 0xfff, size)
-        } else {
-            Ok(u64::MAX)
-        }
-    }
-
-    fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
-        let bdf = Bdf((offset >> 12) as u16);
-        let configs = self.configs.read();
-        if let Some(config) = configs.get(&bdf) {
-            config.write(offset & 0xfff, size, val)
-        } else {
-            Ok(())
-        }
     }
 }
 

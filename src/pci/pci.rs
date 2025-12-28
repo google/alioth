@@ -20,12 +20,13 @@ use parking_lot::RwLock;
 use thiserror::Error;
 
 use crate::mem;
-use crate::mem::{MemRegion, MemRegionCallback};
+use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
 
 pub mod bus;
 pub mod cap;
 pub mod config;
 pub mod host_bridge;
+pub mod segment;
 
 use config::{HeaderData, PciConfig};
 
@@ -72,7 +73,9 @@ pub trait Pci: Debug + Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub enum PciBar {
     Empty,
+    Mem32(Arc<MemRegion>),
     Mem64(Arc<MemRegion>),
+    Io(Arc<IoRegion>),
 }
 
 impl PciBar {
@@ -85,14 +88,20 @@ impl PciBar {
 #[derive(Debug)]
 struct BarCallback {
     index: u8,
+    is_64: bool,
     header: Arc<RwLock<HeaderData>>,
 }
 
 impl MemRegionCallback for BarCallback {
     fn mapped(&self, addr: usize) -> mem::Result<()> {
-        let mut header = self.header.write();
-        header.set_bar(self.index as usize, addr as u32);
-        header.set_bar(self.index as usize + 1, (addr >> 32) as u32);
+        self.header
+            .write()
+            .set_bar(self.index as usize, addr as u32);
+        if self.is_64 {
+            self.header
+                .write()
+                .set_bar(self.index as usize + 1, (addr >> 32) as u32);
+        }
         Ok(())
     }
 }
@@ -108,12 +117,24 @@ impl PciDevice {
         let config = dev.config();
         let dev_bars = &config.get_header().bars;
         for (index, dev_bar) in dev_bars.iter().enumerate() {
-            if let PciBar::Mem64(region) = dev_bar {
-                let header = config.get_header().data.clone();
-                region.callbacks.lock().push(Box::new(BarCallback {
+            let header = config.get_header().data.clone();
+            match dev_bar {
+                PciBar::Empty => {}
+                PciBar::Mem32(region) => region.callbacks.lock().push(Box::new(BarCallback {
                     index: index as u8,
+                    is_64: false,
                     header,
-                }));
+                })),
+                PciBar::Mem64(region) => region.callbacks.lock().push(Box::new(BarCallback {
+                    index: index as u8,
+                    is_64: true,
+                    header,
+                })),
+                PciBar::Io(region) => region.callbacks.lock().push(Box::new(BarCallback {
+                    index: index as u8,
+                    is_64: false,
+                    header,
+                })),
             }
         }
         PciDevice { name, dev }

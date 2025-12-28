@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::super::bindings::{
-    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs,
+use crate::arch::reg::SegAccess;
+use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::hv::kvm::bindings::{
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs, KVM_MAX_CPUID_ENTRIES,
 };
-use super::super::ioctls::{
+use crate::hv::kvm::ioctls::{
     kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2, kvm_set_regs, kvm_set_sregs,
     kvm_set_sregs2,
 };
-use super::Vcpu;
-use crate::arch::reg::SegAccess;
-use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::{Error, Result};
 
 macro_rules! set_kvm_sreg {
@@ -133,7 +133,7 @@ macro_rules! get_kvm_seg_reg {
     }};
 }
 
-impl Vcpu {
+impl KvmVcpu {
     fn get_kvm_regs(&self) -> Result<KvmRegs> {
         let kvm_regs = unsafe { kvm_get_regs(&self.fd) }?;
         Ok(kvm_regs)

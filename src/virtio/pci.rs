@@ -31,7 +31,7 @@ use crate::pci::cap::{
     PciCapHdr, PciCapId, PciCapList,
 };
 use crate::pci::config::{
-    BAR_MEM64, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig,
+    BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig,
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::utils::{
@@ -54,13 +54,16 @@ struct VirtioPciMsixVector {
 }
 
 #[derive(Debug)]
-pub struct PciIrqSender {
+pub struct PciIrqSender<S> {
     msix_vector: VirtioPciMsixVector,
     msix_entries: Arc<Vec<RwLock<MsixTableEntry>>>,
-    msi_sender: MsiSender,
+    msi_sender: S,
 }
 
-impl PciIrqSender {
+impl<S> PciIrqSender<S>
+where
+    S: MsiSender,
+{
     fn send(&self, vector: u16) {
         let entries = &**self.msix_entries;
         let Some(entry) = entries.get(vector as usize) else {
@@ -82,7 +85,10 @@ impl PciIrqSender {
     }
 }
 
-impl IrqSender for PciIrqSender {
+impl<S> IrqSender for PciIrqSender<S>
+where
+    S: MsiSender,
+{
     fn config_irq(&self) {
         let vector = self.msix_vector.config.load(Ordering::Acquire);
         if vector != VIRTIO_MSI_NO_VECTOR {
@@ -137,17 +143,23 @@ pub struct VirtioPciRegister {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciRegisterMmio {
+pub struct VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
     name: Arc<String>,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
-    irq_sender: Arc<PciIrqSender>,
-    event_tx: Sender<WakeEvent<PciIrqSender>>,
+    irq_sender: Arc<PciIrqSender<M>>,
+    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
     waker: Arc<Waker>,
 }
 
-impl VirtioPciRegisterMmio {
-    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender>) {
+impl<M> VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
+    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
         if let Err(e) = self.event_tx.send(event) {
             log::error!("{}: failed to send event: {e}", self.name);
             return;
@@ -169,7 +181,10 @@ impl VirtioPciRegisterMmio {
     }
 }
 
-impl Mmio for VirtioPciRegisterMmio {
+impl<M> Mmio for VirtioPciRegisterMmio<M>
+where
+    M: MsiSender,
+{
     fn size(&self) -> usize {
         size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()
     }
@@ -431,7 +446,10 @@ const VIRTIO_DEVICE_ID_BASE: u16 = 0x1040;
 fn get_class(id: DeviceId) -> (u8, u8) {
     match id {
         DeviceId::Net => (0x02, 0x00),
+        DeviceId::FileSystem => (0x01, 0x80),
         DeviceId::Block => (0x01, 0x00),
+        DeviceId::Socket => (0x02, 0x80),
+        _ => (0xff, 0x00),
     }
 }
 
@@ -442,6 +460,7 @@ pub enum VirtioPciCfg {
     Isr = 3,
     Device = 4,
     Pci = 5,
+    SharedMemory = 8,
     Vendor = 9,
 }
 
@@ -467,6 +486,21 @@ impl PciCap for VirtioPciCap {
 
 #[repr(C, align(4))]
 #[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
+pub struct VirtioPciCap64 {
+    cap: VirtioPciCap,
+    offset_hi: u32,
+    length_hi: u32,
+}
+impl_mmio_for_zerocopy!(VirtioPciCap64);
+
+impl PciCap for VirtioPciCap64 {
+    fn set_next(&mut self, val: u8) {
+        PciCap::set_next(&mut self.cap, val)
+    }
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Default, FromBytes, FromZeroes, AsBytes)]
 pub struct VirtioPciNotifyCap {
     cap: VirtioPciCap,
     multiplier: u32,
@@ -480,20 +514,22 @@ impl PciCap for VirtioPciNotifyCap {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciDevice<D>
+pub struct VirtioPciDevice<D, M>
 where
     D: Virtio,
+    M: MsiSender,
 {
-    pub dev: VirtioDevice<D, PciIrqSender>,
+    pub dev: VirtioDevice<D, PciIrqSender<M>>,
     pub config: Arc<EmulatedConfig>,
-    pub registers: Arc<VirtioPciRegisterMmio>,
+    pub registers: Arc<VirtioPciRegisterMmio<M>>,
 }
 
-impl<D> VirtioPciDevice<D>
+impl<D, M> VirtioPciDevice<D, M>
 where
+    M: MsiSender,
     D: Virtio,
 {
-    pub fn new(dev: VirtioDevice<D, PciIrqSender>, msi_sender: MsiSender) -> Result<Self> {
+    pub fn new(dev: VirtioDevice<D, PciIrqSender<M>>, msi_sender: M) -> Result<Self> {
         let (class, subclass) = get_class(D::device_id());
         let mut header = DeviceHeader {
             common: CommonHeader {
@@ -602,7 +638,7 @@ where
             callbacks: Mutex::new(vec![]),
         };
 
-        let mut caps: Vec<Box<dyn PciCap>> = vec![
+        let mut caps: Vec<Box<(dyn PciCap)>> = vec![
             Box::new(MsixCapMmio {
                 cap: RwLock::new(cap_msix),
             }),
@@ -612,6 +648,30 @@ where
         ];
         if device_config.size() > 0 {
             caps.push(Box::new(cap_device_config));
+        }
+        if let Some(region) = &dev.shared_mem_regions {
+            let mut offset = 0;
+            for (index, entry) in region.entries.iter().enumerate() {
+                let share_mem_cap = VirtioPciCap64 {
+                    cap: VirtioPciCap {
+                        header: PciCapHdr {
+                            id: PciCapId::Vendor as u8,
+                            ..Default::default()
+                        },
+                        cap_len: size_of::<VirtioPciCap64>() as u8,
+                        cfg_type: VirtioPciCfg::SharedMemory as u8,
+                        bar: 2,
+                        id: index as u8,
+                        offset: offset as u32,
+                        length: entry.size as u32,
+                        ..Default::default()
+                    },
+                    length_hi: (entry.size >> 32) as u32,
+                    offset_hi: (offset >> 32) as u32,
+                };
+                caps.push(Box::new(share_mem_cap));
+                offset += entry.size;
+            }
         }
 
         let cap_list = PciCapList::try_from(caps)?;
@@ -652,6 +712,16 @@ where
         bars[0] = PciBar::Mem64(Arc::new(bar0));
         header.bars[0] = BAR_MEM64;
 
+        if let Some(region) = &dev.shared_mem_regions {
+            let bar2_mask = !((region.size as u64).next_power_of_two() - 1);
+            bar_masks[2] = bar2_mask as u32;
+            bar_masks[3] = (bar2_mask >> 32) as u32;
+            bars[2] = PciBar::Mem64(region.clone());
+            let mut not_emulated = |r| !matches!(r, &MemRange::Emulated(_));
+            let prefetchable = region.ranges.iter().all(&mut not_emulated);
+            header.bars[2] = BAR_MEM64 | if prefetchable { BAR_PREFETCHABLE } else { 0 };
+        }
+
         let config = Arc::new(EmulatedConfig::new_device(
             header, bar_masks, bars, cap_list,
         ));
@@ -664,8 +734,9 @@ where
     }
 }
 
-impl<D> Pci for VirtioPciDevice<D>
+impl<D, M> Pci for VirtioPciDevice<D, M>
 where
+    M: MsiSender,
     D: Virtio,
 {
     fn config(&self) -> Arc<dyn PciConfig> {

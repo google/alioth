@@ -26,15 +26,15 @@ use crate::arch::layout::{
 use crate::arch::reg::{Cr0, Rflags, SegAccess};
 use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::elf::{
-    ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,
-    Elf64ProgramHeader, Elf64SectionHeader, PT_NOTE, SHT_NOTE,
+    Elf64Header, Elf64Note, Elf64ProgramHeader, Elf64SectionHeader, ELF_HEADER_MAGIC,
+    ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, PT_NOTE, SHT_NOTE,
 };
 use crate::loader::xen::start_info::{
     XEN_HVM_MEMMAP_TYPE_ACPI, XEN_HVM_MEMMAP_TYPE_PMEM, XEN_HVM_MEMMAP_TYPE_RAM,
     XEN_HVM_MEMMAP_TYPE_RESERVED, XEN_HVM_START_INFO_V1, XEN_HVM_START_MAGIC_VALUE,
 };
-use crate::loader::{Error, InitState, Result, search_initramfs_address};
-use crate::mem::Memory;
+use crate::loader::{search_initramfs_address, Error, InitState, Result};
+use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod start_info;
@@ -68,16 +68,9 @@ fn search_pvh_note<F: Read + Seek>(
         if header.type_ != XEN_ELFNOTE_PHYS32_ENTRY {
             continue;
         }
-        let name_sz_aligned = align_up!(header.name_sz as u64, align) as usize;
-        let mut name = vec![0u8; name_sz_aligned];
-        file.read_exact(&mut name)?;
-        let name_str = std::str::from_utf8(&name)
-            .unwrap_or("")
-            .trim_matches('\0')
-            .trim();
-        if name_str != "Xen" {
-            continue;
-        }
+        file.seek(SeekFrom::Current(
+            align_up!(header.name_sz as u64, align) as i64
+        ))?;
         match header.desc_sz {
             4 => {
                 let mut entry_point = 0u32;
@@ -97,14 +90,16 @@ fn search_pvh_note<F: Read + Seek>(
 }
 
 // https://xenbits.xen.org/docs/4.18-testing/misc/pvh.html
-pub fn find_pvh_entry_point<P: AsRef<Path>>(kernel: P) -> Result<u64> {
-    let mut kernel_file = BufReader::new(
-        File::open(&kernel).map_err(|source| Error::KernelOpen {
-            path: kernel.as_ref().to_path_buf(),
-            source,
-        })?,
-    );
+pub fn load<P: AsRef<Path>>(
+    memory: &RamBus,
+    mem_regions: &[(usize, MemRegionEntry)],
+    kernel: P,
+    cmd_line: Option<&str>,
+    initramfs: Option<P>,
+) -> Result<InitState> {
+    let mut kernel_file = BufReader::new(File::open(kernel)?);
 
+    // load kernel
     let mut elf_header = Elf64Header::new_zeroed();
     kernel_file.read_exact(elf_header.as_bytes_mut())?;
     if elf_header.ident_magic != ELF_HEADER_MAGIC {
@@ -113,12 +108,8 @@ pub fn find_pvh_entry_point<P: AsRef<Path>>(kernel: P) -> Result<u64> {
             found: u32::from_ne_bytes(elf_header.ident_magic) as u64,
         });
     }
-    if elf_header.ident_class != ELF_IDENT_CLASS_64 {
-        return Err(Error::Not64BitKernel);
-    }
-    if elf_header.ident_data != ELF_IDENT_LITTLE_ENDIAN {
-        return Err(Error::NoEntryPoint);
-    }
+    assert_eq!(elf_header.ident_class, ELF_IDENT_CLASS_64);
+    assert_eq!(elf_header.ident_data, ELF_IDENT_LITTLE_ENDIAN);
 
     let mut pvh_entry = None;
 
@@ -133,6 +124,13 @@ pub fn find_pvh_entry_point<P: AsRef<Path>>(kernel: P) -> Result<u64> {
                 program_header.file_sz,
                 program_header.align,
             )?;
+        }
+        if program_header.file_sz > 0 {
+            let addr = program_header.paddr as usize;
+            let size = program_header.file_sz as usize;
+            kernel_file.seek(SeekFrom::Start(program_header.offset))?;
+            memory.write_range(addr, size, &mut kernel_file)?;
+            log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size);
         }
     }
 
@@ -156,59 +154,10 @@ pub fn find_pvh_entry_point<P: AsRef<Path>>(kernel: P) -> Result<u64> {
         }
     }
 
-    pvh_entry.ok_or(Error::NoEntryPoint)
-}
-
-pub fn check_pvh_note<P: AsRef<Path>>(kernel: P) -> Result<()> {
-    find_pvh_entry_point(kernel).map(|_| ())
-}
-
-pub fn load<P: AsRef<Path>>(
-    memory: &Memory,
-    mem_regions: &[(usize, MemRegionEntry)],
-    kernel: P,
-    cmd_line: Option<&str>,
-    initramfs: Option<P>,
-) -> Result<InitState> {
-    let entry_point = find_pvh_entry_point(&kernel)?;
-
-    let mut kernel_file = BufReader::new(
-        File::open(&kernel).map_err(|source| Error::KernelOpen {
-            path: kernel.as_ref().to_path_buf(),
-            source,
-        })?,
-    );
-
-    let mut elf_header = Elf64Header::new_zeroed();
-    kernel_file.read_exact(elf_header.as_bytes_mut())?;
-    kernel_file.seek(SeekFrom::Start(elf_header.ph_off))?;
-    let mut program_header = Elf64ProgramHeader::new_vec_zeroed(elf_header.ph_num as usize);
-    kernel_file.read_exact(program_header.as_bytes_mut())?;
-    for program_header in program_header.iter() {
-        if program_header.file_sz > 0 {
-            let addr = program_header.paddr as usize;
-            let size = program_header.file_sz as usize;
-            kernel_file.seek(SeekFrom::Start(program_header.offset))?;
-            memory.write_range(addr, size, &mut kernel_file)?;
-            log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size);
-        }
-    }
-
+    let Some(entry_point) = pvh_entry else {
+        return Err(Error::NoEntryPoint);
+    };
     log::info!("PVH entry = {entry_point:#x?}");
-
-    let mut in_ram = false;
-    for (start, entry) in memory.mem_region_entries() {
-        if entry.type_ == MemRegionType::Ram
-            && (entry_point as usize) >= start
-            && (entry_point as usize) < start + entry.size
-        {
-            in_ram = true;
-            break;
-        }
-    }
-    if !in_ram {
-        return Err(Error::InvalidEntryPoint(entry_point));
-    }
 
     let mut start_info_page = StartInfoPage {
         start_info: HvmStartInfo {
@@ -233,10 +182,7 @@ pub fn load<P: AsRef<Path>>(
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        let initramfs = File::open(&initramfs).map_err(|source| Error::InitramfsOpen {
-            path: initramfs.as_ref().to_path_buf(),
-            source,
-        })?;
+        let initramfs = File::open(initramfs)?;
         let initramfs_size = initramfs.metadata()?.len() as usize;
         let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size, 2 << 30)?;
         let initramfs_end = initramfs_gpa + initramfs_size;
@@ -345,71 +291,4 @@ pub fn load<P: AsRef<Path>>(
         dt_regs: vec![(DtReg::Gdtr, gdtr), (DtReg::Idtr, idtr)],
         initramfs: initramfs_range,
     })
-}
-
-#[cfg(test)]
-mod test {
-    use std::fs::File;
-    use std::io::Write;
-    use zerocopy::AsBytes;
-    use crate::loader::elf::{
-        ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,
-        Elf64ProgramHeader, PT_NOTE,
-    };
-    use super::{check_pvh_note, XEN_ELFNOTE_PHYS32_ENTRY};
-
-    #[test]
-    fn test_check_pvh_note_valid() {
-        let temp_file = std::env::temp_dir().join("test_pvh_valid.elf");
-        let mut file = File::create(&temp_file).unwrap();
-
-        let mut header = Elf64Header::default();
-        header.ident_magic = ELF_HEADER_MAGIC;
-        header.ident_class = ELF_IDENT_CLASS_64;
-        header.ident_data = ELF_IDENT_LITTLE_ENDIAN;
-        header.ph_num = 1;
-        header.ph_off = std::mem::size_of::<Elf64Header>() as u64;
-
-        let note_header = Elf64Note {
-            name_sz: 4,
-            desc_sz: 8,
-            type_: XEN_ELFNOTE_PHYS32_ENTRY,
-        };
-        let name = b"Xen\0";
-        let entry_point: u64 = 0x100000;
-
-        let mut ph = Elf64ProgramHeader::default();
-        ph.type_ = PT_NOTE;
-        ph.offset = header.ph_off + std::mem::size_of::<Elf64ProgramHeader>() as u64;
-        ph.file_sz = (std::mem::size_of::<Elf64Note>() + 4 + 8) as u64;
-        ph.align = 4;
-
-        file.write_all(header.as_bytes()).unwrap();
-        file.write_all(ph.as_bytes()).unwrap();
-        file.write_all(note_header.as_bytes()).unwrap();
-        file.write_all(name).unwrap();
-        file.write_all(entry_point.as_bytes()).unwrap();
-        file.flush().unwrap();
-
-        assert!(check_pvh_note(&temp_file).is_ok());
-        let _ = std::fs::remove_file(temp_file);
-    }
-
-    #[test]
-    fn test_check_pvh_note_missing() {
-        let temp_file = std::env::temp_dir().join("test_pvh_missing.elf");
-        let mut file = File::create(&temp_file).unwrap();
-
-        let mut header = Elf64Header::default();
-        header.ident_magic = ELF_HEADER_MAGIC;
-        header.ident_class = ELF_IDENT_CLASS_64;
-        header.ident_data = ELF_IDENT_LITTLE_ENDIAN;
-        header.ph_num = 0;
-
-        file.write_all(header.as_bytes()).unwrap();
-        file.flush().unwrap();
-
-        assert!(check_pvh_note(&temp_file).is_err());
-        let _ = std::fs::remove_file(temp_file);
-    }
 }

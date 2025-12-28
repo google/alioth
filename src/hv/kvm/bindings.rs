@@ -178,27 +178,10 @@ pub struct KvmRun {
     pub s: KvmSyncRegsBlock,
 }
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct KvmExitFailEntry {
-    pub hardware_entry_failure_reason: u64,
-    pub cpu: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct KvmExitInternalError {
-    pub suberror: u32,
-    pub ndata: u32,
-    pub data: [u64; 16],
-}
-
-#[repr(C)]
 #[derive(Copy, Clone)]
 pub union KvmExit {
     pub mmio: KvmExitMmio,
     pub io: KvmExitIo,
-    pub fail_entry: KvmExitFailEntry,
-    pub internal: KvmExitInternalError,
     pub padding: [u8; 256],
 }
 
@@ -230,8 +213,6 @@ pub union KvmSyncRegsBlock {
 pub const KVM_EXIT_IO: u32 = 2;
 pub const KVM_EXIT_MMIO: u32 = 6;
 pub const KVM_EXIT_SHUTDOWN: u32 = 8;
-pub const KVM_EXIT_FAIL_ENTRY: u32 = 9;
-pub const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 
 pub const KVM_EXIT_IO_IN: u8 = 0;
 pub const KVM_EXIT_IO_OUT: u8 = 1;
@@ -268,6 +249,17 @@ bitflags! {
         const PIO = 1 << 1;
         const DEASSIGN = 1 << 2;
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmIoEventFd {
+    pub datamatch: u64,
+    pub addr: u64,
+    pub len: u32,
+    pub fd: i32,
+    pub flags: KvmIoEventFdFlag,
+    pub pad: [u32; 9],
 }
 
 #[repr(C)]

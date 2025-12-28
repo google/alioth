@@ -194,26 +194,11 @@ where
             }
         }
     }
-
-    pub fn search_mut(&mut self, addr: usize) -> Option<(usize, &mut B)> {
-        match self.slots.binary_search_by_key(&addr, |s| s.addr) {
-            Ok(index) => Some((self.slots[index].addr, &mut self.slots[index].backend)),
-            Err(0) => None,
-            Err(index) => {
-                let candidate = &mut self.slots[index - 1];
-                if addr <= candidate.max_addr() {
-                    let addr = candidate.addr;
-                    Some((addr, &mut candidate.backend))
-                } else {
-                    None
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod test {
+    use assert_matches::assert_matches;
 
     use super::*;
 
@@ -230,17 +215,14 @@ mod test {
 
     #[test]
     fn test_new_slot() {
-        assert!(matches!(
+        assert_matches!(
             Slot::new(usize::MAX, Backend { size: 0x10 }),
             Err(Error::OutOfRange {
                 size: 0x10,
                 addr: usize::MAX,
             })
-        ));
-        assert!(matches!(
-            Slot::new(0, Backend { size: 0 }),
-            Err(Error::ZeroSizedSlot)
-        ));
+        );
+        assert_matches!(Slot::new(0, Backend { size: 0 }), Err(Error::ZeroSizedSlot));
 
         let slot = Slot::new(0x1000, Backend { size: 0x1000 }).unwrap();
         assert_eq!(slot.max_addr(), 0x1fff);
@@ -249,60 +231,60 @@ mod test {
     #[test]
     fn test_addressable() {
         let mut memory = Addressable::<Backend>::new();
-        assert!(memory.add(0x1000, Backend { size: 0x1000 }).is_ok());
-        assert!(memory.add(0x5000, Backend { size: 0x1000 }).is_ok());
-        assert!(memory.add(0x2000, Backend { size: 0x2000 }).is_ok());
+        assert_matches!(memory.add(0x1000, Backend { size: 0x1000 }), Ok(_));
+        assert_matches!(memory.add(0x5000, Backend { size: 0x1000 }), Ok(_));
+        assert_matches!(memory.add(0x2000, Backend { size: 0x2000 }), Ok(_));
         assert_eq!(memory.slots.len(), 3);
         assert!(!memory.is_empty());
         assert_eq!(memory.last(), Some((0x5000, &memory.slots[2].backend)));
-        // assert!(matches!(memory.last_mut(), Some((0x5000, _))));
-        assert!(matches!(
+        // assert_matches!(memory.last_mut(), Some((0x5000, _)));
+        assert_matches!(
             memory.add(0x1000, Backend { size: 0x2000 }),
             Err(Error::Overlap {
                 new_item: [0x1000, 0x2fff],
                 exist_item: [0x1000, 0x1fff]
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             memory.add(0x1, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x1, 0x1000],
                 exist_item: [0x1000, 0x1fff]
             })
-        ));
+        );
 
-        assert!(memory.add(0x1, Backend { size: 0xfff }).is_ok());
-        assert!(memory.remove(0x1).is_ok());
+        assert_matches!(memory.add(0x1, Backend { size: 0xfff }), Ok(_));
+        assert_matches!(memory.remove(0x1), Ok(_));
 
-        assert!(matches!(
+        assert_matches!(
             memory.add(0x0, Backend { size: 0x2000 }),
             Err(Error::Overlap {
                 new_item: [0x0, 0x1fff],
                 exist_item: [0x1000, 0x1fff]
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             memory.add(0x3000, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x3000, 0x3fff],
                 exist_item: [0x2000, 0x3fff]
             })
-        ));
+        );
 
-        assert!(matches!(
+        assert_matches!(
             memory.add(0x4000, Backend { size: 0x1001 }),
             Err(Error::Overlap {
                 new_item: [0x4000, 0x5000],
                 exist_item: [0x5000, 0x5fff]
             })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             memory.add(0x3fff, Backend { size: 0x1000 }),
             Err(Error::Overlap {
                 new_item: [0x3fff, 0x4ffe],
                 exist_item: [0x2000, 0x3fff]
             })
-        ));
+        );
         memory.add(0x4000, Backend { size: 0x1000 }).unwrap();
         memory.remove(0x4000).unwrap();
 
@@ -333,24 +315,16 @@ mod test {
         assert_eq!(iter.next(), None);
         drop(iter);
 
-        assert!(matches!(
-            memory.remove(0x1000),
-            Ok(Backend { size: 0x1000 })
-        ));
-        assert!(matches!(
-            memory.remove(0x2001),
-            Err(Error::NotMapped(0x2001))
-        ));
+        assert_matches!(memory.remove(0x1000), Ok(Backend { size: 0x1000 }));
+        assert_matches!(memory.remove(0x2001), Err(Error::NotMapped(0x2001)));
 
-        assert!(
-            memory
-                .add(0usize.wrapping_sub(0x2000), Backend { size: 0x2000 })
-                .is_ok()
+        assert_matches!(
+            memory.add(0usize.wrapping_sub(0x2000), Backend { size: 0x2000 }),
+            Ok(_)
         );
-        assert!(
-            memory
-                .add(0usize.wrapping_sub(0x1000), Backend { size: 0x1000 })
-                .is_err()
+        assert_matches!(
+            memory.add(0usize.wrapping_sub(0x1000), Backend { size: 0x1000 }),
+            Err(_)
         )
     }
 
@@ -361,43 +335,43 @@ mod test {
             .add_within(0, 0x1000, 1, Backend { size: 0 })
             .unwrap_err();
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(0xff0, usize::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0x1000)
-        ));
+        );
         // slots: [0x1000, 0x1fff]
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(0, usize::MAX, 0x1000, Backend { size: 0x2000 }),
             Ok(0x2000)
-        ));
+        );
         // slots: [0x1000, 0x1fff], [0x2000, 0x3fff]
 
         memory
             .add_within(0, 0x3fff, 0x1000, Backend { size: 0x2000 })
             .unwrap_err();
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(0, usize::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0)
-        ));
+        );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff]
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(0x5000, usize::MAX, 0x1000, Backend { size: 0x1000 }),
             Ok(0x5000)
-        ));
+        );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
         // [0x5000, 0x5fff]
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(0, usize::MAX, 0x4000, Backend { size: 0x1000 }),
             Ok(0x4000)
-        ));
+        );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
         // [0x4000, 0x4fff], [0x5000, 0x5fff]
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(
                 0usize.wrapping_sub(0x9000),
                 usize::MAX,
@@ -405,12 +379,12 @@ mod test {
                 Backend { size: 0x1000 }
             ),
             Ok(0xffff_ffff_ffff_8000)
-        ));
+        );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
         // [0x4000, 0x4fff], [0x5000, 0x5fff],
         // [0xffff_ffff_ffff_8000, 0xffff_ffff_ffff_8fff]
 
-        assert!(matches!(
+        assert_matches!(
             memory.add_within(
                 0usize.wrapping_sub(0x4000),
                 usize::MAX,
@@ -418,7 +392,7 @@ mod test {
                 Backend { size: 0x1000 }
             ),
             Ok(0xffff_ffff_ffff_c000)
-        ));
+        );
         // slots: [0, 0xfff], [0x1000, 0x1fff], [0x2000, 0x3fff],
         // [0x4000, 0x4fff], [0x5000, 0x5fff],
         // [0xffff_ffff_ffff_8000, 0xffff_ffff_ffff_8fff],

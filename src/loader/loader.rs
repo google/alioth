@@ -18,26 +18,38 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::hv::arch::Reg;
+#[cfg(target_arch = "x86_64")]
 use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
-
+#[path = "linux/linux.rs"]
+pub mod linux;
 #[path = "xen/xen.rs"]
 pub mod xen;
 
 #[derive(Debug)]
 pub struct Payload {
     pub executable: PathBuf,
+    pub exec_type: ExecType,
     pub initramfs: Option<PathBuf>,
     pub cmd_line: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ExecType {
+    Linux,
+    Pvh,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct InitState {
     pub regs: Vec<(Reg, u64)>,
+    #[cfg(target_arch = "x86_64")]
     pub sregs: Vec<(SReg, u64)>,
+    #[cfg(target_arch = "x86_64")]
     pub dt_regs: Vec<(DtReg, DtRegVal)>,
+    #[cfg(target_arch = "x86_64")]
     pub seg_regs: Vec<(SegReg, SegRegVal)>,
     pub initramfs: Option<Range<usize>>,
 }
@@ -47,42 +59,40 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("failed to open kernel file {path:?}: {source}")]
-    KernelOpen {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to open initramfs file {path:?}: {source}")]
-    InitramfsOpen {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
     #[error("mem: {0}")]
     Mem(#[from] crate::mem::Error),
 
-    #[error("Xen/PVH loader: missing magic number {magic:#x}, found {found:#x}")]
+    #[error("msssing magic number {magic:#x}, found {found:#x}")]
     MissingMagic { magic: u64, found: u64 },
 
-    #[error("the kernel does not support PVH booting (no ELF note for PVH entry point found)")]
+    #[error("cannot find entry point")]
     NoEntryPoint,
-
-    #[error(
-        "PVH entry point {0:#x} is not in mapped RAM. The kernel might not support PVH booting or is invalid."
-    )]
-    InvalidEntryPoint(u64),
 
     #[error("not a 64bit kernel")]
     Not64BitKernel,
 
+    #[error("not a relocatable kernel")]
+    NotRelocatableKernel,
+
     #[error("kernel command line too long, length: {0}, limit: {1}")]
     CmdLineTooLong(usize, usize),
 
+    #[error("cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}")]
+    InitramfsAddrLimit {
+        addr: usize,
+        max: usize,
+        addr_max: usize,
+    },
+
     #[error("cannot find a memory region to load initramfs")]
     CannotLoadInitramfs,
+
+    #[error("{name} too old, minimum supported version {min:#x}, found version {found:#x}")]
+    TooOld {
+        name: &'static str,
+        min: u64,
+        found: u64,
+    },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

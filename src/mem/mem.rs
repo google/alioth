@@ -13,16 +13,12 @@
 // limitations under the License.
 
 use std::any::type_name;
-use std::cell::UnsafeCell;
 use std::fmt::Debug;
-use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::mem::{align_of, size_of};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
-use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use parking_lot::Mutex;
 use thiserror::Error;
-use zerocopy::{AsBytes, FromBytes};
 
 use crate::arch::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 use crate::hv::{self, VmEntry, VmMemory};
@@ -32,8 +28,8 @@ pub mod mapped;
 pub mod mmio;
 
 use addressable::{Addressable, SlotBackend};
-pub use mapped::ArcMemPages;
-pub use mmio::{Mmio, MmioRange};
+use mapped::{ArcMemPages, RamBus};
+use mmio::{MmioBus, MmioRange};
 
 #[derive(Debug)]
 pub enum Action {
@@ -102,7 +98,7 @@ impl MemRange {
     pub fn size(&self) -> usize {
         match self {
             MemRange::Mapped(pages) => pages.size(),
-            MemRange::Emulated(range) => range.as_ref().size(),
+            MemRange::Emulated(range) => range.size(),
             MemRange::Span(size) => *size,
         }
     }
@@ -151,7 +147,7 @@ impl MemRegion {
     }
 
     pub fn with_emulated(range: MmioRange, type_: MemRegionType) -> MemRegion {
-        let size = range.as_ref().size();
+        let size = range.size();
         MemRegion {
             size,
             ranges: vec![MemRange::Emulated(range)],
@@ -196,7 +192,7 @@ impl IoRegion {
 
 impl SlotBackend for Arc<IoRegion> {
     fn size(&self) -> usize {
-        self.range.as_ref().size()
+        self.range.size()
     }
 }
 
@@ -209,234 +205,51 @@ pub enum AddrOpt {
 }
 
 #[derive(Debug)]
-pub struct GpaRegion {
-    pub region: Arc<MemRegion>,
-    pub slots: Vec<u32>,
-}
-
-impl SlotBackend for GpaRegion {
-    fn size(&self) -> usize {
-        self.region.size
-    }
-}
-
-#[derive(Debug)]
 pub struct Memory {
-    pub(super) vm_memory: VmMemory,
-    regions: RwLock<Addressable<GpaRegion>>,
-    #[cfg(target_arch = "x86_64")]
-    pub(super) io_ports: RwLock<Addressable<Arc<IoRegion>>>,
-    next_slot_id: AtomicU32,
-    max_mem_slots: u32,
-}
-
-pub struct MemoryReadGuard<'a> {
-    _guard: RwLockReadGuard<'a, Addressable<GpaRegion>>,
-}
-
-impl<'a> MemoryReadGuard<'a> {
-    fn get_mapped_pages(&self, gpa: usize) -> Result<(ArcMemPages, usize)> {
-        let Some((start, gpa_region)) = self._guard.search(gpa) else {
-            return Err(Error::NotMapped(gpa));
-        };
-        let offset = gpa - start;
-        let mut cur_offset = 0;
-        for range in &gpa_region.region.ranges {
-            if offset >= cur_offset && offset < cur_offset + range.size() {
-                match range {
-                    MemRange::Mapped(pages) => {
-                        return Ok((pages.clone(), offset - cur_offset));
-                    }
-                    _ => return Err(Error::NotContinuous),
-                }
-            }
-            cur_offset += range.size();
-        }
-        Err(Error::NotMapped(gpa))
-    }
-
-    pub fn read<T>(&self, gpa: usize) -> Result<T>
-    where
-        T: FromBytes + AsBytes,
-    {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        pages.read(offset)
-    }
-
-    pub fn write<T>(&self, gpa: usize, val: &T) -> Result<()>
-    where
-        T: AsBytes,
-    {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        pages.write(offset, val)
-    }
-
-    pub fn get_ref<T>(&self, gpa: usize) -> Result<&UnsafeCell<T>> {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        let total_len = size_of::<T>();
-        if offset + total_len > pages.size() {
-            return Err(Error::OutOfRange { addr: gpa, size: total_len });
-        }
-        let host_ref = pages.get_partial_slice(offset, total_len)?;
-        let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
-        if host_ref.len() != total_len {
-            Err(Error::NotContinuous)
-        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
-            Err(Error::NotAligned)
-        } else {
-            Ok(unsafe { &*ptr })
-        }
-    }
-
-    pub fn get_slice<T>(&self, gpa: usize, len: usize) -> Result<&[UnsafeCell<T>]> {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        let total_len = len * size_of::<T>();
-        if offset + total_len > pages.size() {
-            return Err(Error::OutOfRange { addr: gpa, size: total_len });
-        }
-        let host_ref = pages.get_partial_slice(offset, total_len)?;
-        let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
-        if host_ref.len() != total_len {
-            Err(Error::NotContinuous)
-        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
-            Err(Error::NotAligned)
-        } else {
-            Ok(unsafe { &*core::ptr::slice_from_raw_parts(ptr, len) })
-        }
-    }
-
-    pub fn translate_iov(&self, iov: &[(usize, usize)]) -> Result<Vec<IoSlice<'_>>> {
-        let mut slices = vec![];
-        for (gpa, len) in iov {
-            let (pages, offset) = self.get_mapped_pages(*gpa)?;
-            if offset + *len > pages.size() {
-                return Err(Error::OutOfRange { addr: *gpa, size: *len });
-            }
-            let slice = unsafe { std::slice::from_raw_parts((pages.addr() + offset) as *const u8, *len) };
-            slices.push(IoSlice::new(slice));
-        }
-        Ok(slices)
-    }
-
-    pub fn translate_iov_mut(&self, iov: &[(usize, usize)]) -> Result<Vec<IoSliceMut<'_>>> {
-        let mut slices = vec![];
-        for (gpa, len) in iov {
-            let (pages, offset) = self.get_mapped_pages(*gpa)?;
-            if offset + *len > pages.size() {
-                return Err(Error::OutOfRange { addr: *gpa, size: *len });
-            }
-            let slice = unsafe { std::slice::from_raw_parts_mut((pages.addr() + offset) as *mut u8, *len) };
-            slices.push(IoSliceMut::new(slice));
-        }
-        Ok(slices)
-    }
-
-    pub fn read_range(&self, gpa: usize, len: usize, mut dst: impl Write) -> Result<()> {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        if offset + len > pages.size() {
-            return Err(Error::OutOfRange { addr: gpa, size: len });
-        }
-        let slice = pages.get_partial_slice(offset, len)?;
-        dst.write_all(slice)?;
-        Ok(())
-    }
-
-    pub fn write_range(&self, gpa: usize, len: usize, mut src: impl Read) -> Result<()> {
-        let (pages, offset) = self.get_mapped_pages(gpa)?;
-        if offset + len > pages.size() {
-            return Err(Error::OutOfRange { addr: gpa, size: len });
-        }
-        let slice = pages.get_partial_slice_mut(offset, len)?;
-        src.read_exact(slice)?;
-        Ok(())
-    }
-
-    pub fn read_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&[IoSlice<'_>]) -> T,
-    {
-        let mut iov = vec![];
-        for (gpa, len) in bufs {
-            let (pages, offset) = self.get_mapped_pages(*gpa)?;
-            if offset + *len > pages.size() {
-                return Err(Error::OutOfRange { addr: *gpa, size: *len });
-            }
-            let slice = unsafe { std::slice::from_raw_parts((pages.addr() + offset) as *const u8, *len) };
-            iov.push(IoSlice::new(slice));
-        }
-        Ok(callback(&iov))
-    }
-
-    pub fn write_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
-    {
-        let mut iov = vec![];
-        for (gpa, len) in bufs {
-            let (pages, offset) = self.get_mapped_pages(*gpa)?;
-            if offset + *len > pages.size() {
-                return Err(Error::OutOfRange { addr: *gpa, size: *len });
-            }
-            let slice = unsafe { std::slice::from_raw_parts_mut((pages.addr() + offset) as *mut u8, *len) };
-            iov.push(IoSliceMut::new(slice));
-        }
-        Ok(callback(&mut iov))
-    }
+    ram_bus: Arc<RamBus>,
+    mmio_bus: MmioBus,
+    regions: Mutex<Addressable<Arc<MemRegion>>>,
+    io_bus: MmioBus,
+    io_regions: Mutex<Addressable<Arc<IoRegion>>>,
 }
 
 impl Memory {
-    pub fn new(vm_memory: VmMemory) -> Self {
-        let max_mem_slots = match vm_memory.max_mem_slots() {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!(
-                    "quering hypervisor for maximum supported memory slots, got error {e:?}"
-                );
-                log::error!(
-                    "assuming the maximum supported memory slots is {:#x}",
-                    u16::MAX
-                );
-                u16::MAX as u32
-            }
-        };
+    pub fn new(vm_memory: impl VmMemory) -> Self {
         Memory {
-            vm_memory,
-            regions: RwLock::new(Addressable::new()),
-            #[cfg(target_arch = "x86_64")]
-            io_ports: RwLock::new(Addressable::new()),
-            next_slot_id: AtomicU32::new(0),
-            max_mem_slots,
-        }
-    }
-
-    pub fn lock_layout(&self) -> MemoryReadGuard<'_> {
-        MemoryReadGuard {
-            _guard: self.regions.read(),
+            ram_bus: Arc::new(RamBus::new(vm_memory)),
+            mmio_bus: MmioBus::new(),
+            regions: Mutex::new(Addressable::new()),
+            io_bus: MmioBus::new(),
+            io_regions: Mutex::new(Addressable::new()),
         }
     }
 
     pub fn reset(&self) -> Result<()> {
         self.clear()?;
-        self.next_slot_id.store(0, Ordering::Relaxed);
+        self.ram_bus.next_slot_id.store(0, Ordering::Relaxed);
         Ok(())
     }
 
+    pub fn ram_bus(&self) -> Arc<RamBus> {
+        self.ram_bus.clone()
+    }
+
     fn alloc(
-        regions: &mut Addressable<GpaRegion>,
+        regions: &mut Addressable<Arc<MemRegion>>,
         addr: AddrOpt,
-        region: GpaRegion,
+        region: Arc<MemRegion>,
     ) -> Result<usize> {
         match addr {
             AddrOpt::Fixed(addr) => {
-                regions.add(addr, region)?;
+                let _region = regions.add(addr, region)?;
                 Ok(addr)
             }
             AddrOpt::Any | AddrOpt::Above4G => {
-                let align = std::cmp::max(region.size().next_power_of_two(), PAGE_SIZE);
+                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
                 regions.add_within(MEM_64_START, usize::MAX, align, region)
             }
             AddrOpt::Below4G => {
-                let align = std::cmp::max(region.size().next_power_of_two(), PAGE_SIZE);
+                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE);
                 regions.add_within(MMIO_32_START, MMIO_32_END - 1, align, region)
             }
         }
@@ -444,42 +257,17 @@ impl Memory {
 
     pub fn add_region(&self, addr: AddrOpt, region: Arc<MemRegion>) -> Result<usize> {
         region.validate()?;
-        let mut regions = self.regions.write();
-        
-        let gpa_region = GpaRegion {
-            region: region.clone(),
-            slots: Vec::new(),
-        };
-        let addr = Self::alloc(&mut regions, addr, gpa_region)?;
-        
-        let (inserted_addr, inserted_gpa_region) = regions.search_mut(addr).ok_or(Error::NotMapped(addr))?;
-        assert_eq!(inserted_addr, addr);
-        
+        let mut regions = self.regions.lock();
+        let addr = Self::alloc(&mut regions, addr, region.clone())?;
         let mut offset = 0;
         for range in &region.ranges {
             match range {
-                MemRange::Mapped(pages) => {
-                    let slot_id = self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots;
-                    let mem_options = hv::MemMapOption {
-                        read: true,
-                        write: true,
-                        exec: true,
-                        log_dirty: false,
-                    };
-                    self.vm_memory.mem_map(
-                        slot_id,
-                        addr + offset,
-                        pages.size(),
-                        pages.addr(),
-                        mem_options,
-                    )?;
-                    inserted_gpa_region.slots.push(slot_id);
-                }
-                MemRange::Emulated(_) | MemRange::Span(_) => {}
+                MemRange::Emulated(r) => self.mmio_bus.add(addr + offset, r.clone())?,
+                MemRange::Mapped(r) => self.ram_bus.add(addr + offset, r.clone())?,
+                MemRange::Span(_) => {}
             }
             offset += range.size();
         }
-        
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.mapped(addr)?;
@@ -487,21 +275,21 @@ impl Memory {
         Ok(addr)
     }
 
-    fn unmap_region(&self, addr: usize, gpa_region: &GpaRegion) -> Result<()> {
-        let mut slot_idx = 0;
+    fn unmap_region(&self, addr: usize, region: &MemRegion) -> Result<()> {
         let mut offset = 0;
-        for range in &gpa_region.region.ranges {
+        for range in &region.ranges {
             match range {
-                MemRange::Mapped(pages) => {
-                    let slot_id = gpa_region.slots[slot_idx];
-                    self.vm_memory.unmap(slot_id, addr + offset, pages.size())?;
-                    slot_idx += 1;
+                MemRange::Emulated(_) => {
+                    self.mmio_bus.remove(addr + offset)?;
                 }
-                MemRange::Emulated(_) | MemRange::Span(_) => {}
-            }
+                MemRange::Mapped(_) => {
+                    self.ram_bus.remove(addr + offset)?;
+                }
+                MemRange::Span(_) => {}
+            };
             offset += range.size();
         }
-        let callbacks = gpa_region.region.callbacks.lock();
+        let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.unmapped()?;
         }
@@ -509,23 +297,24 @@ impl Memory {
     }
 
     pub fn remove_region(&self, addr: usize) -> Result<Arc<MemRegion>> {
-        let mut regions = self.regions.write();
-        let gpa_region = regions.remove(addr)?;
-        self.unmap_region(addr, &gpa_region)?;
-        Ok(gpa_region.region)
+        let mut regions = self.regions.lock();
+        let region = regions.remove(addr)?;
+        self.unmap_region(addr, &region)?;
+        Ok(region)
     }
 
+    // TODO can be optimized
     fn clear(&self) -> Result<()> {
-        let mut regions = self.regions.write();
-        let regions_drain = regions.drain(..);
-        for (addr, gpa_region) in regions_drain {
-            self.unmap_region(addr, &gpa_region)?;
+        let mut regions = self.regions.lock();
+        let regions = regions.drain(..);
+        for (addr, region) in regions {
+            self.unmap_region(addr, &region)?;
         }
         #[cfg(target_arch = "x86_64")]
         {
-            let mut io_ports = self.io_ports.write();
-            let io_ports_drain = io_ports.drain(..);
-            for (port, io_region) in io_ports_drain {
+            let mut io_regions = self.io_regions.lock();
+            let io_regions = io_regions.drain(..);
+            for (port, io_region) in io_regions {
                 self.unmap_io_region(port as u16, &io_region)?;
             }
         }
@@ -534,10 +323,10 @@ impl Memory {
 
     pub fn mem_region_entries(&self) -> Vec<(usize, MemRegionEntry)> {
         let mut entries = vec![];
-        let regions = self.regions.read();
-        for (start, gpa_region) in regions.iter() {
+        let regions = self.regions.lock();
+        for (start, region) in regions.iter() {
             let mut offset = 0;
-            for entry in gpa_region.region.entries.iter() {
+            for entry in region.entries.iter() {
                 entries.push((start + offset, *entry));
                 offset += entry.size;
             }
@@ -552,18 +341,21 @@ impl Memory {
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_io_region(&self, port: Option<u16>, region: Arc<IoRegion>) -> Result<u16, Error> {
-        let mut io_ports = self.io_ports.write();
-        let port_val = port.unwrap() as usize;
-        io_ports.add(port_val, region.clone())?;
+        let mut regions = self.io_regions.lock();
+        // TODO: allocate port dynamically
+        regions.add(port.unwrap() as usize, region.clone())?;
+        self.io_bus
+            .add(port.unwrap() as usize, region.range.clone())?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
-            callback.mapped(port_val)?;
+            callback.mapped(port.unwrap() as usize)?;
         }
-        Ok(port_val as u16)
+        Ok(port.unwrap())
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn unmap_io_region(&self, _port: u16, region: &IoRegion) -> Result<()> {
+    fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {
+        self.io_bus.remove(port as usize)?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
             callback.unmapped()?;
@@ -573,53 +365,10 @@ impl Memory {
 
     #[cfg(target_arch = "x86_64")]
     pub fn remove_io_region(&self, port: u16) -> Result<Arc<IoRegion>> {
-        let mut io_ports = self.io_ports.write();
-        let io_region = io_ports.remove(port as usize)?;
+        let mut io_regions = self.io_regions.lock();
+        let io_region = io_regions.remove(port as usize)?;
         self.unmap_io_region(port, &io_region)?;
         Ok(io_region)
-    }
-
-    // RAM access methods delegating to MemoryReadGuard
-    pub fn read<T>(&self, gpa: usize) -> Result<T>
-    where
-        T: FromBytes + AsBytes,
-    {
-        let guard = self.lock_layout();
-        guard.read(gpa)
-    }
-
-    pub fn write<T>(&self, gpa: usize, val: &T) -> Result<()>
-    where
-        T: AsBytes,
-    {
-        let guard = self.lock_layout();
-        guard.write(gpa, val)
-    }
-
-    pub fn read_range(&self, gpa: usize, len: usize, dst: impl Write) -> Result<()> {
-        let guard = self.lock_layout();
-        guard.read_range(gpa, len, dst)
-    }
-
-    pub fn write_range(&self, gpa: usize, len: usize, src: impl Read) -> Result<()> {
-        let guard = self.lock_layout();
-        guard.write_range(gpa, len, src)
-    }
-
-    pub fn read_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&[IoSlice<'_>]) -> T,
-    {
-        let guard = self.lock_layout();
-        guard.read_vectored(bufs, callback)
-    }
-
-    pub fn write_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
-    {
-        let guard = self.lock_layout();
-        guard.write_vectored(bufs, callback)
     }
 }
 
@@ -643,37 +392,18 @@ impl Memory {
     }
 
     pub fn handle_mmio(&self, gpa: usize, write: Option<u64>, size: u8) -> Result<VmEntry> {
-        let regions = self.regions.read();
-        let Some((start, gpa_region)) = regions.search(gpa) else {
-            return Ok(VmEntry::None);
-        };
-        let offset = gpa - start;
-        let mut cur_offset = 0;
-        for range in &gpa_region.region.ranges {
-            if offset >= cur_offset && offset < cur_offset + range.size() {
-                match range {
-                    MemRange::Emulated(dev) => {
-                        let dev_offset = offset - cur_offset;
-                        if let Some(val) = write {
-                            match dev.write(dev_offset, size, val) {
-                                Ok(()) => return Ok(VmEntry::None),
-                                Err(Error::Action(action)) => return self.handle_action(action),
-                                Err(e) => return Err(e),
-                            }
-                        } else {
-                            let val = dev.read(dev_offset, size)?;
-                            return Ok(VmEntry::Mmio { data: val });
-                        }
-                    }
-                    _ => return Err(Error::NotContinuous),
-                }
+        if let Some(val) = write {
+            match self.mmio_bus.write(gpa, size, val) {
+                Ok(()) => Ok(VmEntry::None),
+                Err(Error::Action(action)) => self.handle_action(action),
+                Err(e) => Err(e),
             }
-            cur_offset += range.size();
+        } else {
+            let data = self.mmio_bus.read(gpa, size)?;
+            Ok(VmEntry::Mmio { data })
         }
-        Ok(VmEntry::None)
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn handle_io(&self, port: u16, write: Option<u32>, size: u8) -> Result<VmEntry> {
         if port == 0x600 || port == 0x601 {
             log::warn!("port = {port:#x}, val = {write:#x?}, size = {size}");
@@ -681,23 +411,18 @@ impl Memory {
                 return Ok(VmEntry::Shutdown);
             }
         }
+        // TODO: add an IO device
         if port == 0x604 && write == Some(0x1) {
             return Ok(VmEntry::Reboot);
         }
-        
-        let io_ports = self.io_ports.read();
-        let Some((start, io_region)) = io_ports.search(port as usize) else {
-            return Ok(VmEntry::None);
-        };
-        let offset = port as usize - start;
         if let Some(val) = write {
-            match io_region.range.write(offset, size, val as u64) {
+            match self.io_bus.write(port as usize, size, val as u64) {
                 Ok(()) => Ok(VmEntry::None),
                 Err(Error::Action(action)) => self.handle_action(action),
                 Err(e) => Err(e),
             }
         } else {
-            let data = io_region.range.read(offset, size)? as u32;
+            let data = self.io_bus.read(port as usize, size)? as u32;
             Ok(VmEntry::Io { data })
         }
     }
@@ -706,57 +431,10 @@ impl Memory {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
-    use std::mem::size_of;
-    use std::ptr::null_mut;
 
-    use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap, munmap};
-    use zerocopy::{AsBytes, FromBytes, FromZeroes};
-
-    use crate::hv::VmMemory;
-    use crate::mem::mmio::Mmio;
-    use crate::mem::{AddrOpt, MMIO_32_START, MemRegion, MemRegionType, Memory, Result, ArcMemPages};
-
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
-    #[repr(C)]
-    struct MyStruct {
-        data: [u32; 8],
-    }
-
-    const PAGE_SIZE: usize = 1 << 12;
-
-    #[test]
-    fn test_memory_ram_read() {
-        let memory = Memory::new(VmMemory::new_fake());
-        let prot = PROT_READ | PROT_WRITE;
-        let size = 3 * PAGE_SIZE;
-        let addr = unsafe { mmap(null_mut(), size, prot, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) };
-        assert_ne!(addr, MAP_FAILED);
-        let munmap_ret = unsafe { munmap(addr.add(PAGE_SIZE), PAGE_SIZE) };
-        assert_ne!(munmap_ret, -1);
-        let mem1 = ArcMemPages::new_raw(addr, PAGE_SIZE);
-        let mem2_addr = unsafe { addr.add(2 * PAGE_SIZE) };
-        let mem2 = ArcMemPages::new_raw(mem2_addr, PAGE_SIZE);
-
-        let region1 = Arc::new(MemRegion::with_mapped(mem1, MemRegionType::Ram));
-        let region2 = Arc::new(MemRegion::with_mapped(mem2, MemRegionType::Ram));
-
-        memory.add_region(AddrOpt::Fixed(0x0), region1).unwrap();
-        memory.add_region(AddrOpt::Fixed(PAGE_SIZE), region2).unwrap();
-
-        let data = MyStruct {
-            data: [1, 2, 3, 4, 5, 6, 7, 8],
-        };
-        let data_size = size_of::<MyStruct>();
-        for gpa in (PAGE_SIZE - data_size)..=PAGE_SIZE {
-            if gpa < PAGE_SIZE && gpa + data_size > PAGE_SIZE {
-                assert!(memory.write(gpa, &data).is_err());
-            } else {
-                memory.write(gpa, &data).unwrap();
-                let r: MyStruct = memory.read(gpa).unwrap();
-                assert_eq!(r, data)
-            }
-        }
-    }
+    use crate::hv::test::FakeVmMemory;
+    use crate::mem::emulated::Mmio;
+    use crate::mem::{AddrOpt, MMIO_32_START, MemRegion, MemRegionType, Memory, Result};
 
     #[test]
     fn test_memory_add_remove() {
@@ -777,7 +455,7 @@ mod test {
             }
         }
 
-        let memory = Memory::new(VmMemory::new_fake());
+        let memory = Memory::new(FakeVmMemory);
         assert_eq!(
             memory
                 .add_region(

@@ -189,15 +189,18 @@ struct SerialReg {
 }
 
 #[derive(Debug)]
-pub struct Serial {
+pub struct Serial<I> {
     base_port: u16,
-    irq_sender: Arc<IntxSender>,
+    irq_sender: Arc<I>,
     reg: Arc<Mutex<SerialReg>>,
     worker_thread: Option<JoinHandle<()>>,
     exit_waker: Waker,
 }
 
-impl Mmio for Serial {
+impl<I> Mmio for Serial<I>
+where
+    I: IntxSender + Sync + Send + 'static,
+{
     fn size(&self) -> usize {
         8
     }
@@ -331,27 +334,30 @@ impl StdinBackup {
 
 impl Drop for StdinBackup {
     fn drop(&mut self) {
-        if let Some(t) = self.termios.take()
-            && let Err(e) = ffi!(unsafe { tcsetattr(STDIN_FILENO, 1, &t) })
-        {
-            log::error!("Restroing termios: {e:?}");
+        if let Some(t) = self.termios.take() {
+            if let Err(e) = ffi!(unsafe { tcsetattr(STDIN_FILENO, 1, &t) }) {
+                log::error!("Restroing termios: {e:?}");
+            }
         }
-        if let Some(f) = self.flag.take()
-            && let Err(e) = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, f) })
-        {
-            log::error!("Restoring stdin flag to {f:#x}: {e:?}")
+        if let Some(f) = self.flag.take() {
+            if let Err(e) = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, f) }) {
+                log::error!("Restoring stdin flag to {f:#x}: {e:?}")
+            }
         }
     }
 }
 
-struct SeiralWorker {
+struct SeiralWorker<I> {
     pub base_port: u16,
-    pub irq_sender: Arc<IntxSender>,
+    pub irq_sender: Arc<I>,
     pub reg: Arc<Mutex<SerialReg>>,
     pub poll: Poll,
 }
 
-impl SeiralWorker {
+impl<I> SeiralWorker<I>
+where
+    I: IntxSender,
+{
     fn setup_termios(&mut self) -> io::Result<()> {
         let mut raw_termios = MaybeUninit::uninit();
         ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
@@ -432,8 +438,11 @@ impl SeiralWorker {
 const TOKEN_SHUTDOWN: Token = Token(1);
 const TOKEN_STDIN: Token = Token(0);
 
-impl Serial {
-    pub fn new(base_port: u16, intx_sender: IntxSender) -> io::Result<Self> {
+impl<I> Serial<I>
+where
+    I: IntxSender + Sync + Send + 'static,
+{
+    pub fn new(base_port: u16, intx_sender: I) -> io::Result<Self> {
         let irq_sender = Arc::new(intx_sender);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
         let poll = Poll::new()?;
@@ -464,7 +473,7 @@ impl Serial {
     }
 }
 
-impl Drop for Serial {
+impl<I> Drop for Serial<I> {
     fn drop(&mut self) {
         if let Err(e) = self.exit_waker.wake() {
             log::error!("Serial {:#x}: {:?}", self.base_port, e);

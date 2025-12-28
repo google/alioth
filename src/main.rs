@@ -13,15 +13,15 @@
 // limitations under the License.
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::Arc;
-
+use crate::board::BoardConfig;
 use crate::hv::Kvm;
-use crate::loader::Payload;
+use crate::loader::{ExecType, Payload};
 use crate::virtio::dev::blk::BlockParam;
-use crate::vm::{BoardConfig, Machine};
+use crate::vm::Machine;
 
 #[path = "arch/arch.rs"]
 pub mod arch;
+#[path = "board/board.rs"]
 pub mod board;
 mod config;
 #[path = "firmware/firmware.rs"]
@@ -48,60 +48,59 @@ fn print_usage_and_exit() -> ! {
     std::process::exit(1)
 }
 
-fn run() -> Result<(), vm::Error> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 || args[1].as_str() != "-c" {
         print_usage_and_exit();
     }
     let config = config::parse_config(args[2].as_str())?;
 
-    let log_file = std::fs::File::create(config.log_file.as_path()).map_err(|source| {
-        vm::Error::LogFileCreate {
-            path: config.log_file.clone(),
-            source,
-        }
-    })?;
-    simplelog::WriteLogger::init(config.log_level, simplelog::Config::default(), log_file).unwrap();
-
-    let payload = Payload {
-        executable: config.kernel,
-        initramfs: config.initramfs,
-        cmd_line: config.cmd_line,
+    let payload = if let Some(kernel) = config.kernel {
+        Some(Payload {
+            exec_type: ExecType::Linux,
+            executable: kernel,
+            initramfs: config.initramfs,
+            cmd_line: config.cmd_line,
+        })
+    } else if let Some(pvh_kernel) = config.pvh {
+        Some(Payload {
+            executable: pvh_kernel,
+            exec_type: ExecType::Pvh,
+            initramfs: config.initramfs,
+            cmd_line: config.cmd_line,
+        })
+    } else {
+        None
     };
 
-    let vm = Arc::new(Machine::new(
+    let mut vm = Machine::new(
         Kvm::new()?,
         BoardConfig {
             mem_size: config.mem_size,
             num_cpu: config.num_cpus,
         },
-    )?);
+    )?;
     vm.add_com1()?;
-    vm.add_payload(payload);
+
+    if let Some(payload) = payload {
+        vm.add_payload(payload);
+    }
 
     for (net_dev_name, net_dev_param) in config.net {
         vm.add_virtio_dev(net_dev_name, net_dev_param)?;
     }
     for (index, blk) in config.blk.into_iter().enumerate() {
-        let param = BlockParam { path: blk };
+        let param = BlockParam { path: blk.into() };
         vm.add_virtio_dev(format!("virtio-blk-{index}"), param)?;
     }
 
-    vm.clone().boot()?;
+    vm.boot()?;
 
     for result in vm.wait() {
         result?;
     }
 
     Ok(())
-}
-
-fn main() -> std::process::ExitCode {
-    match run() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::ExitCode::FAILURE
-        }
-    }
 }

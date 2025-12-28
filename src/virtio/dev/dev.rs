@@ -22,7 +22,8 @@ use bitfield::bitfield;
 use mio::event::Event;
 use mio::{Events, Poll, Registry, Token, Waker};
 
-use crate::mem::Memory;
+use crate::mem::MemRegion;
+use crate::mem::mapped::RamBus;
 use crate::mem::mmio::Mmio;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, VirtQueue};
@@ -40,7 +41,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn device_id() -> DeviceId;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u64;
-    fn activate(&mut self, registry: &Registry, feature: u64, memory: &Memory) -> Result<()>;
+    fn activate(&mut self, registry: &Registry, feature: u64, memory: &RamBus) -> Result<()>;
     fn handle_queue(
         &mut self,
         index: u16,
@@ -55,6 +56,9 @@ pub trait Virtio: Debug + Send + Sync + 'static {
         irq_sender: &impl IrqSender,
         registry: &Registry,
     ) -> Result<()>;
+    fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +94,11 @@ where
 }
 
 #[derive(Debug)]
+enum Queues {
+    Split(Vec<SplitQueue>),
+}
+
+#[derive(Debug)]
 struct DeviceWorker<D, S>
 where
     S: IrqSender,
@@ -97,10 +106,10 @@ where
     name: Arc<String>,
     dev: D,
     poll: Poll,
-    memory: Arc<Memory>,
+    memory: Arc<RamBus>,
     event_rx: Receiver<WakeEvent<S>>,
     queue_regs: Arc<Vec<Queue>>,
-    queues: Vec<SplitQueue>,
+    queues: Queues,
 }
 
 #[derive(Debug)]
@@ -113,6 +122,7 @@ where
     pub device_config: Arc<D::Config>,
     pub reg: Arc<Register>,
     pub queue_regs: Arc<Vec<Queue>>,
+    pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub waker: Arc<Waker>,
     pub event_tx: Sender<WakeEvent<S>>,
     worker_handle: Option<JoinHandle<()>>,
@@ -135,7 +145,7 @@ where
         Ok(())
     }
 
-    pub fn new(name: Arc<String>, dev: D, memory: Arc<Memory>) -> Result<Self> {
+    pub fn new(name: Arc<String>, dev: D, memory: Arc<RamBus>) -> Result<Self> {
         let poll = Poll::new()?;
         let device_config = dev.config();
         let reg = Arc::new(Register {
@@ -150,6 +160,7 @@ where
         let queue_regs = Arc::new(queue_regs.collect::<Vec<_>>());
         let token = TOKEN_IS_QUEUE | TOKEN_WORKER_EVENT;
         let waker = Waker::new(poll.registry(), Token(token as usize))?;
+        let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
         let mut device_worker = DeviceWorker {
             name: name.clone(),
@@ -158,7 +169,7 @@ where
             event_rx,
             memory,
             queue_regs: queue_regs.clone(),
-            queues: Vec::new(),
+            queues: Queues::Split(Vec::new()),
         };
         let handle = std::thread::Builder::new()
             .name(name.as_ref().to_owned())
@@ -178,6 +189,7 @@ where
             event_tx,
             waker: Arc::new(waker),
             device_config,
+            shared_mem_regions,
         };
         Ok(virtio_dev)
     }
@@ -209,7 +221,9 @@ where
 {
     fn notify_queue(&mut self, q_index: u16, irq_sender: &S) -> Result<()> {
         let registry = self.poll.registry();
-        self.dev.handle_queue(q_index, &self.queues, irq_sender, registry)
+        match &self.queues {
+            Queues::Split(qs) => self.dev.handle_queue(q_index, qs, irq_sender, registry),
+        }
     }
 
     fn handle_wake_events(&mut self, irq_sender: &S) -> Result<DevAction> {
@@ -260,7 +274,9 @@ where
             }
         } else {
             let registry = self.poll.registry();
-            self.dev.handle_event(event, &self.queues, irq_sender, registry)?;
+            match &self.queues {
+                Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, registry)?,
+            };
             Ok(DevAction::Continue)
         }
     }
@@ -275,8 +291,14 @@ where
         };
         let memory = &self.memory;
         self.dev.activate(self.poll.registry(), feature, memory)?;
-        let new_queue = |reg| SplitQueue::new(reg, memory.clone(), feature);
-        self.queues = self.queue_regs.iter().map(new_queue).collect();
+        self.queues =
+            if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+                todo!()
+            } else {
+                let new_queue = |reg| SplitQueue::new(reg, memory.clone(), feature);
+                let split_queues = self.queue_regs.iter().map(new_queue).collect();
+                Queues::Split(split_queues)
+            };
         log::debug!("{}: started with feature bit {feature:#b}", self.name);
         self.handle_wake_events(&irq_sender)?;
         let mut events = Events::with_capacity(128);

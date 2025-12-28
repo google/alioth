@@ -12,26 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod serial;
-
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use crate::arch::layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
+use crate::board::{Board, Result};
 use crate::hv::arch::Cpuid;
-use crate::hv::{Kvm, Vcpu};
+use crate::hv::{Hypervisor, Vcpu, Vm};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
-use crate::vm::{Machine, Result};
 
 pub struct ArchBoard {
     cpuids: Vec<Cpuid>,
 }
 
 impl ArchBoard {
-    pub fn new(hv: &Kvm) -> Result<Self> {
+    pub fn new<H: Hypervisor>(hv: &H) -> Result<Self> {
         let mut cpuids = hv.get_supported_cpuids()?;
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
@@ -44,14 +42,17 @@ impl ArchBoard {
     }
 }
 
-impl Machine {
-    pub fn init_boot_vcpu(&self, vcpu: &mut Vcpu, init_state: &InitState) -> Result<()> {
+impl<V> Board<V>
+where
+    V: Vm,
+{
+    pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
         vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
         vcpu.set_regs(&init_state.regs)?;
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut Vcpu) -> Result<()> {
+    pub fn init_vcpu(&self, id: u32, vcpu: &mut V::Vcpu) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {

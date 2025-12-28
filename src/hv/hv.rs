@@ -15,31 +15,18 @@
 #[path = "arch/arch.rs"]
 pub mod arch;
 
-mod bindings;
-mod ioctls;
-pub mod vcpu;
-pub mod vm;
+#[path = "kvm/kvm.rs"]
+mod kvm;
+pub use kvm::Kvm;
 
 use std::fmt::Debug;
-use std::fs::File;
-use std::mem::{size_of, transmute};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::ptr::null_mut;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
+use arch::Reg;
+#[cfg(target_arch = "x86_64")]
+use arch::{Cpuid, DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use thiserror::Error;
-
-use crate::ffi;
-use crate::hv::arch::Cpuid;
-use bindings::{KVM_API_VERSION, KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2};
-use ioctls::{
-    kvm_create_irqchip, kvm_create_vm, kvm_get_api_version, kvm_get_supported_cpuid,
-    kvm_get_vcpu_mmap_size, kvm_set_identity_map_addr, kvm_set_tss_addr,
-};
-use libc::SIGRTMIN;
-
-pub use vcpu::Vcpu;
-pub use vm::{IntxSender, MsiSender, Vm, VmMemory};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -47,11 +34,6 @@ pub enum Error {
     MemMapOption {
         option: MemMapOption,
         hypervisor: &'static str,
-    },
-    #[error("failed to open /dev/kvm: {source} (note: ensure /dev/kvm exists and you have permission to access it, e.g. member of 'kvm' group or root)")]
-    KvmOpen {
-        #[source]
-        source: std::io::Error,
     },
     #[error("IO error: {source}")]
     StdIo {
@@ -87,6 +69,111 @@ impl Default for MemMapOption {
     }
 }
 
+pub trait Vcpu {
+    fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
+    fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_sreg(&self, reg: SReg) -> Result<u64, Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_sregs(
+        &mut self,
+        sregs: &[(SReg, u64)],
+        seg_regs: &[(SegReg, SegRegVal)],
+        dt_regs: &[(DtReg, DtRegVal)],
+    ) -> Result<(), Error>;
+
+    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
+
+    fn dump(&self) -> Result<(), Error>;
+}
+
+pub trait IntxSender: Debug + Send + Sync + 'static {
+    fn send(&self) -> Result<(), Error>;
+}
+
+impl<T> IntxSender for Arc<T>
+where
+    T: IntxSender,
+{
+    fn send(&self) -> Result<(), Error> {
+        IntxSender::send(self.as_ref())
+    }
+}
+
+pub trait MsiSender: Debug + Send + Sync + 'static {
+    fn send(&self, addr: u64, data: u32) -> Result<()>;
+}
+
+pub trait VmMemory: Debug + Send + Sync + 'static {
+    fn mem_map(
+        &self,
+        slot: u32,
+        gpa: usize,
+        size: usize,
+        hva: usize,
+        option: MemMapOption,
+    ) -> Result<(), Error>;
+
+    fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error>;
+
+    fn max_mem_slots(&self) -> Result<u32, Error>;
+
+    fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        unimplemented!()
+    }
+    fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+pub trait Vm {
+    type Vcpu: Vcpu;
+    type Memory: VmMemory;
+    type IntxSender: IntxSender + Send + Sync;
+    type MsiSender: MsiSender;
+    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error>;
+    fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error>;
+    fn create_msi_sender(&self) -> Result<Self::MsiSender>;
+    fn create_vm_memory(&mut self) -> Result<Self::Memory, Error>;
+    fn stop_vcpu<T>(id: u32, handle: &JoinHandle<T>) -> Result<(), Error>;
+
+    fn sev_launch_start(&self, _policy: u32) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_update_data(&self, _range: &mut [u8]) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
+        unimplemented!()
+    }
+    fn sev_launch_finish(&self) -> Result<(), Error> {
+        unimplemented!()
+    }
+}
+
+pub trait Hypervisor {
+    type Vm: Vm + Sync + Send + 'static;
+
+    fn create_vm(&self) -> Result<Self::Vm, Error>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmExit {
     Io {
@@ -112,93 +199,4 @@ pub enum VmEntry {
     Reboot,
     Io { data: u32 },
     Mmio { data: u64 },
-}
-
-#[derive(Debug)]
-pub struct Kvm {
-    fd: OwnedFd,
-}
-
-extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
-
-impl Kvm {
-    pub fn new() -> Result<Self, Error> {
-        let kvm_file = File::open("/dev/kvm").map_err(|source| Error::KvmOpen { source })?;
-        let kvm_fd = OwnedFd::from(kvm_file);
-        let version = unsafe { kvm_get_api_version(&kvm_fd) }?;
-        if version != KVM_API_VERSION {
-            return Err(Error::LackCap {
-                cap: format!("current KVM API version {version}, need {KVM_API_VERSION}"),
-            });
-        }
-        let mut action: libc::sigaction = unsafe { transmute([0u8; size_of::<libc::sigaction>()]) };
-        action.sa_flags = libc::SA_SIGINFO;
-        action.sa_sigaction = sigrtmin_handler as *const () as _;
-        ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) })?;
-        ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })?;
-        Ok(Kvm { fd: kvm_fd })
-    }
-
-    pub fn create_vm(&self) -> Result<Vm, Error> {
-        let vcpu_mmap_size = unsafe { kvm_get_vcpu_mmap_size(&self.fd) }? as usize;
-        let vm_fd = unsafe { kvm_create_vm(&self.fd, 0) }?;
-        let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
-        let vm = Vm {
-            fd: Arc::new(fd),
-            vcpu_mmap_size,
-            memory_created: false,
-        };
-        unsafe { kvm_create_irqchip(&vm.fd) }?;
-        // TODO should be in parameters
-        unsafe { kvm_set_tss_addr(&vm.fd, 0xf000_0000) }?;
-        unsafe { kvm_set_identity_map_addr(&vm.fd, &0xf000_3000) }?;
-        Ok(vm)
-    }
-
-    pub fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error> {
-        let mut kvm_cpuid2 = KvmCpuid2 {
-            nent: KVM_MAX_CPUID_ENTRIES as u32,
-            padding: 0,
-            entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
-        };
-        unsafe { kvm_get_supported_cpuid(&self.fd, &mut kvm_cpuid2) }?;
-        let cpuids = kvm_cpuid2.entries[0..kvm_cpuid2.nent as usize]
-            .iter()
-            .map(|e| Cpuid {
-                func: e.function,
-                index: if e.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX) {
-                    Some(e.index)
-                } else {
-                    None
-                },
-                eax: e.eax,
-                ebx: e.ebx,
-                ecx: e.ecx,
-                edx: e.edx,
-            })
-            .collect::<Vec<_>>();
-        Ok(cpuids)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_get_supported_cpuid() {
-        let kvm = Kvm::new().unwrap();
-        let mut kvm_cpuid_exist = false;
-        let supported_cpuids = kvm.get_supported_cpuids().unwrap();
-        for cpuid in &supported_cpuids {
-            if cpuid.func == 0x4000_0000
-                && cpuid.ebx.to_le_bytes() == *b"KVMK"
-                && cpuid.ecx.to_le_bytes() == *b"VMKV"
-                && cpuid.edx.to_le_bytes() == *b"M\0\0\0"
-            {
-                kvm_cpuid_exist = true;
-            }
-        }
-        assert!(kvm_cpuid_exist);
-    }
 }

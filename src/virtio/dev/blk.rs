@@ -19,12 +19,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use mio::Registry;
 use mio::event::Event;
+use mio::Registry;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::impl_mmio_for_zerocopy;
-use crate::mem::Memory;
+use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
 use crate::virtio::queue::handlers::handle_desc;
 use crate::virtio::queue::{Descriptor, VirtQueue};
@@ -124,22 +124,8 @@ pub struct Block {
 
 impl Block {
     pub fn new(param: BlockParam, name: Arc<String>) -> Result<Self> {
-        let disk = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&param.path)
-            .map_err(|source| crate::virtio::Error::BlockOpen {
-                dev_name: name.to_string(),
-                path: param.path.clone(),
-                source,
-            })?;
-        let len = disk
-            .metadata()
-            .map_err(|source| crate::virtio::Error::BlockMetadata {
-                dev_name: name.to_string(),
-                source,
-            })?
-            .len();
+        let disk = OpenOptions::new().read(true).write(true).open(param.path)?;
+        let len = disk.metadata()?.len();
         let config = BlockConfig {
             capacity: len / SECTOR_SIZE as u64,
             num_queues: 1,
@@ -277,7 +263,7 @@ impl Virtio for Block {
         self.feature.bits()
     }
 
-    fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &Memory) -> Result<()> {
+    fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {
         Ok(())
     }
 

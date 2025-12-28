@@ -17,44 +17,33 @@ use std::os::unix::thread::JoinHandleExt;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, eventfd, write};
+use libc::{eventfd, write, EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN};
 
-use super::bindings::{
-    KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI, KvmEncRegion, KvmIrqfd, KvmMemFlag,
-    KvmMsi, KvmUserspaceMemoryRegion,
+use crate::ffi;
+use crate::hv::kvm::bindings::{
+    KvmEncRegion, KvmIrqfd, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, KVM_CAP_IRQFD,
+    KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI,
 };
-use super::ioctls::{
+use crate::hv::kvm::ioctls::{
     kvm_check_extension, kvm_create_vcpu, kvm_irqfd, kvm_memory_encrypt_reg_region,
     kvm_memory_encrypt_unreg_region, kvm_set_user_memory_region, kvm_signal_msi,
 };
-use super::vcpu::{KvmRunBlock, Vcpu};
-use crate::ffi;
-use crate::hv::{Error, MemMapOption, Result};
+use crate::hv::kvm::vcpu::{KvmRunBlock, KvmVcpu};
+use crate::hv::{Error, IntxSender, MemMapOption, MsiSender, Result, Vm, VmMemory};
 
-pub struct Vm {
+pub struct KvmVm {
     pub(super) fd: Arc<OwnedFd>,
     pub(super) vcpu_mmap_size: usize,
     pub(super) memory_created: bool,
 }
 
 #[derive(Debug)]
-pub struct VmMemory {
+pub struct KvmMemory {
     pub(super) fd: Arc<OwnedFd>,
-    #[cfg(test)]
-    pub(super) is_fake: bool,
 }
 
-impl VmMemory {
-    #[cfg(test)]
-    pub fn new_fake() -> Self {
-        let file = std::fs::File::open("/dev/null").unwrap();
-        Self {
-            fd: Arc::new(file.into()),
-            is_fake: true,
-        }
-    }
-
-    pub fn mem_map(
+impl VmMemory for KvmMemory {
+    fn mem_map(
         &self,
         slot: u32,
         gpa: usize,
@@ -62,10 +51,6 @@ impl VmMemory {
         hva: usize,
         option: MemMapOption,
     ) -> Result<(), Error> {
-        #[cfg(test)]
-        if self.is_fake {
-            return Ok(());
-        }
         let mut flags = KvmMemFlag::empty();
         if !option.read || !option.exec {
             return Err(Error::MemMapOption {
@@ -90,11 +75,7 @@ impl VmMemory {
         Ok(())
     }
 
-    pub fn unmap(&self, slot: u32, gpa: usize, _size: usize) -> Result<(), Error> {
-        #[cfg(test)]
-        if self.is_fake {
-            return Ok(());
-        }
+    fn unmap(&self, slot: u32, gpa: usize, _size: usize) -> Result<(), Error> {
         let flags = KvmMemFlag::empty();
         let region = KvmUserspaceMemoryRegion {
             slot,
@@ -107,20 +88,12 @@ impl VmMemory {
         Ok(())
     }
 
-    pub fn max_mem_slots(&self) -> Result<u32, Error> {
-        #[cfg(test)]
-        if self.is_fake {
-            return Ok(u16::MAX as u32);
-        }
+    fn max_mem_slots(&self) -> Result<u32, Error> {
         let ret = unsafe { kvm_check_extension(&self.fd, KVM_CAP_NR_MEMSLOTS) }?;
         Ok(ret as u32)
     }
 
-    pub fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
-        #[cfg(test)]
-        if self.is_fake {
-            return Ok(());
-        }
+    fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
         let region = KvmEncRegion {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
@@ -129,11 +102,7 @@ impl VmMemory {
         Ok(())
     }
 
-    pub fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
-        #[cfg(test)]
-        if self.is_fake {
-            return Ok(());
-        }
+    fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
         let region = KvmEncRegion {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
@@ -144,24 +113,24 @@ impl VmMemory {
 }
 
 #[derive(Debug)]
-pub struct IntxSender {
+pub struct KvmIntxSender {
     event_fd: OwnedFd,
 }
 
-impl IntxSender {
-    pub fn send(&self) -> Result<(), Error> {
+impl IntxSender for KvmIntxSender {
+    fn send(&self) -> Result<(), Error> {
         ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })?;
         Ok(())
     }
 }
 
 #[derive(Debug)]
-pub struct MsiSender {
+pub struct KvmMsiSender {
     vm_fd: Arc<OwnedFd>,
 }
 
-impl MsiSender {
-    pub fn send(&self, addr: u64, data: u32) -> Result<()> {
+impl MsiSender for KvmMsiSender {
+    fn send(&self, addr: u64, data: u32) -> Result<()> {
         let kvm_msi = KvmMsi {
             address_lo: addr as u32,
             address_hi: (addr >> 32) as u32,
@@ -173,41 +142,46 @@ impl MsiSender {
     }
 }
 
-impl Vm {
+impl KvmVm {
     fn check_extension(&self, id: u64) -> Result<bool, Error> {
         let ret = unsafe { kvm_check_extension(&self.fd, id) }?;
         Ok(ret == 1)
     }
+}
 
-    pub fn create_vcpu(&self, id: u32) -> Result<Vcpu, Error> {
+impl Vm for KvmVm {
+    type Vcpu = KvmVcpu;
+    type IntxSender = KvmIntxSender;
+    type MsiSender = KvmMsiSender;
+    type Memory = KvmMemory;
+
+    fn create_vcpu(&self, id: u32) -> Result<Self::Vcpu, Error> {
         let vcpu_fd = unsafe { kvm_create_vcpu(&self.fd, id) }?;
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
-        Ok(Vcpu {
+        Ok(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
             kvm_run,
         })
     }
 
-    pub fn stop_vcpu<T>(_id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
+    fn stop_vcpu<T>(_id: u32, handle: &JoinHandle<T>) -> Result<(), Error> {
         ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })?;
         Ok(())
     }
 
-    pub fn create_vm_memory(&mut self) -> Result<VmMemory, Error> {
+    fn create_vm_memory(&mut self) -> Result<Self::Memory, Error> {
         if self.memory_created {
             Err(Error::CreatingMultipleMemory)
         } else {
-            let kvm_memory = VmMemory {
+            let kvm_memory = KvmMemory {
                 fd: self.fd.clone(),
-                #[cfg(test)]
-                is_fake: false,
             };
             self.memory_created = true;
             Ok(kvm_memory)
         }
     }
 
-    pub fn create_intx_sender(&self, pin: u8) -> Result<IntxSender, Error> {
+    fn create_intx_sender(&self, pin: u8) -> Result<Self::IntxSender, Error> {
         if !self.check_extension(KVM_CAP_IRQFD)? {
             Err(Error::LackCap {
                 cap: "KVM_CAP_IRQFD".to_string(),
@@ -220,18 +194,18 @@ impl Vm {
             ..Default::default()
         };
         unsafe { kvm_irqfd(&self.fd, &request) }?;
-        Ok(IntxSender {
+        Ok(KvmIntxSender {
             event_fd: unsafe { OwnedFd::from_raw_fd(event_fd) },
         })
     }
 
-    pub fn create_msi_sender(&self) -> Result<MsiSender> {
+    fn create_msi_sender(&self) -> Result<Self::MsiSender> {
         if !self.check_extension(KVM_CAP_SIGNAL_MSI)? {
             Err(Error::LackCap {
                 cap: "KVM_CAP_SIGNAL_MSI".to_string(),
             })?;
         }
-        Ok(MsiSender {
+        Ok(KvmMsiSender {
             vm_fd: self.fd.clone(),
         })
     }

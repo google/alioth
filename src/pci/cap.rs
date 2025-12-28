@@ -21,8 +21,7 @@ use parking_lot::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::addressable::SlotBackend;
-use crate::mem::mmio::Mmio;
-use crate::mem::addressable::Addressable;
+use crate::mem::mmio::{Mmio, MmioBus};
 use crate::pci::Error;
 use crate::pci::config::DeviceHeader;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
@@ -150,7 +149,7 @@ impl Mmio for Box<dyn PciCap> {
 
 #[derive(Debug)]
 pub struct PciCapList {
-    inner: Addressable<Box<dyn PciCap>>,
+    inner: MmioBus<Box<dyn PciCap>>,
 }
 
 impl Default for PciCapList {
@@ -162,7 +161,7 @@ impl Default for PciCapList {
 impl PciCapList {
     pub fn new() -> PciCapList {
         Self {
-            inner: Addressable::new(),
+            inner: MmioBus::new(),
         }
     }
 
@@ -173,17 +172,11 @@ impl PciCapList {
 
 impl Mmio for PciCapList {
     fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
-        match self.inner.search(offset) {
-            Some((start, dev)) => dev.read(offset - start, size),
-            None => Ok(0),
-        }
+        self.inner.read(offset, size)
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
-        match self.inner.search(offset) {
-            Some((start, dev)) => dev.write(offset - start, size, val),
-            None => Ok(()),
-        }
+        self.inner.write(offset, size, val)
     }
 
     fn size(&self) -> usize {
@@ -194,7 +187,7 @@ impl Mmio for PciCapList {
 impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
     type Error = Error;
     fn try_from(caps: Vec<Box<dyn PciCap>>) -> Result<Self, Self::Error> {
-        let mut bus = Addressable::new();
+        let bus = MmioBus::new();
         let mut ptr = size_of::<DeviceHeader>();
         let num_caps = caps.len();
         for (index, mut cap) in caps.into_iter().enumerate() {

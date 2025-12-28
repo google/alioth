@@ -27,38 +27,11 @@ pub mod queue;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("hypervisor: {0}")]
+    Hv(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("failed to open block device file {path:?} for '{dev_name}': {source}")]
-    BlockOpen {
-        dev_name: String,
-        path: std::path::PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to get metadata for block device '{dev_name}': {source}")]
-    BlockMetadata {
-        dev_name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to open /dev/net/tun for network device '{dev_name}': {source} (note: opening /dev/net/tun may require root/sudo privileges or network administrator capabilities)")]
-    TunOpen {
-        dev_name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to configure TAP interface '{if_name}' for network device '{dev_name}': {source} (configuring TAP interfaces typically requires root/sudo privileges or CAP_NET_ADMIN capability)")]
-    TapSetup {
-        dev_name: String,
-        if_name: String,
-        #[source]
-        source: std::io::Error,
-    },
 
     #[error("memory: {0}")]
     Memory(#[from] mem::Error),
@@ -88,6 +61,12 @@ bitflags! {
 pub enum DeviceId {
     Net = 1,
     Block = 2,
+    Entropy = 4,
+    Socket = 19,
+    Iommu = 23,
+    Mem = 24,
+    FileSystem = 26,
+    Pmem = 27,
 }
 
 bitflags! {

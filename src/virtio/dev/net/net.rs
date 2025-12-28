@@ -30,7 +30,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::config::{MacAddr, NetParam};
 use crate::impl_mmio_for_zerocopy;
-use crate::mem::Memory;
+use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
 use crate::virtio::queue::VirtQueue;
 use crate::virtio::queue::handlers::{queue_to_writer, reader_to_queue};
@@ -118,11 +118,7 @@ impl Net {
             .custom_flags(O_NONBLOCK)
             .read(true)
             .write(true)
-            .open("/dev/net/tun")
-            .map_err(|source| crate::virtio::Error::TunOpen {
-                dev_name: name.to_string(),
-                source,
-            })?;
+            .open("/dev/net/tun")?;
 
         let dev_feat = NetFeature::MAC
             | NetFeature::MTU
@@ -135,12 +131,12 @@ impl Net {
             | detect_tap_offload(&file);
         log::debug!("{name}: device fature: {dev_feat:x?}");
 
-        setup_tap(&mut file, param.if_name.as_deref(), &name)?;
+        setup_tap(&mut file, param.if_name.as_deref())?;
         let net = Net {
             name,
             config: Arc::new(NetConfig {
                 mac: param.mac,
-                max_queue_pairs: 1,
+                max_queue_pairs: param.queue_pairs.map(|p| p.into()).unwrap_or(1),
                 mtu: param.mtu,
                 ..Default::default()
             }),
@@ -155,7 +151,12 @@ impl Virtio for Net {
     type Config = NetConfig;
 
     fn num_queues(&self) -> u16 {
-        2
+        let data_queues = self.config.max_queue_pairs << 1;
+        if self.feature.contains(NetFeature::CTRL_VQ) {
+            data_queues + 1
+        } else {
+            data_queues
+        }
     }
 
     fn config(&self) -> Arc<NetConfig> {
@@ -174,7 +175,7 @@ impl Virtio for Net {
         self.feature.bits() | VirtioFeature::EVENT_IDX.bits()
     }
 
-    fn activate(&mut self, registry: &Registry, feature: u64, _memory: &Memory) -> Result<()> {
+    fn activate(&mut self, registry: &Registry, feature: u64, _memory: &RamBus) -> Result<()> {
         let feature = NetFeature::from_bits_retain(feature);
         log::debug!("{}: driver feature: {:?}", self.name, feature);
         enable_tap_offload(&mut self.tap, feature)?;
@@ -221,13 +222,12 @@ impl Virtio for Net {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        match index {
-            QUEUE_RX => reader_to_queue(&self.name, &self.tap, QUEUE_RX, queue, irq_sender),
-            QUEUE_TX => queue_to_writer(&self.name, &self.tap, QUEUE_TX, queue, irq_sender),
-            _ => {
-                log::error!("{}: unexpected queue index {index}", self.name);
-                Ok(())
-            }
+        if index == self.config.max_queue_pairs * 2 {
+            unimplemented!()
+        } else if index & 1 == 0 {
+            reader_to_queue(&self.name, &self.tap, index, queue, irq_sender)
+        } else {
+            queue_to_writer(&self.name, &self.tap, index, queue, irq_sender)
         }
     }
 }
@@ -236,14 +236,9 @@ pub const TOKEN_TAP: Token = Token(0);
 
 const VNET_HEADER_SIZE: i32 = 12;
 
-fn setup_tap(file: &mut File, if_name: Option<&str>, dev_name: &str) -> Result<()> {
-    let if_name_str = if_name.unwrap_or("<unnamed>").to_string();
+fn setup_tap(file: &mut File, if_name: Option<&str>) -> Result<()> {
     let mut tap_ifconfig = match if_name {
-        None => unsafe { tun_get_iff(file) }.map_err(|source| crate::virtio::Error::TapSetup {
-            dev_name: dev_name.to_string(),
-            if_name: if_name_str.clone(),
-            source,
-        })?,
+        None => unsafe { tun_get_iff(file) }?,
         Some(name) => {
             let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
             for (s, d) in zip(name.as_bytes(), tap_ifconfig.ifr_name.as_mut()) {
@@ -254,16 +249,8 @@ fn setup_tap(file: &mut File, if_name: Option<&str>, dev_name: &str) -> Result<(
     };
 
     tap_ifconfig.ifr_ifru.ifru_flags = (IFF_TAP | IFF_NO_PI | IFF_VNET_HDR) as i16;
-    unsafe { tun_set_iff(file, &tap_ifconfig) }.map_err(|source| crate::virtio::Error::TapSetup {
-        dev_name: dev_name.to_string(),
-        if_name: if_name_str.clone(),
-        source,
-    })?;
-    unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }.map_err(|source| crate::virtio::Error::TapSetup {
-        dev_name: dev_name.to_string(),
-        if_name: if_name_str.clone(),
-        source,
-    })?;
+    unsafe { tun_set_iff(file, &tap_ifconfig) }?;
+    unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
     Ok(())
 }
 
