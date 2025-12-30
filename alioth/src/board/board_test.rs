@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use assert_matches::assert_matches;
+use rstest::rstest;
 
 use crate::board::{CpuConfig, CpuTopology, Error};
 
@@ -44,4 +45,24 @@ fn test_cpu_topology_fixup() {
         },
     };
     assert_matches!(invalid.fixup(), Err(Error::InvalidCpuTopology { .. }))
+}
+
+#[rstest]
+#[case(CpuTopology{smt: false, cores: 1, sockets: 1}, 0, (0, 0, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 0, (0, 0, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 1, (0, 1, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 2, (0, 0, 1))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 3, (0, 1, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 4, (0, 4, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 11, (1, 5, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 14, (0, 2, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 23, (1, 5, 1))]
+fn test_cpu_topology_encode_decode(
+    #[case] topology: CpuTopology,
+    #[case] index: u16,
+    #[case] ids: (u8, u16, u8),
+) {
+    assert_eq!(topology.encode(index), ids);
+    let (socket_id, core_id, thread_id) = ids;
+    assert_eq!(topology.decode(socket_id, core_id, thread_id), index);
 }

@@ -156,7 +156,7 @@ impl<V: Vm> ArchBoard<V> {
 }
 
 fn encode_x2apic_id(topology: &CpuTopology, index: u16) -> u32 {
-    let (thread_id, core_id, socket_id) = topology.encode(index);
+    let (socket_id, core_id, thread_id) = topology.encode(index);
 
     let thread_width = topology.smt as u32;
     let cores_per_socket = topology.cores as u32;

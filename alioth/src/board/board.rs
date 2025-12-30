@@ -122,7 +122,12 @@ impl CpuTopology {
         let thread_id = index / total_cores;
         let core_id = index % total_cores % self.cores;
         let socket_id = index % total_cores / self.cores;
-        (thread_id as u8, core_id, socket_id as u8)
+        (socket_id as u8, core_id, thread_id as u8)
+    }
+
+    pub fn decode(&self, socket_id: u8, core_id: u16, thread_id: u8) -> u16 {
+        let total_cores = self.cores * self.sockets as u16;
+        thread_id as u16 * total_cores + core_id + socket_id as u16 * self.cores
     }
 }
 
