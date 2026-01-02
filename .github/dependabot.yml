@@ -6,6 +6,13 @@ updates:
       interval: monthly
     commit-message:
       prefix: "ci"
+    groups:
+      actions:
+        update-types:
+          - minor
+          - major
+          - patch
+
   - package-ecosystem: cargo
     directory: "/"
     schedule:
@@ -13,4 +20,4 @@ updates:
     groups:
       patches:
         update-types:
-        - "patch"
+          - patch
