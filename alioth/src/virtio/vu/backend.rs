@@ -283,7 +283,7 @@ impl VuBackend {
             }
             (VuFrontMsg::GET_FEATURES, 0) => {
                 let feature = self.dev.device_feature | VirtioFeature::VHOST_PROTOCOL.bits();
-                self.session.reply(req, &feature, &[])?;
+                self.session.reply(req, &(feature as u64), &[])?;
                 msg.flag.set_need_reply(false);
                 log::debug!("{name}: get device feature: {feature:#x}");
             }
