@@ -809,6 +809,9 @@ impl VirtioMio for UdsVsock {
                 log::error!("{}: failed to deregister socket: {err}", self.name);
             }
         }
+        if let Err(err) = registry.deregister(&mut SourceFd(&self.listener.as_raw_fd())) {
+            log::error!("{}: failed to deregister listener: {err}", self.name);
+        }
         self.host_ports.clear();
         self.next_port = 1024;
     }
