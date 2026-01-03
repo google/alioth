@@ -22,6 +22,7 @@ use alioth::mem::mapped::RamBus;
 use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
 use alioth::virtio::dev::net::tap::NetTapParam;
+use alioth::virtio::dev::vsock::UdsVsockParam;
 use alioth::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
 use clap::{Args, Subcommand};
@@ -88,6 +89,8 @@ pub enum DevType {
     Blk(DevArgs<BlkFileParam>),
     /// VirtIO filesystem device backed by a shared host directory.
     Fs(DevArgs<SharedDirParam>),
+    /// VirtIO vsock device backed by a Unix domain socket.
+    Vsock(DevArgs<UdsVsockParam>),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -138,6 +141,7 @@ pub fn start(args: VuArgs) -> Result<(), Error> {
             DevType::Net(args) => create_dev(format!("net-{index}"), args, memory.clone()),
             DevType::Blk(args) => create_dev(format!("blk-{index}"), args, memory.clone()),
             DevType::Fs(args) => create_dev(format!("fs-{index}"), args, memory.clone()),
+            DevType::Vsock(args) => create_dev(format!("vsock-{index}"), args, memory.clone()),
         }?;
         let (conn, _) = listener.accept().context(error::Accept)?;
         let backend = VuBackend::new(conn, dev, memory).context(error::CreateVu)?;

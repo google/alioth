@@ -36,7 +36,7 @@ use crate::{
 };
 
 #[cfg(target_os = "linux")]
-#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
 pub struct VuSocket {
     pub socket: Box<Path>,
 }
@@ -88,6 +88,10 @@ pub enum VsockParam {
     /// Vsock device mapped to a Unix domain socket.
     #[serde(alias = "uds")]
     Uds(UdsVsockParam),
+    #[cfg(target_os = "linux")]
+    /// Vsock device backed by a vhost-user process.
+    #[serde(alias = "vu")]
+    Vu(VuSocket),
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]

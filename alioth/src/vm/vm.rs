@@ -237,6 +237,14 @@ where
                 #[cfg(target_os = "linux")]
                 VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock", p),
                 VsockParam::Uds(p) => vm.add_virtio_dev("uds-vsock", p),
+                #[cfg(target_os = "linux")]
+                VsockParam::Vu(s) => {
+                    let p = VuFrontendParam {
+                        id: DeviceId::Socket,
+                        socket: s.socket,
+                    };
+                    vm.add_virtio_dev("vu-vsock", p)
+                }
             }?;
         }
 
