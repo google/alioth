@@ -16,7 +16,6 @@ use std::marker::PhantomData;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::sync::Arc;
-use std::thread::spawn;
 
 use alioth::errors::{DebugTrace, trace_error};
 use alioth::mem::mapped::RamBus;
@@ -142,7 +141,7 @@ pub fn start(args: VuArgs) -> Result<(), Error> {
         }?;
         let (conn, _) = listener.accept().context(error::Accept)?;
         let backend = VuBackend::new(conn, dev, memory).context(error::CreateVu)?;
-        spawn(move || run_backend(backend));
+        run_backend(backend);
         index = index.wrapping_add(1);
     }
 }
