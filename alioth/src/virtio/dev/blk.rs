@@ -198,6 +198,16 @@ impl Block {
             .write(!param.readonly)
             .open(&param.path)
             .context(access_disk)?;
+
+        let ctx_lock = error::LockFile {
+            path: param.path.as_ref(),
+        };
+        if param.readonly {
+            disk.try_lock_shared().context(ctx_lock)
+        } else {
+            disk.try_lock().context(ctx_lock)
+        }?;
+
         let len = disk.metadata().context(access_disk)?.len();
         let config = BlockConfig {
             capacity: len / SECTOR_SIZE as u64,

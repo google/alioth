@@ -49,6 +49,11 @@ pub enum Error {
         path: Box<Path>,
         error: std::io::Error,
     },
+    #[snafu(display("Failed to lock file {path:?}"))]
+    LockFile {
+        path: Box<Path>,
+        error: std::fs::TryLockError,
+    },
     #[snafu(display("Error from OS"), context(false))]
     System { error: std::io::Error },
     #[snafu(display("Failed to create a poll"))]
