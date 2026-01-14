@@ -243,7 +243,14 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
 
     // 1. Host to Guest via guest-initiated connection
     let h2g_data = "hello from host";
-    let buf_id = rx_q.add_desc(&[], &[(rx_buf_addr, 4096)]);
+    let buf_id = rx_q.add_desc(
+        &[],
+        &[
+            (rx_buf_addr, 32),
+            (rx_buf_addr + 32, 32),
+            (rx_buf_addr + 64, 32),
+        ],
+    );
     tx.send(WakeEvent::Notify {
         q_index: VsockVirtq::RX.raw(),
     })

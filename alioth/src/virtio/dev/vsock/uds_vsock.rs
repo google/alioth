@@ -371,6 +371,7 @@ impl UdsVsock {
                 return self.respond_rst(hdr, irq_sender, rx_q);
             }
         };
+        reader.set_nonblocking(true)?;
         let writer = reader.try_clone()?;
         let token = Token(reader.as_raw_fd() as usize);
         registry.register(
