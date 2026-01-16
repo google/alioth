@@ -16,8 +16,8 @@ mod vmentry;
 mod vmexit;
 
 use std::collections::HashMap;
-use std::io::ErrorKind;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, mpsc};
 
@@ -36,6 +36,7 @@ use crate::sys::hvf::{
 #[derive(Debug)]
 pub struct VcpuHandle {
     pub vcpu_id: u64,
+    pub power_on: Arc<AtomicBool>,
     pub sender: Sender<VcpuEvent>,
 }
 
@@ -45,16 +46,17 @@ pub struct HvfVcpu {
     vcpu_id: u64,
     vmexit: Option<VmExit>,
     exit_reg: Option<HvReg>,
-    vcpus: Arc<Mutex<HashMap<MpidrEl1, VcpuHandle>>>,
+    vcpus: Arc<Mutex<HashMap<MpidrEl1, Arc<VcpuHandle>>>>,
     receiver: Receiver<VcpuEvent>,
-    power_on: bool,
+    power_on: Arc<AtomicBool>,
 }
 
 impl HvfVcpu {
     fn power_on(&mut self, pc: u64, context: u64) -> Result<()> {
         let pstate = (Pstate::EL_H | Pstate::EL_BIT2).bits() as u64;
         self.set_regs(&[(Reg::Pc, pc), (Reg::X0, context), (Reg::Pstate, pstate)])?;
-        self.power_on = true;
+        self.set_sregs(&[(SReg::SCTLR_EL1, 0x0)])?;
+        self.power_on.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -70,7 +72,12 @@ impl HvfVcpu {
 
         let (sender, receiver) = mpsc::channel();
 
-        let handle = VcpuHandle { vcpu_id, sender };
+        let power_on = Arc::new(AtomicBool::new(false));
+        let handle = Arc::new(VcpuHandle {
+            vcpu_id,
+            sender,
+            power_on: power_on.clone(),
+        });
 
         vm.vcpus.lock().insert(mpidr, handle);
 
@@ -81,7 +88,7 @@ impl HvfVcpu {
             exit_reg: None,
             vcpus: vm.vcpus.clone(),
             receiver,
-            power_on: false,
+            power_on,
         })
     }
 }
@@ -143,8 +150,8 @@ impl Reg {
 
 impl Vcpu for HvfVcpu {
     fn reset(&mut self, is_bsp: bool) -> Result<()> {
-        self.power_on = is_bsp;
-        self.set_sregs(&[(SReg::SCTLR_EL1, 0)])
+        self.power_on.store(is_bsp, Ordering::Relaxed);
+        self.set_sregs(&[(SReg::SCTLR_EL1, 0x0)])
     }
 
     fn dump(&self) -> Result<()> {
@@ -159,11 +166,8 @@ impl Vcpu for HvfVcpu {
             VmEntry::Reboot => return Ok(VmExit::Reboot),
         }
 
-        if !self.power_on {
-            let Ok(event) = self.receiver.recv() else {
-                return Err(ErrorKind::BrokenPipe.into()).context(error::RunVcpu);
-            };
-            match event {
+        if !self.power_on.load(Ordering::Relaxed) {
+            match self.receiver.recv()? {
                 VcpuEvent::Interrupt => return Ok(VmExit::Interrupted),
                 VcpuEvent::PowerOn { pc, context } => {
                     self.power_on(pc, context)?;

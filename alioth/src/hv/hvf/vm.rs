@@ -257,7 +257,7 @@ pub enum VcpuEvent {
 #[derive(Debug)]
 pub struct HvfVm {
     gic_config: Mutex<(OsObject, bool)>,
-    pub vcpus: Arc<Mutex<HashMap<MpidrEl1, VcpuHandle>>>,
+    pub vcpus: Arc<Mutex<HashMap<MpidrEl1, Arc<VcpuHandle>>>>,
 }
 
 impl HvfVm {
@@ -322,9 +322,7 @@ impl Vm for HvfVm {
             return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
         };
 
-        if vcpu.sender.send(VcpuEvent::Interrupt).is_err() {
-            return Err(ErrorKind::BrokenPipe.into()).context(error::StopVcpu);
-        };
+        vcpu.sender.send(VcpuEvent::Interrupt)?;
         let ret = unsafe { hv_vcpus_exit(&vcpu.vcpu_id, 1) };
         check_ret(ret).context(error::StopVcpu)
     }

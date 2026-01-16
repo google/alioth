@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::Ordering;
+
 use snafu::ResultExt;
 
-use crate::arch::psci::{PSCI_VERSION_1_1, PsciFunc, PsciMigrateInfo};
+use crate::arch::psci::{PSCI_VERSION_1_1, PsciAffinityInfo, PsciErr, PsciFunc, PsciMigrateInfo};
 use crate::arch::reg::{EsrEl2DataAbort, EsrEl2Ec, EsrEl2SysReg, MpidrEl1, Reg, SReg, encode};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vcpu::HvfVcpu;
@@ -80,6 +82,9 @@ impl HvfVcpu {
                     | PsciFunc::SYSTEM_OFF2_64
                     | PsciFunc::CPU_ON_32
                     | PsciFunc::CPU_ON_64
+                    | PsciFunc::CPU_OFF
+                    | PsciFunc::AFFINITY_INFO_32
+                    | PsciFunc::AFFINITY_INFO_64
                     | PsciFunc::SYSTEM_RESET
                     | PsciFunc::SYSTEM_RESET2_32
                     | PsciFunc::SYSTEM_RESET2_64 => 0,
@@ -95,9 +100,7 @@ impl HvfVcpu {
                 let pc = self.get_reg(Reg::X2)?;
                 let context = self.get_reg(Reg::X3)?;
                 if let Some(vcpu) = self.vcpus.lock().get(&MpidrEl1(mpidr)) {
-                    vcpu.sender
-                        .send(VcpuEvent::PowerOn { pc, context })
-                        .unwrap();
+                    vcpu.sender.send(VcpuEvent::PowerOn { pc, context })?;
                     0
                 } else {
                     log::error!("Failed to find CPU with mpidr {mpidr:#x}");
@@ -108,6 +111,8 @@ impl HvfVcpu {
                 self.vmexit = Some(VmExit::Reboot);
                 return Ok(());
             }
+            PsciFunc::AFFINITY_INFO_32 | PsciFunc::AFFINITY_INFO_64 => self.psci_affinity_info()?,
+            PsciFunc::CPU_OFF => self.psci_cpu_off()?,
             f => {
                 return error::VmExit {
                     msg: format!("HVC: {f:x?}"),
@@ -145,5 +150,39 @@ impl HvfVcpu {
             msg: format!("Unhandled iss: {iss:x?}, sreg: {sreg:?}"),
         }
         .fail()
+    }
+
+    fn psci_affinity_info(&mut self) -> Result<u64> {
+        let lowest_affinity_level = self.get_reg(Reg::X2)?;
+        if lowest_affinity_level != 0 {
+            // PSCI 1.0 and later no longer requires AFFINITY_INFO to
+            // support affinity levels greater than 0.
+            return Ok(PsciErr::INVALID_PARAMETERS.raw() as u64);
+        }
+        let target_affinity = self.get_reg(Reg::X1)?;
+        let vcpus = self.vcpus.lock();
+        let Some(vcpu) = vcpus.get(&MpidrEl1(target_affinity)) else {
+            return Ok(PsciErr::INVALID_PARAMETERS.raw() as u64);
+        };
+        let info = if vcpu.power_on.load(Ordering::Relaxed) {
+            PsciAffinityInfo::ON
+        } else {
+            PsciAffinityInfo::OFF
+        };
+        Ok(info.raw())
+    }
+
+    fn psci_cpu_off(&mut self) -> Result<u64> {
+        self.power_on.store(false, Ordering::Relaxed);
+        match self.receiver.recv()? {
+            VcpuEvent::PowerOn { pc, context } => {
+                self.power_on(pc, context)?;
+                Ok(context)
+            }
+            VcpuEvent::Interrupt => {
+                self.vmexit = Some(VmExit::Interrupted);
+                Ok(0)
+            }
+        }
     }
 }

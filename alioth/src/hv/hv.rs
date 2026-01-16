@@ -30,7 +30,7 @@ use std::thread::JoinHandle;
 
 use serde::Deserialize;
 use serde_aco::Help;
-use snafu::Snafu;
+use snafu::{AsErrorSource, Snafu};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::CpuidIn;
@@ -100,9 +100,29 @@ pub enum Error {
     StopVcpu { error: std::io::Error },
     #[snafu(display("Failed to handle VM exit: {msg}"))]
     VmExit { msg: String },
+    #[snafu(display("Broken channel"))]
+    BrokenChannel,
     #[cfg(target_os = "linux")]
     #[snafu(display("KVM internal error"), context(false))]
     KvmErr { source: Box<KvmError> },
+}
+
+impl From<std::sync::mpsc::RecvError> for Error {
+    fn from(error: std::sync::mpsc::RecvError) -> Self {
+        let source = error.as_error_source();
+        Error::BrokenChannel {
+            _location: snafu::GenerateImplicitData::generate_with_source(source),
+        }
+    }
+}
+
+impl<T: 'static> From<std::sync::mpsc::SendError<T>> for Error {
+    fn from(error: std::sync::mpsc::SendError<T>) -> Self {
+        let source = error.as_error_source();
+        Error::BrokenChannel {
+            _location: snafu::GenerateImplicitData::generate_with_source(source),
+        }
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

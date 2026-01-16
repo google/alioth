@@ -59,11 +59,35 @@ c_enum! {
 pub const PSCI_VERSION_1_1: u32 = (1 << 16) | 1;
 
 c_enum! {
+    pub struct PsciErr(i64);
+    {
+        NOT_SUPPORTED = -1;
+        INVALID_PARAMETERS = -2;
+        DENIED = -3;
+        ALREADY_ON = -4;
+        ON_PENDING = -5;
+        INTERNAL_FAILURE = -6;
+        NOT_PRESENT = -7;
+        DISABLED = -8;
+        INVALID_ADDRESS = -9;
+    }
+}
+
+c_enum! {
     /// https://developer.arm.com/documentation/den0022/latest/
     pub struct PsciMigrateInfo(u32);
     {
         CAPABLE = 0;
         INCAPABLE = 1;
         NOT_REQUIRED = 2;
+    }
+}
+
+c_enum! {
+    pub struct PsciAffinityInfo(u64);
+    {
+        ON_PENDING = 2;
+        OFF = 1;
+        ON = 0;
     }
 }
