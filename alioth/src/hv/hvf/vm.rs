@@ -251,7 +251,7 @@ impl Its for HvfIts {
 #[derive(Debug)]
 pub enum VcpuEvent {
     PowerOn { pc: u64, context: u64 },
-    PowerOff,
+    Interrupt,
 }
 
 #[derive(Debug)]
@@ -322,7 +322,7 @@ impl Vm for HvfVm {
             return Err(ErrorKind::NotFound.into()).context(error::StopVcpu);
         };
 
-        if vcpu.sender.send(VcpuEvent::PowerOff).is_err() {
+        if vcpu.sender.send(VcpuEvent::Interrupt).is_err() {
             return Err(ErrorKind::BrokenPipe.into()).context(error::StopVcpu);
         };
         let ret = unsafe { hv_vcpus_exit(&vcpu.vcpu_id, 1) };

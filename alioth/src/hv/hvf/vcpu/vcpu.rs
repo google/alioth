@@ -24,7 +24,7 @@ use std::sync::{Arc, mpsc};
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
-use crate::arch::reg::{MpidrEl1, Reg, SReg};
+use crate::arch::reg::{MpidrEl1, Pstate, Reg, SReg};
 use crate::hv::hvf::check_ret;
 use crate::hv::hvf::vm::{HvfVm, VcpuEvent};
 use crate::hv::{Result, Vcpu, VmEntry, VmExit, error};
@@ -51,14 +51,10 @@ pub struct HvfVcpu {
 }
 
 impl HvfVcpu {
-    fn handle_event(&mut self, event: &VcpuEvent) -> Result<()> {
-        match event {
-            VcpuEvent::PowerOn { pc, context } => {
-                self.set_regs(&[(Reg::Pc, *pc), (Reg::X0, *context), (Reg::Pstate, 5)])?;
-                self.power_on = true;
-            }
-            VcpuEvent::PowerOff => self.power_on = false,
-        }
+    fn power_on(&mut self, pc: u64, context: u64) -> Result<()> {
+        let pstate = (Pstate::EL_H | Pstate::EL_BIT2).bits() as u64;
+        self.set_regs(&[(Reg::Pc, pc), (Reg::X0, context), (Reg::Pstate, pstate)])?;
+        self.power_on = true;
         Ok(())
     }
 
@@ -160,33 +156,30 @@ impl Vcpu for HvfVcpu {
             VmEntry::None => {}
             VmEntry::Mmio { data } => self.entry_mmio(data)?,
             VmEntry::Shutdown => return Ok(VmExit::Shutdown),
-            _ => unimplemented!("{entry:?}"),
+            VmEntry::Reboot => return Ok(VmExit::Reboot),
         }
+
         if !self.power_on {
             let Ok(event) = self.receiver.recv() else {
                 return Err(ErrorKind::BrokenPipe.into()).context(error::RunVcpu);
             };
-            self.handle_event(&event)?;
-            if !self.power_on {
-                return Ok(VmExit::Shutdown);
+            match event {
+                VcpuEvent::Interrupt => return Ok(VmExit::Interrupted),
+                VcpuEvent::PowerOn { pc, context } => {
+                    self.power_on(pc, context)?;
+                }
             }
         }
         loop {
             let ret = unsafe { hv_vcpu_run(self.vcpu_id) };
             check_ret(ret).context(error::RunVcpu)?;
 
-            while let Ok(event) = self.receiver.try_recv() {
-                self.handle_event(&event)?;
-                if !self.power_on {
-                    return Ok(VmExit::Shutdown);
-                }
-            }
-
             let exit = unsafe { &*self.exit };
             match exit.reason {
                 HvExitReason::EXCEPTION => {
                     self.handle_exception(&exit.exception)?;
                 }
+                HvExitReason::CANCEL => break Ok(VmExit::Interrupted),
                 _ => {
                     break error::VmExit {
                         msg: format!("{exit:x?}"),
