@@ -5,8 +5,12 @@ permissions: read-all
 on:
   push:
     branches: ["main"]
+    paths-ignore:
+      - 'bootloader/**'
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - 'bootloader/**'
 
 env:
   CARGO_TERM_COLOR: always
