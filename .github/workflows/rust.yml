@@ -5,12 +5,14 @@ permissions: read-all
 on:
   push:
     branches: ["main"]
-    paths-ignore:
-      - 'bootloader/**'
+    paths: &on_paths
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .github/workflows/rust.yml
   pull_request:
     branches: ["main"]
-    paths-ignore:
-      - 'bootloader/**'
+    paths: *on_paths
 
 env:
   CARGO_TERM_COLOR: always
