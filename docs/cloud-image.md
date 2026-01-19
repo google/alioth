@@ -33,7 +33,7 @@ bootloader/build.sh
 ```
 
 The Alioth binary will be located at `target/release/alioth`, and the bootloader
-kernel image at `target/bootloader-x86_64/linux/arch/x86/boot/bzImage`.
+kernel image at `target/bootloader-x86_64/kernel-x86_64`.
 
 ## Preparing Disk Images
 
@@ -82,7 +82,7 @@ Run the following command to start the VM.
 ```bash
 ./alioth -l info --log-to-file boot \
     -m size=4G -p count=4 \
-    -k ./bzImage \
+    -k ./kernel-x86_64 \
     --entropy \
     --pvpanic \
     --blk file,path=Fedora-Cloud-Base-Generic-43-1.6.x86_64.raw \

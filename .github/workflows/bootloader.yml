@@ -1,0 +1,41 @@
+name: Build Bootloader
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - bootloader/**
+      - .github/workflows/bootloader.yml
+
+jobs:
+  build_bootloader:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: stable
+          cache-dependency-path: "**/go.sum"
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@98e68e10c96dffcb7bfed8b2144541a66b49aa02 # v2.0.8
+        with:
+          version: "20"
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libelf-dev
+      - name: Build bootloader
+        run: ARCH=${{ matrix.arch }} ./bootloader/build.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: target/bootloader-${{ matrix.arch }}/kernel-${{ matrix.arch }}

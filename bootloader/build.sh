@@ -14,7 +14,7 @@ function fetch_source() {
     pushd target
 
     echo "Fetching Linux source..."
-    wget ${LINUX_SRC} -O linux.tar.xz
+    wget -q -O linux.tar.xz ${LINUX_SRC}
     tar xf linux.tar.xz
     mv linux-* linux
 
@@ -60,7 +60,9 @@ function build_linux() {
     echo "Building Linux kernel..."
     make ${vars[@]}
 
-    echo "Image: ${TARGET_DIR}/${image}"
+    mv ${TARGET_DIR}/${image} ${TARGET_DIR}/kernel-${ARCH}
+
+    echo "Image: ${TARGET_DIR}/kernel-${ARCH}"
 }
 
 
