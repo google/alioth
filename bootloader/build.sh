@@ -7,11 +7,11 @@ readonly TARGET_DIR=target/bootloader-${ARCH}
 readonly LINUX_SRC=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.5.tar.xz
 
 function fetch_source() {
-    if [[ -d ${TARGET_DIR}/linux ]]; then
+    if [[ -d target/linux ]]; then
         return 0
     fi
 
-    pushd ${TARGET_DIR}
+    pushd target
 
     echo "Fetching Linux source..."
     wget ${LINUX_SRC} -O linux.tar.xz
@@ -33,14 +33,22 @@ function build_linux() {
             ;;
     esac
 
-    local kconfig="${TARGET_DIR}/linux/.config"
+    local kconfig="${TARGET_DIR}/.config"
 
     cp bootloader/config ${kconfig}
     cat bootloader/config-${arch} >> ${kconfig}
-    echo 'CONFIG_INITRAMFS_SOURCE="../initramfs/initramfs.cpio"' \
+    echo 'CONFIG_INITRAMFS_SOURCE="initramfs/initramfs.cpio"' \
         >> ${kconfig}
 
-    make -C ${TARGET_DIR}/linux olddefconfig LLVM=1 ARCH=${arch}
+    local vars=(
+        -f target/linux/Makefile
+        -j$((2 * $(nproc)))
+        LLVM=1
+        ARCH=${arch}
+        KBUILD_OUTPUT=${TARGET_DIR}
+    )
+
+    make olddefconfig ${vars[@]}
 
     # Validate the configuration
     sort -b -o ${kconfig}.old.sorted ${kconfig}.old
@@ -52,9 +60,9 @@ function build_linux() {
     fi
 
     echo "Building Linux kernel..."
-    make -C ${TARGET_DIR}/linux -j$((2 * $(nproc))) LLVM=1 ARCH=${arch}
+    make ${vars[@]}
 
-    echo "Image: ${PWD}/${TARGET_DIR}/linux/${image}"
+    echo "Image: ${TARGET_DIR}/${image}"
 }
 
 
