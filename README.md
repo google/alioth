@@ -51,6 +51,8 @@ alioth -l info --log-to-file \
     --num-cpu 2
 ```
 
+For instructions on booting a cloud image, see [Booting Cloud Images](docs/cloud-image.md).
+
 ## Features
 
 - **Cross-Platform:** Runs on `x86_64` (Linux) and `aarch64` (Linux & macOS).
