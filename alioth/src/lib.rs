@@ -14,6 +14,8 @@
 
 #[path = "arch/arch.rs"]
 pub mod arch;
+#[path = "blk/blk.rs"]
+pub mod blk;
 #[path = "board/board.rs"]
 pub mod board;
 #[path = "device/device.rs"]
