@@ -37,8 +37,6 @@ function build_linux() {
 
     cp bootloader/config ${kconfig}
     cat bootloader/config-${arch} >> ${kconfig}
-    echo 'CONFIG_INITRAMFS_SOURCE="initramfs/initramfs.cpio"' \
-        >> ${kconfig}
 
     local vars=(
         -f target/linux/Makefile
@@ -67,16 +65,7 @@ function build_linux() {
 
 
 function build_initramfs() {
-    mkdir -p ${TARGET_DIR}/initramfs
-    pushd ${TARGET_DIR}/initramfs
-
     go install github.com/u-root/u-root@latest
-    if [[ ! -f go.mod ]]; then
-        go mod init initramfs
-
-        go get github.com/u-root/u-root/cmds/boot/boot
-        go get github.com/u-root/u-root/cmds/core/init
-    fi
 
     case ${ARCH} in
         x86|x86_64|amd64)
@@ -91,11 +80,11 @@ function build_initramfs() {
 
     echo "Building initramfs..."
 
-    GOARCH=${goarch} u-root -o initramfs.cpio \
+    pushd bootloader/initramfs
+    GOARCH=${goarch} u-root -o ../../${TARGET_DIR}/initramfs.cpio \
         -defaultsh '' -uinitcmd "boot -append '${cmdline}'" \
         github.com/u-root/u-root/cmds/boot/boot \
         github.com/u-root/u-root/cmds/core/init
-
     popd
 }
 
