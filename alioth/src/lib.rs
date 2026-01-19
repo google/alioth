@@ -38,7 +38,7 @@ pub mod sync;
 #[path = "sys/sys.rs"]
 pub mod sys;
 #[path = "utils/utils.rs"]
-pub(crate) mod utils;
+pub mod utils;
 #[cfg(target_os = "linux")]
 #[path = "vfio/vfio.rs"]
 pub mod vfio;

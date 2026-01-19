@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod boot;
+mod img;
 mod objects;
 #[cfg(target_os = "linux")]
 mod vu;
@@ -29,6 +30,8 @@ enum Command {
     #[cfg(target_os = "linux")]
     /// Start a vhost-user backend device.
     Vu(Box<vu::VuArgs>),
+    /// Manipulate disk images.
+    Img(Box<img::ImgArgs>),
 }
 
 #[derive(Parser, Debug)]
@@ -79,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Boot(args) => boot::boot(*args)?,
         #[cfg(target_os = "linux")]
         Command::Vu(args) => vu::start(*args)?,
+        Command::Img(args) => img::exec(*args)?,
     }
     Ok(())
 }

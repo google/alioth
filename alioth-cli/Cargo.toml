@@ -14,8 +14,10 @@ flexi_logger.workspace = true
 clap = { version = "4", features = ["derive"] }
 snafu.workspace = true
 alioth.workspace = true
+miniz_oxide = { version = "0.9", features = ["simd"] }
 serde.workspace = true
 serde-aco.workspace = true
+zerocopy.workspace = true
 
 [[bin]]
 path = "src/main.rs"
