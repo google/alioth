@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: ["main"]
     paths:
-      - bootloader/**
+      - bootloader/config*
+      - bootloader/build.sh
       - .github/workflows/bootloader.yml
 
 jobs:
