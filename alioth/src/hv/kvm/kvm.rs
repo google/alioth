@@ -130,7 +130,7 @@ impl Kvm {
         }
         let mut action: libc::sigaction = unsafe { transmute([0u8; size_of::<libc::sigaction>()]) };
         action.sa_flags = libc::SA_SIGINFO;
-        action.sa_sigaction = sigrtmin_handler as _;
+        action.sa_sigaction = sigrtmin_handler as *const () as _;
         ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) }).context(error::SetupSignal)?;
         ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })
             .context(error::SetupSignal)?;
