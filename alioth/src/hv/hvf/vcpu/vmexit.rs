@@ -48,11 +48,16 @@ impl HvfVcpu {
             }
             .fail();
         }
-        let reg = HvReg::from(iss.srt());
+        let srt = iss.srt();
+        let reg = HvReg::from(srt);
         let write = if iss.wnr() {
             let mut value = 0;
-            let ret = unsafe { hv_vcpu_get_reg(self.vcpu_id, reg, &mut value) };
-            check_ret(ret).context(error::VcpuReg)?;
+            // On aarch64, register index of 31 corresponds to the zero register
+            // in the context of memory access.
+            if srt != 31 {
+                let ret = unsafe { hv_vcpu_get_reg(self.vcpu_id, reg, &mut value) };
+                check_ret(ret).context(error::VcpuReg)?;
+            }
             Some(value)
         } else {
             self.exit_reg = Some(reg);
