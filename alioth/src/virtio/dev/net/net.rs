@@ -112,7 +112,6 @@ bitflags! {
         const RSC_EXT = 1 << 61;
         const STANDBY = 1 << 62;
         const SPEED_DUPLEX = 1 << 63;
-        const INDIRECT_DESC = 1 << 28;
     }
 }
 
