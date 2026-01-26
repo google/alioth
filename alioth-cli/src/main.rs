@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "boot/boot.rs"]
 mod boot;
 mod img;
 mod objects;
