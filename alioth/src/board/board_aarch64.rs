@@ -516,7 +516,6 @@ where
                     // Documentation/devicetree/bindings/pci/pci-msi.txt
                     PropVal::U32List(vec![0, PHANDLE_MSI, 0, 0x10000]),
                 ),
-                ("msi-parent", PropVal::PHandle(PHANDLE_MSI)),
             ]),
             nodes: Vec::new(),
         };
