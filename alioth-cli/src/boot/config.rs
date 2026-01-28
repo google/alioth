@@ -15,25 +15,23 @@
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
+use alioth::board::BoardConfig;
+#[cfg(target_arch = "x86_64")]
+use alioth::device::fw_cfg::FwCfgItemParam;
+use alioth::loader::Payload;
+#[cfg(target_os = "linux")]
+use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
+use alioth::virtio::dev::balloon::BalloonParam;
+use alioth::virtio::dev::blk::BlkFileParam;
+use alioth::virtio::dev::entropy::EntropyParam;
+use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
+#[cfg(target_os = "macos")]
+use alioth::virtio::dev::net::vmnet::NetVmnetParam;
+use alioth::virtio::dev::vsock::UdsVsockParam;
+#[cfg(target_os = "linux")]
+use alioth::virtio::dev::{fs::vu::VuFsParam, net::tap::NetTapParam, vsock::VhostVsockParam};
 use serde::Deserialize;
 use serde_aco::Help;
-
-use crate::board::BoardConfig;
-#[cfg(target_arch = "x86_64")]
-use crate::device::fw_cfg::FwCfgItemParam;
-use crate::loader::Payload;
-use crate::virtio::dev::balloon::BalloonParam;
-use crate::virtio::dev::blk::BlkFileParam;
-use crate::virtio::dev::entropy::EntropyParam;
-use crate::virtio::dev::fs::shared_dir::SharedDirParam;
-#[cfg(target_os = "macos")]
-use crate::virtio::dev::net::vmnet::NetVmnetParam;
-use crate::virtio::dev::vsock::UdsVsockParam;
-#[cfg(target_os = "linux")]
-use crate::{
-    vfio::{CdevParam, ContainerParam, GroupParam, IoasParam},
-    virtio::dev::{fs::vu::VuFsParam, net::tap::NetTapParam, vsock::VhostVsockParam},
-};
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]

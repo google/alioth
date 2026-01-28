@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod config;
+
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::mem;
@@ -25,22 +27,27 @@ use alioth::errors::{DebugTrace, trace_error};
 use alioth::hv::Hvf;
 #[cfg(target_os = "linux")]
 use alioth::hv::Kvm;
-use alioth::hv::{Coco, HvConfig};
+use alioth::hv::{Coco, HvConfig, Hypervisor};
 use alioth::loader::{Executable, Payload};
 use alioth::mem::{MemBackend, MemConfig};
 #[cfg(target_os = "linux")]
 use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
+#[cfg(target_os = "linux")]
+use alioth::virtio::DeviceId;
 use alioth::virtio::dev::balloon::BalloonParam;
 use alioth::virtio::dev::blk::BlkFileParam;
 use alioth::virtio::dev::entropy::EntropyParam;
+#[cfg(target_os = "linux")]
+use alioth::virtio::vu::frontend::VuFrontendParam;
 use alioth::virtio::worker::WorkerApi;
 use alioth::vm::Machine;
-use alioth::vm::config::{BlkParam, Config, FsParam, NetParam, VsockParam};
 use clap::Args;
 use serde_aco::help_text;
 use snafu::{ResultExt, Snafu};
 
 use crate::objects::{DOC_OBJECTS, parse_objects};
+
+use self::config::{BlkParam, Config, FsParam, NetParam, VsockParam};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -338,6 +345,111 @@ fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<Config
     Ok(config)
 }
 
+fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, alioth::vm::Error> {
+    let vm = Machine::new(hypervisor, config.board)?;
+
+    #[cfg(target_arch = "x86_64")]
+    vm.add_com1()?;
+    #[cfg(target_arch = "aarch64")]
+    vm.add_pl011()?;
+    #[cfg(target_arch = "aarch64")]
+    vm.add_pl031();
+
+    if config.pvpanic {
+        vm.add_pvpanic()?;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if config.payload.firmware.is_some() || !config.fw_cfg.is_empty() {
+        vm.add_fw_cfg(config.fw_cfg.into_iter())?;
+    };
+
+    if let Some(param) = config.entropy {
+        vm.add_virtio_dev("virtio-entropy", param)?;
+    }
+
+    for (index, param) in config.net.into_iter().enumerate() {
+        match param {
+            #[cfg(target_os = "linux")]
+            NetParam::Tap(tap_param) => vm.add_virtio_dev(format!("virtio-net-{index}"), tap_param),
+            #[cfg(target_os = "linux")]
+            NetParam::Vu(sock) => {
+                let param = VuFrontendParam {
+                    id: DeviceId::Net,
+                    socket: sock.socket,
+                };
+                vm.add_virtio_dev(format!("vu-net-{index}"), param)
+            }
+            #[cfg(target_os = "macos")]
+            NetParam::Vmnet(p) => vm.add_virtio_dev(format!("virtio-net-{index}"), p),
+        }?;
+    }
+
+    for (index, param) in config.blk.into_iter().enumerate() {
+        match param {
+            BlkParam::File(p) => vm.add_virtio_dev(format!("virtio-blk-{index}"), p),
+            #[cfg(target_os = "linux")]
+            BlkParam::Vu(s) => {
+                let p = VuFrontendParam {
+                    id: DeviceId::Block,
+                    socket: s.socket,
+                };
+                vm.add_virtio_dev(format!("vu-net-{index}"), p)
+            }
+        }?;
+    }
+
+    for (index, param) in config.fs.into_iter().enumerate() {
+        match param {
+            FsParam::Dir(p) => vm.add_virtio_dev(format!("virtio-fs-{index}"), p),
+            #[cfg(target_os = "linux")]
+            FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p),
+        }?;
+    }
+
+    if let Some(param) = config.vsock {
+        match param {
+            #[cfg(target_os = "linux")]
+            VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock", p),
+            VsockParam::Uds(p) => vm.add_virtio_dev("uds-vsock", p),
+            #[cfg(target_os = "linux")]
+            VsockParam::Vu(s) => {
+                let p = VuFrontendParam {
+                    id: DeviceId::Socket,
+                    socket: s.socket,
+                };
+                vm.add_virtio_dev("vu-vsock", p)
+            }
+        }?;
+    }
+
+    if let Some(param) = config.balloon {
+        vm.add_virtio_dev("virtio-balloon", param)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    for param in config.vfio_ioas.into_iter() {
+        vm.add_vfio_ioas(param)?;
+    }
+    #[cfg(target_os = "linux")]
+    for (index, param) in config.vfio_cdev.into_iter().enumerate() {
+        vm.add_vfio_cdev(format!("vfio-{index}").into(), param)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    for param in config.vfio_container.into_iter() {
+        vm.add_vfio_container(param)?;
+    }
+    #[cfg(target_os = "linux")]
+    for (index, param) in config.vfio_group.into_iter().enumerate() {
+        vm.add_vfio_devs_in_group(&index.to_string(), param)?;
+    }
+
+    vm.add_payload(config.payload);
+
+    Ok(vm)
+}
+
 pub fn boot(mut args: BootArgs) -> Result<(), Error> {
     let object_args = mem::take(&mut args.objects);
     let objects = parse_objects(&object_args)?;
@@ -356,7 +468,7 @@ pub fn boot(mut args: BootArgs) -> Result<(), Error> {
 
     let config = parse_args(args, objects)?;
 
-    let vm = Machine::new(hypervisor, config).context(error::CreateVm)?;
+    let vm = create(&hypervisor, config).context(error::CreateVm)?;
 
     vm.boot().context(error::BootVm)?;
     vm.wait().context(error::WaitVm)?;

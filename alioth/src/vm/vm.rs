@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod config;
-
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Arc;
@@ -29,7 +27,7 @@ use snafu::{ResultExt, Snafu};
 use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
-use crate::board::{ArchBoard, Board};
+use crate::board::{ArchBoard, Board, BoardConfig};
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "aarch64")]
@@ -55,21 +53,13 @@ use crate::vfio::container::{Container, UpdateContainerMapping};
 #[cfg(target_os = "linux")]
 use crate::vfio::group::{DevFd, Group};
 #[cfg(target_os = "linux")]
-use crate::vfio::iommu::UpdateIommuIoas;
-#[cfg(target_os = "linux")]
-use crate::vfio::iommu::{Ioas, Iommu};
+use crate::vfio::iommu::{Ioas, Iommu, UpdateIommuIoas};
 #[cfg(target_os = "linux")]
 use crate::vfio::pci::VfioPciDev;
 #[cfg(target_os = "linux")]
 use crate::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
-#[cfg(target_os = "linux")]
-use crate::virtio::DeviceId;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
-#[cfg(target_os = "linux")]
-use crate::virtio::vu::frontend::VuFrontendParam;
-
-use self::config::{BlkParam, Config, FsParam, NetParam, VsockParam};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -127,21 +117,20 @@ pub type VirtioPciDev<H> = VirtioPciDevice<
 
 impl<H> Machine<H>
 where
-    H: Hypervisor + 'static,
+    H: Hypervisor,
 {
-    pub fn new(hv: H, config: Config) -> Result<Self> {
-        let mut board_config = config.board;
-        board_config.config_fixup()?;
+    pub fn new(hv: &H, mut config: BoardConfig) -> Result<Self> {
+        config.config_fixup()?;
 
         let vm_config = VmConfig {
-            coco: board_config.coco.clone(),
+            coco: config.coco.clone(),
         };
         let mut vm = hv.create_vm(&vm_config)?;
         let vm_memory = vm.create_vm_memory()?;
         let memory = Memory::new(vm_memory);
-        let arch = ArchBoard::new(&hv, &vm, &board_config)?;
+        let arch = ArchBoard::new(hv, &vm, &config)?;
 
-        let board = Arc::new(Board::new(vm, memory, arch, board_config));
+        let board = Arc::new(Board::new(vm, memory, arch, config));
 
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -170,107 +159,6 @@ where
             #[cfg(target_os = "linux")]
             iommu: Mutex::new(None),
         };
-
-        #[cfg(target_arch = "x86_64")]
-        vm.add_com1()?;
-        #[cfg(target_arch = "aarch64")]
-        vm.add_pl011()?;
-        #[cfg(target_arch = "aarch64")]
-        vm.add_pl031();
-
-        if config.pvpanic {
-            vm.add_pvpanic()?;
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if config.payload.firmware.is_some() || !config.fw_cfg.is_empty() {
-            vm.add_fw_cfg(config.fw_cfg.into_iter())?;
-        };
-
-        if let Some(param) = config.entropy {
-            vm.add_virtio_dev("virtio-entropy", param)?;
-        }
-
-        for (index, param) in config.net.into_iter().enumerate() {
-            match param {
-                #[cfg(target_os = "linux")]
-                NetParam::Tap(tap_param) => {
-                    vm.add_virtio_dev(format!("virtio-net-{index}"), tap_param)
-                }
-                #[cfg(target_os = "linux")]
-                NetParam::Vu(sock) => {
-                    let param = VuFrontendParam {
-                        id: DeviceId::Net,
-                        socket: sock.socket,
-                    };
-                    vm.add_virtio_dev(format!("vu-net-{index}"), param)
-                }
-                #[cfg(target_os = "macos")]
-                NetParam::Vmnet(p) => vm.add_virtio_dev(format!("virtio-net-{index}"), p),
-            }?;
-        }
-
-        for (index, param) in config.blk.into_iter().enumerate() {
-            match param {
-                BlkParam::File(p) => vm.add_virtio_dev(format!("virtio-blk-{index}"), p),
-                #[cfg(target_os = "linux")]
-                BlkParam::Vu(s) => {
-                    let p = VuFrontendParam {
-                        id: DeviceId::Block,
-                        socket: s.socket,
-                    };
-                    vm.add_virtio_dev(format!("vu-net-{index}"), p)
-                }
-            }?;
-        }
-
-        for (index, param) in config.fs.into_iter().enumerate() {
-            match param {
-                FsParam::Dir(p) => vm.add_virtio_dev(format!("virtio-fs-{index}"), p),
-                #[cfg(target_os = "linux")]
-                FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p),
-            }?;
-        }
-
-        if let Some(param) = config.vsock {
-            match param {
-                #[cfg(target_os = "linux")]
-                VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock", p),
-                VsockParam::Uds(p) => vm.add_virtio_dev("uds-vsock", p),
-                #[cfg(target_os = "linux")]
-                VsockParam::Vu(s) => {
-                    let p = VuFrontendParam {
-                        id: DeviceId::Socket,
-                        socket: s.socket,
-                    };
-                    vm.add_virtio_dev("vu-vsock", p)
-                }
-            }?;
-        }
-
-        if let Some(param) = config.balloon {
-            vm.add_virtio_dev("virtio-balloon", param)?;
-        }
-
-        #[cfg(target_os = "linux")]
-        for param in config.vfio_ioas.into_iter() {
-            vm.add_vfio_ioas(param)?;
-        }
-        #[cfg(target_os = "linux")]
-        for (index, param) in config.vfio_cdev.into_iter().enumerate() {
-            vm.add_vfio_cdev(format!("vfio-{index}").into(), param)?;
-        }
-
-        #[cfg(target_os = "linux")]
-        for param in config.vfio_container.into_iter() {
-            vm.add_vfio_container(param)?;
-        }
-        #[cfg(target_os = "linux")]
-        for (index, param) in config.vfio_group.into_iter().enumerate() {
-            vm.add_vfio_devs_in_group(&index.to_string(), param)?;
-        }
-
-        vm.add_payload(config.payload);
 
         Ok(vm)
     }
@@ -419,7 +307,7 @@ where
 #[cfg(target_os = "linux")]
 impl<H> Machine<H>
 where
-    H: Hypervisor + 'static,
+    H: Hypervisor,
 {
     const DEFAULT_NAME: &str = "default";
 

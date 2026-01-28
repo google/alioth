@@ -35,7 +35,6 @@ use alioth::virtio::dev::net::tap::NetTapParam;
 use alioth::virtio::dev::net::vmnet::NetVmnetParam;
 use alioth::virtio::dev::vsock::UdsVsockParam;
 use alioth::virtio::worker::WorkerApi;
-use alioth::vm::config::{BlkParam, Config, FsParam, NetParam, VsockParam};
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 
@@ -43,6 +42,8 @@ use crate::boot::{
     BootArgs, parse_args, parse_blk_arg, parse_cpu_arg, parse_mem_arg, parse_net_arg,
     parse_payload_arg,
 };
+
+use super::{BlkParam, Config, FsParam, NetParam, VsockParam};
 
 #[test]
 fn test_parse_args() {
