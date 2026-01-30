@@ -55,10 +55,14 @@ jobs:
               IFS='-' read -r -a parts <<< "$dir"
               arch=${parts[1]}
               os=${parts[3]}
-              tar -cJf alioth-${os}-${arch}.tar.xz \
+              tar cf alioth-${os}-${arch}.tar \
                 -C $PWD/$dir alioth \
                 -C $PWD/artifacts/kernel-${arch} kernel-${arch}
           done
+          tar rf alioth-darwin-aarch64.tar \
+            -C $PWD/alioth-cli cli.entitlements \
+            -C $PWD/docs macos-signing.md
+          xz alioth-*-*.tar
       - name: Create Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
