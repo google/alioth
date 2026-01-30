@@ -36,16 +36,10 @@ jobs:
         with:
           path: |
             ~/.cargo/bin/
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ~/.rustup/settings.toml
-            ~/.rustup/toolchains/
-            ~/.rustup/update-hashes/
             target/
-            target/tarpaulin/
           key: ${{ matrix.target.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@nightly
