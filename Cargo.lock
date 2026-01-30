@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "alioth"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "alioth-macros",
  "assert_matches",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "alioth-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "alioth",
  "assert_matches",
