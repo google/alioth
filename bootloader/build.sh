@@ -4,7 +4,7 @@ set -eu
 
 readonly ARCH=${ARCH:=$(uname -m)}
 readonly TARGET_DIR=target/bootloader-${ARCH}
-readonly LINUX_SRC=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.5.tar.xz
+readonly LINUX_SRC=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.8.tar.xz
 
 function fetch_source() {
     if [[ -d target/linux ]]; then
