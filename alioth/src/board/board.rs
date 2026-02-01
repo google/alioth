@@ -393,6 +393,43 @@ where
         }
     }
 
+    fn boot_init_sync(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
+        let vcpus = self.vcpus.read();
+        self.coco_init(index)?;
+        if index == 0 {
+            self.create_ram()?;
+            for (port, dev) in self.io_devs.read().iter() {
+                self.memory.add_io_dev(*port, dev.clone())?;
+            }
+            #[cfg(target_arch = "aarch64")]
+            for (addr, dev) in self.mmio_devs.read().iter() {
+                self.memory.add_region(*addr, dev.clone())?;
+            }
+            self.add_pci_devs()?;
+            let init_state = self.load_payload()?;
+            self.init_boot_vcpu(vcpu, &init_state)?;
+            self.create_firmware_data(&init_state)?;
+        }
+        self.init_ap(index, vcpu, &vcpus)?;
+        self.coco_finalize(index, &vcpus)?;
+        self.sync_vcpus(&vcpus)
+    }
+
+    fn stop_other_vcpus(&self, current: u16, vcpus: &VcpuGuard) -> Result<()> {
+        for (index, handle) in vcpus.iter().enumerate() {
+            let index = index as u16;
+            if current == index {
+                continue;
+            }
+            log::info!("VCPU-{current}: stopping VCPU-{index}");
+            let identity = self.encode_cpu_identity(index);
+            self.vm
+                .stop_vcpu(identity, handle)
+                .context(error::StopVcpu { index })?;
+        }
+        Ok(())
+    }
+
     fn run_vcpu_inner(&self, index: u16, event_tx: &Sender<u16>) -> Result<(), Error> {
         let mut vcpu = self.create_vcpu(index)?;
         self.notify_vmm(index, event_tx)?;
@@ -408,26 +445,7 @@ where
         drop(mp_sync);
 
         loop {
-            let vcpus = self.vcpus.read();
-            self.coco_init(index)?;
-            if index == 0 {
-                self.create_ram()?;
-                for (port, dev) in self.io_devs.read().iter() {
-                    self.memory.add_io_dev(*port, dev.clone())?;
-                }
-                #[cfg(target_arch = "aarch64")]
-                for (addr, dev) in self.mmio_devs.read().iter() {
-                    self.memory.add_region(*addr, dev.clone())?;
-                }
-                self.add_pci_devs()?;
-                let init_state = self.load_payload()?;
-                self.init_boot_vcpu(&mut vcpu, &init_state)?;
-                self.create_firmware_data(&init_state)?;
-            }
-            self.init_ap(index, &mut vcpu, &vcpus)?;
-            self.coco_finalize(index, &vcpus)?;
-            self.sync_vcpus(&vcpus)?;
-            drop(vcpus);
+            self.boot_init_sync(index, &mut vcpu)?;
 
             let maybe_reboot = self.vcpu_loop(&mut vcpu, index);
 
@@ -439,17 +457,7 @@ where
                 } else {
                     BoardState::Shutdown
                 };
-                for (another, handle) in vcpus.iter().enumerate() {
-                    if index == another as u16 {
-                        continue;
-                    }
-                    log::info!("VCPU-{index}: stopping VCPU-{another}");
-                    self.vm
-                        .stop_vcpu(self.encode_cpu_identity(another as u16), handle)
-                        .context(error::StopVcpu {
-                            index: another as u16,
-                        })?;
-                }
+                self.stop_other_vcpus(index, &vcpus)?;
             }
             drop(mp_sync);
             self.sync_vcpus(&vcpus)?;
