@@ -31,7 +31,7 @@ quote = { version = "1" }
 rstest = "0.26"
 tempfile = "3"
 pretty_assertions = "1"
-zerocopy = { version = "0.8.31", features = ["derive", "alloc"] }
+zerocopy = { version = "0.8.37", features = ["derive", "alloc"] }
 
 [profile.release]
 lto = true

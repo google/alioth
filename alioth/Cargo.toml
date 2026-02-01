@@ -15,7 +15,7 @@ bitflags = "2.9.4"
 bitfield = "0.19.4"
 log = "0.4"
 mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
-libc = "0.2.176"
+libc = "0.2.180"
 parking_lot.workspace = true
 alioth-macros.workspace = true
 serde.workspace = true
