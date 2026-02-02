@@ -420,12 +420,14 @@ pub enum VmExit {
     },
     Shutdown,
     Reboot,
+    Paused,
     Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmEntry {
     None,
+    Pause,
     Shutdown,
     Reboot,
     #[cfg(target_arch = "x86_64")]

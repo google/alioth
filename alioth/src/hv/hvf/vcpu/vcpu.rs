@@ -164,6 +164,7 @@ impl Vcpu for HvfVcpu {
             VmEntry::Mmio { data } => self.entry_mmio(data)?,
             VmEntry::Shutdown => return Ok(VmExit::Shutdown),
             VmEntry::Reboot => return Ok(VmExit::Reboot),
+            VmEntry::Pause => return Ok(VmExit::Paused),
         }
 
         if !self.power_on.load(Ordering::Relaxed) {

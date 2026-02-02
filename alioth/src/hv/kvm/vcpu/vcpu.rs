@@ -179,7 +179,7 @@ impl Vcpu for KvmVcpu {
                 }
             }
             VmEntry::Mmio { data } => self.entry_mmio(data),
-            VmEntry::Shutdown | VmEntry::Reboot => self.set_immediate_exit(true),
+            VmEntry::Shutdown | VmEntry::Reboot | VmEntry::Pause => self.set_immediate_exit(true),
         };
         let ret = unsafe { kvm_run(&self.fd) };
         match ret {
@@ -192,6 +192,14 @@ impl Vcpu for KvmVcpu {
                 (ErrorKind::Interrupted, VmEntry::Reboot) => {
                     self.set_immediate_exit(false);
                     Ok(VmExit::Reboot)
+                }
+                (ErrorKind::Interrupted, VmEntry::Pause) => {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Err(e) = self.kvmclock_ctrl() {
+                        log::error!("Failed to control kvmclock: {e:?}");
+                    }
+                    self.set_immediate_exit(false);
+                    Ok(VmExit::Paused)
                 }
                 (ErrorKind::Interrupted, _) => Ok(VmExit::Interrupted),
                 _ => Err(e).context(error::RunVcpu),

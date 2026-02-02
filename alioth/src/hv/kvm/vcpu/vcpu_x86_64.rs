@@ -27,8 +27,8 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_set_cpuid2,
-    kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_kvmclock_ctrl,
+    kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
 };
 
 #[derive(Debug)]
@@ -156,6 +156,11 @@ impl KvmVcpu {
         let apic_id = identity as u32;
         let fd = unsafe { kvm_create_vcpu(&vm.vm.fd, apic_id) }.context(error::CreateVcpu)?;
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    pub fn kvmclock_ctrl(&mut self) -> Result<()> {
+        unsafe { kvm_kvmclock_ctrl(&self.fd) }.context(kvm_error::KvmClockCtrl)?;
+        Ok(())
     }
 
     fn get_kvm_regs(&self) -> Result<KvmRegs> {

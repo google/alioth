@@ -348,6 +348,7 @@ where
                 VmExit::Reboot => {
                     break Ok(true);
                 }
+                VmExit::Paused => todo!(),
                 VmExit::Interrupted => {
                     let mp_sync = self.mp_sync.lock();
                     match mp_sync.state {

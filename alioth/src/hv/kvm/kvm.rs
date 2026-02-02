@@ -92,6 +92,8 @@ pub enum KvmError {
     #[cfg(target_arch = "aarch64")]
     #[snafu(display("Failed to configure device attributes"))]
     DeviceAttr { error: std::io::Error },
+    #[snafu(display("Failed to configure kvmclock"))]
+    KvmClockCtrl { error: std::io::Error },
 }
 
 #[derive(Debug)]
