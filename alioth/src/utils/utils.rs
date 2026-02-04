@@ -140,6 +140,14 @@ macro_rules! c_enum {
             pub const fn raw(self) -> $TyName {
                 self.0
             }
+
+            #[allow(dead_code)]
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $($EnumName::$VARIANT => stringify!($VARIANT),)*
+                    _ => "Unknown"
+                }
+            }
         }
 
         impl ::core::fmt::Debug for $EnumName {

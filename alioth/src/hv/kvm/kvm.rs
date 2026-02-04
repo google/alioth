@@ -31,6 +31,7 @@ use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::fs::File;
 use std::mem::{size_of, transmute};
+use std::num::NonZero;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -78,8 +79,6 @@ pub enum KvmError {
     MmapVcpuFd { error: std::io::Error },
     #[snafu(display("Failed to check KVM capability"))]
     CheckCap { error: std::io::Error },
-    #[snafu(display("KVM Capability {ext:?} not supported"))]
-    NotSupported { ext: KvmCap },
     #[snafu(display("Failed to enable capability {cap:?}"))]
     EnableCap { cap: KvmCap, error: std::io::Error },
     #[snafu(display("Failed to create guest memfd"))]
@@ -141,13 +140,8 @@ impl Kvm {
         })
     }
 
-    pub fn check_extension(&self, id: KvmCap) -> Result<i32, KvmError> {
-        let ret = unsafe { kvm_check_extension(&self.fd, id) }.context(kvm_error::CheckCap)?;
-        if ret == 0 {
-            kvm_error::NotSupported { ext: id }.fail()
-        } else {
-            Ok(ret)
-        }
+    pub fn check_extension(&self, id: KvmCap) -> Result<NonZero<i32>> {
+        check_extension(&self.fd, id)
     }
 }
 
@@ -161,5 +155,14 @@ impl Hypervisor for Kvm {
     #[cfg(target_arch = "x86_64")]
     fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
         Kvm::get_supported_cpuids(self)
+    }
+}
+
+fn check_extension(fd: &OwnedFd, id: KvmCap) -> Result<NonZero<i32>> {
+    let ret = unsafe { kvm_check_extension(fd, id) }.context(kvm_error::CheckCap)?;
+    if let Some(v) = NonZero::new(ret) {
+        Ok(v)
+    } else {
+        error::Capability { cap: id.name() }.fail()
     }
 }

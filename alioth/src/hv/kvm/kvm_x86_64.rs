@@ -56,18 +56,17 @@ impl Kvm {
             .map(map_f)
             .collect();
 
-        // Enable KVM_FEATURE_MSI_EXT_DEST_ID if KVM_CAP_X2APIC_API is supported
-        let ext = self.check_extension(KvmCap::X2APIC_API)?;
-        let flag = KvmX2apicApiFlag::from_bits_retain(ext as u64);
-        let x2apic_flags =
-            KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK;
         let leaf_features = CpuidIn {
             func: KVM_CPUID_FEATURES,
             index: None,
         };
         if let Some(entry) = cpuids.get_mut(&leaf_features)
-            && flag.contains(x2apic_flags)
+            && let Ok(ext) = self.check_extension(KvmCap::X2APIC_API)
+            && KvmX2apicApiFlag::from_bits_retain(ext.get() as u64).contains(
+                KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK,
+            )
         {
+            // Enable KVM_FEATURE_MSI_EXT_DEST_ID if KVM_CAP_X2APIC_API is supported
             entry.eax |= KvmCpuidFeature::MSI_EXT_DEST_ID.bits();
         }
 

@@ -97,7 +97,7 @@ impl KvmVm {
                     }
                 }
                 Some(Coco::AmdSnp { .. }) => {
-                    let bitmap = self.vm.check_extension(KvmCap::EXIT_HYPERCALL)?;
+                    let bitmap = self.vm.check_extension(KvmCap::EXIT_HYPERCALL)?.get();
                     let request = KvmEnableCap {
                         cap: KvmCap::EXIT_HYPERCALL,
                         args: [bitmap as _, 0, 0, 0],

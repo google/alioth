@@ -22,6 +22,7 @@ mod x86_64;
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::io::ErrorKind;
+use std::num::NonZero;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::thread::JoinHandleExt;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use snafu::ResultExt;
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 use crate::ffi;
 use crate::hv::kvm::vcpu::KvmVcpu;
-use crate::hv::kvm::{KvmError, kvm_error};
+use crate::hv::kvm::{KvmError, check_extension, kvm_error};
 use crate::hv::{
     Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Kvm, MemMapOption, MsiSender, Result,
     Vm, VmConfig, VmMemory, error,
@@ -49,11 +50,10 @@ use crate::sys::kvm::{
     KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KvmCap, KvmEnableCap, KvmEncRegion, KvmIoEventFd,
     KvmIoEventFdFlag, KvmIrqRouting, KvmIrqRoutingEntry, KvmIrqRoutingIrqchip, KvmIrqRoutingMsi,
     KvmIrqfd, KvmIrqfdFlag, KvmMemFlag, KvmMemoryAttribute, KvmMemoryAttributes, KvmMsi,
-    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_check_extension, kvm_create_vm,
-    kvm_enable_cap, kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_irqfd,
-    kvm_memory_encrypt_reg_region, kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing,
-    kvm_set_memory_attributes, kvm_set_user_memory_region, kvm_set_user_memory_region2,
-    kvm_signal_msi,
+    KvmUserspaceMemoryRegion, KvmUserspaceMemoryRegion2, kvm_create_vm, kvm_enable_cap,
+    kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_irqfd, kvm_memory_encrypt_reg_region,
+    kvm_memory_encrypt_unreg_region, kvm_set_gsi_routing, kvm_set_memory_attributes,
+    kvm_set_user_memory_region, kvm_set_user_memory_region2, kvm_signal_msi,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -124,13 +124,8 @@ impl VmInner {
         Ok(())
     }
 
-    pub fn check_extension(&self, id: KvmCap) -> Result<i32, KvmError> {
-        let ret = unsafe { kvm_check_extension(&self.fd, id) }.context(kvm_error::CheckCap)?;
-        if ret == 0 {
-            kvm_error::NotSupported { ext: id }.fail()
-        } else {
-            Ok(ret)
-        }
+    pub fn check_extension(&self, id: KvmCap) -> Result<NonZero<i32>> {
+        check_extension(&self.fd, id)
     }
 
     pub fn enable_cap(&self, cap: &KvmEnableCap) -> Result<(), KvmError> {
@@ -692,12 +687,7 @@ impl Vm for KvmVm {
         &self,
         #[cfg(target_arch = "aarch64")] devid: u32,
     ) -> Result<Self::MsiSender> {
-        if self.vm.check_extension(KvmCap::SIGNAL_MSI)? == 0 {
-            return error::Capability {
-                cap: "KVM_CAP_SIGNAL_MSI",
-            }
-            .fail();
-        }
+        self.vm.check_extension(KvmCap::SIGNAL_MSI)?;
         Ok(KvmMsiSender {
             vm: self.vm.clone(),
             #[cfg(target_arch = "aarch64")]
