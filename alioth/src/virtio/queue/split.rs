@@ -220,7 +220,6 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
 
     fn set_used(&self, index: Self::Index, id: u16, len: u32) {
         let used_elem = UsedElem { id: id as u32, len };
-        log::info!("used_elem: {used_elem:x?}");
         let wrapped_index = index & (self.size - 1);
         unsafe { *self.used_ring.offset(wrapped_index as isize) = used_elem };
         fence(Ordering::SeqCst);
