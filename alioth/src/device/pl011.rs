@@ -19,8 +19,8 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
-use crate::device::MmioDev;
 use crate::device::console::{Console, UartRecv};
+use crate::device::{self, MmioDev, Pause};
 use crate::hv::IrqSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::{hv, mem};
@@ -256,6 +256,19 @@ where
             _ => {}
         }
         Ok(Action::None)
+    }
+}
+
+impl<I> Pause for Pl011<I>
+where
+    I: IrqSender,
+{
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
     }
 }
 

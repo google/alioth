@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
-use crate::device::MmioDev;
+use crate::device::{self, MmioDev, Pause};
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 
@@ -140,6 +140,16 @@ impl Mmio for Pl031 {
         };
         log::trace!("{}: write {val:#x} to offset {offset:#x}", self.name);
         Ok(Action::None)
+    }
+}
+
+impl Pause for Pl031 {
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
     }
 }
 

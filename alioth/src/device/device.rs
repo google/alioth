@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alioth_macros::trace_error;
+use snafu::Snafu;
+
+use crate::errors::DebugTrace;
 use crate::mem::emulated::Mmio;
 
 pub mod console;
@@ -26,4 +30,23 @@ pub mod pl031;
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
 
-pub trait MmioDev: Mmio {}
+#[trace_error]
+#[derive(Snafu, DebugTrace)]
+#[snafu(module, visibility(pub(crate)), context(suffix(false)))]
+pub enum Error {
+    #[snafu(display("Device is not pausable"))]
+    NotPausable,
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+pub trait Pause {
+    fn pause(&self) -> Result<()> {
+        error::NotPausable.fail()
+    }
+    fn resume(&self) -> Result<()> {
+        error::NotPausable.fail()
+    }
+}
+
+pub trait MmioDev: Mmio + Pause {}

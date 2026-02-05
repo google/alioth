@@ -20,8 +20,8 @@ use bitfield::bitfield;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
-use crate::device::MmioDev;
 use crate::device::console::{Console, UartRecv};
+use crate::device::{self, MmioDev, Pause};
 use crate::hv::IrqSender;
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
@@ -280,6 +280,19 @@ where
             _ => log::error!("{}: write unreachable offset {:#x}", self.name, offset),
         }
         Ok(Action::None)
+    }
+}
+
+impl<I> Pause for Serial<I>
+where
+    I: IrqSender,
+{
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
     }
 }
 
