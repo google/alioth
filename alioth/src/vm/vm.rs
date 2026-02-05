@@ -34,7 +34,6 @@ use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 use crate::device::pl011::Pl011;
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl031::Pl031;
-use crate::device::pvpanic::PvPanic;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
 use crate::errors::{DebugTrace, trace_error};
@@ -43,6 +42,7 @@ use crate::loader::Payload;
 use crate::mem::Memory;
 #[cfg(target_arch = "aarch64")]
 use crate::mem::{MemRegion, MemRegionType};
+use crate::pci::pvpanic::PvPanic;
 use crate::pci::{Bdf, Pci};
 #[cfg(target_os = "linux")]
 use crate::sys::vfio::VfioIommu;

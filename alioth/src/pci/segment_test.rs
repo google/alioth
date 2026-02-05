@@ -17,10 +17,10 @@ use std::sync::Arc;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
-use crate::device::pvpanic::{PVPANIC_DEVICE_ID, PVPANIC_VENDOR_ID, PvPanic};
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::Bdf;
 use crate::pci::config::{BAR_MEM_MASK, CommonHeader, offset_bar};
+use crate::pci::pvpanic::{PVPANIC_DEVICE_ID, PVPANIC_VENDOR_ID, PvPanic};
 use crate::pci::segment::PciSegment;
 
 #[rstest]

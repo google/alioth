@@ -16,6 +16,7 @@ pub mod bus;
 pub mod cap;
 pub mod config;
 pub mod host_bridge;
+pub mod pvpanic;
 pub mod segment;
 
 use std::fmt::{Debug, Display, Formatter};
