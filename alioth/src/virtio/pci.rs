@@ -24,6 +24,7 @@ use alioth_macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
+use crate::device::Pause;
 use crate::hv::{self, IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
@@ -912,6 +913,13 @@ where
             registers,
         })
     }
+}
+
+impl<M, E> Pause for VirtioPciDevice<M, E>
+where
+    M: MsiSender,
+    E: IoeventFd,
+{
 }
 
 impl<M, E> Pci for VirtioPciDevice<M, E>

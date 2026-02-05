@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use bitflags::bitflags;
 
+use crate::device::{self, Pause};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, MemRegion};
 use crate::pci::cap::PciCapList;
@@ -89,6 +90,16 @@ impl PvPanic {
 impl Default for PvPanic {
     fn default() -> Self {
         PvPanic::new()
+    }
+}
+
+impl Pause for PvPanic {
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
     }
 }
 

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::device::{self, Pause};
 use crate::pci;
 use crate::pci::cap::PciCapList;
 use crate::pci::config::{CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig};
@@ -44,6 +45,16 @@ impl HostBridge {
         let bars = [const { PciBar::Empty }; 6];
         let config = EmulatedConfig::new_device(header, bars, PciCapList::new());
         HostBridge { config }
+    }
+}
+
+impl Pause for HostBridge {
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
     }
 }
 

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use bitfield::bitfield;
 use snafu::Snafu;
 
+use crate::device::Pause;
 use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{IoRegion, MemRegion};
 
@@ -60,7 +61,7 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub trait Pci: Debug + Send + Sync + 'static {
+pub trait Pci: Debug + Send + Sync + Pause + 'static {
     fn name(&self) -> &str;
     fn config(&self) -> &dyn PciConfig;
     fn reset(&self) -> Result<()>;

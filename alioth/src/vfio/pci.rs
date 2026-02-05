@@ -26,6 +26,7 @@ use libc::{PROT_READ, PROT_WRITE};
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromBytes, transmute};
 
+use crate::device::Pause;
 use crate::errors::BoxTrace;
 use crate::hv::{IrqFd, MsiSender};
 use crate::mem::emulated::{Action, Mmio, MmioBus};
@@ -329,6 +330,13 @@ where
 {
     config: PciPthConfig<D>,
     msix_table: Arc<MsixTableMmio<M::IrqFd>>,
+}
+
+impl<M, D> Pause for VfioPciDev<M, D>
+where
+    M: MsiSender,
+    D: Device,
+{
 }
 
 impl<M, D> Pci for VfioPciDev<M, D>

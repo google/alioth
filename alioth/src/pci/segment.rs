@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
+use crate::device::{self, Pause};
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::config::{BAR_IO, BAR_MEM64, BAR_PREFETCHABLE, PciConfig};
 use crate::pci::{Bdf, Pci, Result};
@@ -25,6 +26,16 @@ use crate::{align_up, mem};
 
 #[derive(Debug)]
 struct EmptyDevice;
+
+impl Pause for EmptyDevice {
+    fn pause(&self) -> device::Result<()> {
+        Ok(())
+    }
+
+    fn resume(&self) -> device::Result<()> {
+        Ok(())
+    }
+}
 
 impl Pci for EmptyDevice {
     fn name(&self) -> &str {
