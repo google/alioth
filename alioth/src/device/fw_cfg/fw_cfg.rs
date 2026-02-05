@@ -39,6 +39,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::arch::layout::{
     PORT_FW_CFG_DATA, PORT_FW_CFG_DMA_HI, PORT_FW_CFG_DMA_LO, PORT_FW_CFG_SELECTOR,
 };
+use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::AcpiTable;
 #[cfg(target_arch = "x86_64")]
@@ -511,6 +512,8 @@ impl Mmio for Mutex<FwCfg> {
         Ok(Action::None)
     }
 }
+
+impl MmioDev for Mutex<FwCfg> {}
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Help)]
 pub enum FwCfgContentParam {

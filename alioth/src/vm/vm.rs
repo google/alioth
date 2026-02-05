@@ -40,8 +40,6 @@ use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{Hypervisor, IoeventFdRegistry, Vm, VmConfig};
 use crate::loader::Payload;
 use crate::mem::Memory;
-#[cfg(target_arch = "aarch64")]
-use crate::mem::{MemRegion, MemRegionType};
 use crate::pci::pvpanic::PvPanic;
 use crate::pci::{Bdf, Pci};
 #[cfg(target_os = "linux")]
@@ -175,26 +173,16 @@ where
     pub fn add_pl011(&self) -> Result<(), Error> {
         let irq_line = self.board.vm.create_irq_sender(1)?;
         let pl011_dev = Pl011::new(PL011_START, irq_line).context(error::CreateConsole)?;
-        self.board.mmio_devs.write().push((
-            PL011_START,
-            Arc::new(MemRegion::with_emulated(
-                Arc::new(pl011_dev),
-                MemRegionType::Hidden,
-            )),
-        ));
+        let mut mmio_devs = self.board.mmio_devs.write();
+        mmio_devs.push((PL011_START, Arc::new(pl011_dev)));
         Ok(())
     }
 
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl031(&self) {
         let pl031_dev = Pl031::new(PL031_START);
-        self.board.mmio_devs.write().push((
-            PL031_START,
-            Arc::new(MemRegion::with_emulated(
-                Arc::new(pl031_dev),
-                MemRegionType::Hidden,
-            )),
-        ));
+        let mut mmio_devs = self.board.mmio_devs.write();
+        mmio_devs.push((PL031_START, Arc::new(pl031_dev)));
     }
 
     pub fn add_pci_dev(&self, bdf: Option<Bdf>, dev: Arc<dyn Pci>) -> Result<(), Error> {

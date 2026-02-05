@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::mem::emulated::Mmio;
+
 pub mod console;
 #[cfg(target_arch = "x86_64")]
 #[path = "fw_cfg/fw_cfg.rs"]
@@ -23,3 +25,5 @@ pub mod pl011;
 pub mod pl031;
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
+
+pub trait MmioDev: Mmio {}

@@ -339,6 +339,11 @@ impl Memory {
         Ok(())
     }
 
+    pub fn add_mmio_dev(&self, addr: u64, dev: Arc<dyn Mmio>) -> Result<()> {
+        let region = MemRegion::with_emulated(dev, MemRegionType::Hidden);
+        self.add_region(addr, Arc::new(region))
+    }
+
     pub fn add_region(&self, addr: u64, region: Arc<MemRegion>) -> Result<()> {
         region.validate()?;
         let mut regions = self.regions.lock();

@@ -39,6 +39,7 @@ use crate::arch::layout::{
     PCIE_MMIO_32_NON_PREFETCHABLE_START, PCIE_MMIO_32_PREFETCHABLE_END,
     PCIE_MMIO_32_PREFETCHABLE_START, RAM_32_SIZE,
 };
+use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{DebugTrace, trace_error};
@@ -46,7 +47,6 @@ use crate::hv::{Coco, Vcpu, Vm, VmEntry, VmExit};
 #[cfg(target_arch = "x86_64")]
 use crate::loader::xen;
 use crate::loader::{Executable, InitState, Payload, linux};
-use crate::mem::emulated::Mmio;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
@@ -210,9 +210,9 @@ where
     pub arch: ArchBoard<V>,
     pub config: BoardConfig,
     pub payload: RwLock<Option<Payload>>,
-    pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
+    pub io_devs: RwLock<Vec<(u16, Arc<dyn MmioDev>)>>,
     #[cfg(target_arch = "aarch64")]
-    pub mmio_devs: RwLock<Vec<(u64, Arc<MemRegion>)>>,
+    pub mmio_devs: RwLock<Vec<(u64, Arc<dyn MmioDev>)>>,
     pub pci_bus: PciBus,
     #[cfg(target_arch = "x86_64")]
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
@@ -419,7 +419,7 @@ where
             }
             #[cfg(target_arch = "aarch64")]
             for (addr, dev) in self.mmio_devs.read().iter() {
-                self.memory.add_region(*addr, dev.clone())?;
+                self.memory.add_mmio_dev(*addr, dev.clone())?;
             }
             self.add_pci_devs()?;
             let init_state = self.load_payload()?;

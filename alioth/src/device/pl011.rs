@@ -19,6 +19,7 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
+use crate::device::MmioDev;
 use crate::device::console::{Console, UartRecv};
 use crate::hv::IrqSender;
 use crate::mem::emulated::{Action, Mmio};
@@ -257,6 +258,8 @@ where
         Ok(Action::None)
     }
 }
+
+impl<I> MmioDev for Pl011<I> where I: IrqSender {}
 
 struct Pl011Recv<I: IrqSender> {
     irq_line: Arc<I>,

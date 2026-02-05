@@ -20,6 +20,7 @@ use bitfield::bitfield;
 use bitflags::bitflags;
 use parking_lot::Mutex;
 
+use crate::device::MmioDev;
 use crate::device::console::{Console, UartRecv};
 use crate::hv::IrqSender;
 use crate::mem;
@@ -191,7 +192,7 @@ pub struct Serial<I> {
 
 impl<I> Mmio for Serial<I>
 where
-    I: IrqSender + Sync + Send + 'static,
+    I: IrqSender,
 {
     fn size(&self) -> u64 {
         8
@@ -281,6 +282,8 @@ where
         Ok(Action::None)
     }
 }
+
+impl<I> MmioDev for Serial<I> where I: IrqSender {}
 
 struct SerialRecv<I: IrqSender> {
     pub name: Arc<str>,
