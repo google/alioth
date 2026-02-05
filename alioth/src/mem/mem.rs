@@ -31,7 +31,7 @@ use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{MemMapOption, VmEntry, VmMemory};
 
 use self::addressable::{Addressable, SlotBackend};
-use self::emulated::{Action, MmioBus, MmioRange};
+use self::emulated::{Action, Mmio, MmioBus};
 use self::mapped::{ArcMemPages, Ram, RamBus};
 
 #[trace_error]
@@ -125,7 +125,7 @@ impl MemConfig {
 pub enum MemRange {
     Ram(ArcMemPages),
     DevMem(ArcMemPages),
-    Emulated(MmioRange),
+    Emulated(Arc<dyn Mmio>),
     Span(u64),
 }
 
@@ -133,7 +133,7 @@ impl MemRange {
     pub fn size(&self) -> u64 {
         match self {
             MemRange::Ram(pages) | MemRange::DevMem(pages) => pages.size(),
-            MemRange::Emulated(range) => range.size(),
+            MemRange::Emulated(range) => Mmio::size(range),
             MemRange::Span(size) => *size,
         }
     }
@@ -192,8 +192,8 @@ impl MemRegion {
         }
     }
 
-    pub fn with_emulated(range: MmioRange, type_: MemRegionType) -> MemRegion {
-        let size = range.size();
+    pub fn with_emulated(range: Arc<dyn Mmio>, type_: MemRegionType) -> MemRegion {
+        let size = Mmio::size(&range);
         MemRegion {
             ranges: vec![MemRange::Emulated(range)],
             entries: vec![MemRegionEntry { type_, size }],
@@ -223,12 +223,12 @@ impl SlotBackend for Arc<MemRegion> {
 
 #[derive(Debug)]
 pub struct IoRegion {
-    pub range: MmioRange,
+    pub range: Arc<dyn Mmio>,
     pub callbacks: Mutex<Vec<Box<dyn MemRegionCallback>>>,
 }
 
 impl IoRegion {
-    pub fn new(range: MmioRange) -> IoRegion {
+    pub fn new(range: Arc<dyn Mmio>) -> IoRegion {
         IoRegion {
             range,
             callbacks: Mutex::new(vec![]),
@@ -238,7 +238,7 @@ impl IoRegion {
 
 impl SlotBackend for Arc<IoRegion> {
     fn size(&self) -> u64 {
-        self.range.size()
+        Mmio::size(self.range.as_ref())
     }
 }
 
@@ -460,7 +460,7 @@ impl Memory {
         entries
     }
 
-    pub fn add_io_dev(&self, port: u16, dev: MmioRange) -> Result<()> {
+    pub fn add_io_dev(&self, port: u16, dev: Arc<dyn Mmio>) -> Result<()> {
         self.add_io_region(port, Arc::new(IoRegion::new(dev)))
     }
 
