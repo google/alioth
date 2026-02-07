@@ -24,7 +24,7 @@ use crate::sys::ioctl::ioctl_ior;
 #[cfg(target_arch = "x86_64")]
 use crate::sys::ioctl::ioctl_iowr;
 use crate::{
-    c_enum, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
+    consts, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
     ioctl_writeread,
 };
 
@@ -32,9 +32,8 @@ pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
 
 #[cfg(target_arch = "x86_64")]
-c_enum! {
-    pub struct KvmVmType(u64);
-    {
+consts! {
+    pub struct KvmVmType(u64) {
         DEFAULT = 0;
         SW_PROTECTED = 1;
         SEV = 2;
@@ -285,9 +284,8 @@ pub struct KvmSregs2 {
     pub pdptrs: [u64; 4],
 }
 
-c_enum! {
-    pub struct KvmExit(u32);
-    {
+consts! {
+    pub struct KvmExit(u32) {
         IO = 2;
         HYPERCALL = 3;
         MMIO = 6;
@@ -296,9 +294,8 @@ c_enum! {
     }
 }
 
-c_enum! {
-    pub struct KvmSystemEvent(u32);
-    {
+consts! {
+    pub struct KvmSystemEvent(u32) {
         SHUTDOWN = 1;
         RESET = 2;
     }
@@ -347,9 +344,8 @@ pub struct KvmRunExitMmio {
     pub is_write: u8,
 }
 
-c_enum! {
-    pub struct KvmExitIo(u8);
-    {
+consts! {
+    pub struct KvmExitIo(u8) {
         IN = 0;
         OUT = 1;
     }
@@ -502,9 +498,8 @@ pub struct KvmMsi {
     pub pad: [u8; 12usize],
 }
 
-c_enum! {
-    pub struct KvmCap(u32);
-    {
+consts! {
+    pub struct KvmCap(u32) {
         IRQFD = 32;
         KVMCLOCK_CTRL = 76;
         SIGNAL_MSI = 77;
@@ -599,9 +594,8 @@ pub struct KvmDeviceAttr {
 }
 
 #[cfg(target_arch = "aarch64")]
-c_enum! {
-    pub struct KvmDevType(u32);
-    {
+consts! {
+    pub struct KvmDevType(u32) {
         ARM_VGIC_V2 = 5;
         ARM_VGIC_V3 = 7;
         ARM_ITS = 8;
@@ -609,9 +603,8 @@ c_enum! {
 }
 
 #[cfg(target_arch = "aarch64")]
-c_enum! {
-    pub struct KvmDevArmVgicGrp(u32);
-    {
+consts! {
+    pub struct KvmDevArmVgicGrp(u32) {
         ADDR = 0;
         DIST_REGS = 1;
         CPU_REGS = 2;
@@ -623,9 +616,8 @@ c_enum! {
 }
 
 #[cfg(target_arch = "aarch64")]
-c_enum! {
-    pub struct KvmVgicAddrType(u64);
-    {
+consts! {
+    pub struct KvmVgicAddrType(u64) {
         DIST_V2 = 0;
         CPU_V2 = 1;
         DIST_V3 = 2;
@@ -636,9 +628,8 @@ c_enum! {
 }
 
 #[cfg(target_arch = "aarch64")]
-c_enum! {
-    pub struct KvmDevArmVgicCtrl(u64);
-    {
+consts! {
+    pub struct KvmDevArmVgicCtrl(u64) {
         INIT = 0;
         ITS_SAVE_TABLES = 1;
         ITS_RESTORE_TABLES = 2;

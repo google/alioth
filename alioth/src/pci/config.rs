@@ -27,7 +27,7 @@ use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar, Result};
-use crate::{assign_bits, c_enum, impl_mmio_for_zerocopy, mask_bits, mem};
+use crate::{assign_bits, consts, impl_mmio_for_zerocopy, mask_bits, mem};
 
 pub trait PciConfigArea: Mmio {
     fn reset(&self) -> Result<()>;
@@ -110,10 +110,9 @@ impl std::fmt::Debug for Status {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
-    pub struct HeaderType(u8);
-    {
+    pub struct HeaderType(u8) {
         DEVICE = 0;
         BRIDGE = 1;
     }

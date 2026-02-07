@@ -17,7 +17,7 @@ use bitfield::bitfield;
 use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::c_enum;
+use crate::consts;
 use crate::utils::endian::{Bu32, Bu64};
 
 #[repr(C)]
@@ -69,10 +69,9 @@ bitflags! {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, Immutable, KnownLayout, FromBytes, IntoBytes)]
-    pub struct Qcow2Compression(u8);
-    {
+    pub struct Qcow2Compression(u8) {
         DEFLATE = 0;
         ZSTD = 1;
     }

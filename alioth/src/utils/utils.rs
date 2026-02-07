@@ -120,11 +120,10 @@ macro_rules! ffi {
 }
 
 #[macro_export]
-macro_rules! c_enum {
+macro_rules! consts {
     (
         $(#[$attr:meta])*
-        $vs:vis struct $EnumName:ident($TyName:ty);
-        {
+        $vs:vis struct $EnumName:ident($TyName:ty) {
             $( $(#[$vattr:meta])* $VARIANT:ident = $value:expr;)*
         }
     ) => {

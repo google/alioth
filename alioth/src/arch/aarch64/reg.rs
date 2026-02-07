@@ -15,7 +15,7 @@
 use bitfield::bitfield;
 use bitflags::bitflags;
 
-use crate::c_enum;
+use crate::consts;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Reg {
@@ -59,10 +59,9 @@ pub const fn encode(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
     (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
 }
 
-c_enum! {
+consts! {
     /// https://developer.arm.com/documentation/ddi0601/2020-12/Index-by-Encoding
-    pub struct SReg(u16);
-    {
+    pub struct SReg(u16) {
         /// OS Lock Access Register
         /// https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/OSLAR-EL1--OS-Lock-Access-Register
         OSLAR_EL1 = encode(2, 0, 1, 0, 4);
@@ -127,9 +126,8 @@ bitfield! {
     pub u32, iss, _: 24, 0;
 }
 
-c_enum! {
-    pub struct EsrEl2Ec(u8);
-    {
+consts! {
+    pub struct EsrEl2Ec(u8) {
         HVC_64 = 0x16;
         SYS_REG_64 = 0x18;
         INSTR_ABRT_LOWER = 0x20;

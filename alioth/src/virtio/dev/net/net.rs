@@ -23,7 +23,7 @@ use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::device::net::MacAddr;
-use crate::{c_enum, impl_mmio_for_zerocopy};
+use crate::{consts, impl_mmio_for_zerocopy};
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
@@ -41,27 +41,24 @@ pub struct NetConfig {
 
 impl_mmio_for_zerocopy!(NetConfig);
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct CtrlAck(u8);
-    {
+    pub struct CtrlAck(u8) {
         OK = 0;
         ERR = 1;
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct CtrlClass(u8);
-    {
+    pub struct CtrlClass(u8) {
         MQ = 4;
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct CtrlMq(u8);
-    {
+    pub struct CtrlMq(u8) {
         VQ_PARIS_SET = 0;
     }
 }

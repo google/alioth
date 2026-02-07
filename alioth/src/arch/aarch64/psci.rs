@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::c_enum;
+use crate::consts;
 
-c_enum! {
+consts! {
     /// https://developer.arm.com/documentation/den0022/latest/
-    pub struct PsciFunc(u32);
-    {
+    pub struct PsciFunc(u32) {
         PSCI_VERSION = 0x8400_0000;
         CPU_SUSPEND_32 = 0x8400_0001;
         CPU_SUSPEND_64 = 0xc400_0001;
@@ -58,9 +57,8 @@ c_enum! {
 
 pub const PSCI_VERSION_1_1: u32 = (1 << 16) | 1;
 
-c_enum! {
-    pub struct PsciErr(i64);
-    {
+consts! {
+    pub struct PsciErr(i64) {
         NOT_SUPPORTED = -1;
         INVALID_PARAMETERS = -2;
         DENIED = -3;
@@ -73,19 +71,17 @@ c_enum! {
     }
 }
 
-c_enum! {
+consts! {
     /// https://developer.arm.com/documentation/den0022/latest/
-    pub struct PsciMigrateInfo(u32);
-    {
+    pub struct PsciMigrateInfo(u32) {
         CAPABLE = 0;
         INCAPABLE = 1;
         NOT_REQUIRED = 2;
     }
 }
 
-c_enum! {
-    pub struct PsciAffinityInfo(u64);
-    {
+consts! {
+    pub struct PsciAffinityInfo(u64) {
         ON_PENDING = 2;
         OFF = 1;
         ON = 0;

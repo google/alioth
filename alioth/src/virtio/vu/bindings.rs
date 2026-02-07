@@ -16,7 +16,7 @@ use bitfield::bitfield;
 use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::c_enum;
+use crate::consts;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,9 +45,8 @@ bitflags! {
     }
 }
 
-c_enum! {
-    pub struct VuFrontMsg(u32);
-    {
+consts! {
+    pub struct VuFrontMsg(u32) {
         GET_FEATURES = 1;
         SET_FEATURES = 2;
         SET_OWNER = 3;
@@ -93,16 +92,14 @@ c_enum! {
     }
 }
 
-c_enum! {
-    pub struct VuFrontMsgSize((u32, usize));
-    {
+consts! {
+    pub struct VuFrontMsgSize((u32, usize)) {
         GET_FEATURES = (0, size_of::<u64>());
     }
 }
 
-c_enum! {
-    pub struct VuBackMsg(u32);
-    {
+consts! {
+    pub struct VuBackMsg(u32) {
         IOTLB_MSG = 1;
         CONFIG_CHANGE_MSG = 2;
         VIRTQ_HOST_NOTIFIER_MSG = 3;

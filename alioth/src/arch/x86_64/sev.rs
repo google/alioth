@@ -16,11 +16,10 @@ use bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_aco::Help;
 
-use crate::c_enum;
+use crate::consts;
 
-c_enum! {
-    pub struct SevStatus(u32);
-    {
+consts! {
+    pub struct SevStatus(u32) {
         SUCCESS = 0;
         INVALID_PLATFORM_STATE = 1;
         INVALID_GUEST_STATE = 2;

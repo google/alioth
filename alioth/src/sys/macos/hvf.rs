@@ -16,11 +16,10 @@ use bitflags::bitflags;
 use libc::c_void;
 
 use crate::arch::reg::{EsrEl2, SReg};
-use crate::c_enum;
+use crate::consts;
 
-c_enum! {
-    pub struct HvReg(u32);
-    {
+consts! {
+    pub struct HvReg(u32) {
         X0 = 0;
         X1 = 1;
         X2 = 2;
@@ -59,10 +58,9 @@ c_enum! {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default)]
-    pub struct HvExitReason(u32);
-    {
+    pub struct HvExitReason(u32) {
         CANCEL = 0;
         EXCEPTION = 1;
         VTIMER_ACTIVATED = 2;

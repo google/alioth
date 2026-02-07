@@ -14,14 +14,13 @@
 
 use libc::{c_char, c_void, iovec};
 
-use crate::c_enum;
+use crate::consts;
 use crate::sys::block::Block;
 use crate::sys::dispatch::DispatchQueue;
 use crate::sys::xpc::XpcObject;
 
-c_enum! {
-    pub struct VmnetReturn(u32);
-    {
+consts! {
+    pub struct VmnetReturn(u32) {
         SUCCESS = 1000;
         FAILURE = 1001;
         MEM_FAILURE = 1002;
@@ -36,18 +35,16 @@ c_enum! {
     }
 }
 
-c_enum! {
-    pub struct OperationMode(u32);
-    {
+consts! {
+    pub struct OperationMode(u32) {
         HOST = 1000;
         SHARED = 1001;
         BRIDGED = 1002;
     }
 }
 
-c_enum! {
-    pub struct InterfaceEvent(u32);
-    {
+consts! {
+    pub struct InterfaceEvent(u32) {
         PACKETS_AVAILABLE = 1 << 0;
     }
 }

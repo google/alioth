@@ -16,7 +16,7 @@ use bitflags::bitflags;
 
 use crate::sys::ioctl::ioctl_io;
 use crate::{
-    c_enum, ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
+    consts, ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
 };
 
 pub const VFIO_TYPE: u8 = b';';
@@ -68,9 +68,8 @@ bitflags! {
     }
 }
 
-c_enum! {
-    pub struct VfioPciRegion(u32);
-    {
+consts! {
+    pub struct VfioPciRegion(u32) {
         BAR0 = 0;
         BAR1 = 1;
         BAR2 = 2;
@@ -94,10 +93,9 @@ pub struct VfioRegionInfo {
     pub offset: u64,
 }
 
-c_enum! {
+consts! {
     #[derive(Default)]
-    pub struct VfioRegionInfoCap(u16);
-    {
+    pub struct VfioRegionInfoCap(u16) {
         MSIX_MAPPABLE = 3;
     }
 }
@@ -113,10 +111,9 @@ bitflags! {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default)]
-    pub struct VfioPciIrq(u32);
-    {
+    pub struct VfioPciIrq(u32) {
         INTX = 0;
         MSI = 1;
         MSIX = 2;
@@ -274,9 +271,8 @@ pub struct VfioIommuType1DmaUnmap {
     pub size: u64,
 }
 
-c_enum! {
-    pub struct VfioIommu(i32);
-    {
+consts! {
+    pub struct VfioIommu(i32) {
         TYPE1 = 1;
         SPAR_TCE= 2;
         TYPE1_V2 = 3;

@@ -36,7 +36,7 @@ use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
-use crate::{c_enum, ffi, impl_mmio_for_zerocopy, mem};
+use crate::{consts, ffi, impl_mmio_for_zerocopy, mem};
 
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Default, FromBytes, IntoBytes, Immutable, Layout)]
@@ -94,9 +94,8 @@ bitflags! {
     }
 }
 
-c_enum! {
-    pub struct BalloonStats(u16);
-    {
+consts! {
+    pub struct BalloonStats(u16) {
         SWAP_IN = 0;
         SWAP_OUT = 1;
         MAJFLT = 2;

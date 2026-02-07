@@ -13,11 +13,10 @@
 // limitations under the License.
 
 use crate::arch::sev::{SevPolicy, SevStatus, SnpPolicy};
-use crate::{c_enum, ioctl_writeread};
+use crate::{consts, ioctl_writeread};
 
-c_enum! {
-    pub struct SevCmd(u32);
-    {
+consts! {
+    pub struct SevCmd(u32) {
         PLATFORM_STATUS = 1;
     }
 }
@@ -34,9 +33,8 @@ pub const SEV_IOC_TYPE: u8 = b'S';
 
 ioctl_writeread!(sev_issue_cmd, SEV_IOC_TYPE, 0x0, SevIssueCmd);
 
-c_enum! {
-    pub struct KvmSevCmdId(u32);
-    {
+consts! {
+    pub struct KvmSevCmdId(u32) {
         INIT = 0;
         ES_INIT = 1;
         LAUNCH_START = 2;

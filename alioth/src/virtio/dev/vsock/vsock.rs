@@ -21,16 +21,15 @@ use std::num::Wrapping;
 use bitflags::bitflags;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-use crate::{c_enum, impl_mmio_for_zerocopy};
+use crate::{consts, impl_mmio_for_zerocopy};
 
 pub use self::uds_vsock::{UdsVsock, UdsVsockParam};
 #[cfg(target_os = "linux")]
 pub use self::vhost_vsock::{VhostVsock, VhostVsockParam};
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct VsockVirtq(u16);
-    {
+    pub struct VsockVirtq(u16) {
         RX = 0;
         TX = 1;
         EVENT = 2;
@@ -56,10 +55,9 @@ bitflags! {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct VsockOp(u16);
-    {
+    pub struct VsockOp(u16) {
         INVALID = 0;
         REQUEST = 1;
         RESPONSE = 2;
@@ -71,10 +69,9 @@ c_enum! {
     }
 }
 
-c_enum! {
+consts! {
     #[derive(Default, FromBytes, Immutable, IntoBytes)]
-    pub struct VsockType(u16);
-    {
+    pub struct VsockType(u16) {
         STREAM = 1;
         SEQPACKET = 2;
     }
