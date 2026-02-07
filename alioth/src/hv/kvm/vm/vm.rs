@@ -128,8 +128,14 @@ impl VmInner {
         check_extension(&self.fd, id)
     }
 
-    pub fn enable_cap(&self, cap: &KvmEnableCap) -> Result<(), KvmError> {
-        unsafe { kvm_enable_cap(&self.fd, cap) }.context(kvm_error::EnableCap { cap: cap.cap })?;
+    pub fn enable_cap(&self, cap: KvmCap, arg0: u64) -> Result<(), KvmError> {
+        let request = KvmEnableCap {
+            cap,
+            args: [arg0, 0, 0, 0],
+            flags: 0,
+            pad: [0; 64],
+        };
+        unsafe { kvm_enable_cap(&self.fd, &request) }.context(kvm_error::EnableCap { cap })?;
         Ok(())
     }
 }

@@ -22,7 +22,7 @@ use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
-    KvmCap, KvmCreateGuestMemfd, KvmEnableCap, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
+    KvmCap, KvmCreateGuestMemfd, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
     kvm_create_irqchip, kvm_memory_encrypt_op, kvm_set_identity_map_addr, kvm_set_tss_addr,
 };
 use crate::sys::sev::{
@@ -98,13 +98,7 @@ impl KvmVm {
                 }
                 Some(Coco::AmdSnp { .. }) => {
                     let bitmap = self.vm.check_extension(KvmCap::EXIT_HYPERCALL)?.get();
-                    let request = KvmEnableCap {
-                        cap: KvmCap::EXIT_HYPERCALL,
-                        args: [bitmap as _, 0, 0, 0],
-                        flags: 0,
-                        pad: [0; 64],
-                    };
-                    self.vm.enable_cap(&request)?;
+                    self.vm.enable_cap(KvmCap::EXIT_HYPERCALL, bitmap as u64)?;
                     let mut init = KvmSevInit::default();
                     self.sev_op(KvmSevCmdId::INIT2, Some(&mut init))?;
                     log::debug!("{}: snp init: {init:#x?}", self.vm);
@@ -115,13 +109,7 @@ impl KvmVm {
 
         let x2apic_caps =
             KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK;
-        let request = KvmEnableCap {
-            cap: KvmCap::X2APIC_API,
-            args: [x2apic_caps.bits(), 0, 0, 0],
-            flags: 0,
-            pad: [0; 64],
-        };
-        if let Err(e) = self.vm.enable_cap(&request) {
+        if let Err(e) = self.vm.enable_cap(KvmCap::X2APIC_API, x2apic_caps.bits()) {
             log::error!("Failed to enable KVM_CAP_X2APIC_API: {e:?}");
         }
         unsafe { kvm_create_irqchip(&self.vm.fd) }.context(error::CreateDevice)?;
