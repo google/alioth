@@ -15,7 +15,6 @@
 use std::arch::x86_64::{__cpuid, CpuidResult};
 use std::collections::HashMap;
 use std::iter::zip;
-use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
 use std::path::Path;
 use std::sync::Arc;
@@ -27,13 +26,14 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::layout::{
-    BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL,
-    RAM_32_SIZE,
+    BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
+    PORT_ACPI_SLEEP_CONTROL, RAM_32_SIZE,
 };
 use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::SnpPageType;
 use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
+use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
 };
@@ -47,10 +47,13 @@ use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
 
-pub struct ArchBoard<V> {
+pub struct ArchBoard<V>
+where
+    V: Vm,
+{
     cpuids: HashMap<CpuidIn, CpuidResult>,
     sev_ap_eip: AtomicU32,
-    _phantom: PhantomData<V>,
+    pub(crate) io_apic: Arc<IoApic<V::MsiSender>>,
 }
 
 fn add_topology(cpuids: &mut HashMap<CpuidIn, CpuidResult>, func: u32, levels: &[(u8, u16)]) {
@@ -70,7 +73,7 @@ fn add_topology(cpuids: &mut HashMap<CpuidIn, CpuidResult>, func: u32, levels: &
 }
 
 impl<V: Vm> ArchBoard<V> {
-    pub fn new<H>(hv: &H, _vm: &V, config: &BoardConfig) -> Result<Self>
+    pub fn new<H>(hv: &H, vm: &V, config: &BoardConfig) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
@@ -147,10 +150,11 @@ impl<V: Vm> ArchBoard<V> {
             let host_cpuid = unsafe { __cpuid(func) };
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
+
         Ok(Self {
             cpuids,
             sev_ap_eip: AtomicU32::new(0),
-            _phantom: PhantomData,
+            io_apic: Arc::new(IoApic::new(vm.create_msi_sender()?)),
         })
     }
 }
@@ -538,6 +542,8 @@ where
     }
 
     pub fn arch_init(&self) -> Result<()> {
+        let io_apic = self.arch.io_apic.clone();
+        self.mmio_devs.write().push((IOAPIC_START, io_apic));
         Ok(())
     }
 }

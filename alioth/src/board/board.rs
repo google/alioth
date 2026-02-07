@@ -211,7 +211,6 @@ where
     pub config: BoardConfig,
     pub payload: RwLock<Option<Payload>>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn MmioDev>)>>,
-    #[cfg(target_arch = "aarch64")]
     pub mmio_devs: RwLock<Vec<(u64, Arc<dyn MmioDev>)>>,
     pub pci_bus: PciBus,
     #[cfg(target_arch = "x86_64")]
@@ -238,7 +237,6 @@ where
             payload: RwLock::new(None),
             vcpus: Arc::new(RwLock::new(Vec::new())),
             io_devs: RwLock::new(Vec::new()),
-            #[cfg(target_arch = "aarch64")]
             mmio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
             #[cfg(target_arch = "x86_64")]
@@ -417,7 +415,6 @@ where
             for (port, dev) in self.io_devs.read().iter() {
                 self.memory.add_io_dev(*port, dev.clone())?;
             }
-            #[cfg(target_arch = "aarch64")]
             for (addr, dev) in self.mmio_devs.read().iter() {
                 self.memory.add_mmio_dev(*addr, dev.clone())?;
             }

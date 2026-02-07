@@ -163,8 +163,8 @@ where
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
-        let irq_sender = self.board.vm.create_irq_sender(4)?;
-        let com1 = Serial::new(PORT_COM1, irq_sender).context(error::CreateConsole)?;
+        let io_apic = self.board.arch.io_apic.clone();
+        let com1 = Serial::new(PORT_COM1, io_apic, 4).context(error::CreateConsole)?;
         self.board.io_devs.write().push((PORT_COM1, Arc::new(com1)));
         Ok(())
     }

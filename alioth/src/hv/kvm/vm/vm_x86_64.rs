@@ -17,13 +17,14 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use snafu::ResultExt;
 
 use crate::arch::intr::{MsiAddrHi, MsiAddrLo};
+use crate::arch::ioapic::NUM_PINS;
 use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::hv::kvm::sev::SevFd;
 use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
     KvmCap, KvmCreateGuestMemfd, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
-    kvm_create_irqchip, kvm_memory_encrypt_op, kvm_set_identity_map_addr, kvm_set_tss_addr,
+    kvm_memory_encrypt_op, kvm_set_identity_map_addr, kvm_set_tss_addr,
 };
 use crate::sys::sev::{
     KvmSevCmd, KvmSevCmdId, KvmSevInit, KvmSevLaunchMeasure, KvmSevLaunchStart,
@@ -112,7 +113,7 @@ impl KvmVm {
         if let Err(e) = self.vm.enable_cap(KvmCap::X2APIC_API, x2apic_caps.bits()) {
             log::error!("Failed to enable KVM_CAP_X2APIC_API: {e:?}");
         }
-        unsafe { kvm_create_irqchip(&self.vm.fd) }.context(error::CreateDevice)?;
+        self.vm.enable_cap(KvmCap::SPLIT_IRQCHIP, NUM_PINS as u64)?;
         // TODO should be in parameters
         unsafe { kvm_set_tss_addr(&self.vm.fd, 0xf000_0000) }.context(error::SetVmParam)?;
         unsafe { kvm_set_identity_map_addr(&self.vm.fd, &0xf000_3000) }

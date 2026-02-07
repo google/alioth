@@ -29,18 +29,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
-use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, eventfd, write};
+#[cfg(not(target_arch = "x86_64"))]
+use libc::write;
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, eventfd};
 use parking_lot::{Mutex, RwLock};
 use snafu::ResultExt;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
 use crate::ffi;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::hv::IrqSender;
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::kvm::{KvmError, check_extension, kvm_error};
 use crate::hv::{
-    Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Kvm, MemMapOption, MsiSender, Result,
-    Vm, VmConfig, VmMemory, error,
+    Error, IoeventFd, IoeventFdRegistry, IrqFd, Kvm, MemMapOption, MsiSender, Result, Vm, VmConfig,
+    VmMemory, error,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
@@ -279,7 +283,7 @@ impl VmMemory for KvmMemory {
         Ok(())
     }
 }
-
+#[cfg(not(target_arch = "x86_64"))]
 #[derive(Debug)]
 pub struct KvmIrqSender {
     pin: u8,
@@ -287,6 +291,7 @@ pub struct KvmIrqSender {
     event_fd: OwnedFd,
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 impl Drop for KvmIrqSender {
     fn drop(&mut self) {
         let pin_flag = 1 << (self.pin as u32);
@@ -307,6 +312,7 @@ impl Drop for KvmIrqSender {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 impl IrqSender for KvmIrqSender {
     fn send(&self) -> Result<(), Error> {
         ffi!(unsafe { write(self.event_fd.as_raw_fd(), &1u64 as *const _ as _, 8) })
@@ -640,6 +646,7 @@ impl Vm for KvmVm {
     #[cfg(target_arch = "aarch64")]
     type GicV3 = aarch64::KvmGicV3;
     type IoeventFdRegistry = KvmIoeventFdRegistry;
+    #[cfg(not(target_arch = "x86_64"))]
     type IrqSender = KvmIrqSender;
     #[cfg(target_arch = "aarch64")]
     type Its = aarch64::KvmIts;
@@ -667,6 +674,7 @@ impl Vm for KvmVm {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error> {
         let pin_flag = 1 << pin;
         if self.vm.pin_map.fetch_or(pin_flag, Ordering::AcqRel) & pin_flag == pin_flag {

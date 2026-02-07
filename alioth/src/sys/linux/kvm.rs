@@ -504,6 +504,7 @@ consts! {
         KVMCLOCK_CTRL = 76;
         SIGNAL_MSI = 77;
         ARM_PSCI_0_2 = 102;
+        SPLIT_IRQCHIP = 121;
         X2APIC_API = 129;
         EXIT_HYPERCALL = 201;
         // GUEST_MEMFD = 234;

@@ -21,8 +21,9 @@ use bitflags::bitflags;
 use parking_lot::Mutex;
 
 use crate::device::console::{Console, UartRecv};
+use crate::device::ioapic::IoApic;
 use crate::device::{self, MmioDev, Pause};
-use crate::hv::IrqSender;
+use crate::hv::MsiSender;
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 
@@ -183,16 +184,17 @@ struct SerialReg {
 }
 
 #[derive(Debug)]
-pub struct Serial<I> {
+pub struct Serial<M: MsiSender> {
     name: Arc<str>,
-    irq_sender: Arc<I>,
+    io_apci: Arc<IoApic<M>>,
+    pin: u8,
     reg: Arc<Mutex<SerialReg>>,
     console: Console,
 }
 
-impl<I> Mmio for Serial<I>
+impl<M> Mmio for Serial<M>
 where
-    I: IrqSender,
+    M: MsiSender,
 {
     fn size(&self) -> u64 {
         8
@@ -283,9 +285,9 @@ where
     }
 }
 
-impl<I> Pause for Serial<I>
+impl<M> Pause for Serial<M>
 where
-    I: IrqSender,
+    M: MsiSender,
 {
     fn pause(&self) -> device::Result<()> {
         Ok(())
@@ -296,15 +298,16 @@ where
     }
 }
 
-impl<I> MmioDev for Serial<I> where I: IrqSender {}
+impl<M> MmioDev for Serial<M> where M: MsiSender {}
 
-struct SerialRecv<I: IrqSender> {
+struct SerialRecv<M: MsiSender> {
     pub name: Arc<str>,
-    pub irq_sender: Arc<I>,
+    pub io_apci: Arc<IoApic<M>>,
+    pub pin: u8,
     pub reg: Arc<Mutex<SerialReg>>,
 }
 
-impl<I: IrqSender> UartRecv for SerialRecv<I> {
+impl<M: MsiSender> UartRecv for SerialRecv<M> {
     fn receive(&self, bytes: &[u8]) {
         let mut reg = self.reg.lock();
         reg.data.extend(bytes);
@@ -313,7 +316,7 @@ impl<I: IrqSender> UartRecv for SerialRecv<I> {
             .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
         {
             reg.interrupt_identification.set_rx_data_available();
-            if let Err(e) = self.irq_sender.send() {
+            if let Err(e) = self.io_apci.service_pin(self.pin) {
                 log::error!("{}: sending interrupt: {e:?}", self.name);
             }
         }
@@ -321,16 +324,16 @@ impl<I: IrqSender> UartRecv for SerialRecv<I> {
     }
 }
 
-impl<I> Serial<I>
+impl<M> Serial<M>
 where
-    I: IrqSender + Sync + Send + 'static,
+    M: MsiSender,
 {
-    pub fn new(base_port: u16, irq_sender: I) -> io::Result<Self> {
-        let irq_sender = Arc::new(irq_sender);
+    pub fn new(base_port: u16, io_apci: Arc<IoApic<M>>, pin: u8) -> io::Result<Self> {
         let reg = Arc::new(Mutex::new(SerialReg::default()));
         let name: Arc<str> = Arc::from(format!("serial_{base_port:#x}"));
         let uart_recv = SerialRecv {
-            irq_sender: irq_sender.clone(),
+            io_apci: io_apci.clone(),
+            pin,
             name: name.clone(),
             reg: reg.clone(),
         };
@@ -338,14 +341,15 @@ where
         let serial = Serial {
             name,
             reg,
-            irq_sender,
+            pin,
+            io_apci,
             console,
         };
         Ok(serial)
     }
 
     fn send_irq(&self) {
-        if let Err(e) = self.irq_sender.send() {
+        if let Err(e) = self.io_apci.service_pin(self.pin) {
             log::error!("{}: sending interrupt: {e:?}", self.name);
         }
     }

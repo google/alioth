@@ -25,6 +25,7 @@ use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::os::fd::AsFd;
+#[cfg(not(target_arch = "x86_64"))]
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -210,10 +211,12 @@ pub trait Vcpu {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub trait IrqSender: Debug + Send + Sync + 'static {
     fn send(&self) -> Result<(), Error>;
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 impl<T> IrqSender for Arc<T>
 where
     T: IrqSender,
@@ -328,10 +331,12 @@ pub struct VmConfig {
 pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
+    #[cfg(not(target_arch = "x86_64"))]
     type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu, Error>;
+    #[cfg(not(target_arch = "x86_64"))]
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(
         &self,
