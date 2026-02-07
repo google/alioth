@@ -14,6 +14,7 @@
 
 pub mod cpuid;
 pub mod intr;
+pub mod ioapic;
 pub mod layout;
 pub mod msr;
 pub mod paging;

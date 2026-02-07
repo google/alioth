@@ -52,6 +52,8 @@ pub const PCIE_CONFIG_START: u64 = 0xe000_0000; // 3.5 GiB
 pub const PCIE_CONFIG_END: u64 = 0xf000_0000; // 3.75 GiB, size = 256 MiB
 
 pub const IOAPIC_START: u64 = 0xfec0_0000;
+pub const IOAPIC_END: u64 = IOAPIC_START + 0x100;
+
 pub const APIC_START: u64 = 0xfee0_0000;
 
 pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB

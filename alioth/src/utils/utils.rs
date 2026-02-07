@@ -144,6 +144,7 @@ macro_rules! consts {
             pub const fn name(self) -> &'static str {
                 match self {
                     $($EnumName::$VARIANT => stringify!($VARIANT),)*
+                    #[allow(unreachable_patterns)]
                     _ => "Unknown"
                 }
             }
@@ -157,6 +158,7 @@ macro_rules! consts {
                         f.write_str("::")?;
                         f.write_str(stringify!($VARIANT))
                     })*
+                    #[allow(unreachable_patterns)]
                     _ => {
                         ::core::fmt::Write::write_char(f, '(')?;
                         ::core::fmt::Debug::fmt(&self.0, f)?;

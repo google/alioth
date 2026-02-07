@@ -14,6 +14,34 @@
 
 use bitfield::bitfield;
 
+use crate::consts;
+
+consts! {
+    pub struct DeliveryMode(u8) {
+        FIXED = 0b000;
+        LOW_PRIORITY = 0b001;
+        SMI = 0b010;
+        NMI = 0b100;
+        INIT = 0b101;
+        STARTUP_IPI = 0b110;
+        EXTINT = 0b111;
+    }
+}
+
+consts! {
+    pub struct TriggerMode(bool) {
+        EDGE = false;
+        LEVEL = true;
+    }
+}
+
+consts! {
+    pub struct DestinationMode(bool) {
+        PHYSICAL = false;
+        LOGICAL = true;
+    }
+}
+
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     pub struct MsiAddrLo(u32);
@@ -31,4 +59,15 @@ bitfield! {
     pub struct MsiAddrHi(u32);
     impl Debug;
     pub dest_id_hi, set_dest_id_hi : 31, 8;
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct MsiData(u32);
+    impl Debug;
+    impl new;
+    pub u8, vector, set_vector : 7, 0;
+    pub u8, from into DeliveryMode, delivery_mode, set_delivery_mode : 11, 8;
+    pub u8, level, set_level : 14;
+    pub trigger_mode, set_trigger_mode : 15;
 }
