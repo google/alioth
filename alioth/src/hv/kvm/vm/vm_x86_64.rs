@@ -32,13 +32,13 @@ use crate::sys::sev::{
 
 pub fn translate_msi_addr(addr_lo: u32, addr_hi: u32) -> (u32, u32) {
     let mut addr_lo = MsiAddrLo(addr_lo);
-    if addr_lo.reserved() == 0 || addr_lo.remappable() || addr_hi != 0 {
-        return (addr_lo.0, addr_hi);
+    let mut addr_hi = MsiAddrHi(addr_hi);
+    if addr_lo.virt_dest_id_hi() == 0 || addr_lo.remappable() || addr_hi.dest_id_hi() != 0 {
+        return (addr_lo.0, addr_hi.0);
     }
 
-    let mut addr_hi = MsiAddrHi(0);
-    addr_hi.set_dest_id(addr_lo.reserved());
-    addr_lo.set_reserved(0);
+    addr_hi.set_dest_id_hi(addr_lo.virt_dest_id_hi() as u32);
+    addr_lo.set_virt_dest_id_hi(0);
     (addr_lo.0, addr_hi.0)
 }
 

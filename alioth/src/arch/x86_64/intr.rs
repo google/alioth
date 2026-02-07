@@ -21,8 +21,8 @@ bitfield! {
     pub mode, set_mode : 2;
     pub redirection, set_redirection : 3;
     pub remappable, set_remappable : 4;
-    pub reserved, set_reserved : 11, 5;
-    pub dest_id, set_dest_id : 19, 12;
+    pub u8, virt_dest_id_hi, set_virt_dest_id_hi : 11, 5;
+    pub u8, dest_id, set_dest_id : 19, 12;
     pub identifier, _: 31, 20;
 }
 
@@ -30,5 +30,5 @@ bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     pub struct MsiAddrHi(u32);
     impl Debug;
-    pub dest_id, set_dest_id : 31, 8;
+    pub dest_id_hi, set_dest_id_hi : 31, 8;
 }
