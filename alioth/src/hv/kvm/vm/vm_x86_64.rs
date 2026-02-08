@@ -68,9 +68,13 @@ impl VmArch {
 
 impl KvmVm {
     pub fn determine_vm_type(config: &VmConfig) -> KvmVmType {
-        match &config.coco {
-            Some(Coco::AmdSnp { .. }) => KvmVmType::SNP,
-            _ => KvmVmType::DEFAULT,
+        let Some(coco) = &config.coco else {
+            return KvmVmType::DEFAULT;
+        };
+        match coco {
+            Coco::AmdSev { .. } => KvmVmType::DEFAULT,
+            Coco::AmdSnp { .. } => KvmVmType::SNP,
+            Coco::IntelTdx { .. } => KvmVmType::TDX,
         }
     }
 
