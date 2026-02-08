@@ -20,3 +20,4 @@ pub mod msr;
 pub mod paging;
 pub mod reg;
 pub mod sev;
+pub mod tdx;

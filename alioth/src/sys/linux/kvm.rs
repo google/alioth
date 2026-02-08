@@ -39,6 +39,7 @@ consts! {
         SEV = 2;
         SEV_ES = 3;
         SNP = 4;
+        TDX = 5;
     }
 }
 
