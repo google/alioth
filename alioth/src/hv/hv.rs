@@ -40,6 +40,8 @@ use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::TdAttr;
 use crate::errors::{DebugTrace, trace_error};
 
 #[cfg(target_os = "macos")]
@@ -323,6 +325,15 @@ pub enum Coco {
         /// SEV-SNP policy, e.g. 0x30000.
         /// SNP Firmware ABI Spec, Rev 1.55, Sec.4.3, Table 9.
         policy: SnpPolicy,
+    },
+    /// Enable Intel TDX.
+    #[cfg(target_arch = "x86_64")]
+    #[serde(alias = "tdx")]
+    #[serde_aco(hide)]
+    IntelTdx {
+        /// TD attribute,
+        /// Intel TDX Module ABI Spec, Sec.3.4.1, Table 3.22.
+        attr: TdAttr,
     },
 }
 

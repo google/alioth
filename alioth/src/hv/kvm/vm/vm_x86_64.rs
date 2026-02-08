@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::path::Path;
 
 use snafu::ResultExt;
 
@@ -43,24 +44,25 @@ pub fn translate_msi_addr(addr_lo: u32, addr_hi: u32) -> (u32, u32) {
     (addr_lo.0, addr_hi.0)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct VmArch {
     pub sev_fd: Option<SevFd>,
 }
 
 impl VmArch {
     pub fn new(kvm: &Kvm, config: &VmConfig) -> Result<Self> {
-        let sev_fd = if let Some(cv) = &config.coco {
-            match cv {
-                Coco::AmdSev { .. } | Coco::AmdSnp { .. } => Some(match &kvm.config.dev_sev {
-                    Some(dev_sev) => SevFd::new(dev_sev),
-                    None => SevFd::new("/dev/sev"),
-                }?),
-            }
-        } else {
-            None
+        let Some(coco) = &config.coco else {
+            return Ok(VmArch::default());
         };
-        Ok(VmArch { sev_fd })
+        match coco {
+            Coco::AmdSev { .. } | Coco::AmdSnp { .. } => {
+                let default_dev = Path::new("/dev/sev");
+                let dev_sev = kvm.config.dev_sev.as_deref().unwrap_or(default_dev);
+                let fd = SevFd::new(dev_sev)?;
+                Ok(VmArch { sev_fd: Some(fd) })
+            }
+            Coco::IntelTdx { attr } => todo!("Intel TDX {attr:?}"),
+        }
     }
 }
 

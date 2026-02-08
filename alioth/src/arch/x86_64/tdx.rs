@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use crate::bitflags;
+use serde::{Deserialize, Serialize};
+use serde_aco::Help;
 
 bitflags! {
+    #[derive(Default, Serialize, Deserialize, Help)]
     pub struct TdAttr(u64) {
         DEBUG = 1 << 0;
         SEPT_VE_DISABLE = 1 << 28;

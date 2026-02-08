@@ -312,6 +312,7 @@ where
                     .snp_launch_update(fw_range, fw_gpa, SnpPageType::Normal)
                     .unwrap();
             }
+            Coco::IntelTdx { attr } => todo!("Intel TDX {attr:?}"),
         }
         Ok(())
     }
@@ -435,6 +436,7 @@ where
             match coco {
                 Coco::AmdSev { policy } => self.vm.sev_launch_start(*policy)?,
                 Coco::AmdSnp { policy } => self.vm.snp_launch_start(*policy)?,
+                Coco::IntelTdx { attr } => todo!("Intel TDX {attr:?}"),
             }
         }
         Ok(())
@@ -455,6 +457,7 @@ where
                     Coco::AmdSnp { .. } => {
                         self.vm.snp_launch_finish()?;
                     }
+                    Coco::IntelTdx { attr } => todo!("Intel TDX {attr:?}"),
                 }
             }
             self.sync_vcpus(vcpus)?;
