@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
-
 use crate::sys::ioctl::ioctl_io;
 use crate::{
-    consts, ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread,
+    bitflags, consts, ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
+    ioctl_writeread,
 };
 
 pub const VFIO_TYPE: u8 = b';';
@@ -31,18 +30,17 @@ pub struct VfioInfoCapHeader {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct VfioDeviceInfoFlag: u32 {
-        const RESET = 1 << 0;
-        const PCI = 1 << 1;
-        const PLATFORM = 1 << 2;
-        const AMBA  = 1 << 3;
-        const CCW = 1 << 4;
-        const AP = 1 << 5;
-        const FSL_MC = 1 << 6;
-        const CAPS = 1 << 7;
-        const CDX = 1 << 8;
+    #[derive(Default)]
+    pub struct VfioDeviceInfoFlag(u32) {
+        RESET = 1 << 0;
+        PCI = 1 << 1;
+        PLATFORM = 1 << 2;
+        AMBA = 1 << 3;
+        CCW = 1 << 4;
+        AP = 1 << 5;
+        FSL_MC = 1 << 6;
+        CAPS = 1 << 7;
+        CDX = 1 << 8;
     }
 }
 
@@ -58,13 +56,12 @@ pub struct VfioDeviceInfo {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct VfioRegionInfoFlag: u32 {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-        const MMAP = 1 << 2;
-        const CAPS = 1 << 3;
+    #[derive(Default)]
+    pub struct VfioRegionInfoFlag(u32) {
+        READ = 1 << 0;
+        WRITE = 1 << 1;
+        MMAP = 1 << 2;
+        CAPS = 1 << 3;
     }
 }
 
@@ -101,13 +98,12 @@ consts! {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct VfioIrqInfoFlag: u32 {
-        const EVENTFD = 1 << 0;
-        const MASKABLE = 1 << 1;
-        const AUTOMASKED = 1 << 2;
-        const NORESIZE = 1 << 3;
+    #[derive(Default)]
+    pub struct VfioIrqInfoFlag(u32) {
+        EVENTFD = 1 << 0;
+        MASKABLE = 1 << 1;
+        AUTOMASKED = 1 << 2;
+        NORESIZE = 1 << 3;
     }
 }
 
@@ -132,15 +128,13 @@ pub struct VfioIrqInfo {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct VfioIrqSetFlag: u32 {
-        const DATA_NONE = 1 << 0;
-        const DATA_BOOL = 1 << 1;
-        const DATA_EVENTFD = 1 << 2;
-        const ACTION_MASK = 1 << 3;
-        const ACTION_UNMASK = 1 << 4;
-        const ACTION_TRIGGER = 1 << 5;
+    pub struct VfioIrqSetFlag(u32) {
+        DATA_NONE = 1 << 0;
+        DATA_BOOL = 1 << 1;
+        DATA_EVENTFD = 1 << 2;
+        ACTION_MASK = 1 << 3;
+        ACTION_UNMASK = 1 << 4;
+        ACTION_TRIGGER = 1 << 5;
     }
 }
 
@@ -202,12 +196,11 @@ pub struct IommuIoasAlloc {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Default)]
-    pub struct IommuIoasMapFlag: u32 {
-        const FIXED_IOVA = 1 << 0;
-        const WRITEABLE = 1 << 1;
-        const READABLE = 1 << 2;
+    #[derive(Default)]
+    pub struct IommuIoasMapFlag(u32) {
+        FIXED_IOVA = 1 << 0;
+        WRITEABLE = 1 << 1;
+        READABLE = 1 << 2;
     }
 }
 
@@ -233,12 +226,11 @@ pub struct IommuIoasUnmap {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Default)]
-    pub struct VfioDmaMapFlag: u32 {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-        const VADDR = 1 << 2;
+    #[derive(Default)]
+    pub struct VfioDmaMapFlag(u32) {
+        READ = 1 << 0;
+        WRITE = 1 << 1;
+        VADDR = 1 << 2;
     }
 }
 
@@ -253,12 +245,11 @@ pub struct VfioIommuType1DmaMap {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Default)]
-    pub struct VfioDmaUnmapFlag: u32 {
-        const GET_DIRTY_BITMAP  = 1 << 0;
-        const ALL = 1 << 1;
-        const VADDR = 1 << 2;
+    #[derive(Default)]
+    pub struct VfioDmaUnmapFlag(u32) {
+        GET_DIRTY_BITMAP = 1 << 0;
+        ALL = 1 << 1;
+        VADDR = 1 << 2;
     }
 }
 

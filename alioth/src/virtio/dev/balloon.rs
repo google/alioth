@@ -19,7 +19,6 @@ use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use alioth_macros::Layout;
-use bitflags::bitflags;
 use libc::{_SC_PAGESIZE, sysconf};
 use mio::Registry;
 use mio::event::Event;
@@ -36,7 +35,7 @@ use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
-use crate::{consts, ffi, impl_mmio_for_zerocopy, mem};
+use crate::{bitflags, consts, ffi, impl_mmio_for_zerocopy, mem};
 
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Default, FromBytes, IntoBytes, Immutable, Layout)]
@@ -83,14 +82,13 @@ impl Mmio for BalloonConfigMmio {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct BalloonFeature: u128 {
-        const MUST_TELL_HOST = 1 << 0;
-        const STATS_VQ = 1 << 1;
-        const DEFLATE_ON_OOM = 1 << 2;
-        const FREE_PAGE_HINT = 1 << 3;
-        const PAGE_POISON = 1 << 4;
-        const PAGE_REPORTING = 1 << 5;
+    pub struct BalloonFeature(u128) {
+        MUST_TELL_HOST = 1 << 0;
+        STATS_VQ = 1 << 1;
+        DEFLATE_ON_OOM = 1 << 2;
+        FREE_PAGE_HINT = 1 << 3;
+        PAGE_POISON = 1 << 4;
+        PAGE_REPORTING = 1 << 5;
     }
 }
 

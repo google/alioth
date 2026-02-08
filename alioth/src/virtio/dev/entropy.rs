@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 use libc::O_NONBLOCK;
 use mio::Registry;
 use mio::event::Event;
@@ -29,7 +28,6 @@ use serde_aco::Help;
 use snafu::ResultExt;
 
 use crate::hv::IoeventFd;
-use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
@@ -37,6 +35,7 @@ use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue, copy_from_reader};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result, error};
+use crate::{bitflags, mem};
 
 #[derive(Debug, Clone)]
 pub struct EntropyConfig;
@@ -56,8 +55,7 @@ impl Mmio for EntropyConfig {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct EntropyFeature: u128 { }
+    pub struct EntropyFeature(u128) { }
 }
 
 #[derive(Debug)]

@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
+use crate::bitflags;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TdAttr: u64 {
-        const DEBUG = 1 << 0;
-        const SEPT_VE_DISABLE = 1 << 28;
-        const PKS = 1 << 30;
-        const PERFMON = 1 << 63;
+    pub struct TdAttr(u64) {
+        DEBUG = 1 << 0;
+        SEPT_VE_DISABLE = 1 << 28;
+        PKS = 1 << 30;
+        PERFMON = 1 << 63;
     }
 }

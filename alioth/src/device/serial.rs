@@ -17,15 +17,14 @@ use std::io;
 use std::sync::Arc;
 
 use bitfield::bitfield;
-use bitflags::bitflags;
 use parking_lot::Mutex;
 
 use crate::device::console::{Console, UartRecv};
 use crate::device::ioapic::IoApic;
 use crate::device::{self, MmioDev, Pause};
 use crate::hv::MsiSender;
-use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
+use crate::{bitflags, mem};
 
 const TX_HOLDING_REGISTER: u16 = 0x0;
 const RX_BUFFER_REGISTER: u16 = 0x0;
@@ -42,12 +41,12 @@ const SCRATCH_REGISTER: u16 = 0x7;
 
 // offset 0x1, Interrupt Enable Register (IER)
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct InterruptEnable: u8 {
-        const MODEM_STATUS = 1 << 3;
-        const RECEIVER_LINE_STATUS = 1 << 2;
-        const TX_HOLDING_REGISTER_EMPTY = 1 << 1;
-        const RECEIVED_DATA_AVAILABLE = 1 << 0;
+    #[derive(Default)]
+    pub struct InterruptEnable(u8) {
+        MODEM_STATUS = 1 << 3;
+        RECEIVER_LINE_STATUS = 1 << 2;
+        TX_HOLDING_REGISTER_EMPTY = 1 << 1;
+        RECEIVED_DATA_AVAILABLE = 1 << 0;
     }
 }
 
@@ -149,16 +148,15 @@ bitfield! {
 
 // offset 0x5, Line Status Register (LSR)
 bitflags! {
-    #[derive(Debug)]
-    pub struct LineStatus: u8 {
-        const ERROR_IN_RX_FIFO = 1 << 7;
-        const TX_EMPTY = 1 << 6;
-        const TX_HOLDING_REGISTER_EMPTY = 1 << 5;
-        const BREAK_INTERRUPT = 1 << 4;
-        const FRAMING_ERROR = 1 << 3;
-        const PARITY_ERROR = 1 << 2;
-        const OVERRUN_ERROR = 1 << 1;
-        const DATA_READY = 1 << 0;
+    pub struct LineStatus(u8) {
+        ERROR_IN_RX_FIFO = 1 << 7;
+        TX_EMPTY = 1 << 6;
+        TX_HOLDING_REGISTER_EMPTY = 1 << 5;
+        BREAK_INTERRUPT = 1 << 4;
+        FRAMING_ERROR = 1 << 3;
+        PARITY_ERROR = 1 << 2;
+        OVERRUN_ERROR = 1 << 1;
+        DATA_READY = 1 << 0;
     }
 }
 

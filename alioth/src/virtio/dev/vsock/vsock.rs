@@ -18,10 +18,9 @@ mod vhost_vsock;
 
 use std::num::Wrapping;
 
-use bitflags::bitflags;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-use crate::{consts, impl_mmio_for_zerocopy};
+use crate::{bitflags, consts, impl_mmio_for_zerocopy};
 
 pub use self::uds_vsock::{UdsVsock, UdsVsockParam};
 #[cfg(target_os = "linux")]
@@ -48,10 +47,9 @@ pub struct VsockConfig {
 impl_mmio_for_zerocopy!(VsockConfig);
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VsockFeature: u128 {
-        const STREAM = 1 << 0;
-        const SEQPACKET = 1 << 1;
+    pub struct VsockFeature(u128) {
+        STREAM = 1 << 0;
+        SEQPACKET = 1 << 1;
     }
 }
 
@@ -95,9 +93,8 @@ pub struct VsockHeader {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct ShutdownFlag: u32 {
-        const RECEIVE = 1 << 0;
-        const SEND = 1 << 1;
+    pub struct ShutdownFlag(u32) {
+        RECEIVE = 1 << 0;
+        SEND = 1 << 1;
     }
 }

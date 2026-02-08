@@ -12,28 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
+use crate::bitflags;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Entry: u32 {
+    pub struct Entry(u32) {
         /// Present
-        const P = 1 << 0;
+        P = 1 << 0;
         /// Read/write
-        const RW = 1 << 1;
+        RW = 1 << 1;
         /// User/supervisor
-        const US = 1 << 2;
+        US = 1 << 2;
         /// Page-level write-through
-        const PWT = 1 << 3;
+        PWT = 1 << 3;
         /// Page-level cache disable
-        const PCD = 1 << 4;
+        PCD = 1 << 4;
         /// Accessed
-        const A = 1 << 5;
+        A = 1 << 5;
         /// Dirty
-        const D = 1 << 6;
+        D = 1 << 6;
         /// Page size
-        const PS = 1 << 7;
+        PS = 1 << 7;
         /// Global
-        const G = 1 << 8;
+        G = 1 << 8;
     }
 }

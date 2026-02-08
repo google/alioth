@@ -17,9 +17,9 @@ use std::mem::size_of;
 use std::sync::atomic::{Ordering, fence};
 
 use alioth_macros::Layout;
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
+use crate::bitflags;
 use crate::mem::mapped::Ram;
 use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
@@ -34,9 +34,8 @@ pub struct Desc {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct AvailFlag: u16 {
-        const NO_INTERRUPT = 1;
+    pub struct AvailFlag(u16) {
+        NO_INTERRUPT = 1 << 0;
     }
 }
 
@@ -48,9 +47,8 @@ pub struct AvailHeader {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct UsedFlag: u16 {
-        const NO_NOTIFY = 1;
+    pub struct UsedFlag(u16) {
+        NO_NOTIFY = 1 << 0;
     }
 }
 

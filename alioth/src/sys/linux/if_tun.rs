@@ -14,11 +14,10 @@
 
 use std::ffi::{c_int, c_uint, c_ulong};
 
-use bitflags::bitflags;
 use libc::ifreq;
 
 use crate::sys::ioctl::ioctl_iow;
-use crate::{ioctl_read, ioctl_write_ptr, ioctl_write_val};
+use crate::{bitflags, ioctl_read, ioctl_write_ptr, ioctl_write_val};
 
 ioctl_write_ptr!(tun_set_iff, ioctl_iow::<c_int>(b'T', 202), ifreq);
 
@@ -29,14 +28,13 @@ ioctl_read!(tun_get_vnet_hdr_sz, b'T', 215, c_int);
 ioctl_write_ptr!(tun_set_vnet_hdr_sz, b'T', 216, c_int);
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct TunFeature: c_ulong {
-        const CSUM = 0x01;
-        const TSO4 = 0x02;
-        const TSO6 = 0x04;
-        const TSO_ECN = 0x08;
-        const UFO = 0x10;
-        const USO4 = 0x20;
-        const USO6 = 0x40;
+    pub struct TunFeature(c_ulong) {
+        CSUM = 1 << 0;
+        TSO4 = 1 << 1;
+        TSO6 = 1 << 2;
+        TSO_ECN = 1 << 3;
+        UFO = 1 << 4;
+        USO4 = 1 << 5;
+        USO6 = 1 << 6;
     }
 }

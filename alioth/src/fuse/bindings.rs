@@ -14,10 +14,9 @@
 
 use std::marker::PhantomData;
 
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::consts;
+use crate::{bitflags, consts};
 
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 pub const FUSE_KERNEL_MINOR_VERSION: u32 = 43;
@@ -25,189 +24,161 @@ pub const FUSE_ROOT_ID: u64 = 1;
 pub const FUSE_UNIQUE_RESEND: u64 = 1 << 63;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FAttrFlag: u32 {
-        const MODE = 1 << 0;
-        const UID = 1 << 1;
-        const GID = 1 << 2;
-        const SIZE = 1 << 3;
-        const ATIME = 1 << 4;
-        const MTIME = 1 << 5;
-        const FH = 1 << 6;
-        const ATIME_NOW = 1 << 7;
-        const MTIME_NOW = 1 << 8;
-        const LOCKOWNER = 1 << 9;
-        const CTIME = 1 << 10;
-        const KILL_SUIDGID = 1 << 11;
+    pub struct FAttrFlag(u32) {
+        MODE = 1 << 0;
+        UID = 1 << 1;
+        GID = 1 << 2;
+        SIZE = 1 << 3;
+        ATIME = 1 << 4;
+        MTIME = 1 << 5;
+        FH = 1 << 6;
+        ATIME_NOW = 1 << 7;
+        MTIME_NOW = 1 << 8;
+        LOCKOWNER = 1 << 9;
+        CTIME = 1 << 10;
+        KILL_SUIDGID = 1 << 11;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FOpenFlag: u32 {
-        const DIRECT_IO = 1 << 0;
-        const KEEP_CACHE = 1 << 1;
-        const NONSEEKABLE = 1 << 2;
-        const CACHE_DIR = 1 << 3;
-        const STREAM = 1 << 4;
-        const NOFLUSH = 1 << 5;
-        const PARALLEL_DIRECT_WRITES = 1 << 6;
-        const PASSTHROUGH = 1 << 7;
+    pub struct FOpenFlag(u32) {
+        DIRECT_IO = 1 << 0;
+        KEEP_CACHE = 1 << 1;
+        NONSEEKABLE = 1 << 2;
+        CACHE_DIR = 1 << 3;
+        STREAM = 1 << 4;
+        NOFLUSH = 1 << 5;
+        PARALLEL_DIRECT_WRITES = 1 << 6;
+        PASSTHROUGH = 1 << 7;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseInitFlag: u32 {
-        const ASYNC_READ = 1 << 0;
-        const POSIX_LOCKS = 1 << 1;
-        const FILE_OPS = 1 << 2;
-        const ATOMIC_O_TRUNC = 1 << 3;
-        const EXPORT_SUPPORT = 1 << 4;
-        const BIG_WRITES = 1 << 5;
-        const DONT_MASK = 1 << 6;
-        const SPLICE_WRITE = 1 << 7;
-        const SPLICE_MOVE = 1 << 8;
-        const SPLICE_READ = 1 << 9;
-        const FLOCK_LOCKS = 1 << 10;
-        const HAS_IOCTL_DIR = 1 << 11;
-        const AUTO_INVAL_DATA = 1 << 12;
-        const DO_READDIRPLUS = 1 << 13;
-        const READDIRPLUS_AUTO = 1 << 14;
-        const ASYNC_DIO = 1 << 15;
-        const WRITEBACK_CACHE = 1 << 16;
-        const NO_OPEN_SUPPORT = 1 << 17;
-        const PARALLEL_DIROPS = 1 << 18;
-        const HANDLE_KILLPRIV = 1 << 19;
-        const POSIX_ACL = 1 << 20;
-        const ABORT_ERROR = 1 << 21;
-        const MAX_PAGES = 1 << 22;
-        const CACHE_SYMLINKS = 1 << 23;
-        const NO_OPENDIR_SUPPORT = 1 << 24;
-        const EXPLICIT_INVAL_DATA = 1 << 25;
-        const MAP_ALIGNMENT = 1 << 26;
-        const SUBMOUNTS = 1 << 27;
-        const HANDLE_KILLPRIV_V2 = 1 << 28;
-        const SETXATTR_EXT = 1 << 29;
-        const INIT_EXT = 1 << 30;
-        const INIT_RESERVED = 1 << 31;
+    pub struct FuseInitFlag(u32) {
+        ASYNC_READ = 1 << 0;
+        POSIX_LOCKS = 1 << 1;
+        FILE_OPS = 1 << 2;
+        ATOMIC_O_TRUNC = 1 << 3;
+        EXPORT_SUPPORT = 1 << 4;
+        BIG_WRITES = 1 << 5;
+        DONT_MASK = 1 << 6;
+        SPLICE_WRITE = 1 << 7;
+        SPLICE_MOVE = 1 << 8;
+        SPLICE_READ = 1 << 9;
+        FLOCK_LOCKS = 1 << 10;
+        HAS_IOCTL_DIR = 1 << 11;
+        AUTO_INVAL_DATA = 1 << 12;
+        DO_READDIRPLUS = 1 << 13;
+        READDIRPLUS_AUTO = 1 << 14;
+        ASYNC_DIO = 1 << 15;
+        WRITEBACK_CACHE = 1 << 16;
+        NO_OPEN_SUPPORT = 1 << 17;
+        PARALLEL_DIROPS = 1 << 18;
+        HANDLE_KILLPRIV = 1 << 19;
+        POSIX_ACL = 1 << 20;
+        ABORT_ERROR = 1 << 21;
+        MAX_PAGES = 1 << 22;
+        CACHE_SYMLINKS = 1 << 23;
+        NO_OPENDIR_SUPPORT = 1 << 24;
+        EXPLICIT_INVAL_DATA = 1 << 25;
+        MAP_ALIGNMENT = 1 << 26;
+        SUBMOUNTS = 1 << 27;
+        HANDLE_KILLPRIV_V2 = 1 << 28;
+        SETXATTR_EXT = 1 << 29;
+        INIT_EXT = 1 << 30;
+        INIT_RESERVED = 1 << 31;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseInitFlag2: u32 {
-        const SECURITY_CTX = 1 << 0;
-        const HAS_INODE_DAX = 1 << 1;
-        const CREATE_SUPP_GROUP = 1 << 2;
-        const HAS_EXPIRE_ONLY = 1 << 3;
-        const DIRECT_IO_ALLOW_MMAP = 1 << 4;
-        const PASSTHROUGH = 1 << 5;
-        const NO_EXPORT_SUPPORT = 1 << 6;
-        const HAS_RESEND = 1 << 7;
-        const ALLOW_IDMAP = 1 << 8;
-        const OVER_IO_URING = 1 << 9;
-        const REQUEST_TIMEOUT = 1 << 10;
+    pub struct FuseInitFlag2(u32) {
+        SECURITY_CTX = 1 << 0;
+        HAS_INODE_DAX = 1 << 1;
+        CREATE_SUPP_GROUP = 1 << 2;
+        HAS_EXPIRE_ONLY = 1 << 3;
+        DIRECT_IO_ALLOW_MMAP = 1 << 4;
+        PASSTHROUGH = 1 << 5;
+        NO_EXPORT_SUPPORT = 1 << 6;
+        HAS_RESEND = 1 << 7;
+        ALLOW_IDMAP = 1 << 8;
+        OVER_IO_URING = 1 << 9;
+        REQUEST_TIMEOUT = 1 << 10;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseReleaseFlag: u32 {
-        const FLUSH = 1 << 0;
-        const FLOCK_UNLOCK = 1 << 1;
+    pub struct FuseReleaseFlag(u32) {
+        FLUSH = 1 << 0;
+        FLOCK_UNLOCK = 1 << 1;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseGetattrFlag: u32 {
-        const FH = 1 << 0;
+    pub struct FuseGetattrFlag(u32) {
+        FH = 1 << 0;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseLockFlag: u32 {
-        const FLOCK = 1 << 0;
+    pub struct FuseLockFlag(u32) {
+        FLOCK = 1 << 0;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseWriteFlag: u32 {
-        const CACHE = 1 << 0;
-        const LOCKOWNER = 1 << 1;
-        const KILL_SUIDGID = 1 << 2;
+    pub struct FuseWriteFlag(u32) {
+        CACHE = 1 << 0;
+        LOCKOWNER = 1 << 1;
+        KILL_SUIDGID = 1 << 2;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseReadFlag: u32 {
-        const LOCKOWNER = 1 << 1;
+    pub struct FuseReadFlag(u32) {
+        LOCKOWNER = 1 << 1;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseIoctlFlag: u32 {
-        const COMPAT = 1;
-        const UNRESTRICTED = 2;
-        const RETRY = 4;
-        const BIT_32 = 8;
-        const DIR = 16;
-        const COMPAT_X32 = 32;
-        const MAX_IOV = 256;
+    pub struct FuseIoctlFlag(u32) {
+        COMPAT = 1 << 0;
+        UNRESTRICTED = 1 << 1;
+        RETRY = 1 << 2;
+        BIT_32 = 1 << 3;
+        DIR = 1 << 4;
+        COMPAT_X32 = 1 << 5;
+        MAX_IOV = 1 << 8;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FusePollFlag: u32 {
-        const SCHEDULE_NOTIFY = 1;
+    pub struct FusePollFlag(u32) {
+        SCHEDULE_NOTIFY = 1 << 0;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseFsyncFlag: u32 {
-        const FDATASYNC = 1;
+    pub struct FuseFsyncFlag(u32) {
+        FDATASYNC = 1 << 0;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseAttrFlag: u32 {
-        const SUBMOUNT = 1;
-        const DAX = 2;
+    pub struct FuseAttrFlag(u32) {
+        SUBMOUNT = 1 << 0;
+        DAX = 1 << 1;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseOpenFlag: u32 {
-        const KILL_SUIDGID = 1;
+    pub struct FuseOpenFlag(u32) {
+        KILL_SUIDGID = 1 << 0;
     }
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseSetattrFlag: u32 {
-        const ACL_KILL_SGID = 1;
+    pub struct FuseSetattrFlag(u32) {
+        ACL_KILL_SGID = 1 << 0;
     }
 }
 
@@ -439,12 +410,10 @@ pub struct FuseRenameIn {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct RenameFlag: u32 {
-        const NOREPLACE = 1 << 0;
-        const EXCHANGE = 1 << 1;
-        const WHITEOUT = 1 << 2;
+    pub struct RenameFlag(u32) {
+        NOREPLACE = 1 << 0;
+        EXCHANGE = 1 << 1;
+        WHITEOUT = 1 << 2;
     }
 }
 
@@ -794,10 +763,8 @@ pub struct FuseNotifyInvalInodeOut {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseNotifyInvalFlag: u32 {
-        const EXPIRE_ONLY = 1 << 0;
+    pub struct FuseNotifyInvalFlag(u32) {
+        EXPIRE_ONLY = 1 << 0;
     }
 }
 
@@ -884,11 +851,9 @@ pub struct FuseCopyFileRangeIn {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FuseSetupmappingFlag: u64 {
-        const WRITE = 1 << 0;
-        const READ = 1 << 1;
+    pub struct FuseSetupmappingFlag(u64) {
+        WRITE = 1 << 0;
+        READ = 1 << 1;
     }
 }
 

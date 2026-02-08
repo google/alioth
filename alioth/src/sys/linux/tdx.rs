@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
-
 use crate::arch::tdx::TdAttr;
-use crate::consts;
 use crate::sys::kvm::KvmCpuid2;
+use crate::{bitflags, consts};
 
 consts! {
     #[derive(Default)]
@@ -73,8 +71,7 @@ pub struct KvmTdxInitMemRegion {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct KvmTdxInitMemRegionFlag: u32 {
-        const MEASURE_MEMORY_REGION = 1 << 0;
+    pub struct KvmTdxInitMemRegionFlag(u32) {
+        MEASURE_MEMORY_REGION = 1 << 0;
     }
 }

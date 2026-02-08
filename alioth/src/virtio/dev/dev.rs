@@ -197,7 +197,7 @@ where
         let (event_tx, event_rx) = mpsc::channel();
         let (handle, notifier) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
         log::debug!(
-            "{name}: created with {:x?} {:x?}",
+            "{name}: created with {:x?}, {:x?}",
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(device_feature)
         );
@@ -378,7 +378,7 @@ where
         E: IoeventFd,
     {
         log::debug!(
-            "{}: activated with {:x?} {:x?}",
+            "{}: activated with {:x?}, {:x?}",
             self.context.dev.name(),
             VirtioFeature::from_bits_retain(param.feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(param.feature)

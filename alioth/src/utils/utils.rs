@@ -183,6 +183,43 @@ macro_rules! consts {
     }
 }
 
+#[macro_export]
+macro_rules! bitflags {
+    (
+        $(#[$attr:meta])*
+        $vs:vis struct $FlagTy:ident($TyName:ty) {
+            $(
+                $(#[$inner:ident $($args:tt)*])*
+                $FALG:ident = $value:expr;
+            )*
+        }
+    ) => {
+        #[repr(transparent)]
+        #[derive(PartialEq, Eq, Copy, Clone, Hash)]
+        $(#[$attr])*
+        $vs struct $FlagTy($TyName);
+
+        ::bitflags::bitflags! {
+            impl $FlagTy: $TyName {
+                $(
+                    $(#[$inner $($args)*])*
+                    const $FALG = $value;
+                )*
+            }
+        }
+
+        impl ::core::fmt::Debug for $FlagTy {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                if self.is_empty() {
+                    write!(f, "0")
+                } else {
+                    ::bitflags::parser::to_writer(self, f)
+                }
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 #[path = "utils_test.rs"]
 mod tests;

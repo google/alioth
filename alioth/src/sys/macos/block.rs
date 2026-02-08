@@ -14,8 +14,9 @@
 
 //! https://clang.llvm.org/docs/Block-ABI-Apple.html
 
-use bitflags::bitflags;
 use libc::{c_int, c_ulong, c_void};
+
+use crate::bitflags;
 
 #[repr(C)]
 pub struct BlockDescriptor {
@@ -24,10 +25,9 @@ pub struct BlockDescriptor {
 }
 
 bitflags! {
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Default)]
-    pub struct BlockFlag: c_int {
-        const HAS_STRET = 1 << 29;
+    #[derive(Default)]
+    pub struct BlockFlag(c_int) {
+        HAS_STRET = 1 << 29;
     }
 }
 

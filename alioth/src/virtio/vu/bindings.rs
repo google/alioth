@@ -13,35 +13,32 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::consts;
+use crate::{bitflags, consts};
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct VuFeature: u64 {
-        const MQ = 1 << 0;
-        const LOG_SHMFD = 1 << 1;
-        const RARP = 1 << 2;
-        const REPLY_ACK = 1 << 3;
-        const MTU = 1 << 4;
-        const BACKEND_REQ = 1 << 5;
-        const CROSS_ENDIAN = 1 << 6;
-        const CRYPTO_SESSION = 1 << 7;
-        const PAGEFAULT = 1 << 8;
-        const CONFIG = 1 << 9;
-        const BACKEND_SEND_FD = 1 << 10;
-        const HOST_NOTIFIER = 1 << 11;
-        const INFLIGHT_SHMFD = 1 << 12;
-        const RESET_DEVICE = 1 << 13;
-        const INBAND_NOTIFICATIONS = 1 << 14;
-        const CONFIGURE_MEM_SLOTS = 1 << 15;
-        const STATUS = 1 << 16;
-        const XEN_MMAP = 1 << 17;
-        const SHARED_OBJECT = 1 << 18;
-        const DEVICE_STATE = 1 << 19;
+    pub struct VuFeature(u64) {
+        MQ = 1 << 0;
+        LOG_SHMFD = 1 << 1;
+        RARP = 1 << 2;
+        REPLY_ACK = 1 << 3;
+        MTU = 1 << 4;
+        BACKEND_REQ = 1 << 5;
+        CROSS_ENDIAN = 1 << 6;
+        CRYPTO_SESSION = 1 << 7;
+        PAGEFAULT = 1 << 8;
+        CONFIG = 1 << 9;
+        BACKEND_SEND_FD = 1 << 10;
+        HOST_NOTIFIER = 1 << 11;
+        INFLIGHT_SHMFD = 1 << 12;
+        RESET_DEVICE = 1 << 13;
+        INBAND_NOTIFICATIONS = 1 << 14;
+        CONFIGURE_MEM_SLOTS = 1 << 15;
+        STATUS = 1 << 16;
+        XEN_MMAP = 1 << 17;
+        SHARED_OBJECT = 1 << 18;
+        DEVICE_STATE = 1 << 19;
     }
 }
 

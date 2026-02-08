@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 use mio::Registry;
 use mio::event::Event;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -43,7 +42,7 @@ use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender};
-use crate::{ffi, impl_mmio_for_zerocopy};
+use crate::{bitflags, ffi, impl_mmio_for_zerocopy};
 
 impl DaxRegion for ArcMemPages {
     fn map(
@@ -106,9 +105,8 @@ pub struct FsConfig {
 impl_mmio_for_zerocopy!(FsConfig);
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct FsFeature: u128 {
-        const NOTIFICATION = 1 << 0;
+    pub struct FsFeature(u128) {
+        NOTIFICATION = 1 << 0;
     }
 }
 

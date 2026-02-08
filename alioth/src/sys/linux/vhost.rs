@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
-
-use crate::{ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr};
+use crate::{bitflags, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr};
 
 pub const VHOST_VIRTIO: u8 = 0xAF;
 
@@ -63,11 +61,9 @@ pub struct VirtqAddr {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct VhostFeature: u64 {
-        const IOTLB_MSG_V2 = 0x1;
-        const IOTLB_BATCH = 0x2;
+    pub struct VhostFeature(u64) {
+        IOTLB_MSG_V2 = 1 << 0;
+        IOTLB_BATCH = 1 << 1;
     }
 }
 

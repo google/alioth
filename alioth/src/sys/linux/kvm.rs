@@ -16,7 +16,6 @@ use std::fmt::{Debug, Formatter, Result};
 
 #[cfg(target_arch = "aarch64")]
 use bitfield::bitfield;
-use bitflags::bitflags;
 
 #[cfg(target_arch = "x86_64")]
 use crate::ioctl_writeread_buf;
@@ -24,7 +23,7 @@ use crate::sys::ioctl::ioctl_ior;
 #[cfg(target_arch = "x86_64")]
 use crate::sys::ioctl::ioctl_iowr;
 use crate::{
-    consts, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
+    bitflags, consts, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
     ioctl_writeread,
 };
 
@@ -50,9 +49,9 @@ pub struct KvmVmType(#[allow(dead_code)] pub u64);
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmCpuid2Flag: u32 {
-        const SIGNIFCANT_INDEX = 1;
+    #[derive(Default)]
+    pub struct KvmCpuid2Flag(u32) {
+        SIGNIFCANT_INDEX = 1 << 0;
     }
 }
 
@@ -83,25 +82,24 @@ pub const KVM_CPUID_SIGNATURE: u32 = 0x4000_0000;
 pub const KVM_CPUID_FEATURES: u32 = 0x4000_0001;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmCpuidFeature: u32 {
-        const CLOCKSOURCE = 1 << 0;
-        const NOP_IO_DELAY = 1 << 1;
-        const MMU_OP = 1 << 2;
-        const CLOCKSOURCE2 = 1 << 3;
-        const ASYNC_PF = 1 << 4;
-        const STEAL_TIME = 1 << 5;
-        const PV_EOI = 1 << 6;
-        const PV_UNHALT = 1 << 7;
-        const PV_TLB_FLUSH = 1 << 9;
-        const ASYNC_PF_VMEXIT = 1 << 10;
-        const PV_SEND_IPI = 1 << 11;
-        const POLL_CONTROL = 1 << 12;
-        const PV_SCHED_YIELD = 1 << 13;
-        const ASYNC_PF_INT = 1 << 14;
-        const MSI_EXT_DEST_ID = 1 << 15;
-        const HC_MAP_GPA_RANGE = 1 << 16;
-        const MIGRATION_CONTROL = 1 << 17;
+    pub struct KvmCpuidFeature(u32) {
+        CLOCKSOURCE = 1 << 0;
+        NOP_IO_DELAY = 1 << 1;
+        MMU_OP = 1 << 2;
+        CLOCKSOURCE2 = 1 << 3;
+        ASYNC_PF = 1 << 4;
+        STEAL_TIME = 1 << 5;
+        PV_EOI = 1 << 6;
+        PV_UNHALT = 1 << 7;
+        PV_TLB_FLUSH = 1 << 9;
+        ASYNC_PF_VMEXIT = 1 << 10;
+        PV_SEND_IPI = 1 << 11;
+        POLL_CONTROL = 1 << 12;
+        PV_SCHED_YIELD = 1 << 13;
+        ASYNC_PF_INT = 1 << 14;
+        MSI_EXT_DEST_ID = 1 << 15;
+        HC_MAP_GPA_RANGE = 1 << 16;
+        MIGRATION_CONTROL = 1 << 17;
     }
 }
 
@@ -127,11 +125,11 @@ pub struct KvmMsrs<const N: usize> {
 pub const MAX_IO_MSRS: usize = 256;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmMemFlag: u32 {
-        const LOG_DIRTY_PAGES = 1 << 0;
-        const READONLY = 1 << 1;
-        const GUEST_MEMFD = 1 << 2;
+    #[derive(Default)]
+    pub struct KvmMemFlag(u32) {
+        LOG_DIRTY_PAGES = 1 << 0;
+        READONLY = 1 << 1;
+        GUEST_MEMFD = 1 << 2;
     }
 }
 
@@ -160,9 +158,9 @@ pub struct KvmUserspaceMemoryRegion2 {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmMemoryAttribute: u64 {
-        const PRIVATE = 1 << 3;
+    #[derive(Default)]
+    pub struct KvmMemoryAttribute(u64) {
+        PRIVATE = 1 << 3;
     }
 }
 
@@ -378,10 +376,10 @@ pub union KvmSyncRegsBlock {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct KvmIrqfdFlag: u32 {
-        const DEASSIGN = 1 << 0;
-        const RESAMPLE = 1 << 1;
+    #[derive(Default)]
+    pub struct KvmIrqfdFlag(u32) {
+        DEASSIGN = 1 << 0;
+        RESAMPLE = 1 << 1;
     }
 }
 
@@ -480,11 +478,10 @@ impl<const N: usize> Debug for KvmIrqRouting<N> {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    #[repr(transparent)]
-    pub struct KvmMsiFlag: u32 {
+    #[derive(Default)]
+    pub struct KvmMsiFlag(u32) {
         #[cfg(target_arch = "aarch64")]
-        const VALID_DEVID = 1 << 0;
+        VALID_DEVID = 1 << 0;
     }
 }
 
@@ -514,30 +511,28 @@ consts! {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct KvmX2apicApiFlag: u64 {
-        const USE_32BIT_IDS = 1 << 0;
-        const DISABLE_BROADCAST_QUIRK = 1 << 1;
+    pub struct KvmX2apicApiFlag(u64) {
+        USE_32BIT_IDS = 1 << 0;
+        DISABLE_BROADCAST_QUIRK = 1 << 1;
     }
 }
 
 pub const KVM_HC_MAP_GPA_RANGE: u64 = 12;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct KvmMapGpaRangeFlag: u64 {
-        const PAGE_2M = 1 << 0;
-        const PAGE_1G = 1 << 1;
-        const ENCRYPTED = 1 << 4;
+    pub struct KvmMapGpaRangeFlag(u64) {
+        PAGE_2M = 1 << 0;
+        PAGE_1G = 1 << 1;
+        ENCRYPTED = 1 << 4;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct KvmIoEventFdFlag: u32 {
-        const DATA_MATCH = 1 << 0;
-        const PIO = 1 << 1;
-        const DEASSIGN = 1 << 2;
+    #[derive(Default)]
+    pub struct KvmIoEventFdFlag(u32) {
+        DATA_MATCH = 1 << 0;
+        PIO = 1 << 1;
+        DEASSIGN = 1 << 2;
     }
 }
 
@@ -660,12 +655,11 @@ pub struct KvmVcpuInit {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct KvmArmVcpuFeature: u32 {
-        const POWER_OFF = 1 << 0;
-        const EL1_32BIT = 1 << 1;
-        const PSCI_0_2 = 1 << 2;
-        const PMU_V3 = 1 << 3;
+    pub struct KvmArmVcpuFeature(u32) {
+        POWER_OFF = 1 << 0;
+        EL1_32BIT = 1 << 1;
+        PSCI_0_2 = 1 << 2;
+        PMU_V3 = 1 << 3;
     }
 }
 

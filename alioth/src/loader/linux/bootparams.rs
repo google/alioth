@@ -12,35 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+use crate::bitflags;
 
 pub const MAGIC_AA55: u16 = 0xaa55;
 pub const MAGIC_HDRS: u32 = 0x53726448; // "HdrS"
 pub const SETUP_HEADER_OFFSET: u64 = 0x01f1;
 
 bitflags! {
-    #[repr(C)]
-    #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct LoadFlags: u8 {
-        const LOADED_HIGH = (1<<0);
-        const KASLR_FLAG = (1<<1);
-        const QUIET_FLAG = (1<<5);
-        const KEEP_SEGMENTS	= (1<<6);
-        const CAN_USE_HEAP = (1<<7);
+    pub struct LoadFlags(u8) {
+        LOADED_HIGH = 1 << 0;
+        KASLR_FLAG = 1 << 1;
+        QUIET_FLAG = 1 << 5;
+        KEEP_SEGMENTS = 1 << 6;
+        CAN_USE_HEAP = 1 << 7;
    }
 }
 
 bitflags! {
-    #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct XLoadFlags: u16 {
-        const XLF_KERNEL_64 = (1<<0);
-        const XLF_CAN_BE_LOADED_ABOVE_4G = (1<<1);
-        const XLF_EFI_HANDOVER_32 = (1<<2);
-        const XLF_EFI_HANDOVER_64 = (1<<3);
-        const XLF_EFI_KEXEC = (1<<4);
-        const XLF_5LEVEL = (1<<5);
-        const XLF_5LEVEL_ENABLED = (1<<6);
+    pub struct XLoadFlags(u16) {
+        XLF_KERNEL_64 = 1 << 0;
+        XLF_CAN_BE_LOADED_ABOVE_4G = 1 << 1;
+        XLF_EFI_HANDOVER_32 = 1 << 2;
+        XLF_EFI_HANDOVER_64 = 1 << 3;
+        XLF_EFI_KEXEC = 1 << 4;
+        XLF_5LEVEL = 1 << 5;
+        XLF_5LEVEL_ENABLED = 1 << 6;
     }
 }
 

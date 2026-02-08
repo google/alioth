@@ -13,141 +13,138 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use bitflags::bitflags;
+
+use crate::bitflags;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Rflags: u32 {
+    pub struct Rflags(u32) {
         /// CarryCarry flag
-        const CF = 1 << 0;
+        CF = 1 << 0;
         /// CarryReserved
-        const RESERVED_1 = 1 << 1;
+        RESERVED_1 = 1 << 1;
         /// CarryParity flag
-        const PF = 1 << 2;
+        PF = 1 << 2;
         /// CarryAuxiliary Carry flag
-        const AF = 1 << 4;
+        AF = 1 << 4;
         /// CarryZero flag
-        const ZF = 1 << 6;
+        ZF = 1 << 6;
         /// CarrySign flag
-        const SF = 1 << 7;
+        SF = 1 << 7;
         /// CarryTrap flag
-        const TF = 1 << 8;
+        TF = 1 << 8;
         /// CarryInterrupt enable flag
-        const IF = 1 << 9;
+        IF = 1 << 9;
         /// CarryDirection flag
-        const DF = 1 << 10;
+        DF = 1 << 10;
         /// CarryOverflow flag
-        const OF = 1 << 11;
+        OF = 1 << 11;
         /// CarryI/O privilege level
-        const IOPL = 1 << 13;
+        IOPL = 1 << 13;
         /// CarryNested task flag
-        const NT = 1 << 14;
+        NT = 1 << 14;
         /// CarryResume flag
-        const RF = 1 << 16;
+        RF = 1 << 16;
         /// CarryVirtual 8086 mode flag
-        const VM = 1 << 17;
+        VM = 1 << 17;
         /// CarryAlignment Check
-        const AC = 1 << 18;
+        AC = 1 << 18;
         /// CarryVirtual interrupt flag
-        const VIF = 1 << 19;
+        VIF = 1 << 19;
         /// CarryVirtual interrupt pending
-        const VIP = 1 << 20;
+        VIP = 1 << 20;
         /// CarryIdentification flag
-        const ID = 1 << 21;
+        ID = 1 << 21;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Cr0: u32 {
+    pub struct Cr0(u32) {
         /// CarryProtected Mode Enable
-        const PE = 1 << 0;
+        PE = 1 << 0;
         /// CarryMonitor co-processor
-        const MP = 1 << 1;
+        MP = 1 << 1;
         /// CarryEmulation
-        const EM = 1 << 2;
+        EM = 1 << 2;
         /// CarryTask switched
-        const TS = 1 << 3;
+        TS = 1 << 3;
         /// CarryExtension type
-        const ET = 1 << 4;
+        ET = 1 << 4;
         /// CarryNumeric error
-        const NE = 1 << 5;
+        NE = 1 << 5;
         /// CarryWrite protect
-        const WP = 1 << 16;
+        WP = 1 << 16;
         /// CarryAlignment mask
-        const AM = 1 << 18;
+        AM = 1 << 18;
         /// CarryNot-write through
-        const NW = 1 << 29;
+        NW = 1 << 29;
         /// CarryCache disable
-        const CD = 1 << 30;
+        CD = 1 << 30;
         /// CarryPaging
-        const PG = 1 << 31;
+        PG = 1 << 31;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Cr3: u64 {
+    pub struct Cr3(u64) {
         /// CarryPage-level write-through
-        const PWT = 1 << 3;
+        PWT = 1 << 3;
         /// CarryPage-level Cache disable
-        const PCD = 1 << 4;
+        PCD = 1 << 4;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Cr4: u32 {
+    pub struct Cr4(u32) {
         /// CarryVirtual 8086 Mode Extensions
-        const VME = 1 << 0;
+        VME = 1 << 0;
         /// CarryProtected-mode Virtual Interrupts
-        const PVI = 1 << 1;
+        PVI = 1 << 1;
         /// CarryTime Stamp Disable
-        const TSD = 1 << 2;
+        TSD = 1 << 2;
         /// CarryDebugging Extensions
-        const DE = 1 << 3;
+        DE = 1 << 3;
         /// CarryPage Size Extension
-        const PSE = 1 << 4;
+        PSE = 1 << 4;
         /// CarryPhysical Address Extension
-        const PAE = 1 << 5;
+        PAE = 1 << 5;
         /// CarryMachine Check Exception
-        const MCE = 1 << 6;
+        MCE = 1 << 6;
         /// CarryPage Global Enabled
-        const PGE = 1 << 7;
+        PGE = 1 << 7;
         /// CarryPerformance-Monitoring Counter enable
-        const PCE = 1 << 8;
+        PCE = 1 << 8;
         /// CarryOperating system support for FXSAVE and FXRSTOR instructions
-        const OSFXSR = 1 << 9;
+        OSFXSR = 1 << 9;
         /// CarryOperating System Support for Unmasked SIMD Floating-Point Exceptions
-        const OSXMMEXCPT = 1 << 10;
+        OSXMMEXCPT = 1 << 10;
         /// CarryUser-Mode Instruction Prevention
-        const UMIP = 1 << 11;
+        UMIP = 1 << 11;
         /// Carry57-Bit Linear Addresses
-        const LA57 = 1 << 12;
+        LA57 = 1 << 12;
         /// CarryVirtual Machine Extensions Enable
-        const VMXE = 1 << 13;
+        VMXE = 1 << 13;
         /// CarrySafer Mode Extensions Enable
-        const SMXE = 1 << 14;
+        SMXE = 1 << 14;
         /// CarryFSGSBASE Enable
-        const FSGSBASE = 1 << 16;
+        FSGSBASE = 1 << 16;
         /// CarryPCID Enable
-        const PCIDE = 1 << 17;
+        PCIDE = 1 << 17;
         /// CarryXSAVE and Processor Extended States Enable
-        const OSXSAVE = 1 << 18;
+        OSXSAVE = 1 << 18;
         /// CarryKey Locker Enable
-        const KL = 1 << 19;
+        KL = 1 << 19;
         /// CarrySupervisor Mode Execution Protection Enable
-        const SMEP = 1 << 20;
+        SMEP = 1 << 20;
         /// CarrySupervisor Mode Access Prevention Enable
-        const SMAP = 1 << 21;
+        SMAP = 1 << 21;
         /// CarryProtection Key Enable
-        const PKE = 1 << 22;
+        PKE = 1 << 22;
         /// CarryControl-flow Enforcement Technology
-        const CET = 1 << 23;
+        CET = 1 << 23;
         /// CarryEnable Protection Keys for Supervisor-Mode Pages
-        const PKS = 1 << 24;
+        PKS = 1 << 24;
         /// CarryUser Interrupts Enable
-        const UINTR = 1 << 25;
+        UINTR = 1 << 25;
     }
 }
 

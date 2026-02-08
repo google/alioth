@@ -29,9 +29,9 @@ use std::fmt::Debug;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
 
-use bitflags::bitflags;
 use snafu::Snafu;
 
+use crate::bitflags;
 use crate::errors::{DebugTrace, trace_error};
 
 #[trace_error]
@@ -85,14 +85,13 @@ pub enum Error {
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VirtioFeature: u128 {
-        const INDIRECT_DESC = 1 << 28;
-        const EVENT_IDX = 1 << 29;
-        const VHOST_PROTOCOL = 1 << 30;
-        const VERSION_1 = 1 << 32;
-        const ACCESS_PLATFORM = 1 << 33;
-        const RING_PACKED = 1 << 34;
+    pub struct VirtioFeature(u128) {
+        INDIRECT_DESC = 1 << 28;
+        EVENT_IDX = 1 << 29;
+        VHOST_PROTOCOL = 1 << 30;
+        VERSION_1 = 1 << 32;
+        ACCESS_PLATFORM = 1 << 33;
+        RING_PACKED = 1 << 34;
     }
 }
 
@@ -114,14 +113,14 @@ pub enum DeviceId {
 }
 
 bitflags! {
-    #[derive(Debug, Default, Clone, Copy)]
-    pub struct DevStatus: u8 {
-        const ACK = 1;
-        const DRIVER = 2;
-        const DRIVER_OK = 4;
-        const FEATURES_OK = 8;
-        const NEEDS_RESET = 64;
-        const FAILED = 128;
+    #[derive(Default)]
+    pub struct DevStatus(u8) {
+        ACK = 1 << 0;
+        DRIVER = 1 << 1;
+        DRIVER_OK = 1 << 2;
+        FEATURES_OK = 1 << 3;
+        NEEDS_RESET = 1 << 6;
+        FAILED = 1 << 7;
     }
 }
 

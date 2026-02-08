@@ -14,11 +14,10 @@
 
 use alioth_macros::Layout;
 use bitfield::bitfield;
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::consts;
 use crate::utils::endian::{Bu32, Bu64};
+use crate::{bitflags, consts};
 
 #[repr(C)]
 #[derive(Debug, Clone, Layout, KnownLayout, Immutable, FromBytes, IntoBytes)]
@@ -52,20 +51,18 @@ pub struct Qcow2Hdr {
 pub const QCOW2_MAGIC: [u8; 4] = *b"QFI\xfb";
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Qcow2IncompatibleFeatures: u64 {
-        const DIRTY = 1 << 0;
-        const CORRUPT = 1 << 1;
-        const EXTERNAL_DATA = 1 << 2;
-        const COMPRESSION = 1 << 3;
-        const EXTERNAL_L2 = 1 << 4;
+    pub struct Qcow2IncompatibleFeatures(u64) {
+        DIRTY = 1 << 0;
+        CORRUPT = 1 << 1;
+        EXTERNAL_DATA = 1 << 2;
+        COMPRESSION = 1 << 3;
+        EXTERNAL_L2 = 1 << 4;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Qcow2CompatibleFeatures: u64 {
-        const LAZY_REFCOUNTS = 1 << 0;
+    pub struct Qcow2CompatibleFeatures(u64) {
+        LAZY_REFCOUNTS = 1 << 0;
     }
 }
 

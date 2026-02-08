@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 #[cfg(target_os = "linux")]
 use io_uring::cqueue::Entry as Cqe;
 #[cfg(target_os = "linux")]
@@ -46,7 +45,7 @@ use crate::virtio::worker::WorkerApi;
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
-use crate::{consts, impl_mmio_for_zerocopy};
+use crate::{bitflags, consts, impl_mmio_for_zerocopy};
 
 consts! {
     #[derive(FromBytes)]
@@ -84,21 +83,20 @@ pub const VIRTIO_BLK_ID_SIZE: usize = 20;
 const SECTOR_SIZE: usize = 1 << 9;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct BlockFeature: u128 {
-        const SIZE_MAX = 1 << 1;
-        const SEG_MAX = 1 << 2;
-        const GEOMETRY = 1 << 4;
-        const RO = 1 << 5;
-        const BLK_SIZE = 1 << 6;
-        const FLUSH = 1 << 9;
-        const TOPOLOGY = 1 << 10;
-        const CONFIG_WCE = 1 << 11;
-        const MQ = 1 << 12;
-        const DISCARD = 1 << 13;
-        const WRITE_ZEROS = 1 << 14;
-        const LIFETIME = 1 << 15;
-        const SECURE_ERASE = 1 << 16;
+    pub struct BlockFeature(u128) {
+        SIZE_MAX = 1 << 1;
+        SEG_MAX = 1 << 2;
+        GEOMETRY = 1 << 4;
+        RO = 1 << 5;
+        BLK_SIZE = 1 << 6;
+        FLUSH = 1 << 9;
+        TOPOLOGY = 1 << 10;
+        CONFIG_WCE = 1 << 11;
+        MQ = 1 << 12;
+        DISCARD = 1 << 13;
+        WRITE_ZEROS = 1 << 14;
+        LIFETIME = 1 << 15;
+        SECURE_ERASE = 1 << 16;
     }
 }
 

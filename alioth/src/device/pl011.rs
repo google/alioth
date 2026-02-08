@@ -16,14 +16,13 @@ use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 
-use bitflags::bitflags;
 use parking_lot::Mutex;
 
 use crate::device::console::{Console, UartRecv};
 use crate::device::{self, MmioDev, Pause};
 use crate::hv::IrqSender;
 use crate::mem::emulated::{Action, Mmio};
-use crate::{hv, mem};
+use crate::{bitflags, hv, mem};
 
 /// RW width 12/8 Data Register
 const UART_DR: u64 = 0x0;
@@ -79,49 +78,49 @@ const PERIPH_ID: [u32; 4] = [0x11, 0x10, 0x14, 0x00];
 const PCELL_ID: [u32; 4] = [0x0d, 0xf0, 0x05, 0xb1];
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy)]
-    pub struct Flag: u16 {
-        const RI = 1 << 8;
+    #[derive(Default)]
+    pub struct Flag(u16) {
+        RI = 1 << 8;
         /// Transmit FIFO empty
-        const TXFE = 1 << 7;
+        TXFE = 1 << 7;
         /// Receive FIFO full
-        const RXFF = 1 << 6;
+        RXFF = 1 << 6;
         /// Transmit FIFO full.
-        const TXFF = 1 << 5;
+        TXFF = 1 << 5;
         /// Receive FIFO empty
-        const RXFE = 1 << 4;
-        const BUSY = 1 << 3;
-        const DCD = 1 << 2;
-        const DSR = 1 << 1;
-        const CTS = 1 << 0;
+        RXFE = 1 << 4;
+        BUSY = 1 << 3;
+        DCD = 1 << 2;
+        DSR = 1 << 1;
+        CTS = 1 << 0;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy)]
-    pub struct Interrupt: u16 {
+    #[derive(Default)]
+    pub struct Interrupt(u16) {
         /// Overrun error interrupt status.
-        const OERIS = 1 << 10;
+        OERIS = 1 << 10;
         /// Break error interrupt status.
-        const BERIS = 1 << 9;
+        BERIS = 1 << 9;
         /// Parity error interrupt status.
-        const PERIS = 1 << 8;
+        PERIS = 1 << 8;
         /// Framing error interrupt status.
-        const FERIS = 1 << 7;
+        FERIS = 1 << 7;
         /// Receive timeout interrupt status.
-        const RTRIS = 1 << 6;
+        RTRIS = 1 << 6;
         /// Transmit interrupt status.
-        const TXRIS = 1 << 5;
+        TXRIS = 1 << 5;
         /// Receive interrupt status.
-        const RXRIS = 1 << 4;
+        RXRIS = 1 << 4;
         /// nUARTDSR modem interrupt status.
-        const DSRRMIS = 1 << 3;
+        DSRRMIS = 1 << 3;
         /// nUARTDCD modem interrupt status.
-        const DCDRMIS = 1 << 2;
+        DCDRMIS = 1 << 2;
         /// nUARTCTS modem interrupt status.
-        const CTSRMIS = 1 << 1;
+        CTSRMIS = 1 << 1;
         /// nUARTRI modem interrupt status.
-        const RIRMIS = 1 << 0;
+        RIRMIS = 1 << 0;
     }
 }
 

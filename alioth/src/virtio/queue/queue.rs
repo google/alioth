@@ -17,25 +17,22 @@ pub mod split;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
 
-use bitflags::bitflags;
-
+use crate::bitflags;
 use crate::mem::mapped::Ram;
 use crate::virtio::{IrqSender, Result, error};
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct DescFlag: u16 {
-        const NEXT = 1;
-        const WRITE = 2;
-        const INDIRECT = 4;
-        const AVAIL = 1 << 7;
-        const USED = 1 << 15;
+    pub struct DescFlag(u16) {
+        NEXT = 1 << 0;
+        WRITE = 1 << 1;
+        INDIRECT = 1 << 2;
+        AVAIL = 1 << 7;
+        USED = 1 << 15;
     }
 }
 

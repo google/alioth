@@ -19,7 +19,6 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -40,11 +39,10 @@ use crate::virtio::vu::conn::{VuChannel, VuSession};
 use crate::virtio::vu::error as vu_error;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
-use crate::{ffi, mem};
+use crate::{bitflags, ffi, mem};
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct VuDevFeature: u128 { }
+    pub struct VuDevFeature(u128) { }
 }
 
 #[derive(Debug)]

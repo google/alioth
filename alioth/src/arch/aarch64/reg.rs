@@ -13,9 +13,8 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use bitflags::bitflags;
 
-use crate::consts;
+use crate::{bitflags, consts};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Reg {
@@ -82,33 +81,32 @@ consts! {
 
 // https://developer.arm.com/documentation/den0024/a/ARMv8-Registers/Processor-state
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Pstate: u32 {
+    pub struct Pstate(u32) {
         /// Negative condition flag.
-        const N = 1 << 31;
+        N = 1 << 31;
         /// Zero condition flag.
-        const Z = 1 << 30;
+        Z = 1 << 30;
         /// Carry condition flag.
-        const C = 1 << 29;
+        C = 1 << 29;
         /// oVerflow condition flag.
-        const V = 1 << 28;
+        V = 1 << 28;
         /// Debug mask bit.
         /// Software Step bit.
-        const SS = 1 << 21;
+        SS = 1 << 21;
         /// Illegal execution state bit.
-        const IL = 1 << 20;
-        const D = 1 << 9;
+        IL = 1 << 20;
+        D = 1 << 9;
         /// SError mask bit.
-        const A = 1 << 8;
+        A = 1 << 8;
         /// IRQ mask bit.
-        const I = 1 << 7;
+        I = 1 << 7;
         /// FIQ mask bit.
-        const F = 1 << 6;
-        const M = 1 << 4;
+        F = 1 << 6;
+        M = 1 << 4;
 
-        const EL_BIT3 = 1 << 3;
-        const EL_BIT2 = 1 << 2;
-        const EL_H = 1 << 0;
+        EL_BIT3 = 1 << 3;
+        EL_BIT2 = 1 << 2;
+        EL_H = 1 << 0;
     }
 }
 

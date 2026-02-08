@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bitflags::bitflags;
 use libc::c_void;
 
 use crate::arch::reg::{EsrEl2, SReg};
-use crate::consts;
+use crate::{bitflags, consts};
 
 consts! {
     pub struct HvReg(u32) {
@@ -84,12 +83,10 @@ pub struct HvVcpuExit {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default)]
-    #[repr(transparent)]
-    pub struct HvMemoryFlag: u64 {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-        const EXEC = 1 << 2;
+    pub struct HvMemoryFlag(u64) {
+        READ = 1 << 0;
+        WRITE = 1 << 1;
+        EXEC = 1 << 2;
     }
 }
 

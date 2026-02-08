@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use bitflags::bitflags;
+
+use crate::bitflags;
 
 // Intel Vol.4, Table 2-2.
 pub const IA32_EFER: u32 = 0xc000_0080;
@@ -28,24 +29,22 @@ pub const IA32_TSC_AUX: u32 = 0xc000_0103;
 pub const IA32_MISC_ENABLE: u32 = 0x0000_01a0;
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Efer: u32 {
+    pub struct Efer(u32) {
         /// SYSCALL enable
-        const SCE = 1 << 0;
+        SCE = 1 << 0;
         /// IA-32e mode enable
-        const LME = 1 << 8;
+        LME = 1 << 8;
         /// IA-32e mode active
-        const LMA = 1 << 10;
+        LMA = 1 << 10;
         /// Execute disable bit enable
-        const NXE = 1 << 11;
+        NXE = 1 << 11;
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct MiscEnable: u64 {
+    pub struct MiscEnable(u64) {
         /// Enable Fast-Strings
-        const FAST_STRINGS = 1 << 0;
+        FAST_STRINGS = 1 << 0;
     }
 }
 

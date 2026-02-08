@@ -17,12 +17,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bitflags::bitflags;
 use parking_lot::Mutex;
 
 use crate::device::{self, MmioDev, Pause};
-use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
+use crate::{bitflags, mem};
 
 const RTC_DR: u64 = 0x000;
 const RTC_MR: u64 = 0x004;
@@ -46,9 +45,9 @@ const PERIPH_ID: [u8; 4] = [0x31, 0x10, 0x04, 0x00];
 const PCELL_ID: [u8; 4] = [0x0d, 0xf0, 0x05, 0xb1];
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy)]
-    struct Interrupt: u32 {
-        const RTCINTR = 1 << 0;
+    #[derive(Default)]
+    struct Interrupt(u32) {
+        RTCINTR = 1 << 0;
     }
 }
 

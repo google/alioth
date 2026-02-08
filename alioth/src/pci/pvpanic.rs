@@ -14,8 +14,7 @@
 
 use std::sync::Arc;
 
-use bitflags::bitflags;
-
+use crate::bitflags;
 use crate::device::{self, Pause};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, MemRegion};
@@ -26,10 +25,9 @@ use crate::pci::config::{
 use crate::pci::{self, Pci, PciBar};
 
 bitflags! {
-    #[derive(Debug)]
-    struct PvPanicByte: u8 {
-        const PANICKED = 1 << 0;
-        const CRASH_LOADED = 1 << 1;
+    struct PvPanicByte(u8) {
+        PANICKED = 1 << 0;
+        CRASH_LOADED = 1 << 1;
     }
 }
 

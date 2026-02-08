@@ -18,7 +18,6 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use alioth_macros::Layout;
-use bitflags::bitflags;
 use parking_lot::RwLock;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -27,7 +26,7 @@ use crate::mem::addressable::SlotBackend;
 use crate::mem::emulated::{Action, ChangeLayout, Mmio};
 use crate::pci::cap::PciCapList;
 use crate::pci::{Bdf, PciBar, Result};
-use crate::{assign_bits, consts, impl_mmio_for_zerocopy, mask_bits, mem};
+use crate::{assign_bits, bitflags, consts, impl_mmio_for_zerocopy, mask_bits, mem};
 
 pub trait PciConfigArea: Mmio {
     fn reset(&self) -> Result<()>;
@@ -53,19 +52,16 @@ impl SlotBackend for Box<dyn PciConfigArea> {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, IntoBytes, FromBytes, KnownLayout, Immutable)]
-#[repr(transparent)]
-pub struct Command(u16);
-
 bitflags! {
-    impl Command: u16 {
-        const INTX_DISABLE = 1 << 10;
-        const SERR = 1 << 8;
-        const PARITY_ERR = 1 << 6;
-        const BUS_MASTER = 1 << 2;
-        const MEM = 1 << 1;
-        const IO = 1 << 0;
-        const WRITABLE_BITS = Self::INTX_DISABLE.bits()
+    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
+    pub struct Command(u16) {
+        INTX_DISABLE = 1 << 10;
+        SERR = 1 << 8;
+        PARITY_ERR = 1 << 6;
+        BUS_MASTER = 1 << 2;
+        MEM = 1 << 1;
+        IO = 1 << 0;
+        WRITABLE_BITS = Self::INTX_DISABLE.bits()
             | Self::SERR.bits()
             | Self::PARITY_ERR.bits()
             | Self::BUS_MASTER.bits()
@@ -74,39 +70,24 @@ bitflags! {
     }
 }
 
-impl std::fmt::Debug for Command {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        bitflags::parser::to_writer(self, f)
-    }
-}
-
-#[derive(Clone, Copy, Default, IntoBytes, FromBytes, KnownLayout, Immutable)]
-#[repr(transparent)]
-pub struct Status(u16);
-
 bitflags! {
-    impl Status: u16 {
-        const PARITY_ERR = 1 << 15;
-        const SYSTEM_ERR = 1 << 14;
-        const RECEIVED_MASTER_ABORT = 1 << 13;
-        const RECEIVED_TARGET_ABORT = 1 << 12;
-        const SIGNALED_TARGET_ABORT = 1 << 11;
-        const MASTER_PARITY_ERR = 1 << 8;
-        const CAP = 1 << 4;
-        const INTX = 1 << 3;
-        const IMMEDIATE_READINESS = 1 << 0;
-        const RW1C_BITS = Self::PARITY_ERR.bits()
+    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
+    pub struct Status(u16) {
+        PARITY_ERR = 1 << 15;
+        SYSTEM_ERR = 1 << 14;
+        RECEIVED_MASTER_ABORT = 1 << 13;
+        RECEIVED_TARGET_ABORT = 1 << 12;
+        SIGNALED_TARGET_ABORT = 1 << 11;
+        MASTER_PARITY_ERR = 1 << 8;
+        CAP = 1 << 4;
+        INTX = 1 << 3;
+        IMMEDIATE_READINESS = 1 << 0;
+        RW1C_BITS = Self::PARITY_ERR.bits()
             | Self::SYSTEM_ERR.bits()
             | Self::RECEIVED_MASTER_ABORT.bits()
             | Self::RECEIVED_TARGET_ABORT.bits()
             | Self::SIGNALED_TARGET_ABORT.bits()
             | Self::MASTER_PARITY_ERR.bits();
-    }
-}
-
-impl std::fmt::Debug for Status {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        bitflags::parser::to_writer(self, f)
     }
 }
 

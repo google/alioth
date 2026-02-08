@@ -19,11 +19,10 @@ pub mod vmnet;
 
 use std::fmt::Debug;
 
-use bitflags::bitflags;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::device::net::MacAddr;
-use crate::{consts, impl_mmio_for_zerocopy};
+use crate::{bitflags, consts, impl_mmio_for_zerocopy};
 
 #[repr(C, align(8))]
 #[derive(Debug, Default, FromBytes, Immutable, IntoBytes)]
@@ -77,38 +76,37 @@ pub struct CtrlHdr {
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct NetFeature: u128 {
-        const CSUM = 1 << 0;
-        const GUEST_CSUM = 1 << 1;
-        const CTRL_GUEST_OFFLOADS = 1 << 2;
-        const MTU = 1 << 3;
-        const MAC = 1 << 5;
-        const GUEST_TSO4 = 1 << 7;
-        const GUEST_TSO6 = 1 << 8;
-        const GUEST_ECN = 1 << 9;
-        const GUEST_UFO = 1 << 10;
-        const HOST_TSO4 = 1 << 11;
-        const HOST_TSO6 = 1 << 12;
-        const HOST_ECN = 1 << 13;
-        const HOST_UFO = 1 << 14;
-        const MRG_RXBUF = 1 << 15;
-        const STATUS = 1 << 16;
-        const CTRL_VQ = 1 << 17;
-        const CTRL_RX = 1 << 18;
-        const CTRL_VLAN = 1 << 19;
-        const GUEST_ANNOUNCE = 1 << 21;
-        const MQ = 1 << 22;
-        const CTRL_MAC_ADDR = 1 << 23;
-        const GUEST_USO4 = 1 << 54;
-        const GUEST_USO6 = 1 << 55;
-        const HOST_USO = 1 << 56;
-        const HASH_REPORT = 1 << 57;
-        const GUEST_HDRLEN = 1 << 59;
-        const RSS = 1 << 60;
-        const RSC_EXT = 1 << 61;
-        const STANDBY = 1 << 62;
-        const SPEED_DUPLEX = 1 << 63;
+    pub struct NetFeature(u128) {
+        CSUM = 1 << 0;
+        GUEST_CSUM = 1 << 1;
+        CTRL_GUEST_OFFLOADS = 1 << 2;
+        MTU = 1 << 3;
+        MAC = 1 << 5;
+        GUEST_TSO4 = 1 << 7;
+        GUEST_TSO6 = 1 << 8;
+        GUEST_ECN = 1 << 9;
+        GUEST_UFO = 1 << 10;
+        HOST_TSO4 = 1 << 11;
+        HOST_TSO6 = 1 << 12;
+        HOST_ECN = 1 << 13;
+        HOST_UFO = 1 << 14;
+        MRG_RXBUF = 1 << 15;
+        STATUS = 1 << 16;
+        CTRL_VQ = 1 << 17;
+        CTRL_RX = 1 << 18;
+        CTRL_VLAN = 1 << 19;
+        GUEST_ANNOUNCE = 1 << 21;
+        MQ = 1 << 22;
+        CTRL_MAC_ADDR = 1 << 23;
+        GUEST_USO4 = 1 << 54;
+        GUEST_USO6 = 1 << 55;
+        HOST_USO = 1 << 56;
+        HASH_REPORT = 1 << 57;
+        GUEST_HDRLEN = 1 << 59;
+        RSS = 1 << 60;
+        RSC_EXT = 1 << 61;
+        STANDBY = 1 << 62;
+        SPEED_DUPLEX = 1 << 63;
     }
 }
 
