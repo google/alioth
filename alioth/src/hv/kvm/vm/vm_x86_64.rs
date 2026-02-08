@@ -79,18 +79,18 @@ impl KvmVm {
     }
 
     pub fn create_guest_memfd(config: &VmConfig, fd: &OwnedFd) -> Result<Option<OwnedFd>> {
-        let memfd = if let Some(Coco::AmdSnp { .. }) = &config.coco {
-            let mut request = KvmCreateGuestMemfd {
-                size: 1 << 48,
-                ..Default::default()
-            };
-            let ret = unsafe { kvm_create_guest_memfd(fd, &mut request) }
-                .context(kvm_error::GuestMemfd)?;
-            Some(unsafe { OwnedFd::from_raw_fd(ret) })
-        } else {
-            None
+        let Some(coco) = &config.coco else {
+            return Ok(None);
         };
-        Ok(memfd)
+        if !matches!(coco, Coco::AmdSnp { .. } | Coco::IntelTdx { .. }) {
+            return Ok(None);
+        }
+        let mut gmem = KvmCreateGuestMemfd {
+            size: 1 << 48,
+            ..Default::default()
+        };
+        let fd = unsafe { kvm_create_guest_memfd(fd, &mut gmem) }.context(kvm_error::GuestMemfd)?;
+        Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
     pub fn init(&self, config: &VmConfig) -> Result<()> {
