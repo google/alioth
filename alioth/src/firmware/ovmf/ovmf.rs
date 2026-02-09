@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "acpi/acpi.rs"]
+#[path = "ovmf_x86_64/ovmf_x86_64.rs"]
+pub mod x86_64;
+
 #[cfg(target_arch = "x86_64")]
-pub mod acpi;
-#[path = "dt/dt.rs"]
-pub mod dt;
-#[path = "ovmf/ovmf.rs"]
-pub mod ovmf;
+pub use self::x86_64::*;

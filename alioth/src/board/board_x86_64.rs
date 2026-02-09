@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
-use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::layout::{
@@ -40,6 +40,11 @@ use crate::firmware::acpi::bindings::{
 use crate::firmware::acpi::reg::{FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
     AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
+};
+use crate::firmware::ovmf::parse_data;
+use crate::firmware::ovmf::sev::{
+    GUID_SEV_ES_RESET_BLOCK, GUID_SEV_METADATA, SevDescType, SevMetaData, SevMetadataDesc,
+    SnpCpuidFunc, SnpCpuidInfo,
 };
 use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
 use crate::loader::{Executable, InitState, Payload, firmware};
@@ -214,7 +219,8 @@ where
             Coco::AmdSnp { .. } => {}
             _ => return,
         }
-        let ap_eip = parse_data_from_fw(fw.as_slice(), &SEV_ES_RESET_BLOCK_GUID).unwrap();
+        let ap_eip = parse_data(fw.as_slice(), &GUID_SEV_ES_RESET_BLOCK).unwrap();
+        let ap_eip = u32::read_from_bytes(ap_eip).unwrap();
         self.arch.sev_ap_eip.store(ap_eip, Ordering::Release);
     }
 
@@ -224,9 +230,9 @@ where
         let ram = ram_bus.lock_layout();
         let (desc, _) = SevMetadataDesc::read_from_prefix(&fw_range[offset..]).unwrap();
         let snp_page_type = match desc.type_ {
-            SEV_DESC_TYPE_SNP_SEC_MEM => SnpPageType::Unmeasured,
-            SEV_DESC_TYPE_SNP_SECRETS => SnpPageType::Secrets,
-            SEV_DESC_TYPE_CPUID => {
+            SevDescType::SNP_DESC_MEM => SnpPageType::Unmeasured,
+            SevDescType::SNP_SECRETS => SnpPageType::Secrets,
+            SevDescType::CPUID => {
                 assert!(desc.len as usize >= size_of::<SnpCpuidInfo>());
                 assert!(cpuid_table.entries.len() >= self.arch.cpuids.len());
                 cpuid_table.count = self.arch.cpuids.len() as u32;
@@ -244,7 +250,7 @@ where
         let mut ret = self
             .vm
             .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
-        if ret.is_err() && desc.type_ == SEV_DESC_TYPE_CPUID {
+        if ret.is_err() && desc.type_ == SevDescType::CPUID {
             let updated_cpuid: SnpCpuidInfo = ram.read_t(desc.base as _)?;
             for (set, got) in zip(cpuid_table.entries.iter(), updated_cpuid.entries.iter()) {
                 if set != got {
@@ -289,9 +295,9 @@ where
             }
             Coco::AmdSnp { .. } => {
                 let fw_range = fw.as_slice_mut();
-                let metadata_offset_r: u32 =
-                    parse_data_from_fw(fw_range, &SEV_METADATA_GUID).unwrap();
-                let metadata_offset = fw_range.len() - metadata_offset_r as usize;
+                let metadata_offset_r = parse_data(fw_range, &GUID_SEV_METADATA).unwrap();
+                let metadata_offset =
+                    fw_range.len() - u32::read_from_bytes(metadata_offset_r).unwrap() as usize;
                 let (metadata, _) =
                     SevMetaData::read_from_prefix(&fw_range[metadata_offset..]).unwrap();
                 let desc_offset = metadata_offset + size_of::<SevMetaData>();
@@ -587,95 +593,6 @@ const DSDT_TEMPLATE: [u8; 352] = [
 ];
 
 const DSDT_OFFSET_PCI_QWORD_MEM: usize = 0x12b;
-
-const GUID_TABLE_FOOTER_R_OFFSET: usize = 48;
-
-const GUID_SIZE: usize = 16;
-
-const GUID_TABLE_FOOTER_GUID: [u8; GUID_SIZE] = [
-    0xDE, 0x82, 0xB5, 0x96, 0xB2, 0x1F, 0xF7, 0x45, 0xBA, 0xEA, 0xA3, 0x66, 0xC5, 0x5A, 0x08, 0x2D,
-];
-
-const SEV_ES_RESET_BLOCK_GUID: [u8; GUID_SIZE] = [
-    0xde, 0x71, 0xf7, 0x00, 0x7e, 0x1a, 0xcb, 0x4f, 0x89, 0x0e, 0x68, 0xc7, 0x7e, 0x2f, 0xb4, 0x4e,
-];
-
-const SEV_METADATA_GUID: [u8; GUID_SIZE] = [
-    0x66, 0x65, 0x88, 0xdc, 0x4a, 0x98, 0x98, 0x47, 0xA7, 0x5e, 0x55, 0x85, 0xa7, 0xbf, 0x67, 0xcc,
-];
-
-#[derive(Debug, FromBytes, IntoBytes, Immutable)]
-#[repr(C)]
-struct SevMetaData {
-    signature: u32,
-    len: u32,
-    version: u32,
-    num_desc: u32,
-}
-
-pub const SEV_DESC_TYPE_SNP_SEC_MEM: u32 = 1;
-pub const SEV_DESC_TYPE_SNP_SECRETS: u32 = 2;
-pub const SEV_DESC_TYPE_CPUID: u32 = 3;
-
-#[derive(Debug, FromBytes, IntoBytes, Immutable)]
-#[repr(C)]
-struct SevMetadataDesc {
-    base: u32,
-    len: u32,
-    type_: u32,
-}
-
-pub fn parse_data_from_fw<T>(blob: &[u8], guid: &[u8; GUID_SIZE]) -> Option<T>
-where
-    T: FromBytes,
-{
-    let offset_table_footer = blob.len().checked_sub(GUID_TABLE_FOOTER_R_OFFSET)?;
-    if !blob[offset_table_footer..].starts_with(&GUID_TABLE_FOOTER_GUID) {
-        return None;
-    }
-    let offset_table_len = offset_table_footer.checked_sub(size_of::<u16>())?;
-    let (table_len, _) = u16::read_from_prefix(&blob[offset_table_len..]).ok()?;
-    let offset_table_end = offset_table_len.checked_sub(
-        (table_len as usize)
-            .checked_sub(size_of::<u16>())?
-            .checked_sub(GUID_SIZE)?,
-    )?;
-    let mut current = offset_table_len;
-    while current > offset_table_end {
-        let offset_len = current.checked_sub(GUID_SIZE + size_of::<u16>())?;
-        if blob[(offset_len + 2)..].starts_with(guid) {
-            return T::read_from_prefix(&blob[offset_len.checked_sub(size_of::<T>())?..])
-                .map(|(n, _)| n)
-                .ok();
-        }
-        let (table_len, _) = u16::read_from_prefix(&blob[offset_len..]).ok()?;
-        current = current.checked_sub(table_len as usize)?;
-    }
-    None
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, FromBytes, IntoBytes, Immutable)]
-pub struct SnpCpuidFunc {
-    pub eax_in: u32,
-    pub ecx_in: u32,
-    pub xcr0_in: u64,
-    pub xss_in: u64,
-    pub eax: u32,
-    pub ebx: u32,
-    pub ecx: u32,
-    pub edx: u32,
-    pub reserved: u64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct SnpCpuidInfo {
-    pub count: u32,
-    pub _reserved1: u32,
-    pub _reserved2: u64,
-    pub entries: [SnpCpuidFunc; 64],
-}
 
 #[cfg(test)]
 #[path = "board_x86_64_test.rs"]
