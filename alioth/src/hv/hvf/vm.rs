@@ -43,7 +43,7 @@ pub struct HvfMemory;
 
 impl VmMemory for HvfMemory {
     fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::EncryptedRegion)
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
     }
 
     fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<()> {
@@ -65,7 +65,7 @@ impl VmMemory for HvfMemory {
     }
 
     fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::EncryptedRegion)
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
     }
 
     fn unmap(&self, gpa: u64, size: u64) -> Result<()> {
@@ -75,7 +75,7 @@ impl VmMemory for HvfMemory {
     }
 
     fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::EncryptedRegion)
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
     }
 
     fn reset(&self) -> Result<()> {

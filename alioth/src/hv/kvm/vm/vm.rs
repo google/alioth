@@ -245,7 +245,7 @@ impl VmMemory for KvmMemory {
             size: range.len() as u64,
         };
         unsafe { kvm_memory_encrypt_reg_region(&self.vm.fd, &region) }
-            .context(error::EncryptedRegion)?;
+            .context(error::MemEncrypt)?;
         Ok(())
     }
 
@@ -255,7 +255,7 @@ impl VmMemory for KvmMemory {
             size: range.len() as u64,
         };
         unsafe { kvm_memory_encrypt_unreg_region(&self.vm.fd, &region) }
-            .context(error::EncryptedRegion)?;
+            .context(error::MemEncrypt)?;
         Ok(())
     }
 
@@ -270,7 +270,7 @@ impl VmMemory for KvmMemory {
             },
             flags: 0,
         };
-        unsafe { kvm_set_memory_attributes(&self.vm.fd, &attr) }.context(error::EncryptedRegion)?;
+        unsafe { kvm_set_memory_attributes(&self.vm.fd, &attr) }.context(error::MemEncrypt)?;
         Ok(())
     }
 

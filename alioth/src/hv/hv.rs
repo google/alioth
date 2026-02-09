@@ -39,7 +39,7 @@ use crate::arch::cpuid::CpuidIn;
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 #[cfg(target_arch = "x86_64")]
-use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
+use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::errors::{DebugTrace, trace_error};
 
 #[cfg(target_os = "macos")]
@@ -83,8 +83,8 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to configure guest MSRs"))]
     GuestMsr { error: std::io::Error },
-    #[snafu(display("Failed to configure an encrypted region"))]
-    EncryptedRegion { error: std::io::Error },
+    #[snafu(display("Failed to configure memory encryption"))]
+    MemEncrypt { error: std::io::Error },
     #[snafu(display("Cannot create multiple VM memories"))]
     MemoryCreated,
     #[snafu(display("Failed to configure an IrqFd"))]
@@ -106,6 +106,9 @@ pub enum Error {
     #[cfg(target_os = "linux")]
     #[snafu(display("KVM internal error"), context(false))]
     KvmErr { source: Box<KvmError> },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("SEV command error code {code:#x?}"))]
+    SevErr { code: SevStatus },
 }
 
 impl From<std::sync::mpsc::RecvError> for Error {

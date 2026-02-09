@@ -62,10 +62,6 @@ pub enum KvmError {
     AllocateGsi,
     #[snafu(display("CPUID table too long"))]
     CpuidTableTooLong,
-    #[snafu(display("Failed to issue an SEV command"))]
-    SevCmd { error: std::io::Error },
-    #[snafu(display("SEV command error code {code:#x}"))]
-    SevErr { code: u32 },
     #[snafu(display("Failed to get KVM API version"))]
     KvmApi { error: std::io::Error },
     #[snafu(display("Failed to open {path:?}"))]

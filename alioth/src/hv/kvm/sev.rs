@@ -20,8 +20,8 @@ use std::path::Path;
 use snafu::ResultExt;
 
 use crate::arch::sev::SevStatus;
-use crate::hv::Result;
 use crate::hv::kvm::kvm_error;
+use crate::hv::{Result, error};
 use crate::sys::sev::{SevCmd, SevIssueCmd, sev_issue_cmd};
 
 #[derive(Debug)]
@@ -51,9 +51,9 @@ impl SevFd {
             data: data as *mut T as _,
             error: SevStatus::SUCCESS,
         };
-        unsafe { sev_issue_cmd(&self.fd, &mut req) }.context(kvm_error::SevCmd)?;
+        unsafe { sev_issue_cmd(&self.fd, &mut req) }.context(error::MemEncrypt)?;
         if req.error != SevStatus::SUCCESS {
-            return kvm_error::SevErr { code: req.error }.fail()?;
+            return error::SevErr { code: req.error }.fail();
         }
         Ok(())
     }

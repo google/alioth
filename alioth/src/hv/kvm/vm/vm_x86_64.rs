@@ -20,7 +20,7 @@ use crate::arch::intr::{MsiAddrHi, MsiAddrLo};
 use crate::arch::ioapic::NUM_PINS;
 use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::hv::kvm::sev::SevFd;
-use crate::hv::kvm::{KvmError, KvmVm, kvm_error};
+use crate::hv::kvm::{KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
     KvmCap, KvmCreateGuestMemfd, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
@@ -121,7 +121,7 @@ impl KvmVm {
         Ok(())
     }
 
-    pub fn sev_op<T>(&self, cmd: KvmSevCmdId, data: Option<&mut T>) -> Result<(), KvmError> {
+    fn sev_op<T>(&self, cmd: KvmSevCmdId, data: Option<&mut T>) -> Result<()> {
         let Some(sev_fd) = &self.vm.arch.sev_fd else {
             unreachable!("SevFd is not initialized")
         };
@@ -134,7 +134,10 @@ impl KvmVm {
             id: cmd,
             error: SevStatus::SUCCESS,
         };
-        unsafe { kvm_memory_encrypt_op(&self.vm.fd, &mut req) }.context(kvm_error::SevCmd)?;
+        unsafe { kvm_memory_encrypt_op(&self.vm.fd, &mut req) }.context(error::MemEncrypt)?;
+        if req.error != SevStatus::SUCCESS {
+            return error::SevErr { code: req.error }.fail();
+        }
         Ok(())
     }
 
