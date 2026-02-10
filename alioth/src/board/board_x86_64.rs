@@ -87,54 +87,43 @@ impl<V: Vm> ArchBoard<V> {
             0xb,
             &[(1, threads_per_core), (2, threads_per_socket)],
         );
+
         let leaf0 = CpuidIn {
             func: 0,
             index: None,
         };
-        if let Some(func0) = cpuids.get(&leaf0) {
-            let vendor = [func0.ebx, func0.edx, func0.ecx];
-            match vendor.as_bytes() {
-                b"GenuineIntel" => add_topology(
-                    &mut cpuids,
-                    0x1f,
-                    &[(1, threads_per_core), (2, threads_per_socket)],
-                ),
-                b"AuthenticAMD" => add_topology(
-                    &mut cpuids,
-                    0x8000_0026,
-                    &[
-                        (1, threads_per_core),
-                        (2, threads_per_socket),
-                        (3, threads_per_socket),
-                        (4, threads_per_socket),
-                    ],
-                ),
-                _ => {}
-            }
+        let Some(out) = cpuids.get_mut(&leaf0) else {
+            return error::MissingCpuid { leaf: leaf0 }.fail();
+        };
+        let vendor = [out.ebx, out.edx, out.ecx];
+        match vendor.as_bytes() {
+            b"GenuineIntel" => add_topology(
+                &mut cpuids,
+                0x1f,
+                &[(1, threads_per_core), (2, threads_per_socket)],
+            ),
+            b"AuthenticAMD" => add_topology(
+                &mut cpuids,
+                0x8000_0026,
+                &[
+                    (1, threads_per_core),
+                    (2, threads_per_socket),
+                    (3, threads_per_socket),
+                    (4, threads_per_socket),
+                ],
+            ),
+            _ => {}
         }
 
-        for (in_, out) in &mut cpuids {
-            if in_.func == 0x1 {
-                out.ecx |= (1 << 24) | (1 << 31);
-            } else if in_.func == 0x8000_001f {
-                // AMD Volume 3, section E.4.17.
-                if matches!(
-                    &config.coco,
-                    Some(Coco::AmdSev { .. } | Coco::AmdSnp { .. })
-                ) {
-                    let host_ebx = unsafe { __cpuid(in_.func) }.ebx;
-                    // set PhysAddrReduction to 1
-                    out.ebx = (1 << 6) | (host_ebx & 0x3f);
-                    out.ecx = 0;
-                    out.edx = 0;
-                }
-                if let Some(Coco::AmdSev { policy }) = &config.coco {
-                    out.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
-                } else if let Some(Coco::AmdSnp { .. }) = &config.coco {
-                    out.eax = 0x2 | 0x8 | 0x10;
-                }
-            }
-        }
+        let leaf1 = CpuidIn {
+            func: 0x1,
+            index: None,
+        };
+        let Some(out) = cpuids.get_mut(&leaf1) else {
+            return error::MissingCpuid { leaf: leaf1 }.fail();
+        };
+        out.ecx |= (1 << 24) | (1 << 31);
+
         let leaf_8000_0000 = unsafe { __cpuid(0x8000_0000) };
         cpuids.insert(
             CpuidIn {
@@ -149,6 +138,30 @@ impl<V: Vm> ArchBoard<V> {
         for func in 0x8000_0002..=0x8000_0006 {
             let host_cpuid = unsafe { __cpuid(func) };
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
+        }
+
+        if matches!(
+            &config.coco,
+            Some(Coco::AmdSev { .. } | Coco::AmdSnp { .. })
+        ) {
+            // AMD Volume 3, section E.4.17.
+            let leaf = CpuidIn {
+                func: 0x8000_001f,
+                index: None,
+            };
+            let Some(out) = cpuids.get_mut(&leaf) else {
+                return error::MissingCpuid { leaf }.fail();
+            };
+            let host_ebx = unsafe { __cpuid(leaf.func) }.ebx;
+            // set PhysAddrReduction to 1
+            out.ebx = (1 << 6) | (host_ebx & 0x3f);
+            out.ecx = 0;
+            out.edx = 0;
+            if let Some(Coco::AmdSev { policy }) = &config.coco {
+                out.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
+            } else if let Some(Coco::AmdSnp { .. }) = &config.coco {
+                out.eax = 0x2 | 0x8 | 0x10;
+            }
         }
 
         Ok(Self {

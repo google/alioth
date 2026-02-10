@@ -33,6 +33,8 @@ use serde_aco::Help;
 use snafu::{ResultExt, Snafu};
 
 #[cfg(target_arch = "x86_64")]
+use crate::arch::cpuid::CpuidIn;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::layout::PORT_PCI_ADDRESS;
 use crate::arch::layout::{
     MEM_64_START, PCIE_CONFIG_START, PCIE_MMIO_32_NON_PREFETCHABLE_END,
@@ -99,6 +101,9 @@ pub enum Error {
     PeerFailure,
     #[snafu(display("Unexpected state: {state:?}, want {want:?}"))]
     UnexpectedState { state: BoardState, want: BoardState },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("Missing CPUID leaf {leaf:x?}"))]
+    MissingCpuid { leaf: CpuidIn },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
