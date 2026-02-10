@@ -52,6 +52,7 @@ impl Kvm {
         let mut cpuids: HashMap<_, _> = kvm_cpuid2
             .entries
             .iter()
+            .filter(|e| e.eax != 0 || e.ebx != 0 || e.ecx != 0 || e.edx != 0)
             .take(kvm_cpuid2.nent as usize)
             .map(map_f)
             .collect();
