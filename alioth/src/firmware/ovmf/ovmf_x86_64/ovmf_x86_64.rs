@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod sev;
+pub mod tdx;
 
 use zerocopy::FromBytes;
 
