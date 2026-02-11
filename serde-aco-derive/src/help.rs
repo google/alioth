@@ -21,7 +21,7 @@ use quote::quote;
 use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Field, Fields, FieldsNamed,
+    Attribute, Data, DataEnum, DataStruct, DeriveInput, Expr, ExprLit, Fields, FieldsNamed,
     FieldsUnnamed, Ident, Lit, Meta, MetaNameValue, Token, parse_macro_input,
 };
 
@@ -103,30 +103,42 @@ fn get_serde_aliases_from_attrs(ident: &Ident, attrs: &[Attribute]) -> Vec<Strin
     aliases
 }
 
-fn is_flattened(attrs: &[Attribute]) -> bool {
+fn has_aco_attr(attrs: &[Attribute], name: &str) -> bool {
     for attr in attrs.iter() {
         if !attr.path().is_ident("serde_aco") {
             continue;
         }
-        let mut flattened = false;
-        let is_flatten = |meta: ParseNestedMeta| {
-            if meta.path.is_ident("flatten") {
-                flattened = true;
+        let mut found = false;
+        let has_name = |meta: ParseNestedMeta| {
+            if meta.path.is_ident(name) {
+                found = true;
             }
             Ok(())
         };
-        if attr.parse_nested_meta(is_flatten).is_err() {
+        if attr.parse_nested_meta(has_name).is_err() {
             continue;
         }
-        if flattened {
+        if found {
             return true;
         }
     }
     false
 }
 
+fn is_hidden(attrs: &[Attribute]) -> bool {
+    has_aco_attr(attrs, "hide")
+}
+
+fn is_flattened(attrs: &[Attribute]) -> bool {
+    has_aco_attr(attrs, "flatten")
+}
+
 fn derive_named_struct_help(name: &Ident, fields: &FieldsNamed) -> TokenStream2 {
-    let field_help_fn = |field: &Field| {
+    let mut field_docs = Vec::new();
+    for field in &fields.named {
+        if is_hidden(&field.attrs) {
+            continue;
+        }
         let aliases;
         let ident = if is_flattened(&field.attrs) {
             ""
@@ -136,16 +148,14 @@ fn derive_named_struct_help(name: &Ident, fields: &FieldsNamed) -> TokenStream2 
         };
         let ty = &field.ty;
         let doc = get_doc_from_attrs(&field.attrs);
-        quote! {
+        field_docs.push(quote! {
             FieldHelp {
                 ident: #ident,
                 doc: #doc,
                 ty: <#ty as Help>::HELP,
             }
-        }
-    };
-
-    let field_docs: Vec<_> = fields.named.iter().map(field_help_fn).collect();
+        })
+    }
 
     quote! {
         TypedHelp::Struct{
@@ -175,8 +185,11 @@ fn derive_struct_help(name: &Ident, data: &DataStruct) -> TokenStream2 {
 }
 
 fn derive_enum_help(name: &Ident, data: &DataEnum) -> TokenStream2 {
-    let mut variants = vec![];
+    let mut variant_docs = vec![];
     for variant in data.variants.iter() {
+        if is_hidden(&variant.attrs) {
+            continue;
+        }
         let doc = get_doc_from_attrs(&variant.attrs);
         let ty = match &variant.fields {
             Fields::Unit => quote! {TypedHelp::Unit},
@@ -185,7 +198,7 @@ fn derive_enum_help(name: &Ident, data: &DataEnum) -> TokenStream2 {
         };
         let aliases = get_serde_aliases_from_attrs(&variant.ident, &variant.attrs);
         let ident = &aliases[0];
-        variants.push(quote! {
+        variant_docs.push(quote! {
             FieldHelp {
                 ident: #ident,
                 doc: #doc,
@@ -196,7 +209,7 @@ fn derive_enum_help(name: &Ident, data: &DataEnum) -> TokenStream2 {
     quote! {
         TypedHelp::Enum {
             name: stringify!(#name),
-            variants: &[#(#variants,)*],
+            variants: &[#(#variant_docs,)*],
         }
     }
 }
