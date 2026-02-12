@@ -251,6 +251,7 @@ bitflags! {
     }
 }
 
+/*
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmIoEventFd {
@@ -261,6 +262,7 @@ pub struct KvmIoEventFd {
     pub flags: KvmIoEventFdFlag,
     pub pad: [u32; 9],
 }
+*/
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

@@ -258,7 +258,7 @@ impl<'a> Iterator for IterMut<'a> {
 }
 
 impl Addressable<MappedSlot> {
-    fn slice_iter(&self, gpa: usize, len: usize) -> Iter {
+    fn slice_iter(&self, gpa: usize, len: usize) -> Iter<'_> {
         Iter {
             inner: self,
             gpa,
@@ -266,7 +266,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    fn slice_iter_mut(&self, gpa: usize, len: usize) -> IterMut {
+    fn slice_iter_mut(&self, gpa: usize, len: usize) -> IterMut<'_> {
         IterMut {
             inner: self,
             gpa,

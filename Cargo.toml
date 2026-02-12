@@ -11,13 +11,13 @@ derive-layout = { path = "derive-layout" }
 # External dependencies.
 bitfield = "0.15.0"
 bitflags = "2.4.0"
-env_logger = "0.11"
 libc = "0.2.150"
 log = "0.4"
 mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 parking_lot = { version = "0.12" }
 rand = "0.8.5"
 serde = { version = "1.0.*", features = ["derive"] }
+simplelog = "0.12.2"
 thiserror = "1"
 toml = "0.9"
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }

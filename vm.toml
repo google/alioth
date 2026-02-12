@@ -3,6 +3,9 @@ cmd_line = "console=ttyS0 root=/dev/vda3 rw"
 num_cpus = 4
 mem_size = "256M"
 blk = ["alpine.raw"]
+log_file = "/tmp/puff.log"
+log_level = "info"
+
 
 [net.dev0]
 mac = "a4:a1:c2:00:00:01"

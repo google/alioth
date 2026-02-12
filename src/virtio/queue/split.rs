@@ -274,7 +274,7 @@ impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
 }
 
 impl<'m, 'q> QueueGuard for SplitQueueGuard<'m, 'q> {
-    fn queue(&self) -> Result<impl LockedQueue> {
+    fn queue(&self) -> Result<impl LockedQueue<'_>> {
         let mut avail_event = None;
         let mut used_event = None;
         let queue_size = self.register.size as usize;

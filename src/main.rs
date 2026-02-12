@@ -49,13 +49,15 @@ fn print_usage_and_exit() -> ! {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 || args[1].as_str() != "-c" {
         print_usage_and_exit();
     }
     let config = config::parse_config(args[2].as_str())?;
+
+    let log_file = std::fs::File::create(config.log_file.as_path())
+        .expect(format!("Error creating log file {:?}", config.log_file).as_str());
+    simplelog::WriteLogger::init(config.log_level, simplelog::Config::default(), log_file).unwrap();
 
     let payload = if let Some(kernel) = config.kernel {
         Some(Payload {

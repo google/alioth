@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use mio::event::Event;
 use mio::Registry;
+use mio::event::Event;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::impl_mmio_for_zerocopy;

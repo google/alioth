@@ -638,7 +638,7 @@ where
             callbacks: Mutex::new(vec![]),
         };
 
-        let mut caps: Vec<Box<(dyn PciCap)>> = vec![
+        let mut caps: Vec<Box<dyn PciCap>> = vec![
             Box::new(MsixCapMmio {
                 cap: RwLock::new(cap_msix),
             }),

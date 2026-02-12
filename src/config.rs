@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, de};
 use std::num::NonZeroU16;
+use std::str::FromStr;
 use std::{collections::BTreeMap, path::PathBuf};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -71,11 +72,26 @@ pub struct Config {
     pub cmd_line: Option<String>,
     pub initramfs: Option<PathBuf>,
     pub num_cpus: u32,
+    pub log_file: PathBuf,
+
+    #[serde(deserialize_with = "parse_log_level")]
+    pub log_level: log::LevelFilter,
 
     #[serde(deserialize_with = "parse_bytes")]
     pub mem_size: usize,
     pub net: BTreeMap<String, NetParam>,
     pub blk: Vec<PathBuf>,
+}
+
+fn parse_log_level<'de, D>(deserializer: D) -> Result<log::LevelFilter, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let s: String = String::deserialize(deserializer)?;
+    log::LevelFilter::from_str(s.as_str())
+        .map_err(|e| D::Error::custom(format!("Invalid log level format: '{e:?}'")))
 }
 
 fn parse_bytes<'de, D>(deserializer: D) -> Result<usize, D::Error>
