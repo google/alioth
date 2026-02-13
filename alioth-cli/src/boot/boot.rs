@@ -375,7 +375,7 @@ fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, a
             #[cfg(target_os = "linux")]
             NetParam::Vu(sock) => {
                 let param = VuFrontendParam {
-                    id: DeviceId::Net,
+                    id: DeviceId::NET,
                     socket: sock.socket,
                 };
                 vm.add_virtio_dev(format!("vu-net-{index}"), param)
@@ -391,7 +391,7 @@ fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, a
             #[cfg(target_os = "linux")]
             BlkParam::Vu(s) => {
                 let p = VuFrontendParam {
-                    id: DeviceId::Block,
+                    id: DeviceId::BLOCK,
                     socket: s.socket,
                 };
                 vm.add_virtio_dev(format!("vu-net-{index}"), p)
@@ -415,7 +415,7 @@ fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, a
             #[cfg(target_os = "linux")]
             VsockParam::Vu(s) => {
                 let p = VuFrontendParam {
-                    id: DeviceId::Socket,
+                    id: DeviceId::SOCKET,
                     socket: s.socket,
                 };
                 vm.add_virtio_dev("vu-vsock", p)

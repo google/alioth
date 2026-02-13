@@ -695,7 +695,7 @@ impl Virtio for UdsVsock {
     type Feature = VsockFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::Socket
+        DeviceId::SOCKET
     }
 
     fn name(&self) -> &str {

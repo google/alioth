@@ -31,8 +31,8 @@ use std::path::Path;
 
 use snafu::Snafu;
 
-use crate::bitflags;
 use crate::errors::{DebugTrace, trace_error};
+use crate::{bitflags, consts};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -99,17 +99,18 @@ const FEATURE_BUILT_IN: u128 = VirtioFeature::EVENT_IDX.bits()
     | VirtioFeature::RING_PACKED.bits()
     | VirtioFeature::VERSION_1.bits();
 
-#[derive(Debug, Clone, Copy)]
-pub enum DeviceId {
-    Net = 1,
-    Block = 2,
-    Entropy = 4,
-    Balloon = 5,
-    Socket = 19,
-    Iommu = 23,
-    Mem = 24,
-    FileSystem = 26,
-    Pmem = 27,
+consts! {
+    pub struct DeviceId(u16) {
+        NET = 1;
+        BLOCK = 2;
+        ENTROPY = 4;
+        BALLOON = 5;
+        SOCKET = 19;
+        IOMMU = 23;
+        MEM = 24;
+        FILE_SYSTEM = 26;
+        PMEM = 27;
+    }
 }
 
 bitflags! {

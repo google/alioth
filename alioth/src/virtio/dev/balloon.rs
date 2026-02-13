@@ -190,7 +190,7 @@ impl Virtio for Balloon {
     type Feature = BalloonFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::Balloon
+        DeviceId::BALLOON
     }
 
     fn name(&self) -> &str {

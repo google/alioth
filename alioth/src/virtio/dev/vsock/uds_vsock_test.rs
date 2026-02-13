@@ -124,7 +124,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
     };
     let dev = param.build("vsock").unwrap();
 
-    assert_matches!(dev.id(), DeviceId::Socket);
+    assert_matches!(dev.id(), DeviceId::SOCKET);
     assert_eq!(dev.name(), "vsock");
     assert_eq!(dev.num_queues(), 3);
     assert_eq!(dev.config().guest_cid, GUEST_CID as u32);

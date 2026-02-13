@@ -85,7 +85,7 @@ impl Virtio for Entropy {
     type Feature = EntropyFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::Entropy
+        DeviceId::ENTROPY
     }
 
     fn name(&self) -> &str {

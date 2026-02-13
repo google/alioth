@@ -236,7 +236,7 @@ impl Virtio for Net {
     type Feature = NetFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::Net
+        DeviceId::NET
     }
 
     fn name(&self) -> &str {

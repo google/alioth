@@ -576,10 +576,10 @@ const VIRTIO_DEVICE_ID_BASE: u16 = 0x1040;
 
 fn get_class(id: DeviceId) -> (u8, u8) {
     match id {
-        DeviceId::Net => (0x02, 0x00),
-        DeviceId::FileSystem => (0x01, 0x80),
-        DeviceId::Block => (0x01, 0x00),
-        DeviceId::Socket => (0x02, 0x80),
+        DeviceId::NET => (0x02, 0x00),
+        DeviceId::FILE_SYSTEM => (0x01, 0x80),
+        DeviceId::BLOCK => (0x01, 0x00),
+        DeviceId::SOCKET => (0x02, 0x80),
         _ => (0xff, 0x00),
     }
 }
@@ -690,14 +690,14 @@ where
         let mut header = DeviceHeader {
             common: CommonHeader {
                 vendor: VIRTIO_VENDOR_ID,
-                device: VIRTIO_DEVICE_ID_BASE + dev.id as u16,
+                device: VIRTIO_DEVICE_ID_BASE + dev.id.raw(),
                 revision: 0x1,
                 header_type: HeaderType::DEVICE,
                 class,
                 subclass,
                 ..Default::default()
             },
-            subsystem: VIRTIO_DEVICE_ID_BASE + dev.id as u16,
+            subsystem: VIRTIO_DEVICE_ID_BASE + dev.id.raw(),
             ..Default::default()
         };
         let device_config = dev.device_config.clone();

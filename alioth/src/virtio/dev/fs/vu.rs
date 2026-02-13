@@ -64,7 +64,7 @@ impl VuFs {
         if param.tag.is_none() {
             extra_features |= VuFeature::CONFIG;
         }
-        let frontend = VuFrontend::new(name, &param.socket, DeviceId::FileSystem, extra_features)?;
+        let frontend = VuFrontend::new(name, &param.socket, DeviceId::FILE_SYSTEM, extra_features)?;
         let config = if let Some(tag) = param.tag {
             assert!(tag.len() <= 36);
             assert_ne!(tag.len(), 0);
@@ -131,7 +131,7 @@ impl Virtio for VuFs {
     type Feature = FsFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::FileSystem
+        DeviceId::FILE_SYSTEM
     }
 
     fn name(&self) -> &str {

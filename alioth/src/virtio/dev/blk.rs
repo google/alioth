@@ -285,7 +285,7 @@ impl Virtio for Block {
     type Feature = BlockFeature;
 
     fn id(&self) -> DeviceId {
-        DeviceId::Block
+        DeviceId::BLOCK
     }
 
     fn name(&self) -> &str {
