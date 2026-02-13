@@ -20,6 +20,8 @@ mod x86_64;
 mod device;
 #[cfg(target_arch = "x86_64")]
 mod sev;
+#[cfg(target_arch = "x86_64")]
+mod tdx;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
 #[path = "vm/vm.rs"]

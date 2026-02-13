@@ -111,6 +111,9 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("SEV command error code {code:#x?}"))]
     SevErr { code: SevStatus },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("TDX command error code {code:#x?}"))]
+    TdxErr { code: u64 },
 }
 
 impl From<std::sync::mpsc::RecvError> for Error {
@@ -214,6 +217,9 @@ pub trait Vcpu {
         let pc = self.get_reg(Reg::Pc)?;
         self.set_regs(&[(Reg::Pc, pc + 4)])
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn tdx_init_mem_region(&self, data: &[u8], gpa: u64, measure: bool) -> Result<()>;
 }
 
 #[cfg(not(target_arch = "x86_64"))]

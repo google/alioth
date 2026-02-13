@@ -16,7 +16,7 @@
 #[path = "vcpu_aarch64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
-#[path = "vcpu_x86_64.rs"]
+#[path = "vcpu_x86_64/vcpu_x86_64.rs"]
 mod x86_64;
 
 mod vmentry;
@@ -231,5 +231,10 @@ impl Vcpu for KvmVcpu {
 
     fn dump(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn tdx_init_mem_region(&self, data: &[u8], gpa: u64, measure: bool) -> Result<()> {
+        KvmVcpu::tdx_init_mem_region(self, data, gpa, measure)
     }
 }
