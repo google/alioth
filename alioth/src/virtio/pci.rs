@@ -42,7 +42,7 @@ use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_a
 use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
-use crate::{impl_mmio_for_zerocopy, mem};
+use crate::{consts, impl_mmio_for_zerocopy, mem};
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
@@ -584,15 +584,17 @@ fn get_class(id: DeviceId) -> (u8, u8) {
     }
 }
 
-#[repr(u8)]
-pub enum VirtioPciCfg {
-    Common = 1,
-    Notify = 2,
-    Isr = 3,
-    Device = 4,
-    Pci = 5,
-    SharedMemory = 8,
-    Vendor = 9,
+consts! {
+    #[derive(Default, FromZeros, Immutable, IntoBytes)]
+    pub struct VirtioPciCfg(u8) {
+        COMMON = 1;
+        NOTIFY = 2;
+        ISR = 3;
+        DEVICE = 4;
+        PCI = 5;
+        SHARED_MEMORY = 8;
+        VENDOR = 9;
+    }
 }
 
 #[repr(C, align(4))]
@@ -600,7 +602,7 @@ pub enum VirtioPciCfg {
 pub struct VirtioPciCap {
     header: PciCapHdr,
     cap_len: u8,
-    cfg_type: u8,
+    cfg_type: VirtioPciCfg,
     bar: u8,
     id: u8,
     padding: [u8; 2],
@@ -730,7 +732,7 @@ where
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
-            cfg_type: VirtioPciCfg::Common as u8,
+            cfg_type: VirtioPciCfg::COMMON,
             bar: 0,
             id: 0,
             offset: (virtio_register_offset + VirtioPciRegister::OFFSET_COMMON) as u32,
@@ -743,7 +745,7 @@ where
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
-            cfg_type: VirtioPciCfg::Isr as u8,
+            cfg_type: VirtioPciCfg::ISR,
             bar: 0,
             id: 0,
             offset: (virtio_register_offset + VirtioPciRegister::OFFSET_ISR_STATUS) as u32,
@@ -757,7 +759,7 @@ where
                     ..Default::default()
                 },
                 cap_len: size_of::<VirtioPciNotifyCap>() as u8,
-                cfg_type: VirtioPciCfg::Notify as u8,
+                cfg_type: VirtioPciCfg::NOTIFY,
                 bar: 0,
                 id: 0,
                 offset: (virtio_register_offset + VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u32,
@@ -772,7 +774,7 @@ where
                 ..Default::default()
             },
             cap_len: size_of::<VirtioPciCap>() as u8,
-            cfg_type: VirtioPciCfg::Device as u8,
+            cfg_type: VirtioPciCfg::DEVICE,
             bar: 0,
             id: 0,
             offset: device_config_offset as u32,
@@ -814,7 +816,7 @@ where
                             ..Default::default()
                         },
                         cap_len: size_of::<VirtioPciCap64>() as u8,
-                        cfg_type: VirtioPciCfg::SharedMemory as u8,
+                        cfg_type: VirtioPciCfg::SHARED_MEMORY,
                         bar: 2,
                         id: index as u8,
                         offset: offset as u32,
