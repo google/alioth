@@ -85,24 +85,25 @@ bitfield! {
     pub ciphertext_hiding, set_ciphertext_hiding: 24;
 }
 
-/// AMD SEV-SNP launch update page type.
-///
-/// From SEV SNP Firmware ABI Specification, Revision 1.55, Table 67.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum SnpPageType {
-    /// A normal data page.
-    Normal = 1,
-    /// A VMSA page.
-    Vmsa = 2,
-    /// A page full of zeros.
-    Zero = 3,
-    /// A page that is encrypted but not measured.
-    Unmeasured = 4,
-    /// A page for the firmware to store secrets for the guest.
-    Secrets = 5,
-    /// A page for the hypervisor to provide CPUID function values.
-    Cpuid = 6,
+consts! {
+    /// AMD SEV-SNP launch update page type.
+    ///
+    /// From SEV SNP Firmware ABI Specification, Revision 1.55, Table 67.
+    #[derive(Default)]
+    pub struct SnpPageType(u8) {
+        /// A normal data page.
+        NORMAL = 1;
+        /// A VMSA page.
+        VMSA = 2;
+        /// A page full of zeros.
+        ZERO = 3;
+        /// A page that is encrypted but not measured.
+        UNMEASURED = 4;
+        /// A page for the firmware to store secrets for the guest.
+        SECRETS = 5;
+        /// A page for the hypervisor to provide CPUID function values.
+        CPUID = 6;
+    }
 }
 
 #[repr(C, packed)]

@@ -230,15 +230,15 @@ where
         let ram = ram_bus.lock_layout();
         let (desc, _) = SevMetadataDesc::read_from_prefix(&fw_range[offset..]).unwrap();
         let snp_page_type = match desc.type_ {
-            SevDescType::SNP_DESC_MEM => SnpPageType::Unmeasured,
-            SevDescType::SNP_SECRETS => SnpPageType::Secrets,
+            SevDescType::SNP_DESC_MEM => SnpPageType::UNMEASURED,
+            SevDescType::SNP_SECRETS => SnpPageType::SECRETS,
             SevDescType::CPUID => {
                 assert!(desc.len as usize >= size_of::<SnpCpuidInfo>());
                 assert!(cpuid_table.entries.len() >= self.arch.cpuids.len());
                 cpuid_table.count = self.arch.cpuids.len() as u32;
                 self.fill_snp_cpuid(&mut cpuid_table.entries);
                 ram.write_t(desc.base as _, &cpuid_table)?;
-                SnpPageType::Cpuid
+                SnpPageType::CPUID
             }
             _ => unimplemented!(),
         };
@@ -309,7 +309,7 @@ where
                 self.memory
                     .mark_private_memory(fw_gpa, fw_range.len() as _, true)?;
                 self.vm
-                    .snp_launch_update(fw_range, fw_gpa, SnpPageType::Normal)
+                    .snp_launch_update(fw_range, fw_gpa, SnpPageType::NORMAL)
                     .unwrap();
             }
             Coco::IntelTdx { attr } => todo!("Intel TDX {attr:?}"),

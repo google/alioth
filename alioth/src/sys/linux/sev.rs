@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arch::sev::{SevPolicy, SevStatus, SnpPolicy};
+use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::{consts, ioctl_writeread};
 
 consts! {
@@ -206,7 +206,7 @@ pub struct KvmSevSnpLaunchUpdate {
     pub gfn_start: u64,
     pub uaddr: u64,
     pub len: u64,
-    pub type_: u8,
+    pub type_: SnpPageType,
     pub pad0: u8,
     pub flags: u16,
     pub pad1: u32,

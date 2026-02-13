@@ -207,7 +207,7 @@ impl KvmVm {
             uaddr: range.as_mut_ptr() as _,
             len: range.len() as _,
             gfn_start: gpa >> 12,
-            type_: type_ as _,
+            type_,
             ..Default::default()
         };
         self.sev_op(KvmSevCmdId::SNP_LAUNCH_UPDATE, Some(&mut update))?;
