@@ -16,7 +16,7 @@
 #[path = "vm_aarch64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
-#[path = "vm_x86_64.rs"]
+#[path = "vm_x86_64/vm_x86_64.rs"]
 mod x86_64;
 
 use std::collections::HashMap;
@@ -717,42 +717,42 @@ impl Vm for KvmVm {
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_start(&self, policy: SevPolicy) -> Result<(), Error> {
-        self.kvm_sev_launch_start(policy)
+        KvmVm::sev_launch_start(self, policy)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_update_data(&self, range: &mut [u8]) -> Result<(), Error> {
-        self.kvm_sev_launch_update_data(range)
+        KvmVm::sev_launch_update_data(self, range)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_update_vmsa(&self) -> Result<(), Error> {
-        self.kvm_sev_launch_update_vmsa()
+        KvmVm::sev_launch_update_vmsa(self)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_measure(&self) -> Result<Vec<u8>, Error> {
-        self.kvm_sev_launch_measure()
+        KvmVm::sev_launch_measure(self)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn sev_launch_finish(&self) -> Result<(), Error> {
-        self.kvm_sev_launch_finish()
+        KvmVm::sev_launch_finish(self)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn snp_launch_start(&self, policy: SnpPolicy) -> Result<()> {
-        self.kvm_snp_launch_start(policy)
+        KvmVm::snp_launch_start(self, policy)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn snp_launch_update(&self, range: &mut [u8], gpa: u64, type_: SnpPageType) -> Result<()> {
-        self.kvm_snp_launch_update(range, gpa, type_)
+        KvmVm::snp_launch_update(self, range, gpa, type_)
     }
 
     #[cfg(target_arch = "x86_64")]
     fn snp_launch_finish(&self) -> Result<()> {
-        self.kvm_snp_launch_finish()
+        KvmVm::snp_launch_finish(self)
     }
 
     #[cfg(target_arch = "aarch64")]
