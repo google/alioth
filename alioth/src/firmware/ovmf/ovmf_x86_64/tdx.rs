@@ -17,6 +17,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::firmware::ovmf::x86_64::GUID_SIZE;
 use crate::{bitflags, consts};
 
+use crate::firmware::ovmf::x86_64::parse_data;
+use crate::firmware::{Result, error};
+
 pub const GUID_TDX_METADATA_OFFSET: [u8; GUID_SIZE] = [
     0x35, 0x65, 0x7a, 0xe4, 0x4a, 0x98, 0x98, 0x47, 0x86, 0x5e, 0x46, 0x85, 0xa7, 0xbf, 0x8e, 0xc2,
 ];
@@ -44,7 +47,7 @@ consts! {
 
 bitflags! {
     #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
-    pub struct TdvfSectionAttribute(u32) {
+    pub struct TdvfSectionAttr(u32) {
         MR_EXTEND = 1 << 0;
         PAGE_AUG = 1 << 1;
     }
@@ -52,11 +55,46 @@ bitflags! {
 
 #[repr(C)]
 #[derive(Debug, Clone, Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
-pub struct TdxMetadataSection {
+pub struct TdvfSectionEntry {
     pub data_offset: u32,
     pub raw_data_size: u32,
     pub memory_address: u64,
     pub memory_data_size: u64,
     pub r#type: TdvfSectionType,
-    pub attributes: TdvfSectionAttribute,
+    pub attributes: TdvfSectionAttr,
+}
+
+pub fn parse_entries(data: &[u8]) -> Result<&[TdvfSectionEntry]> {
+    let Some(offset_r) = parse_data(data, &GUID_TDX_METADATA_OFFSET) else {
+        return error::MissingMetadata {
+            name: "TdvfMetadata",
+        }
+        .fail();
+    };
+    let Ok(offset_r) = u32::read_from_bytes(offset_r) else {
+        return error::InvalidLayout.fail();
+    };
+    let offset = data.len() - offset_r as usize;
+    let Ok((metadata, remain)) = TdvfMetadata::ref_from_prefix(&data[offset..]) else {
+        return error::InvalidLayout.fail();
+    };
+    if metadata.signature != TDVF_SIGNATURE {
+        return error::MissingTdvfSignature {
+            got: metadata.signature,
+        }
+        .fail();
+    }
+    if metadata.version != TDVF_VERSION {
+        return error::MissingTdvfVersion {
+            got: metadata.version,
+        }
+        .fail();
+    }
+    let Ok((entries, _)) = <[TdvfSectionEntry]>::ref_from_prefix_with_elems(
+        remain,
+        metadata.number_of_entries as usize,
+    ) else {
+        return error::InvalidLayout.fail();
+    };
+    Ok(entries)
 }
