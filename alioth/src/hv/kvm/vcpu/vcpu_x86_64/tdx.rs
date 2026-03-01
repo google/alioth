@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::hv::Result;
-use crate::hv::kvm::tdx::tdx_op;
 use crate::hv::kvm::vcpu::KvmVcpu;
+use crate::hv::kvm::x86_64::tdx::tdx_op;
 use crate::sys::tdx::{KvmTdxCmdId, KvmTdxInitMemRegion, KvmTdxInitMemRegionFlag};
 
 impl KvmVcpu {

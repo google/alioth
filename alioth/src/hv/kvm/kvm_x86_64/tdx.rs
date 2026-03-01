@@ -17,7 +17,7 @@ use std::os::fd::OwnedFd;
 use snafu::ResultExt;
 
 use crate::hv::{Result, error};
-use crate::sys::kvm::kvm_memory_encrypt_op;
+use crate::sys::kvm::{KvmCpuidFeature, kvm_memory_encrypt_op};
 use crate::sys::tdx::{KvmTdxCmd, KvmTdxCmdId};
 
 pub fn tdx_op<T>(fd: &OwnedFd, cmd: KvmTdxCmdId, flags: u32, data: Option<&mut T>) -> Result<()> {
@@ -33,3 +33,11 @@ pub fn tdx_op<T>(fd: &OwnedFd, cmd: KvmTdxCmdId, flags: u32, data: Option<&mut T
     }
     Ok(())
 }
+
+pub const SUPPORTED_KVM_FEATURES: u32 = KvmCpuidFeature::NOP_IO_DELAY.bits()
+    | KvmCpuidFeature::PV_UNHALT.bits()
+    | KvmCpuidFeature::PV_TLB_FLUSH.bits()
+    | KvmCpuidFeature::PV_SEND_IPI.bits()
+    | KvmCpuidFeature::POLL_CONTROL.bits()
+    | KvmCpuidFeature::PV_SCHED_YIELD.bits()
+    | KvmCpuidFeature::MSI_EXT_DEST_ID.bits();

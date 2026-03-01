@@ -25,7 +25,7 @@ use crate::sys::kvm::{KVM_CPUID_SIGNATURE, KvmCpuid2Flag, KvmCpuidEntry2};
 fn test_get_supported_cpuid() {
     let kvm = Kvm::new(KvmConfig::default()).unwrap();
     let mut kvm_cpuid_exist = false;
-    let supported_cpuids = kvm.get_supported_cpuids().unwrap();
+    let supported_cpuids = kvm.get_supported_cpuids(None).unwrap();
     for (in_, out) in &supported_cpuids {
         if in_.func == KVM_CPUID_SIGNATURE
             && out.ebx.to_le_bytes() == *b"KVMK"

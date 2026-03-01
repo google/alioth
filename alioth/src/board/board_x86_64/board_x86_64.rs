@@ -78,7 +78,7 @@ impl<V: Vm> ArchBoard<V> {
     where
         H: Hypervisor<Vm = V>,
     {
-        let mut cpuids = hv.get_supported_cpuids()?;
+        let mut cpuids = hv.get_supported_cpuids(config.coco.as_ref())?;
 
         let threads_per_core = 1 + config.cpu.topology.smt as u16;
         let threads_per_socket = config.cpu.topology.cores * threads_per_core;

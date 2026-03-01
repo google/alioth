@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub(crate) mod sev;
+pub(crate) mod tdx;
+
 use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 
 use snafu::ResultExt;
 
 use crate::arch::cpuid::CpuidIn;
+#[cfg(target_arch = "x86_64")]
+use crate::hv::Coco;
 use crate::hv::{Kvm, Result, error};
 use crate::sys::kvm::{
     KVM_CPUID_FEATURES, KVM_MAX_CPUID_ENTRIES, KvmCap, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2,
@@ -45,7 +50,10 @@ impl From<KvmCpuidEntry2> for (CpuidIn, CpuidResult) {
 }
 
 impl Kvm {
-    pub fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
+    pub fn get_supported_cpuids(
+        &self,
+        coco: Option<&Coco>,
+    ) -> Result<HashMap<CpuidIn, CpuidResult>> {
         let mut kvm_cpuid2 = KvmCpuid2 {
             nent: KVM_MAX_CPUID_ENTRIES as u32,
             padding: 0,
@@ -64,14 +72,18 @@ impl Kvm {
             func: KVM_CPUID_FEATURES,
             index: None,
         };
-        if let Some(entry) = cpuids.get_mut(&leaf_features)
-            && let Ok(ext) = self.check_extension(KvmCap::X2APIC_API)
-            && KvmX2apicApiFlag::from_bits_retain(ext.get() as u64).contains(
-                KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK,
-            )
-        {
-            // Enable KVM_FEATURE_MSI_EXT_DEST_ID if KVM_CAP_X2APIC_API is supported
-            entry.eax |= KvmCpuidFeature::MSI_EXT_DEST_ID.bits();
+        if let Some(entry) = cpuids.get_mut(&leaf_features) {
+            if let Ok(ext) = self.check_extension(KvmCap::X2APIC_API)
+                && KvmX2apicApiFlag::from_bits_retain(ext.get() as u64).contains(
+                    KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK,
+                )
+            {
+                // Enable KVM_FEATURE_MSI_EXT_DEST_ID if KVM_CAP_X2APIC_API is supported
+                entry.eax |= KvmCpuidFeature::MSI_EXT_DEST_ID.bits();
+            }
+            if matches!(coco, Some(Coco::IntelTdx { .. })) {
+                entry.eax &= tdx::SUPPORTED_KVM_FEATURES;
+            }
         }
 
         Ok(cpuids)

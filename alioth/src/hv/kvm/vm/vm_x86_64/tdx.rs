@@ -19,8 +19,8 @@ use std::mem::MaybeUninit;
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::tdx::TdAttr;
 use crate::hv::Result;
-use crate::hv::kvm::tdx::tdx_op;
 use crate::hv::kvm::vm::KvmVm;
+use crate::hv::kvm::x86_64::tdx::tdx_op;
 use crate::sys::kvm::{KvmCap, KvmCpuid2Flag, KvmCpuidEntry2, KvmHypercall};
 use crate::sys::tdx::{KvmTdxCapabilities, KvmTdxCmdId, KvmTdxInitVm};
 

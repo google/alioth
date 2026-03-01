@@ -431,7 +431,7 @@ pub trait Hypervisor {
     fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>>;
+    fn get_supported_cpuids(&self, coco: Option<&Coco>) -> Result<HashMap<CpuidIn, CpuidResult>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

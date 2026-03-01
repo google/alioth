@@ -13,15 +13,11 @@
 // limitations under the License.
 
 #[cfg(target_arch = "x86_64")]
-#[path = "kvm_x86_64.rs"]
+#[path = "kvm_x86_64/kvm_x86_64.rs"]
 mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 mod device;
-#[cfg(target_arch = "x86_64")]
-mod sev;
-#[cfg(target_arch = "x86_64")]
-mod tdx;
 #[path = "vcpu/vcpu.rs"]
 mod vcpu;
 #[path = "vm/vm.rs"]
@@ -47,6 +43,8 @@ use snafu::{ResultExt, Snafu};
 use crate::arch::cpuid::CpuidIn;
 use crate::errors::{DebugTrace, trace_error};
 use crate::ffi;
+#[cfg(target_arch = "x86_64")]
+use crate::hv::Coco;
 use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
 #[cfg(target_arch = "aarch64")]
 use crate::sys::kvm::KvmDevType;
@@ -153,8 +151,8 @@ impl Hypervisor for Kvm {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
-        Kvm::get_supported_cpuids(self)
+    fn get_supported_cpuids(&self, coco: Option<&Coco>) -> Result<HashMap<CpuidIn, CpuidResult>> {
+        Kvm::get_supported_cpuids(self, coco)
     }
 }
 

@@ -22,7 +22,7 @@ use snafu::ResultExt;
 
 use crate::arch::intr::{MsiAddrHi, MsiAddrLo};
 use crate::arch::ioapic::NUM_PINS;
-use crate::hv::kvm::sev::SevFd;
+use crate::hv::kvm::x86_64::sev::SevFd;
 use crate::hv::kvm::{KvmVm, kvm_error};
 use crate::hv::{Coco, Kvm, Result, VmConfig, error};
 use crate::sys::kvm::{
