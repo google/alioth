@@ -47,9 +47,11 @@ impl KvmVm {
         let caps = self.tdx_get_capabilities()?;
         let convert = |e: &KvmCpuidEntry2| {
             let (mut in_, out) = From::from(*e);
-            if in_.index.is_none() {
-                in_.index = Some(0)
-            }
+            // Work around the missing SIGNIFICANT_INDEX flag in KVM_TDX_CAPABILITIES
+            // (https://lore.kernel.org/all/20260223214336.722463-1-changyuanl@google.com/).
+            // Until this is fixed upstream, explicitly retain the index value from the
+            // KvmCpuidEntry2 struct.
+            in_.index = Some(e.index);
             (in_, out)
         };
         let caps_cpuid = caps.cpuid.entries.iter().take(caps.cpuid.nent as usize);
@@ -57,6 +59,8 @@ impl KvmVm {
         for (in_, out) in cpuids {
             let cap_cpuid_in = CpuidIn {
                 func: in_.func,
+                // Fall back to index 0 to work around the missing SIGNIFICANT_INDEX
+                // flag in KVM_TDX_CAPABILITIES.
                 index: in_.index.or(Some(0)),
             };
             let Some(cap_out) = caps_cpuid.get(&cap_cpuid_in) else {
