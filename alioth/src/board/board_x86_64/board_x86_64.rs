@@ -29,7 +29,7 @@ use zerocopy::{FromZeros, IntoBytes};
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
-    PORT_ACPI_SLEEP_CONTROL, RAM_32_SIZE,
+    PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
 use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
 use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
@@ -37,7 +37,7 @@ use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
 };
-use crate::firmware::acpi::reg::{FadtReset, FadtSleepControl};
+use crate::firmware::acpi::reg::{AcpiPmTimer, FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
     AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
 };
@@ -431,6 +431,7 @@ where
         let memory = &self.memory;
         memory.add_io_dev(PORT_ACPI_RESET, Arc::new(FadtReset))?;
         memory.add_io_dev(PORT_ACPI_SLEEP_CONTROL, Arc::new(FadtSleepControl))?;
+        memory.add_io_dev(PORT_ACPI_TIMER, Arc::new(AcpiPmTimer::new()))?;
         if self.config.coco.is_none() {
             let ram = memory.ram_bus();
             acpi_table.relocate(EBDA_START + size_of::<AcpiTableRsdp>() as u64);

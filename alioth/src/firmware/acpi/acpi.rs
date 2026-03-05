@@ -19,11 +19,12 @@ use std::mem::{offset_of, size_of};
 
 use zerocopy::{FromBytes, IntoBytes, transmute};
 
-use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{
     APIC_START, IOAPIC_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_SLEEP_STATUS,
 };
+use crate::arch::layout::{PCIE_CONFIG_START, PORT_ACPI_TIMER};
+use crate::firmware::acpi::bindings::AcpiFadtFlag;
 use crate::utils::wrapping_sum;
 
 use self::bindings::{
@@ -93,6 +94,13 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             address: transmute!(PORT_ACPI_RESET as u64),
         },
         reset_value: FADT_RESET_VAL,
+        xpm_timer_block: AcpiGenericAddress {
+            space_id: 1,
+            bit_width: 32,
+            bit_offset: 0,
+            access_width: 3,
+            address: transmute!(PORT_ACPI_TIMER as u64),
+        },
         sleep_control: AcpiGenericAddress {
             space_id: 1,
             bit_width: 8,
@@ -107,7 +115,9 @@ pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             access_width: 1,
             address: transmute!(PORT_ACPI_SLEEP_STATUS as u64),
         },
-        flags: (1 << 20) | (1 << 10),
+        flags: AcpiFadtFlag::HW_REDUCED_ACPI
+            | AcpiFadtFlag::RESET_REG_SUP
+            | AcpiFadtFlag::TMR_VAL_EXT,
         minor_revision: FADT_MINOR_VERSION,
         hypervisor_id: *b"ALIOTH  ",
         xdsdt: transmute!(dsdt_addr),

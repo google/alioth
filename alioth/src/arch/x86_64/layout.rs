@@ -70,6 +70,7 @@ pub const PORT_FW_CFG_DMA_LO: u16 = 0x518;
 pub const PORT_ACPI_SLEEP_CONTROL: u16 = 0x600;
 pub const PORT_ACPI_SLEEP_STATUS: u16 = 0x601;
 pub const PORT_ACPI_RESET: u16 = 0x604;
+pub const PORT_ACPI_TIMER: u16 = 0x608;
 
 pub const PORT_PCI_ADDRESS: u16 = 0xcf8;
 pub const PORT_PCI_DATA: u16 = 0xcfc;

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+
+use crate::bitflags;
 
 pub const SIG_RSDP: [u8; 8] = *b"RSD PTR ";
 pub const SIG_XSDT: [u8; 4] = *b"XSDT";
@@ -82,6 +84,15 @@ pub struct AcpiGenericAddress {
 pub const FADT_MAJOR_VERSION: u8 = 6;
 pub const FADT_MINOR_VERSION: u8 = 4;
 
+bitflags! {
+    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
+    pub struct AcpiFadtFlag(u32) {
+        TMR_VAL_EXT = 1 << 8;
+        RESET_REG_SUP = 1 << 10;
+        HW_REDUCED_ACPI = 1 << 20;
+    }
+}
+
 #[repr(C, align(4))]
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct AcpiTableFadt {
@@ -124,7 +135,7 @@ pub struct AcpiTableFadt {
     pub boot_flags: u8,
     pub boot_flags_hi: u8,
     pub reserved: u8,
-    pub flags: u32,
+    pub flags: AcpiFadtFlag,
     pub reset_register: AcpiGenericAddress,
     pub reset_value: u8,
     pub arm_boot_flags: u8,
