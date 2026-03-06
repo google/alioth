@@ -435,6 +435,7 @@ where
         if self.config.coco.is_none() {
             let ram = memory.ram_bus();
             acpi_table.relocate(EBDA_START + size_of::<AcpiTableRsdp>() as u64);
+            acpi_table.update_checksums();
             ram.write_range(
                 EBDA_START,
                 size_of::<AcpiTableRsdp>() as u64,

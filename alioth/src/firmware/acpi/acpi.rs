@@ -210,22 +210,33 @@ impl AcpiTable {
         let old_addr: u64 = transmute!(self.rsdp.xsdt_physical_address);
         self.rsdp.xsdt_physical_address = transmute!(table_addr);
 
-        let sum = wrapping_sum(&self.rsdp.as_bytes()[0..20]);
-        self.rsdp.checksum = self.rsdp.checksum.wrapping_sub(sum);
-        let ext_sum = wrapping_sum(self.rsdp.as_bytes());
-        self.rsdp.extended_checksum = self.rsdp.extended_checksum.wrapping_sub(ext_sum);
-
         for pointer in self.table_pointers.iter() {
             let (old_val, _) = u64::read_from_prefix(&self.tables[*pointer..]).unwrap();
             let new_val = old_val.wrapping_sub(old_addr).wrapping_add(table_addr);
             IntoBytes::write_to_prefix(&new_val, &mut self.tables[*pointer..]).unwrap();
         }
+    }
+
+    pub fn update_checksums(&mut self) {
+        let sum = wrapping_sum(&self.rsdp.as_bytes()[0..20]);
+        self.rsdp.checksum = self.rsdp.checksum.wrapping_sub(sum);
+        let ext_sum = wrapping_sum(self.rsdp.as_bytes());
+        self.rsdp.extended_checksum = self.rsdp.extended_checksum.wrapping_sub(ext_sum);
 
         for (start, len) in self.table_checksums.iter() {
             let sum = wrapping_sum(&self.tables[*start..(*start + *len)]);
             let checksum = &mut self.tables[start + offset_of!(AcpiTableHeader, checksum)];
             *checksum = checksum.wrapping_sub(sum);
         }
+    }
+
+    pub fn clear_checksums(&mut self) {
+        for (start, _) in self.table_checksums.iter() {
+            let checksum = &mut self.tables[start + offset_of!(AcpiTableHeader, checksum)];
+            *checksum = 0;
+        }
+        self.rsdp.checksum = 0;
+        self.rsdp.extended_checksum = 0;
     }
 
     pub fn rsdp(&self) -> &AcpiTableRsdp {

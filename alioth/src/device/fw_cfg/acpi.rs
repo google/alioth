@@ -87,6 +87,7 @@ fn create_acpi_table_checksum(offset: usize, len: usize) -> AddChecksum {
 
 pub fn create_acpi_loader(mut acpi_table: AcpiTable) -> [FwCfgItem; 3] {
     acpi_table.relocate(0);
+    acpi_table.clear_checksums();
     let mut table_loader_bytes: Vec<u8> = Vec::new();
     let allocate_rsdp = Allocate {
         command: COMMAND_ALLOCATE,
