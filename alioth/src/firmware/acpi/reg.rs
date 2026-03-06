@@ -1,4 +1,5 @@
 // Copyright 2024 Google LLC
+// Copyright © 2019 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,6 +63,9 @@ impl Mmio for FadtSleepControl {
         }
     }
 }
+
+// The following AcpiPmTimer implementation is derived from Cloud Hypervisor.
+// Copyright © 2019 Intel Corporation
 
 /// Power Management Timer
 ///
