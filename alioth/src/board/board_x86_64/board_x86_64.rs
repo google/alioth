@@ -125,7 +125,7 @@ impl<V: Vm> ArchBoard<V> {
         };
         out.ecx |= (1 << 24) | (1 << 31);
 
-        let leaf_8000_0000 = unsafe { __cpuid(0x8000_0000) };
+        let leaf_8000_0000 = __cpuid(0x8000_0000);
         cpuids.insert(
             CpuidIn {
                 func: 0x8000_0000,
@@ -137,7 +137,7 @@ impl<V: Vm> ArchBoard<V> {
         // 0x8000_0005: L1 cache/LTB
         // 0x8000_0006: L2 cache/TLB and L3 cache
         for func in 0x8000_0002..=0x8000_0006 {
-            let host_cpuid = unsafe { __cpuid(func) };
+            let host_cpuid = __cpuid(func);
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
 
@@ -153,7 +153,7 @@ impl<V: Vm> ArchBoard<V> {
             let Some(out) = cpuids.get_mut(&leaf) else {
                 return error::MissingCpuid { leaf }.fail();
             };
-            let host_ebx = unsafe { __cpuid(leaf.func) }.ebx;
+            let host_ebx = __cpuid(leaf.func).ebx;
             // set PhysAddrReduction to 1
             out.ebx = (1 << 6) | (host_ebx & 0x3f);
             out.ecx = 0;
