@@ -158,7 +158,7 @@ where
     pub fn read(&self, addr: u64, size: u8) -> Result<u64> {
         match self.inner.search(addr) {
             Some((start, dev)) => dev.read(addr - start, size),
-            None => Ok(0),
+            None => Ok(u64::MAX),
         }
     }
 

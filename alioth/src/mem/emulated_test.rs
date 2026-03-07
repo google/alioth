@@ -88,8 +88,8 @@ fn fixture_mmio_bus() -> MmioBus {
 #[case(0x6, 1, 0xab)]
 #[case(0x6, 2, 0x89ab)]
 #[case(0x6, 4, 0xffff_89ab)]
-#[case(0x8, 1, 0)]
-#[case(0xa, 8, 0)]
+#[case(0x8, 1, u64::MAX)]
+#[case(0xa, 8, u64::MAX)]
 #[case(0xe, 2, 0xabcd)]
 fn test_mmio_bus_read(
     fixture_mmio_bus: MmioBus,
@@ -117,7 +117,7 @@ fn test_mmio_bus_read(
 #[case(0x6, 1, 0xba, 0xffff_ffff_89ba)]
 #[case(0x6, 2, 0x98ba, 0xffff_ffff_98ba)]
 #[case(0x6, 4, 0xcd_ab98, 0xffff_00cd_ab98)]
-#[case(0x8, 1, 0xff, 0)]
+#[case(0x8, 1, 0xff, u64::MAX)]
 fn test_mmio_bus_write(
     fixture_mmio_bus: MmioBus,
     #[case] addr: u64,
