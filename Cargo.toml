@@ -9,7 +9,6 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["Changyuan Lyu <changyuan.lv@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/google/alioth"
 edition = "2024"

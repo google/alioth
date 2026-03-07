@@ -1,6 +1,5 @@
 [package]
 name = "serde-aco-derive"
-authors.workspace = true
 license.workspace = true
 description = "Proc macros for serde-aco"
 repository.workspace = true
