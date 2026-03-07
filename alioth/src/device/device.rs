@@ -18,6 +18,8 @@ use snafu::Snafu;
 use crate::errors::DebugTrace;
 use crate::mem::emulated::Mmio;
 
+pub mod clock;
+pub mod cmos;
 pub mod console;
 #[cfg(target_arch = "x86_64")]
 #[path = "fw_cfg/fw_cfg.rs"]
