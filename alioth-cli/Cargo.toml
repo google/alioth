@@ -3,27 +3,27 @@ name = "alioth-cli"
 version = "0.11.0"
 edition.workspace = true
 description = "Command-line interface for Alioth, an experimental Type-2 hypervisor."
+readme = "../README.md"
 repository.workspace = true
 license.workspace = true
-readme = "../README.md"
+
+[[bin]]
+name = "alioth"
+path = "src/main.rs"
 
 [dependencies]
-log = "0.4"
-flexi_logger.workspace = true
-clap = { version = "4", features = ["derive"] }
-snafu.workspace = true
 alioth.workspace = true
+clap = { version = "4", features = ["derive"] }
+flexi_logger.workspace = true
+log = "0.4"
 miniz_oxide = { version = "0.9", features = ["simd"] }
 serde.workspace = true
 serde-aco.workspace = true
+snafu.workspace = true
 zerocopy.workspace = true
-
-[[bin]]
-path = "src/main.rs"
-name = "alioth"
 
 [dev-dependencies]
 assert_matches.workspace = true
 ctor.workspace = true
-rstest.workspace = true
 pretty_assertions.workspace = true
+rstest.workspace = true

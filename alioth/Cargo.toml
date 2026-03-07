@@ -6,24 +6,18 @@ description = "Core library for Alioth, an experimental Type-2 hypervisor."
 repository.workspace = true
 license.workspace = true
 
-[features]
-test-hv = []
-
 [dependencies]
-bitflags = "2.11.0"
-bitfield = "0.19.4"
-log = "0.4"
-mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
-libc = "0.2.182"
-parking_lot.workspace = true
 alioth-macros.workspace = true
+bitfield = "0.19.4"
+bitflags = "2.11.0"
+libc = "0.2.182"
+log = "0.4"
+mio = { version = "1", features = ["net", "os-ext", "os-poll"] }
+parking_lot.workspace = true
 serde.workspace = true
 serde-aco.workspace = true
 snafu.workspace = true
 zerocopy.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-io-uring = "0.7"
 
 [dev-dependencies]
 assert_matches.workspace = true
@@ -31,3 +25,9 @@ ctor.workspace = true
 flexi_logger.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
+[features]
+test-hv = []

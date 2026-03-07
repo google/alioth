@@ -1,39 +1,39 @@
 [workspace]
-members = [
-    "alioth",
-    "alioth-cli",
-    "alioth-macros",
-    "serde-aco",
-    "serde-aco-derive",
-]
 resolver = "3"
+members = [
+  "alioth",
+  "alioth-cli",
+  "alioth-macros",
+  "serde-aco",
+  "serde-aco-derive",
+]
 
 [workspace.package]
-license = "Apache-2.0"
-repository = "https://github.com/google/alioth"
 edition = "2024"
+repository = "https://github.com/google/alioth"
+license = "Apache-2.0"
 
 [workspace.dependencies]
-parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
-serde = { version = "1.0", features = ["derive"] }
-snafu = "0.8.9"
-alioth-macros = { version = "0.7.0", path = "alioth-macros" }
-alioth = { version = "0.11.0", path = "alioth" }
+alioth = { path = "alioth", version = "0.11.0" }
+alioth-macros = { path = "alioth-macros", version = "0.7.0" }
+assert_matches = "1"
 ctor = "0.6"
 flexi_logger = "0.31"
-serde-aco = { version = "0.10.0", path = "serde-aco" }
-serde-aco-derive = { version = "0.7.0", path = "serde-aco-derive" }
-assert_matches = "1"
+parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
+pretty_assertions = "1"
 proc-macro2 = "1"
-syn = { version = "2", features = ["full"] }
 quote = { version = "1" }
 rstest = "0.26"
+serde = { version = "1.0", features = ["derive"] }
+serde-aco = { path = "serde-aco", version = "0.10.0" }
+serde-aco-derive = { path = "serde-aco-derive", version = "0.7.0" }
+snafu = "0.8.9"
+syn = { version = "2", features = ["full"] }
 tempfile = "3"
-pretty_assertions = "1"
-zerocopy = { version = "0.8.40", features = ["derive", "alloc"] }
+zerocopy = { version = "0.8.40", features = ["alloc", "derive"] }
 
 [profile.release]
-lto = true
-codegen-units = 1
 opt-level = 3
 strip = true
+lto = true
+codegen-units = 1
