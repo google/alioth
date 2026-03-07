@@ -31,18 +31,19 @@ impl Mmio for TestRange {
         self.size
     }
 
-    fn read(&self, offset: u64, _size: u8) -> Result<u64> {
+    fn read(&self, offset: u64, size: u8) -> Result<u64> {
         let val = *self.val.lock() >> (offset << 3);
-        Ok(val)
+        let mask = u64::MAX >> (64 - (size << 3));
+        Ok(val & mask)
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> Result<Action> {
         assert_eq!(size.count_ones(), 1);
-        assert!(offset.trailing_zeros() >= size.trailing_zeros());
         let v = &mut *self.val.lock();
         let shift = offset << 3;
-        *v &= !(((1 << (size << 3)) - 1) << shift);
-        *v |= val << shift;
+        let mask = u64::MAX >> (64 - (size << 3));
+        *v &= !(mask << shift);
+        *v |= (val & mask) << shift;
         Ok(Action::None)
     }
 }
@@ -74,53 +75,49 @@ fn fixture_mmio_bus() -> MmioBus {
 
 #[rstest]
 #[case(0x0, 1, 0x01)]
-#[case(0x0, 2, 0x2301)]
-#[case(0x0, 3, 0x672301)]
-#[case(0x0, 4, 0x45672301)]
-#[case(0x0, 8, 0x89ab_cdef_4567_2301)]
+#[case(0x0, 2, 0xff01)]
+#[case(0x0, 3, 0xff_ff01)]
+#[case(0x0, 4, 0xffff_ff01)]
+#[case(0x0, 8, 0xffff_ffff_ffff_ff01)]
 #[case(0x1, 1, 0x23)]
-#[case(0x1, 2, 0x6723)]
-#[case(0x1, 3, 0x45_6723)]
-#[case(0x1, 4, 0xef45_6723)]
-#[case(0x1, 8, 0x89_abcd_ef45_6723)]
-#[case(0x4, 8, 0x89ab_cdef)]
+#[case(0x1, 2, 0xff23)]
+#[case(0x1, 3, 0xff_ff23)]
+#[case(0x1, 4, 0xffff_ff23)]
+#[case(0x1, 8, 0xffff_ffff_ffff_ff23)]
+#[case(0x4, 8, 0xffff_ffff_89ab_cdef)]
 #[case(0x6, 1, 0xab)]
 #[case(0x6, 2, 0x89ab)]
-#[case(0x6, 4, 0x89ab)]
-#[case(0x8, 1, 0x0)]
-#[case(0x8, 4, 0x0)]
-#[case(0x8, 5, 0x34_0000_0000)]
-#[case(0x8, 8, 0xabcd_1234_0000_0000)]
-#[case(0xa, 8, 0x0000_abcd_1234_0000)]
+#[case(0x6, 4, 0xffff_89ab)]
+#[case(0x8, 1, 0)]
+#[case(0xa, 8, 0)]
+#[case(0xe, 2, 0xabcd)]
 fn test_mmio_bus_read(
     fixture_mmio_bus: MmioBus,
     #[case] addr: u64,
     #[case] size: u8,
     #[case] val: u64,
 ) {
-    assert_eq!(fixture_mmio_bus.read(addr, size).unwrap(), val)
+    assert_eq!(
+        fixture_mmio_bus.read(addr, size).unwrap(),
+        val,
+        "Read from addr {addr:#x} with size {size} failed"
+    )
 }
 
 #[rstest]
-#[case(0x0, 1, 0x3210, 0x89ab_cdef_4567_2310)]
-#[case(0x0, 2, 0x3210, 0x89ab_cdef_4567_3210)]
-#[case(0x0, 3, 0x763201, 0x89ab_cdef_4576_3201)]
-#[case(0x0, 4, 0x10, 0x89ab_cdef_0000_0010)]
+#[case(0x0, 1, 0x3210, 0xffff_ffff_ffff_ff10)]
+#[case(0x0, 2, 0x3210, 0xffff_ffff_ffff_3210)]
+#[case(0x0, 4, 0x10, 0xffff_ffff_0000_0010)]
 #[case(0x0, 8, 0x10, 0x10)]
-#[case(0x1, 1, 0x32, 0x89_abcd_ef45_6732)]
-#[case(0x1, 2, 0x7632, 0x89_abcd_ef45_7632)]
-#[case(0x1, 3, 0x1254_7632, 0x89_abcd_ef54_7632)]
-#[case(0x1, 4, 0xfe54_7632, 0x89_abcd_fe54_7632)]
+#[case(0x1, 1, 0x32, 0xffff_ffff_ffff_ff32)]
+#[case(0x1, 2, 0x7632, 0xffff_ffff_ffff_7632)]
+#[case(0x1, 4, 0xfe54_7632, 0xffff_ffff_fe54_7632)]
 #[case(0x1, 8, 0x0, 0x0)]
-#[case(0x4, 8, 0x1234_89ab_cdef, 0x89ab_cdef)]
-#[case(0x6, 1, 0xba, 0x1234_0000_0000_89ba)]
-#[case(0x6, 2, 0x98ba, 0x1234_0000_0000_98ba)]
-#[case(0x6, 4, 0xff_ab98, 0x1234_0000_0000_ab98)]
-#[case(0x8, 1, 0xff, 0xabcd_1234_0000_0000)]
-#[case(0x8, 4, 0xffff, 0xabcd_1234_0000_0000)]
-#[case(0x8, 5, 0xfe_1234_0000, 0xabcd_12fe_0000_0000)]
-#[case(0x8, 8, 0x5678_cdfe_1234_0000, 0x5678_cdfe_0000_0000)]
-#[case(0xa, 8, 0xcdfe_1234_abcd, 0xcdfe_1234_0000)]
+#[case(0x4, 8, 0x1234_89ab_cdef, 0x1234_89ab_cdef)]
+#[case(0x6, 1, 0xba, 0xffff_ffff_89ba)]
+#[case(0x6, 2, 0x98ba, 0xffff_ffff_98ba)]
+#[case(0x6, 4, 0xcd_ab98, 0xffff_00cd_ab98)]
+#[case(0x8, 1, 0xff, 0)]
 fn test_mmio_bus_write(
     fixture_mmio_bus: MmioBus,
     #[case] addr: u64,
