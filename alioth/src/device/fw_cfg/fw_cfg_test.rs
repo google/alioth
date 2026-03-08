@@ -34,7 +34,9 @@ fn create_file_with_content(content: &str) -> io::Result<File> {
 #[case(FwCfgContent::Bytes(vec![0x01, 0x02, 0x03]), 3)]
 #[case(FwCfgContent::default(), 0)]
 #[case(FwCfgContent::Slice(b"abcd"), 4)]
+#[case(FwCfgContent::Lu16(1234.into()), 2)]
 #[case(FwCfgContent::Lu32(1234.into()), 4)]
+#[case(FwCfgContent::Lu64(1234.into()), 8)]
 fn test_fw_cfg_content_size(#[case] content: FwCfgContent, #[case] size: u32) {
     assert_matches!(content.size(), Ok(v) if v == size);
 }
@@ -51,7 +53,9 @@ fn test_fw_cfg_content_file_size() {
 #[case(FwCfgContent::Bytes(vec![0x01, 0x02, 0x03]), 2, Some(0x03))]
 #[case(FwCfgContent::default(), 1, None)]
 #[case(FwCfgContent::Slice(b"abcd"), 0, Some(b'a'))]
-#[case(FwCfgContent::Lu32(0xab_cd_u32.into()), 0, Some(0xcd))]
+#[case(FwCfgContent::Lu16(0x12_u16.into()), 0, Some(0x12))]
+#[case(FwCfgContent::Lu32(0xabcd_u32.into()), 1, Some(0xab))]
+#[case(FwCfgContent::Lu64(0xef_abcd_u64.into()), 2, Some(0xef))]
 fn test_fw_cfg_content_read(
     #[case] content: FwCfgContent,
     #[case] offset: u32,
@@ -75,8 +79,12 @@ fn test_fw_cfg_content_file_read() {
 #[case(FwCfgContent::Bytes(vec![0x01, 0x02, 0x03]), 4, &[])]
 #[case(FwCfgContent::default(), 1, &[])]
 #[case(FwCfgContent::Slice(b"abcd"), 0, &[b'a', b'b', b'c', b'd'])]
-#[case(FwCfgContent::Lu32(0xab_cd_u32.into()), 0, &[0xcd, 0xab, 0x00, 0x00])]
-#[case(FwCfgContent::Lu32(0xab_cd_u32.into()), 5, &[])]
+#[case(FwCfgContent::Lu16(0xabcd_u16.into()), 0, &[0xcd, 0xab])]
+#[case(FwCfgContent::Lu16(0xabcd_u16.into()), 2, &[])]
+#[case(FwCfgContent::Lu32(0x1234_abcd_u32.into()), 0, &[0xcd, 0xab, 0x34, 0x12])]
+#[case(FwCfgContent::Lu32(0x1234_abcd_u32.into()), 5, &[])]
+#[case(FwCfgContent::Lu64(0xfcfe_1234_abcd_u64.into()), 0, &[0xcd, 0xab, 0x34, 0x12, 0xfe, 0xfc])]
+#[case(FwCfgContent::Lu64(0xfcfe_1234_abcd_u64.into()), 8, &[])]
 fn test_fw_cfg_content_access(
     #[case] content: FwCfgContent,
     #[case] offset: u32,

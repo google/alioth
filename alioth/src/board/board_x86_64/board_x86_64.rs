@@ -454,6 +454,8 @@ where
             dev.add_acpi(acpi_table).context(error::FwCfg)?;
             let mem_regions = memory.mem_region_entries();
             dev.add_e820(&mem_regions).context(error::FwCfg)?;
+            dev.add_ram_size(self.config.mem.size);
+            dev.add_cpu_count(self.config.cpu.count);
         }
         Ok(())
     }

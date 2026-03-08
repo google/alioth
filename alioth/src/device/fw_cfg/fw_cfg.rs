@@ -51,7 +51,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 #[cfg(target_arch = "x86_64")]
 use crate::mem::{MemRegionEntry, MemRegionType};
-use crate::utils::endian::{Bu16, Bu32, Bu64, Lu32};
+use crate::utils::endian::{Bu16, Bu32, Bu64, Lu16, Lu32, Lu64};
 
 #[cfg(target_arch = "x86_64")]
 use self::acpi::create_acpi_loader;
@@ -104,7 +104,9 @@ pub enum FwCfgContent {
     Bytes(Vec<u8>),
     Slice(&'static [u8]),
     File(u64, File),
+    Lu16(Lu16),
     Lu32(Lu32),
+    Lu64(Lu64),
 }
 
 struct FwCfgContentAccess<'a> {
@@ -127,7 +129,15 @@ impl Read for FwCfgContentAccess<'_> {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
+            FwCfgContent::Lu16(n) => match n.as_bytes().get(self.offset as usize..) {
+                Some(mut s) => s.read(buf),
+                None => Err(ErrorKind::UnexpectedEof)?,
+            },
             FwCfgContent::Lu32(n) => match n.as_bytes().get(self.offset as usize..) {
+                Some(mut s) => s.read(buf),
+                None => Err(ErrorKind::UnexpectedEof)?,
+            },
+            FwCfgContent::Lu64(n) => match n.as_bytes().get(self.offset as usize..) {
                 Some(mut s) => s.read(buf),
                 None => Err(ErrorKind::UnexpectedEof)?,
             },
@@ -147,7 +157,9 @@ impl FwCfgContent {
             FwCfgContent::Bytes(v) => v.len(),
             FwCfgContent::File(offset, f) => (f.metadata()?.len() - offset) as usize,
             FwCfgContent::Slice(s) => s.len(),
+            FwCfgContent::Lu16(n) => size_of_val(n),
             FwCfgContent::Lu32(n) => size_of_val(n),
+            FwCfgContent::Lu64(n) => size_of_val(n),
         };
         u32::try_from(ret).map_err(|_| std::io::ErrorKind::InvalidInput.into())
     }
@@ -173,7 +185,9 @@ impl FwCfgContent {
                     }
                 }
             }
+            FwCfgContent::Lu16(n) => n.as_bytes().get(offset as usize).copied(),
             FwCfgContent::Lu32(n) => n.as_bytes().get(offset as usize).copied(),
+            FwCfgContent::Lu64(n) => n.as_bytes().get(offset as usize).copied(),
         }
     }
 }
@@ -264,6 +278,14 @@ impl FwCfg {
             count: (self.items.len() as u32).into(),
         };
         self.get_file_dir_mut()[0..4].copy_from_slice(header.as_bytes());
+    }
+
+    pub fn add_ram_size(&mut self, size: u64) {
+        self.known_items[FW_CFG_RAM_SIZE as usize] = FwCfgContent::Lu64(size.into());
+    }
+
+    pub fn add_cpu_count(&mut self, count: u16) {
+        self.known_items[FW_CFG_NB_CPUS as usize] = FwCfgContent::Lu16(count.into());
     }
 
     #[cfg(target_arch = "x86_64")]
