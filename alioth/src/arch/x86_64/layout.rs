@@ -65,6 +65,8 @@ pub const PORT_CMOS_DATA: u16 = 0x71;
 
 pub const PORT_COM1: u16 = 0x3f8;
 
+pub const PORT_FWDBG: u16 = 0x402;
+
 pub const PORT_FW_CFG_SELECTOR: u16 = 0x510;
 pub const PORT_FW_CFG_DATA: u16 = 0x511;
 pub const PORT_FW_CFG_DMA_HI: u16 = 0x514;

@@ -24,6 +24,7 @@ pub mod console;
 #[cfg(target_arch = "x86_64")]
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
+pub mod fw_dbg;
 #[cfg(target_arch = "x86_64")]
 pub mod ioapic;
 pub mod net;
