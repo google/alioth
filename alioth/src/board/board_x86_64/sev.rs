@@ -12,22 +12,106 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::arch::x86_64::{__cpuid, CpuidResult};
+use std::collections::HashMap;
 use std::iter::zip;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use zerocopy::FromZeros;
 
+use crate::arch::cpuid::{
+    Cpuid1Ecx, Cpuid7Index0Ebx, Cpuid7Index0Edx, CpuidExt1fEAx, CpuidExt1fEbx, CpuidExt8Ebx,
+    CpuidExt21EAx, CpuidIn,
+};
 use crate::arch::layout::MEM_64_START;
 use crate::arch::reg::{Reg, SegAccess, SegReg, SegRegVal};
 use crate::arch::sev::{SevPolicy, SnpPageType, SnpPolicy};
-use crate::board::{Board, Result};
+use crate::board::{Board, Result, error};
 use crate::firmware::ovmf::sev::{
     SevDescType, SevMetadataDesc, SnpCpuidFunc, SnpCpuidInfo, parse_desc, parse_sev_ap_eip,
 };
-use crate::hv::{Vcpu, Vm, VmMemory};
+use crate::hv::{Coco, Vcpu, Vm, VmMemory};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged, MarkPrivateMemory};
+
+pub fn adjust_cpuid(coco: &Coco, cpuids: &mut HashMap<CpuidIn, CpuidResult>) -> Result<()> {
+    // AMD Volume 3, section E.4.17.
+    let in_ = CpuidIn {
+        func: 0x8000_001f,
+        index: None,
+    };
+    let Some(out) = cpuids.get_mut(&in_) else {
+        return error::MissingCpuid { leaf: in_ }.fail();
+    };
+    let host_ebx = CpuidExt1fEbx(__cpuid(in_.func).ebx);
+    out.ebx = CpuidExt1fEbx::new(host_ebx.cbit_pos(), 1, 0).0;
+    out.ecx = 0;
+    out.edx = 0;
+    if let Coco::AmdSev { policy } = coco {
+        out.eax = if policy.es() {
+            (CpuidExt1fEAx::SEV | CpuidExt1fEAx::SEV_ES).bits()
+        } else {
+            CpuidExt1fEAx::SEV.bits()
+        };
+    } else if let Coco::AmdSnp { .. } = coco {
+        out.eax = (CpuidExt1fEAx::SEV | CpuidExt1fEAx::SEV_ES | CpuidExt1fEAx::SEV_SNP).bits()
+    }
+
+    if let Coco::AmdSnp { .. } = coco {
+        snp_adjust_cpuids(cpuids);
+    }
+
+    Ok(())
+}
+
+fn snp_adjust_cpuids(cpuids: &mut HashMap<CpuidIn, CpuidResult>) {
+    let in_ = CpuidIn {
+        func: 0x1,
+        index: None,
+    };
+    if let Some(out) = cpuids.get_mut(&in_) {
+        out.ecx &= !Cpuid1Ecx::TSC_DEADLINE.bits()
+    };
+
+    let in_ = CpuidIn {
+        func: 0x7,
+        index: Some(0),
+    };
+    if let Some(out) = cpuids.get_mut(&in_) {
+        out.ebx &= !Cpuid7Index0Ebx::TSC_ADJUST.bits();
+        out.edx &= !(Cpuid7Index0Edx::IBRS_IBPB
+            | Cpuid7Index0Edx::SPEC_CTRL_ST_PREDICTORS
+            | Cpuid7Index0Edx::L1D_FLUSH_INTERFACE
+            | Cpuid7Index0Edx::ARCH_CAPABILITIES
+            | Cpuid7Index0Edx::CORE_CAPABILITIES
+            | Cpuid7Index0Edx::SPEC_CTRL_SSBD)
+            .bits()
+    }
+
+    let in_ = CpuidIn {
+        func: 0x8000_0008,
+        index: None,
+    };
+    if let Some(out) = cpuids.get_mut(&in_) {
+        out.ebx &= !CpuidExt8Ebx::SSBD_VIRT_SPEC_CTRL.bits();
+    }
+
+    let in_ = CpuidIn {
+        func: 0x8000_0021,
+        index: None,
+    };
+    if let Some(out) = cpuids.get_mut(&in_) {
+        out.eax &= !CpuidExt21EAx::NO_SMM_CTL_MSR.bits();
+    }
+
+    for index in 0..=4 {
+        cpuids.remove(&CpuidIn {
+            func: 0x8000_0026,
+            index: Some(index),
+        });
+    }
+}
 
 impl<V> Board<V>
 where
@@ -59,7 +143,7 @@ where
         let mut cpuid_table = SnpCpuidInfo::new_zeroed();
         let ram_bus = self.memory.ram_bus();
         let ram = ram_bus.lock_layout();
-        let snp_page_type = match desc.type_ {
+        let page_type = match desc.type_ {
             SevDescType::SNP_DESC_MEM => SnpPageType::UNMEASURED,
             SevDescType::SNP_SECRETS => SnpPageType::SECRETS,
             SevDescType::CPUID => {
@@ -73,24 +157,18 @@ where
             _ => unimplemented!(),
         };
         let range_ref = ram.get_slice::<u8>(desc.base as u64, desc.len as u64)?;
-        let range_bytes =
+        let bytes =
             unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
         self.memory
             .mark_private_memory(desc.base as _, desc.len as _, true)?;
-        let mut ret = self
-            .vm
-            .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
+        let ret = self.vm.snp_launch_update(bytes, desc.base as _, page_type);
         if ret.is_err() && desc.type_ == SevDescType::CPUID {
             let updated_cpuid: SnpCpuidInfo = ram.read_t(desc.base as _)?;
-            for (set, got) in zip(cpuid_table.entries.iter(), updated_cpuid.entries.iter()) {
+            for (set, got) in zip(&cpuid_table.entries, &updated_cpuid.entries) {
                 if set != got {
                     log::error!("set {set:#x?}, but firmware expects {got:#x?}");
                 }
             }
-            ram.write_t(desc.base as _, &updated_cpuid)?;
-            ret = self
-                .vm
-                .snp_launch_update(range_bytes, desc.base as _, snp_page_type);
         }
         ret?;
         Ok(())

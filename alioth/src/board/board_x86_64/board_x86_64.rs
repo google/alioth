@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 use zerocopy::{FromZeros, IntoBytes};
 
-use crate::arch::cpuid::CpuidIn;
+use crate::arch::cpuid::{Cpuid1Ecx, CpuidIn};
 use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
     PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, PORT_CMOS_REG, RAM_32_SIZE,
@@ -125,7 +125,7 @@ impl<V: Vm> ArchBoard<V> {
         let Some(out) = cpuids.get_mut(&leaf1) else {
             return error::MissingCpuid { leaf: leaf1 }.fail();
         };
-        out.ecx |= (1 << 24) | (1 << 31);
+        out.ecx |= (Cpuid1Ecx::TSC_DEADLINE | Cpuid1Ecx::HYPERVISOR).bits();
 
         let leaf_8000_0000 = __cpuid(0x8000_0000);
         cpuids.insert(
@@ -143,28 +143,10 @@ impl<V: Vm> ArchBoard<V> {
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
 
-        if matches!(
-            &config.coco,
-            Some(Coco::AmdSev { .. } | Coco::AmdSnp { .. })
-        ) {
-            // AMD Volume 3, section E.4.17.
-            let leaf = CpuidIn {
-                func: 0x8000_001f,
-                index: None,
-            };
-            let Some(out) = cpuids.get_mut(&leaf) else {
-                return error::MissingCpuid { leaf }.fail();
-            };
-            let host_ebx = __cpuid(leaf.func).ebx;
-            // set PhysAddrReduction to 1
-            out.ebx = (1 << 6) | (host_ebx & 0x3f);
-            out.ecx = 0;
-            out.edx = 0;
-            if let Some(Coco::AmdSev { policy }) = &config.coco {
-                out.eax = if policy.es() { 0x2 | 0x8 } else { 0x2 };
-            } else if let Some(Coco::AmdSnp { .. }) = &config.coco {
-                out.eax = 0x2 | 0x8 | 0x10;
-            }
+        if let Some(coco) = &config.coco
+            && matches!(coco, Coco::AmdSev { .. } | Coco::AmdSnp { .. })
+        {
+            sev::adjust_cpuid(coco, &mut cpuids)?;
         }
 
         Ok(Self {
