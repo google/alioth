@@ -154,7 +154,7 @@ where
                 ram.write_t(desc.base as _, &cpuid_table)?;
                 SnpPageType::CPUID
             }
-            _ => unimplemented!(),
+            _ => SnpPageType::ZERO,
         };
         let range_ref = ram.get_slice::<u8>(desc.base as u64, desc.len as u64)?;
         let bytes =
