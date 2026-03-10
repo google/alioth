@@ -150,3 +150,7 @@ impl<C: Clock> Pause for Pl031<C> {
 }
 
 impl<C: Clock> MmioDev for Pl031<C> {}
+
+#[cfg(test)]
+#[path = "pl031_test.rs"]
+mod tests;
