@@ -29,13 +29,10 @@ use zerocopy::{FromZeros, IntoBytes};
 use crate::arch::cpuid::{Cpuid1Ecx, CpuidIn};
 use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
-    PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, PORT_CMOS_REG, PORT_FWDBG, RAM_32_SIZE,
+    PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
 use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
 use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
-use crate::device::clock::SystemClock;
-use crate::device::cmos::Cmos;
-use crate::device::fw_dbg::FwDbg;
 use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
@@ -446,9 +443,6 @@ where
     pub fn arch_init(&self) -> Result<()> {
         let io_apic = self.arch.io_apic.clone();
         self.mmio_devs.write().push((IOAPIC_START, io_apic));
-        let mut io_devs = self.io_devs.write();
-        io_devs.push((PORT_CMOS_REG, Arc::new(Cmos::new(SystemClock))));
-        io_devs.push((PORT_FWDBG, Arc::new(FwDbg::new())));
         Ok(())
     }
 }

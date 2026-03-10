@@ -360,6 +360,12 @@ fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, a
     }
 
     #[cfg(target_arch = "x86_64")]
+    if config.payload.firmware.is_some() {
+        vm.add_cmos()?;
+        vm.add_fw_dbg()?;
+    }
+
+    #[cfg(target_arch = "x86_64")]
     if config.payload.firmware.is_some() || !config.fw_cfg.is_empty() {
         vm.add_fw_cfg(config.fw_cfg.into_iter())?;
     };

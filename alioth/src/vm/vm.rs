@@ -26,12 +26,15 @@ use snafu::{ResultExt, Snafu};
 #[cfg(target_arch = "aarch64")]
 use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
-use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
+use crate::arch::layout::{PORT_CMOS_REG, PORT_COM1, PORT_FW_CFG_SELECTOR, PORT_FWDBG};
 use crate::board::{Board, BoardConfig};
-#[cfg(target_arch = "aarch64")]
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
+use crate::device::cmos::Cmos;
+#[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
+#[cfg(target_arch = "x86_64")]
+use crate::device::fw_dbg::FwDbg;
 #[cfg(target_arch = "aarch64")]
 use crate::device::pl011::Pl011;
 #[cfg(target_arch = "aarch64")]
@@ -157,6 +160,20 @@ where
         let io_apic = self.board.arch.io_apic.clone();
         let com1 = Serial::new(PORT_COM1, io_apic, 4).context(error::CreateConsole)?;
         self.board.io_devs.write().push((PORT_COM1, Arc::new(com1)));
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_cmos(&self) -> Result<(), Error> {
+        let mut io_devs = self.board.io_devs.write();
+        io_devs.push((PORT_CMOS_REG, Arc::new(Cmos::new(SystemClock))));
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn add_fw_dbg(&self) -> Result<(), Error> {
+        let mut io_devs = self.board.io_devs.write();
+        io_devs.push((PORT_FWDBG, Arc::new(FwDbg::new())));
         Ok(())
     }
 
