@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use chrono::{DateTime, Utc};
 
 use crate::device::clock::{Clock, SystemClock};
@@ -22,15 +24,22 @@ pub struct TestClock {
 }
 
 impl Clock for TestClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.now
+    fn now(&self) -> Duration {
+        let nanos = (self.now - DateTime::UNIX_EPOCH).num_nanoseconds().unwrap();
+        Duration::from_nanos(nanos as u64)
+    }
+}
+
+impl TestClock {
+    pub fn tick(&mut self) {
+        self.now += Duration::from_secs(1);
     }
 }
 
 #[test]
 fn test_system_clock() {
     let now = SystemClock.now();
-    let utc_now = Utc::now();
-    let diff = utc_now - now;
-    assert!(diff.num_seconds() < 1);
+    let sys_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let diff = sys_now - now;
+    assert!(diff.as_secs() < 1);
 }

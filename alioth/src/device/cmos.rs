@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use bitfield::bitfield;
-use chrono::{Datelike, Timelike};
+use chrono::{DateTime, Datelike, Timelike};
 
 use crate::device::clock::Clock;
 use crate::device::{MmioDev, Pause, Result};
@@ -96,7 +96,8 @@ impl<C: Clock> Mmio for Cmos<C> {
         if offset == 0 {
             return Ok(reg as u64);
         }
-        let now = self.clock.now();
+        let nanos = self.clock.now().as_nanos();
+        let now = DateTime::from_timestamp_nanos(nanos as i64);
         let ret = match CmosReg(reg).reg() {
             0x00 => now.second(),
             0x02 => now.minute(),

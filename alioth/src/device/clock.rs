@@ -13,19 +13,20 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-
-use chrono::{DateTime, Utc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub trait Clock: Debug + Send + Sync + 'static {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Duration;
 }
 
 #[derive(Debug)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> Duration {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
     }
 }
 

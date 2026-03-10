@@ -28,6 +28,8 @@ use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_COM1, PORT_FW_CFG_SELECTOR};
 use crate::board::{Board, BoardConfig};
+#[cfg(target_arch = "aarch64")]
+use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "aarch64")]
@@ -169,7 +171,7 @@ where
 
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl031(&self) {
-        let pl031_dev = Pl031::new(PL031_START);
+        let pl031_dev = Pl031::new(PL031_START, SystemClock);
         let mut mmio_devs = self.board.mmio_devs.write();
         mmio_devs.push((PL031_START, Arc::new(pl031_dev)));
     }

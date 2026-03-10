@@ -15,11 +15,10 @@
 //! Emulated PL031 Real Time Clock (RTC) device.
 //! See: https://developer.arm.com/documentation/ddi0224/c
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use parking_lot::Mutex;
 
-use crate::device::{self, MmioDev, Pause};
+use crate::device::clock::Clock;
+use crate::device::{MmioDev, Pause, Result};
 use crate::mem::emulated::{Action, Mmio};
 use crate::{bitflags, mem};
 
@@ -59,31 +58,29 @@ struct Pl031Reg {
 }
 
 #[derive(Debug)]
-pub struct Pl031 {
+pub struct Pl031<C> {
     name: Box<str>,
     reg: Mutex<Pl031Reg>,
+    clock: C,
 }
 
-impl Pl031 {
-    pub fn new(base_addr: u64) -> Self {
+impl<C> Pl031<C> {
+    pub fn new(base_addr: u64, clock: C) -> Self {
         Self {
             name: Box::from(format!("pl031@{base_addr:x}")),
             reg: Mutex::new(Pl031Reg::default()),
-        }
-    }
-
-    fn now() -> u32 {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_secs() as u32,
-            Err(_) => {
-                log::error!("System clock is before UNIX_EPOCH. PL031 won't work!");
-                0
-            }
+            clock,
         }
     }
 }
 
-impl Mmio for Pl031 {
+impl<C: Clock> Pl031<C> {
+    fn now(&self) -> u32 {
+        self.clock.now().as_secs() as u32
+    }
+}
+
+impl<C: Clock> Mmio for Pl031<C> {
     fn size(&self) -> u64 {
         0x1000
     }
@@ -91,7 +88,7 @@ impl Mmio for Pl031 {
     fn read(&self, offset: u64, _size: u8) -> mem::Result<u64> {
         let reg = self.reg.lock();
         let val = match offset {
-            RTC_DR => reg.offset.wrapping_add(Self::now()),
+            RTC_DR => reg.offset.wrapping_add(self.now()),
             RTC_MR => reg.mr,
             RTC_LR => reg.lr,
             RTC_CR => 1,                       // RTC is always enabled
@@ -119,7 +116,7 @@ impl Mmio for Pl031 {
         match offset {
             RTC_MR => reg.mr = val,
             RTC_LR => {
-                reg.offset = val.wrapping_sub(Self::now());
+                reg.offset = val.wrapping_sub(self.now());
                 reg.lr = val;
             }
             RTC_CR => {} // RTC is always enabled
@@ -142,14 +139,14 @@ impl Mmio for Pl031 {
     }
 }
 
-impl Pause for Pl031 {
-    fn pause(&self) -> device::Result<()> {
+impl<C: Clock> Pause for Pl031<C> {
+    fn pause(&self) -> Result<()> {
         Ok(())
     }
 
-    fn resume(&self) -> device::Result<()> {
+    fn resume(&self) -> Result<()> {
         Ok(())
     }
 }
 
-impl MmioDev for Pl031 {}
+impl<C: Clock> MmioDev for Pl031<C> {}
