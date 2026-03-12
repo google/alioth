@@ -42,8 +42,8 @@ use crate::pci::config::{
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::sys::vfio::{
-    VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo,
-    VfioRegionInfoFlag,
+    VfioDeviceInfoFlag, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion,
+    VfioRegionInfo, VfioRegionInfoFlag,
 };
 use crate::vfio::device::Device;
 use crate::vfio::{Result, error};
@@ -205,6 +205,19 @@ where
 struct VfioDev<D> {
     name: Arc<str>,
     dev: D,
+    flags: VfioDeviceInfoFlag,
+}
+
+impl<D> VfioDev<D>
+where
+    D: Device,
+{
+    fn reset(&self) -> Result<()> {
+        if self.flags.contains(VfioDeviceInfoFlag::RESET) {
+            self.dev.reset()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -365,7 +378,9 @@ where
     D: Device,
 {
     pub fn new(name: Arc<str>, dev: D, msi_sender: M) -> Result<VfioPciDev<M, D>> {
-        let cdev = Arc::new(VfioDev { dev, name });
+        let flags = dev.get_info()?.flags;
+
+        let cdev = Arc::new(VfioDev { dev, name, flags });
 
         let msi_sender = Arc::new(msi_sender);
 
@@ -500,7 +515,7 @@ where
 
         let config_header = ConfigHeader::Device(dev_header);
 
-        cdev.dev.reset()?;
+        cdev.reset()?;
 
         let msix_count = match &msix_cap {
             Some(cap) => cap.control.table_len() + 1,
@@ -578,7 +593,7 @@ where
         }
 
         self.msix_table.reset();
-        self.config.dev.dev.reset()
+        self.config.dev.reset()
     }
 }
 
