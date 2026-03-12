@@ -24,7 +24,7 @@ use std::sync::atomic::AtomicU64;
 
 use libc::{PROT_READ, PROT_WRITE};
 use parking_lot::{Mutex, RwLock};
-use zerocopy::{FromBytes, transmute};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::device::Pause;
 use crate::errors::BoxTrace;
@@ -377,10 +377,12 @@ where
             CommonHeader::SIZE_COMMAND as u8,
             pci_command.bits() as _,
         )?;
-        let mut buf: [u8; 4096] = transmute!([0u32; 1024]);
-        cdev.dev.fd().read_at(&mut buf, region_config.offset)?;
 
-        let (mut dev_header, _) = DeviceHeader::read_from_prefix(&buf).unwrap();
+        let mut buf = vec![0u32; region_config.size as usize >> 2];
+        let buf = buf.as_mut_bytes();
+        cdev.dev.fd().read_at(buf, region_config.offset)?;
+
+        let (mut dev_header, _) = DeviceHeader::read_from_prefix(buf).unwrap();
         let header_type = dev_header.common.header_type.raw() & !(1 << 7);
         if header_type != HeaderType::DEVICE.raw() {
             return error::NotSupportedHeader { ty: header_type }.fail();
