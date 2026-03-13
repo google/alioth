@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_arch = "aarch64")]
+#[path = "hv_aarch64_test.rs"]
+pub mod aarch64;
+
 use std::os::fd::{AsFd, BorrowedFd};
 
 use parking_lot::RwLock;

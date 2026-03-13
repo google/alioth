@@ -239,3 +239,7 @@ impl Drop for ConsoleThread {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "console_test.rs"]
+pub(crate) mod tests;

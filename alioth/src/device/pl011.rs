@@ -307,3 +307,7 @@ impl<I: IrqSender> UartRecv for Pl011Recv<I> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pl011_test.rs"]
+mod tests;
