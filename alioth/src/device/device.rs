@@ -39,6 +39,8 @@ pub mod serial;
 #[derive(Snafu, DebugTrace)]
 #[snafu(module, visibility(pub(crate)), context(suffix(false)))]
 pub enum Error {
+    #[snafu(display("Error from OS"), context(false))]
+    System { error: std::io::Error },
     #[snafu(display("Device is not pausable"))]
     NotPausable,
 }

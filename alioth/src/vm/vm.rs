@@ -31,6 +31,7 @@ use crate::board::{Board, BoardConfig};
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::cmos::Cmos;
+use crate::device::console::StdioConsole;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
 #[cfg(target_arch = "x86_64")]
@@ -74,7 +75,7 @@ pub enum Error {
     #[snafu(display("Failed to create VCPU-{index} thread"))]
     VcpuThread { index: u16, error: std::io::Error },
     #[snafu(display("Failed to create a console"))]
-    CreateConsole { error: std::io::Error },
+    CreateConsole { error: crate::device::Error },
     #[snafu(display("Failed to create fw-cfg device"))]
     FwCfg { error: std::io::Error },
     #[snafu(display("Failed to create a VirtIO device"), context(false))]
@@ -158,7 +159,8 @@ where
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
         let io_apic = self.board.arch.io_apic.clone();
-        let com1 = Serial::new(PORT_COM1, io_apic, 4).context(error::CreateConsole)?;
+        let console = StdioConsole::new().context(error::CreateConsole)?;
+        let com1 = Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?;
         self.board.io_devs.write().push((PORT_COM1, Arc::new(com1)));
         Ok(())
     }
@@ -180,7 +182,8 @@ where
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl011(&self) -> Result<(), Error> {
         let irq_line = self.board.vm.create_irq_sender(1)?;
-        let pl011_dev = Pl011::new(PL011_START, irq_line).context(error::CreateConsole)?;
+        let console = StdioConsole::new().context(error::CreateConsole)?;
+        let pl011_dev = Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?;
         let mut mmio_devs = self.board.mmio_devs.write();
         mmio_devs.push((PL011_START, Arc::new(pl011_dev)));
         Ok(())

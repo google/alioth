@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
-use std::io;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::device::console::{Console, UartRecv};
-use crate::device::{self, MmioDev, Pause};
+use crate::device::console::{Console, ConsoleThread, UartRecv};
+use crate::device::{MmioDev, Pause, Result};
 use crate::hv::IrqSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::{bitflags, hv, mem};
@@ -142,31 +142,38 @@ struct Pl011Reg {
 
 ///  https://developer.arm.com/documentation/ddi0183/g
 #[derive(Debug)]
-pub struct Pl011<I> {
+pub struct Pl011<I, C> {
     name: Arc<str>,
     irq_line: Arc<I>,
     reg: Arc<Mutex<Pl011Reg>>,
-    console: Console,
+    console: Arc<C>,
+    _thread: ConsoleThread,
 }
 
-impl<I> Pl011<I>
+impl<I, C> Pl011<I, C>
 where
     I: IrqSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
 {
-    pub fn new(base_addr: u64, irq_line: I) -> io::Result<Self> {
+    pub fn new(base_addr: u64, irq_line: I, console: C) -> Result<Self> {
         let irq_line = Arc::new(irq_line);
-        let reg = Arc::new(Mutex::new(Pl011Reg::default()));
+        let console = Arc::new(console);
+        let mut reg = Pl011Reg::default();
+        reg.flag |= Flag::RXFE | Flag::TXFE;
+        let reg = Arc::new(Mutex::new(reg));
         let name: Arc<str> = Arc::from(format!("pl011@{base_addr:#x}"));
         let pl011_recv = Pl011Recv {
             irq_line: irq_line.clone(),
             reg: reg.clone(),
         };
-        let console = Console::new(name.clone(), pl011_recv)?;
+        let thread = ConsoleThread::new(name.clone(), pl011_recv, console.clone())?;
         let pl011 = Pl011 {
             name,
             irq_line,
             reg,
             console,
+            _thread: thread,
         };
         Ok(pl011)
     }
@@ -179,9 +186,11 @@ where
     }
 }
 
-impl<I> Mmio for Pl011<I>
+impl<I, C> Mmio for Pl011<I, C>
 where
     I: IrqSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
 {
     fn size(&self) -> u64 {
         0x1000
@@ -232,7 +241,7 @@ where
         let mut reg = self.reg.lock();
         match offset {
             UART_DR => {
-                self.console.transmit(&[val as u8]);
+                let _ = self.console.as_ref().write(&[val as u8]);
                 reg.interrupt_status.insert(Interrupt::TXRIS);
                 reg.flag.insert(Flag::TXFE);
                 self.update_interrupt(&reg)?;
@@ -258,20 +267,28 @@ where
     }
 }
 
-impl<I> Pause for Pl011<I>
+impl<I, C> Pause for Pl011<I, C>
 where
     I: IrqSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
 {
-    fn pause(&self) -> device::Result<()> {
+    fn pause(&self) -> Result<()> {
         Ok(())
     }
 
-    fn resume(&self) -> device::Result<()> {
+    fn resume(&self) -> Result<()> {
         Ok(())
     }
 }
 
-impl<I> MmioDev for Pl011<I> where I: IrqSender {}
+impl<I, C> MmioDev for Pl011<I, C>
+where
+    I: IrqSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
+{
+}
 
 struct Pl011Recv<I: IrqSender> {
     irq_line: Arc<I>,

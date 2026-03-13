@@ -13,15 +13,15 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
-use std::io;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use bitfield::bitfield;
 use parking_lot::Mutex;
 
-use crate::device::console::{Console, UartRecv};
+use crate::device::console::{Console, ConsoleThread, UartRecv};
 use crate::device::ioapic::IoApic;
-use crate::device::{self, MmioDev, Pause};
+use crate::device::{self, MmioDev, Pause, Result};
 use crate::hv::MsiSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::{bitflags, mem};
@@ -182,17 +182,20 @@ struct SerialReg {
 }
 
 #[derive(Debug)]
-pub struct Serial<M: MsiSender> {
+pub struct Serial<M: MsiSender, C> {
     name: Arc<str>,
     io_apci: Arc<IoApic<M>>,
     pin: u8,
     reg: Arc<Mutex<SerialReg>>,
-    console: Console,
+    console: Arc<C>,
+    _thread: ConsoleThread,
 }
 
-impl<M> Mmio for Serial<M>
+impl<M, C> Mmio for Serial<M, C>
 where
     M: MsiSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
 {
     fn size(&self) -> u64 {
         8
@@ -252,7 +255,7 @@ where
                     }
                     reg.line_status |= LineStatus::DATA_READY;
                 } else {
-                    self.console.transmit(&[byte]);
+                    let _ = self.console.as_ref().write(&[byte]);
                     if reg
                         .interrupt_enable
                         .contains(InterruptEnable::TX_HOLDING_REGISTER_EMPTY)
@@ -283,7 +286,7 @@ where
     }
 }
 
-impl<M> Pause for Serial<M>
+impl<M, C> Pause for Serial<M, C>
 where
     M: MsiSender,
 {
@@ -296,7 +299,13 @@ where
     }
 }
 
-impl<M> MmioDev for Serial<M> where M: MsiSender {}
+impl<M, C> MmioDev for Serial<M, C>
+where
+    M: MsiSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
+{
+}
 
 struct SerialRecv<M: MsiSender> {
     pub name: Arc<str>,
@@ -322,12 +331,15 @@ impl<M: MsiSender> UartRecv for SerialRecv<M> {
     }
 }
 
-impl<M> Serial<M>
+impl<M, C> Serial<M, C>
 where
     M: MsiSender,
+    C: Console,
+    for<'a> &'a C: Read + Write,
 {
-    pub fn new(base_port: u16, io_apci: Arc<IoApic<M>>, pin: u8) -> io::Result<Self> {
+    pub fn new(base_port: u16, io_apci: Arc<IoApic<M>>, pin: u8, console: C) -> Result<Self> {
         let reg = Arc::new(Mutex::new(SerialReg::default()));
+        let console = Arc::new(console);
         let name: Arc<str> = Arc::from(format!("serial_{base_port:#x}"));
         let uart_recv = SerialRecv {
             io_apci: io_apci.clone(),
@@ -335,13 +347,14 @@ where
             name: name.clone(),
             reg: reg.clone(),
         };
-        let console = Console::new(name.clone(), uart_recv)?;
+        let thread = ConsoleThread::new(name.clone(), uart_recv, console.clone())?;
         let serial = Serial {
             name,
             reg,
             pin,
             io_apci,
             console,
+            _thread: thread,
         };
         Ok(serial)
     }

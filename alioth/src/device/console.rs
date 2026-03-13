@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{ErrorKind, Result};
+use std::fmt::Debug;
+use std::io::{self, ErrorKind, Read, Write};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -22,10 +23,19 @@ use libc::{
     tcgetattr, tcsetattr, termios,
 };
 use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token, Waker};
+use mio::{Events, Interest, Poll, Registry, Token};
 
+use crate::device::Result;
 use crate::ffi;
+use crate::sync::notifier::Notifier;
 
+pub trait Console: Debug + Send + Sync + 'static {
+    const TOKEN_INPUT: Token;
+    fn activate(&self, registry: &Registry) -> io::Result<()>;
+    fn deactivate(&self, registry: &Registry) -> io::Result<()>;
+}
+
+#[derive(Debug)]
 struct StdinBackup {
     termios: Option<termios>,
     flag: Option<i32>,
@@ -66,18 +76,14 @@ impl Drop for StdinBackup {
     }
 }
 
-pub trait UartRecv: Send + 'static {
-    fn receive(&self, bytes: &[u8]);
+#[derive(Debug)]
+pub struct StdioConsole {
+    _backup: StdinBackup,
 }
 
-struct ConsoleWorker<U: UartRecv> {
-    name: Arc<str>,
-    uart: U,
-    poll: Poll,
-}
-
-impl<U: UartRecv> ConsoleWorker<U> {
-    fn setup_termios(&mut self) -> Result<()> {
+impl StdioConsole {
+    pub fn new() -> Result<Self> {
+        let backup = StdinBackup::new();
         let mut raw_termios = MaybeUninit::uninit();
         ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
         unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
@@ -86,39 +92,87 @@ impl<U: UartRecv> ConsoleWorker<U> {
 
         let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
         ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) })?;
-        self.poll.registry().register(
-            &mut SourceFd(&STDIN_FILENO),
-            TOKEN_STDIN,
-            Interest::READABLE,
-        )?;
+        Ok(StdioConsole { _backup: backup })
+    }
+}
 
-        Ok(())
+impl Read for &StdioConsole {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let count = ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) })?;
+        Ok(count as usize)
+    }
+}
+
+impl Write for &StdioConsole {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let count =
+            ffi!(unsafe { libc::write(STDOUT_FILENO, buf.as_ptr() as *const _, buf.len()) })?;
+        Ok(count as usize)
     }
 
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Console for StdioConsole {
+    const TOKEN_INPUT: Token = Token(0);
+
+    fn activate(&self, registry: &Registry) -> io::Result<()> {
+        registry.register(
+            &mut SourceFd(&STDIN_FILENO),
+            Self::TOKEN_INPUT,
+            Interest::READABLE,
+        )
+    }
+
+    fn deactivate(&self, registry: &Registry) -> io::Result<()> {
+        registry.deregister(&mut SourceFd(&STDIN_FILENO))
+    }
+}
+
+pub trait UartRecv: Send + 'static {
+    fn receive(&self, bytes: &[u8]);
+}
+
+const TOKEN_SHUTDOWN: Token = Token(1 << 63);
+
+struct ThreadWorker<U, C> {
+    name: Arc<str>,
+    uart: U,
+    console: Arc<C>,
+    poll: Poll,
+}
+
+impl<U, C> ThreadWorker<U, C>
+where
+    U: UartRecv,
+    C: Console,
+    for<'a> &'a C: Read + Write,
+{
     fn read_input(&self) -> Result<usize> {
         let mut total_size = 0;
         let mut buf = [0u8; 16];
         loop {
-            match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) }) {
+            match self.console.as_ref().read(&mut buf) {
                 Ok(0) => break,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Ok(len) => {
-                    self.uart.receive(&buf[0..len as usize]);
-                    total_size += len as usize;
+                    self.uart.receive(&buf[0..len]);
+                    total_size += len;
                 }
-                Err(e) => return Err(e),
+                Err(e) => Err(e)?,
             }
         }
         Ok(total_size)
     }
 
     fn do_work_inner(&mut self) -> Result<()> {
-        self.setup_termios()?;
         let mut events = Events::with_capacity(16);
         loop {
             self.poll.poll(&mut events, None)?;
             for event in events.iter() {
-                if event.token() == TOKEN_SHUTDOWN {
+                if event.token() != C::TOKEN_INPUT {
                     return Ok(());
                 }
                 self.read_input()?;
@@ -127,59 +181,53 @@ impl<U: UartRecv> ConsoleWorker<U> {
     }
 
     fn do_work(&mut self) {
-        log::trace!("{}: start", self.name);
-        let _backup = StdinBackup::new();
-        if let Err(e) = self.do_work_inner() {
-            log::error!("{}: {e:?}", self.name)
-        } else {
-            log::trace!("{}: done", self.name)
+        match self.do_work_inner() {
+            Ok(()) => log::trace!("{}: done", self.name),
+            Err(e) => log::error!("{}: {e:?}", self.name),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Console {
+pub struct ConsoleThread {
     pub name: Arc<str>,
     worker_thread: Option<JoinHandle<()>>,
-    exit_waker: Waker,
+    exit_notifier: Notifier,
 }
 
-const TOKEN_SHUTDOWN: Token = Token(1);
-const TOKEN_STDIN: Token = Token(0);
-
-impl Console {
-    pub fn new(name: impl Into<Arc<str>>, uart: impl UartRecv) -> Result<Self> {
-        let name = name.into();
+impl ConsoleThread {
+    pub fn new<U, C>(name: Arc<str>, uart: U, console: Arc<C>) -> Result<Self>
+    where
+        U: UartRecv,
+        C: Console,
+        for<'a> &'a C: Read + Write,
+    {
         let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
-        let mut worker = ConsoleWorker {
+        let registry = poll.registry();
+        let mut notifier = Notifier::new()?;
+        registry.register(&mut notifier, TOKEN_SHUTDOWN, Interest::READABLE)?;
+        console.activate(registry)?;
+        let mut worker = ThreadWorker {
             name: name.clone(),
             uart,
             poll,
+            console,
         };
         let worker_thread = std::thread::Builder::new()
             .name(name.to_string())
             .spawn(move || worker.do_work())?;
-        let console = Console {
+        let console = ConsoleThread {
             name,
             worker_thread: Some(worker_thread),
-            exit_waker: waker,
+            exit_notifier: notifier,
         };
         Ok(console)
     }
-
-    pub fn transmit(&self, bytes: &[u8]) {
-        let ret =
-            ffi!(unsafe { libc::write(STDOUT_FILENO, bytes.as_ptr() as *const _, bytes.len()) });
-        if let Err(e) = ret {
-            log::error!("{}: cannot write {bytes:#02x?}: {e:?}", self.name)
-        }
-    }
 }
 
-impl Drop for Console {
+impl Drop for ConsoleThread {
     fn drop(&mut self) {
-        if let Err(e) = self.exit_waker.wake() {
+        if let Err(e) = self.exit_notifier.notify() {
             log::error!("{}: {e:?}", self.name);
             return;
         }
