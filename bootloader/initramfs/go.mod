@@ -1,8 +1,8 @@
 module initramfs
 
-go 1.24.8
+go 1.26.1
 
-require github.com/u-root/u-root v0.15.1-0.20260130184054-1d77f99544ea // indirect
+require github.com/u-root/u-root v0.16.0 // indirect
 
 require (
 	github.com/cenkalti/backoff/v4 v4.1.3 // indirect
@@ -19,7 +19,7 @@ require (
 	github.com/vishvananda/netns v0.0.4 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/sync v0.18.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.37.0 // indirect
 	pack.ag/tftp v1.0.1-0.20181129014014-07909dfbde3c // indirect
 )
