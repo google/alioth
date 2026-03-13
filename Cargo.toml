@@ -14,8 +14,8 @@ repository = "https://github.com/google/alioth"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-alioth = { path = "alioth", version = "0.11.0" }
-alioth-macros = { path = "alioth-macros", version = "0.7.0" }
+alioth = { path = "alioth", version = "0.12.0" }
+alioth-macros = { path = "alioth-macros", version = "0.12.0" }
 assert_matches = "1"
 ctor = "0.6"
 flexi_logger = "0.31"
@@ -25,8 +25,8 @@ proc-macro2 = "1"
 quote = { version = "1" }
 rstest = "0.26"
 serde = { version = "1.0", features = ["derive"] }
-serde-aco = { path = "serde-aco", version = "0.10.0" }
-serde-aco-derive = { path = "serde-aco-derive", version = "0.7.0" }
+serde-aco = { path = "serde-aco", version = "0.12.0" }
+serde-aco-derive = { path = "serde-aco-derive", version = "0.12.0" }
 snafu = "0.8.9"
 syn = { version = "2", features = ["full"] }
 tempfile = "3"
