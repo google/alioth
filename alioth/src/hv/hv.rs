@@ -338,7 +338,6 @@ pub enum Coco {
     /// Enable Intel TDX.
     #[cfg(target_arch = "x86_64")]
     #[serde(alias = "tdx")]
-    #[serde_aco(hide)]
     IntelTdx {
         /// TD attribute,
         /// Intel TDX Module ABI Spec, Sec.3.4.1, Table 3.22.

@@ -57,7 +57,7 @@ For instructions on booting a cloud image, see [Booting Cloud Images](docs/cloud
 
 - **Cross-Platform:** Runs on `x86_64` (Linux) and `aarch64` (Linux & macOS).
 - **Confidential Computing:** Supports confidential VMs using AMD SEV, SEV-ES,
-  and SEV-SNP. See [coco.md](docs/coco.md) for more details.
+  and SEV-SNP or Intel TDX. See [coco.md](docs/coco.md) for more details.
 - **VirtIO Devices:**
   - `net`: Backed by a TAP device on Linux and
     [vmnet framework](https://developer.apple.com/documentation/vmnet) on macOS.
