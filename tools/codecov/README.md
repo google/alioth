@@ -110,7 +110,7 @@ In your GitHub Actions workflow, after running tests and generating an `lcov` re
     fi
     node tools/codecov/upload.mjs ./lcov.info $PR_ARGS
   env:
-    CODECOV_URL: ${{ secrets.CODECOV_URL }}
+    CODECOV_URL: ${{ vars.CODECOV_URL }}
     CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
