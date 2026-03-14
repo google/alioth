@@ -1,6 +1,6 @@
 # Alioth Code Coverage Dashboard
 
-This project is a lightweight, Coveralls-style code coverage dashboard designed specifically for the `alioth` repository. It is built using the [Hono](https://hono.dev) framework and runs on **Cloudflare Workers**. 
+This project is a lightweight, Coveralls-style code coverage dashboard. It is built using the [Hono](https://hono.dev) framework and runs on **Cloudflare Workers**. It can be configured to serve any GitHub repository via `wrangler.toml`.
 
 To remain within edge execution limits and keep storage costs low, this app uses:
 - **Cloudflare D1 (SQLite)**: To store lightweight metadata (commit SHA, branch, overall coverage %).
@@ -22,7 +22,7 @@ To remain within edge execution limits and keep storage costs low, this app uses
 
 2. **Create the D1 Database:**
    ```bash
-   npx wrangler d1 create codecov-db
+   npx wrangler d1 create alioth-codecov-db
    ```
    *Take note of the `database_id` returned by this command.*
 
@@ -31,13 +31,13 @@ To remain within edge execution limits and keep storage costs low, this app uses
 
 4. **Create the R2 Bucket:**
    ```bash
-   npx wrangler r2 bucket create codecov-reports
+   npx wrangler r2 bucket create alioth-codecov-reports
    ```
 
 5. **Initialize the Database Schema:**
    Run the schema against your production D1 database:
    ```bash
-   npx wrangler d1 execute codecov-db --remote --file=./schema.sql
+   npx wrangler d1 execute alioth-codecov-db --remote --file=./schema.sql
    ```
 
 ## Local Development
@@ -46,7 +46,7 @@ To run the worker locally, you first need to initialize the local SQLite databas
 
 ```bash
 # Initialize local DB
-npx wrangler d1 execute codecov-db --local --file=./schema.sql
+npx wrangler d1 execute alioth-codecov-db --local --file=./schema.sql
 
 # Start the development server
 npm run dev
@@ -94,8 +94,8 @@ export CODECOV_URL="https://your-worker-url.workers.dev/api/upload"
 # Export the authentication token you created
 export CODECOV_TOKEN="your_secret_token"
 
-# Run the upload script, pointing to your generated lcov.info file
-node upload.mjs ../alioth/lcov.info
+# Run the upload script from the root of your repository
+node tools/codecov/upload.mjs ./lcov.info
 ```
 
 ### CI/CD Integration (GitHub Actions)
@@ -108,7 +108,7 @@ In your GitHub Actions workflow, after running tests and generating an `lcov` re
     if [ "${{ github.event_name }}" = "pull_request" ]; then
       PR_ARGS="--pr ${{ github.event.pull_request.number }} --pr-base ${{ github.event.pull_request.base.sha }}"
     fi
-    node codecov/upload.mjs ./lcov.info $PR_ARGS
+    node tools/codecov/upload.mjs ./lcov.info $PR_ARGS
   env:
     CODECOV_URL: ${{ secrets.CODECOV_URL }}
     CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
