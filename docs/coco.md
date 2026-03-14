@@ -5,7 +5,7 @@ Alioth supports booting confidential guests on the following platforms:
 -   AMD SEV [^sev]
 -   Intel TDX [^tdx]
 
-The implementation of both takes QEMU [^qemu-sev]^[qemu-tdx] as a reference.
+The implementation of both takes QEMU [^qemu-sev][^qemu-tdx] as a reference.
 
 > [!IMPORTANT]
 >
