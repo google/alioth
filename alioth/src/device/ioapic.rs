@@ -182,4 +182,4 @@ impl<M: MsiSender> MmioDev for IoApic<M> {}
 
 #[cfg(test)]
 #[path = "ioapic_test.rs"]
-mod tests;
+pub mod tests;

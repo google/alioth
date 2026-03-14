@@ -26,18 +26,18 @@ use crate::hv::MsiSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::{bitflags, mem};
 
-const TX_HOLDING_REGISTER: u16 = 0x0;
-const RX_BUFFER_REGISTER: u16 = 0x0;
-const DIVISOR_LATCH_LSB: u16 = 0x0;
-const DIVISOR_LATCH_MSB: u16 = 0x1;
-const INTERRUPT_ENABLE_REGISTER: u16 = 0x1;
-const FIFO_CONTROL_REGISTER: u16 = 0x2;
-const INTERRUPT_IDENTIFICATION_REGISTER: u16 = 0x2;
-const LINE_CONTROL_REGISTER: u16 = 0x3;
-const MODEM_CONTROL_REGISTER: u16 = 0x4;
-const LINE_STATUS_REGISTER: u16 = 0x5;
-const MODEM_STATUS_REGISTER: u16 = 0x6;
-const SCRATCH_REGISTER: u16 = 0x7;
+const TX_HOLDING_REGISTER: u64 = 0x0;
+const RX_BUFFER_REGISTER: u64 = 0x0;
+const DIVISOR_LATCH_LSB: u64 = 0x0;
+const DIVISOR_LATCH_MSB: u64 = 0x1;
+const INTERRUPT_ENABLE_REGISTER: u64 = 0x1;
+const FIFO_CONTROL_REGISTER: u64 = 0x2;
+const INTERRUPT_IDENTIFICATION_REGISTER: u64 = 0x2;
+const LINE_CONTROL_REGISTER: u64 = 0x3;
+const MODEM_CONTROL_REGISTER: u64 = 0x4;
+const LINE_STATUS_REGISTER: u64 = 0x5;
+const MODEM_STATUS_REGISTER: u64 = 0x6;
+const SCRATCH_REGISTER: u64 = 0x7;
 
 // offset 0x1, Interrupt Enable Register (IER)
 bitflags! {
@@ -203,7 +203,7 @@ where
 
     fn read(&self, offset: u64, _size: u8) -> Result<u64, mem::Error> {
         let mut reg = self.reg.lock();
-        let ret = match offset as u16 {
+        let ret = match offset {
             DIVISOR_LATCH_LSB if reg.line_control.divisor_latch_access() => reg.divisor as u8,
             DIVISOR_LATCH_MSB if reg.line_control.divisor_latch_access() => {
                 (reg.divisor >> 8) as u8
@@ -236,7 +236,7 @@ where
     fn write(&self, offset: u64, _size: u8, val: u64) -> mem::Result<Action> {
         let byte = val as u8;
         let mut reg = self.reg.lock();
-        match offset as u16 {
+        match offset {
             DIVISOR_LATCH_LSB if reg.line_control.divisor_latch_access() => {
                 reg.divisor = (reg.divisor & 0xff00) | byte as u16;
             }
@@ -365,3 +365,7 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "serial_test.rs"]
+mod tests;

@@ -16,7 +16,7 @@ use std::os::fd::{AsFd, BorrowedFd};
 
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::hv::{IrqFd, IrqSender, Result};
+use crate::hv::{IrqFd, IrqSender, MsiSender, Result};
 
 #[derive(Debug)]
 struct TestIrqFdInner {
@@ -110,5 +110,23 @@ impl IrqSender for TestIrqSender {
         *count += 1;
         self.condvar.notify_one();
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct TestMsiSender {
+    pub messages: std::sync::Arc<parking_lot::Mutex<Vec<(u64, u32)>>>,
+}
+
+impl MsiSender for TestMsiSender {
+    type IrqFd = TestIrqFd;
+
+    fn send(&self, addr: u64, data: u32) -> std::result::Result<(), crate::hv::Error> {
+        self.messages.lock().push((addr, data));
+        Ok(())
+    }
+
+    fn create_irqfd(&self) -> std::result::Result<Self::IrqFd, crate::hv::Error> {
+        Ok(TestIrqFd::default())
     }
 }
