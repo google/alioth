@@ -10,9 +10,12 @@
   "dependencies": {
     "hono": "^4.0.0"
   },
+  "overrides": {
+    "undici": "^7.24.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240222.0",
     "typescript": "^5.0.0",
-    "wrangler": "^4.69.0"
+    "wrangler": "^4.73.0"
   }
 }
