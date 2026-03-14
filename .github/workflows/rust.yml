@@ -91,6 +91,14 @@ jobs:
         run: |
           sed -i 's#SF:/Users/#SF:/home/#g' lcov/*apple-darwin*.info
           npx lcov-result-merger 'lcov/lcov-*.info' lcov.info
-      - name: Upload coverage
-        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2.3.7
-        continue-on-error: true
+      - name: Upload Coverage
+        run: |
+          PR_ARGS=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_ARGS="--pr ${{ github.event.pull_request.number }} --pr-base ${{ github.event.pull_request.base.sha }}"
+          fi
+          node tools/codecov/upload.mjs ./lcov.info $PR_ARGS
+        env:
+          CODECOV_URL: ${{ vars.CODECOV_URL }}
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
