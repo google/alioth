@@ -15,9 +15,7 @@
 pub mod if_tun;
 pub mod ioctl;
 pub mod kvm;
-#[cfg(target_arch = "x86_64")]
 pub mod sev;
-#[cfg(target_arch = "x86_64")]
 pub mod tdx;
 pub mod vfio;
 pub mod vhost;

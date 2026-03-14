@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
+use crate::arch::x86_64::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 use crate::{consts, ioctl_writeread};
 
 consts! {

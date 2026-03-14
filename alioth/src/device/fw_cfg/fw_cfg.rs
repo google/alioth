@@ -12,18 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "x86_64")]
 pub mod acpi;
 
 use std::ffi::CString;
 use std::fmt;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Seek, SeekFrom};
-#[cfg(target_arch = "x86_64")]
-use std::mem::size_of;
-use std::mem::size_of_val;
+use std::mem::{size_of, size_of_val};
 use std::os::unix::fs::FileExt;
-#[cfg(target_arch = "x86_64")]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -35,12 +31,10 @@ use serde::{Deserialize, Deserializer};
 use serde_aco::Help;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-#[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{
     PORT_FW_CFG_DATA, PORT_FW_CFG_DMA_HI, PORT_FW_CFG_DMA_LO, PORT_FW_CFG_SELECTOR,
 };
 use crate::device::{self, MmioDev, Pause};
-#[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::AcpiTable;
 #[cfg(target_arch = "x86_64")]
 use crate::loader::linux::bootparams::{
@@ -49,11 +43,9 @@ use crate::loader::linux::bootparams::{
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
-#[cfg(target_arch = "x86_64")]
 use crate::mem::{MemRegionEntry, MemRegionType};
 use crate::utils::endian::{Bu16, Bu32, Bu64, Lu16, Lu32, Lu64};
 
-#[cfg(target_arch = "x86_64")]
 use self::acpi::create_acpi_loader;
 
 pub const SELECTOR_WR: u16 = 1 << 14;
@@ -288,7 +280,6 @@ impl FwCfg {
         self.known_items[FW_CFG_NB_CPUS as usize] = FwCfgContent::Lu16(count.into());
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn add_e820(&mut self, mem_regions: &[(u64, MemRegionEntry)]) -> Result<()> {
         let mut bytes = vec![];
         for (addr, region) in mem_regions.iter() {
@@ -313,7 +304,6 @@ impl FwCfg {
         self.add_item(item)
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn add_acpi(&mut self, acpi_table: AcpiTable) -> Result<()> {
         let [table_loader, acpi_rsdp, apci_tables] = create_acpi_loader(acpi_table);
         self.add_item(table_loader)?;
@@ -321,7 +311,6 @@ impl FwCfg {
         self.add_item(apci_tables)
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn add_kernel_data(&mut self, p: &Path) -> Result<()> {
         let file = File::open(p)?;
         let mut buffer = vec![0u8; size_of::<BootParams>()];

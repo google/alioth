@@ -17,12 +17,12 @@
 
 use parking_lot::Mutex;
 
-use crate::arch::intr::{DestinationMode, MsiAddrLo, MsiData, TriggerMode};
-use crate::arch::ioapic::{
+use crate::arch::x86_64::intr::{DestinationMode, MsiAddrLo, MsiData, TriggerMode};
+use crate::arch::x86_64::ioapic::{
     IOAPIC_VER, IOAPICARB, IOAPICID, IOAPICVER, IOREDTBL_BASE, IOREDTBL_MAX, IOREGSEL, IOWIN,
     NUM_PINS, RedirectEntry, RegId, RegVer,
 };
-use crate::arch::layout::{APIC_START, IOAPIC_END, IOAPIC_START};
+use crate::arch::x86_64::layout::{APIC_START, IOAPIC_END, IOAPIC_START};
 use crate::device::{self, MmioDev, Pause};
 use crate::hv::MsiSender;
 use crate::mem;

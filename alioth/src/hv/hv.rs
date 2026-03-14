@@ -25,7 +25,6 @@ use std::arch::x86_64::CpuidResult;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::os::fd::AsFd;
-#[cfg(not(target_arch = "x86_64"))]
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -225,12 +224,10 @@ pub trait Vcpu {
     fn tdx_init_mem_region(&self, data: &[u8], gpa: u64, measure: bool) -> Result<()>;
 }
 
-#[cfg(not(target_arch = "x86_64"))]
 pub trait IrqSender: Debug + Send + Sync + 'static {
     fn send(&self) -> Result<(), Error>;
 }
 
-#[cfg(not(target_arch = "x86_64"))]
 impl<T> IrqSender for Arc<T>
 where
     T: IrqSender,
@@ -269,14 +266,6 @@ pub trait IoeventFdRegistry: Debug + Send + Sync + 'static {
     type IoeventFd: IoeventFd;
     fn create(&self) -> Result<Self::IoeventFd>;
     fn register(&self, fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
-    #[cfg(target_arch = "x86_64")]
-    fn register_port(
-        &self,
-        fd: &Self::IoeventFd,
-        port: u16,
-        len: u8,
-        data: Option<u64>,
-    ) -> Result<()>;
     fn deregister(&self, fd: &Self::IoeventFd) -> Result<()>;
 }
 
@@ -353,12 +342,10 @@ pub struct VmConfig {
 pub trait Vm {
     type Vcpu: Vcpu;
     type Memory: VmMemory;
-    #[cfg(not(target_arch = "x86_64"))]
     type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
     type IoeventFdRegistry: IoeventFdRegistry;
     fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu, Error>;
-    #[cfg(not(target_arch = "x86_64"))]
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(
         &self,

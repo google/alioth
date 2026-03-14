@@ -25,14 +25,10 @@ pub mod console;
 #[path = "fw_cfg/fw_cfg.rs"]
 pub mod fw_cfg;
 pub mod fw_dbg;
-#[cfg(target_arch = "x86_64")]
 pub mod ioapic;
 pub mod net;
-#[cfg(target_arch = "aarch64")]
 pub mod pl011;
-#[cfg(target_arch = "aarch64")]
 pub mod pl031;
-#[cfg(target_arch = "x86_64")]
 pub mod serial;
 
 #[trace_error]

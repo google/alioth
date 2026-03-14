@@ -14,7 +14,7 @@
 
 use bitfield::bitfield;
 
-use crate::arch::intr::DeliveryMode;
+use crate::arch::x86_64::intr::DeliveryMode;
 
 pub const IOREGSEL: u64 = 0x00;
 pub const IOWIN: u64 = 0x10;

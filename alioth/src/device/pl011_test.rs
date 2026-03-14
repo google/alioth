@@ -17,14 +17,14 @@ use std::time::{Duration, Instant};
 
 use assert_matches::assert_matches;
 
-use crate::arch::layout::PL011_START;
+use crate::arch::aarch64::layout::PL011_START;
 use crate::device::console::tests::TestConsole;
 use crate::device::pl011::{
     Flag, Interrupt, Pl011, UART_DR, UART_FR, UART_IMSC, UART_MIS, UART_PCELL_ID0, UART_PCELL_ID1,
     UART_PCELL_ID2, UART_PCELL_ID3, UART_PERIPH_ID0, UART_PERIPH_ID1, UART_PERIPH_ID2,
     UART_PERIPH_ID3, UART_RIS,
 };
-use crate::hv::tests::aarch64::TestIrqSender;
+use crate::hv::tests::TestIrqSender;
 use crate::mem::emulated::Mmio;
 
 fn fixture_pl011() -> Pl011<TestIrqSender, TestConsole> {

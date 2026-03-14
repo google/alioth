@@ -60,7 +60,6 @@ macro_rules! mask_bits {
     };
 }
 
-#[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn wrapping_sum<'a, T>(data: T) -> u8
 where

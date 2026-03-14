@@ -14,17 +14,12 @@
 
 use std::fmt::{Debug, Formatter, Result};
 
-#[cfg(target_arch = "aarch64")]
 use bitfield::bitfield;
 
-#[cfg(target_arch = "x86_64")]
-use crate::ioctl_writeread_buf;
-use crate::sys::ioctl::ioctl_ior;
-#[cfg(target_arch = "x86_64")]
-use crate::sys::ioctl::ioctl_iowr;
+use crate::sys::ioctl::{ioctl_ior, ioctl_iowr};
 use crate::{
     bitflags, consts, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
-    ioctl_writeread,
+    ioctl_writeread, ioctl_writeread_buf,
 };
 
 pub const KVMIO: u8 = 0xAE;
@@ -41,11 +36,9 @@ consts! {
         TDX = 5;
     }
 }
-
 #[cfg(target_arch = "aarch64")]
 pub struct KvmVmType(#[allow(dead_code)] pub u64);
 
-#[cfg(target_arch = "x86_64")]
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
 bitflags! {
@@ -55,7 +48,6 @@ bitflags! {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmCpuidEntry2 {
@@ -69,7 +61,6 @@ pub struct KvmCpuidEntry2 {
     pub padding: [u32; 3],
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmCpuid2<const N: usize> {
@@ -103,7 +94,6 @@ bitflags! {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmMsrEntry {
@@ -112,7 +102,6 @@ pub struct KvmMsrEntry {
     pub data: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct KvmMsrs<const N: usize> {
@@ -121,7 +110,6 @@ pub struct KvmMsrs<const N: usize> {
     pub entries: [KvmMsrEntry; N],
 }
 
-#[cfg(target_arch = "x86_64")]
 pub const MAX_IO_MSRS: usize = 256;
 
 bitflags! {
@@ -173,7 +161,6 @@ pub struct KvmMemoryAttributes {
     pub flags: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmCreateGuestMemfd {
@@ -182,7 +169,6 @@ pub struct KvmCreateGuestMemfd {
     pub reserved: [u64; 6],
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmRegs {
@@ -206,7 +192,6 @@ pub struct KvmRegs {
     pub rflags: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSegment {
@@ -225,7 +210,6 @@ pub struct KvmSegment {
     pub padding: u8,
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmDtable {
@@ -234,7 +218,6 @@ pub struct KvmDtable {
     pub padding: [u16; 3],
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSregs {
@@ -258,7 +241,6 @@ pub struct KvmSregs {
     pub interrupt_bitmap: [u64; 4],
 }
 
-#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct KvmSregs2 {
@@ -419,7 +401,6 @@ pub struct KvmIrqfd {
 pub const KVM_IRQ_ROUTING_IRQCHIP: u32 = 1;
 pub const KVM_IRQ_ROUTING_MSI: u32 = 2;
 
-#[cfg(target_arch = "x86_64")]
 pub const KVM_IRQCHIP_IOAPIC: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -503,7 +484,6 @@ impl<const N: usize> Debug for KvmIrqRouting<N> {
 bitflags! {
     #[derive(Default)]
     pub struct KvmMsiFlag(u32) {
-        #[cfg(target_arch = "aarch64")]
         VALID_DEVID = 1 << 0;
     }
 }
@@ -585,7 +565,6 @@ pub struct KvmEnableCap {
     pub pad: [u8; 64],
 }
 
-#[cfg(not(target_arch = "x86_64"))]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmOneReg {
@@ -593,7 +572,6 @@ pub struct KvmOneReg {
     pub addr: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct KvmCreateDevice {
@@ -602,7 +580,6 @@ pub struct KvmCreateDevice {
     pub flags: u32,
 }
 
-#[cfg(target_arch = "aarch64")]
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct KvmDeviceAttr {
@@ -612,7 +589,6 @@ pub struct KvmDeviceAttr {
     pub addr: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 consts! {
     pub struct KvmDevType(u32) {
         ARM_VGIC_V2 = 5;
@@ -621,7 +597,6 @@ consts! {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 consts! {
     pub struct KvmDevArmVgicGrp(u32) {
         ADDR = 0;
@@ -634,7 +609,6 @@ consts! {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 consts! {
     pub struct KvmVgicAddrType(u64) {
         DIST_V2 = 0;
@@ -646,7 +620,6 @@ consts! {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 consts! {
     pub struct KvmDevArmVgicCtrl(u64) {
         INIT = 0;
@@ -657,7 +630,6 @@ consts! {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     #[repr(transparent)]
@@ -668,7 +640,6 @@ bitfield! {
     pub index, set_index: 11, 0;
 }
 
-#[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmVcpuInit {
@@ -689,7 +660,6 @@ ioctl_none!(kvm_get_api_version, KVMIO, 0x00);
 ioctl_write_val!(kvm_create_vm, KVMIO, 0x01, KvmVmType);
 ioctl_write_val!(kvm_check_extension, KVMIO, 0x03, KvmCap);
 ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04);
-#[cfg(target_arch = "x86_64")]
 ioctl_writeread_buf!(kvm_get_supported_cpuid, KVMIO, 0x05, KvmCpuid2);
 
 ioctl_write_val!(kvm_create_vcpu, KVMIO, 0x41, u32);
@@ -699,9 +669,7 @@ ioctl_write_ptr!(
     0x46,
     KvmUserspaceMemoryRegion
 );
-#[cfg(target_arch = "x86_64")]
 ioctl_write_val!(kvm_set_tss_addr, KVMIO, 0x47, u64);
-#[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_identity_map_addr, KVMIO, 0x48, u64);
 ioctl_write_ptr!(
     kvm_set_user_memory_region2,
@@ -710,7 +678,6 @@ ioctl_write_ptr!(
     KvmUserspaceMemoryRegion2
 );
 
-#[cfg(target_arch = "x86_64")]
 ioctl_none!(kvm_create_irqchip, KVMIO, 0x60);
 ioctl_write_buf!(kvm_set_gsi_routing, KVMIO, 0x6a, KvmIrqRouting);
 
@@ -718,36 +685,25 @@ ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
 ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, KvmIoEventFd);
 
 ioctl_none!(kvm_run, KVMIO, 0x80);
-#[cfg(target_arch = "x86_64")]
 ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
-#[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
-#[cfg(target_arch = "x86_64")]
 ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
-#[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
-#[cfg(target_arch = "x86_64")]
 ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 
-#[cfg(target_arch = "x86_64")]
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
 
 ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 
-#[cfg(not(target_arch = "x86_64"))]
 ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
-#[cfg(not(target_arch = "x86_64"))]
 ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
 
 ioctl_none!(kvm_kvmclock_ctrl, KVMIO, 0xad);
 
-#[cfg(target_arch = "aarch64")]
 ioctl_write_ptr!(kvm_arm_vcpu_init, KVMIO, 0xae, KvmVcpuInit);
-#[cfg(target_arch = "aarch64")]
 ioctl_read!(kvm_arm_preferred_target, KVMIO, 0xaf, KvmVcpuInit);
 
-#[cfg(target_arch = "x86_64")]
 ioctl_writeread!(kvm_memory_encrypt_op, ioctl_iowr::<u64>(KVMIO, 0xba));
 
 ioctl_write_ptr!(
@@ -762,19 +718,13 @@ ioctl_write_ptr!(
     KvmEncRegion
 );
 
-#[cfg(target_arch = "x86_64")]
 ioctl_read!(kvm_get_sregs2, KVMIO, 0xcc, KvmSregs2);
-#[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_sregs2, KVMIO, 0xcd, KvmSregs2);
 
 ioctl_write_ptr!(kvm_set_memory_attributes, KVMIO, 0xd2, KvmMemoryAttributes);
 
-#[cfg(target_arch = "x86_64")]
 ioctl_writeread!(kvm_create_guest_memfd, KVMIO, 0xd4, KvmCreateGuestMemfd);
 
-#[cfg(target_arch = "aarch64")]
 ioctl_writeread!(kvm_create_device, KVMIO, 0xe0, KvmCreateDevice);
-#[cfg(target_arch = "aarch64")]
 ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, KvmDeviceAttr);
-#[cfg(target_arch = "aarch64")]
 ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, KvmDeviceAttr);

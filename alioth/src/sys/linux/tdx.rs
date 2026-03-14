@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arch::tdx::TdAttr;
+use crate::arch::x86_64::tdx::TdAttr;
 use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2};
 use crate::{bitflags, consts};
 

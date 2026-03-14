@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "aarch64")]
 #[path = "aarch64/aarch64.rs"]
-mod aarch64;
-#[cfg(target_arch = "x86_64")]
+pub mod aarch64;
 #[path = "x86_64/x86_64.rs"]
-mod x86_64;
+pub mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
 pub use self::aarch64::*;

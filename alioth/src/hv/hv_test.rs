@@ -12,15 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_arch = "aarch64")]
-#[path = "hv_aarch64_test.rs"]
-pub mod aarch64;
-
 use std::os::fd::{AsFd, BorrowedFd};
 
-use parking_lot::RwLock;
+use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::hv::{IrqFd, Result};
+use crate::hv::{IrqFd, IrqSender, Result};
 
 #[derive(Debug)]
 struct TestIrqFdInner {
@@ -90,5 +86,29 @@ impl IrqFd for TestIrqFd {
 impl AsFd for TestIrqFd {
     fn as_fd(&self) -> BorrowedFd<'_> {
         unreachable!()
+    }
+}
+
+#[derive(Debug)]
+pub struct TestIrqSender {
+    pub count: Mutex<u8>,
+    pub condvar: Condvar,
+}
+
+impl TestIrqSender {
+    pub fn new() -> Self {
+        Self {
+            count: Mutex::new(0),
+            condvar: Condvar::new(),
+        }
+    }
+}
+
+impl IrqSender for TestIrqSender {
+    fn send(&self) -> Result<()> {
+        let mut count = self.count.lock();
+        *count += 1;
+        self.condvar.notify_one();
+        Ok(())
     }
 }

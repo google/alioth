@@ -15,7 +15,7 @@
 use assert_matches::assert_matches;
 use chrono::DateTime;
 
-use crate::arch::layout::PL031_START;
+use crate::arch::aarch64::layout::PL031_START;
 use crate::device::clock::tests::TestClock;
 use crate::device::pl031::{
     Pl031, RTC_CR, RTC_DR, RTC_ICR, RTC_IMSC, RTC_LR, RTC_MIS, RTC_MR, RTC_PCELL_ID0,
