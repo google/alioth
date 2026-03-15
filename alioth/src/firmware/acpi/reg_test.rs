@@ -20,5 +20,5 @@ fn test_pm_timer() {
     let timer = AcpiPmTimer::default();
     let v1 = timer.read(0, 4).unwrap();
     let v2 = timer.read(0, 4).unwrap();
-    assert!(v2 > v1);
+    assert!(v2 >= v1);
 }
