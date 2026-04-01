@@ -27,7 +27,7 @@ rstest = "0.26"
 serde = { version = "1.0", features = ["derive"] }
 serde-aco = { path = "serde-aco", version = "0.12.0" }
 serde-aco-derive = { path = "serde-aco-derive", version = "0.12.0" }
-snafu = "0.8.9"
+snafu = "0.9.0"
 syn = { version = "2", features = ["full"] }
 tempfile = "3"
 zerocopy = { version = "0.8.48", features = ["alloc", "derive"] }
