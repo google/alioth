@@ -30,7 +30,7 @@ serde-aco-derive = { path = "serde-aco-derive", version = "0.12.0" }
 snafu = "0.8.9"
 syn = { version = "2", features = ["full"] }
 tempfile = "3"
-zerocopy = { version = "0.8.40", features = ["alloc", "derive"] }
+zerocopy = { version = "0.8.48", features = ["alloc", "derive"] }
 
 [profile.release]
 opt-level = 3
