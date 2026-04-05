@@ -318,7 +318,7 @@ pub fn load<P: AsRef<Path>>(
             (Reg::Rip, entry_point),
         ],
         sregs: vec![
-            (SReg::Cr0, Cr0::PE.bits() as u64),
+            (SReg::Cr0, Cr0::PE.bits()),
             (SReg::Cr4, 0),
             (SReg::Efer, 0),
             (SReg::ApicBase, apic_base.0),

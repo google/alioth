@@ -58,7 +58,7 @@ bitflags! {
 }
 
 bitflags! {
-    pub struct Cr0(u32) {
+    pub struct Cr0(u64) {
         /// CarryProtected Mode Enable
         PE = 1 << 0;
         /// CarryMonitor co-processor
@@ -94,7 +94,7 @@ bitflags! {
 }
 
 bitflags! {
-    pub struct Cr4(u32) {
+    pub struct Cr4(u64) {
         /// CarryVirtual 8086 Mode Extensions
         VME = 1 << 0;
         /// CarryProtected-mode Virtual Interrupts

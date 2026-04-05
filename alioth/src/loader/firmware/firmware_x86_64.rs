@@ -98,7 +98,7 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
             (Reg::Rflags, Rflags::RESERVED_1.bits() as u64),
         ],
         sregs: vec![
-            (SReg::Cr0, (Cr0::ET | Cr0::NW | Cr0::CD).bits() as u64),
+            (SReg::Cr0, (Cr0::ET | Cr0::NW | Cr0::CD).bits()),
             (SReg::Cr2, 0),
             (SReg::Cr3, 0),
             (SReg::Cr4, 0),

@@ -251,10 +251,10 @@ pub fn load<P: AsRef<Path>>(
             (Reg::Rflags, Rflags::RESERVED_1.bits() as u64),
         ],
         sregs: vec![
-            (SReg::Efer, (Efer::LMA | Efer::LME).bits() as u64),
-            (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits() as u64),
+            (SReg::Efer, (Efer::LMA | Efer::LME).bits()),
+            (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits()),
             (SReg::Cr3, pml4_start),
-            (SReg::Cr4, Cr4::PAE.bits() as u64),
+            (SReg::Cr4, Cr4::PAE.bits()),
             (SReg::ApicBase, apic_base.0),
         ],
         seg_regs: vec![
