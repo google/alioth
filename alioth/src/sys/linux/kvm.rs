@@ -16,6 +16,8 @@ use std::fmt::{Debug, Formatter, Result};
 
 use bitfield::bitfield;
 
+use crate::arch::x86_64::msr::{ApicBase, Efer};
+use crate::arch::x86_64::reg::{Cr0, Cr3, Cr4};
 use crate::sys::ioctl::{ioctl_ior, ioctl_iowr};
 use crate::{
     bitflags, consts, ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
@@ -231,13 +233,13 @@ pub struct KvmSregs {
     pub ldt: KvmSegment,
     pub gdt: KvmDtable,
     pub idt: KvmDtable,
-    pub cr0: u64,
+    pub cr0: Cr0,
     pub cr2: u64,
-    pub cr3: u64,
-    pub cr4: u64,
+    pub cr3: Cr3,
+    pub cr4: Cr4,
     pub cr8: u64,
-    pub efer: u64,
-    pub apic_base: u64,
+    pub efer: Efer,
+    pub apic_base: ApicBase,
     pub interrupt_bitmap: [u64; 4],
 }
 
@@ -254,13 +256,13 @@ pub struct KvmSregs2 {
     pub ldt: KvmSegment,
     pub gdt: KvmDtable,
     pub idt: KvmDtable,
-    pub cr0: u64,
+    pub cr0: Cr0,
     pub cr2: u64,
-    pub cr3: u64,
-    pub cr4: u64,
+    pub cr3: Cr3,
+    pub cr4: Cr4,
     pub cr8: u64,
-    pub efer: u64,
-    pub apic_base: u64,
+    pub efer: Efer,
+    pub apic_base: ApicBase,
     pub flags: u64,
     pub pdptrs: [u64; 4],
 }

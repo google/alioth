@@ -22,7 +22,8 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use snafu::ResultExt;
 
 use crate::arch::cpuid::CpuidIn;
-use crate::arch::reg::{DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
+use crate::arch::msr::{ApicBase, Efer};
+use crate::arch::reg::{Cr0, Cr3, Cr4, DtReg, DtRegVal, Reg, SReg, SegAccess, SegReg, SegRegVal};
 use crate::hv::kvm::kvm_error;
 use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::kvm::vm::KvmVm;
@@ -47,13 +48,13 @@ impl VcpuArch {
 macro_rules! set_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident, $val:expr) => {
         match $sreg {
-            SReg::Cr0 => $kvm_sregs.cr0 = $val,
+            SReg::Cr0 => $kvm_sregs.cr0 = Cr0::from_bits_retain($val),
             SReg::Cr2 => $kvm_sregs.cr2 = $val,
-            SReg::Cr3 => $kvm_sregs.cr3 = $val,
-            SReg::Cr4 => $kvm_sregs.cr4 = $val,
+            SReg::Cr3 => $kvm_sregs.cr3 = Cr3::from_bits_retain($val),
+            SReg::Cr4 => $kvm_sregs.cr4 = Cr4::from_bits_retain($val),
             SReg::Cr8 => $kvm_sregs.cr8 = $val,
-            SReg::Efer => $kvm_sregs.efer = $val,
-            SReg::ApicBase => $kvm_sregs.apic_base = $val,
+            SReg::Efer => $kvm_sregs.efer = Efer::from_bits_retain($val),
+            SReg::ApicBase => $kvm_sregs.apic_base = ApicBase($val),
         }
     };
 }
@@ -99,13 +100,13 @@ macro_rules! set_kvm_seg_reg {
 macro_rules! get_kvm_sreg {
     ($kvm_sregs:ident, $sreg:ident) => {
         match $sreg {
-            SReg::Cr0 => $kvm_sregs.cr0,
+            SReg::Cr0 => $kvm_sregs.cr0.bits(),
             SReg::Cr2 => $kvm_sregs.cr2,
-            SReg::Cr3 => $kvm_sregs.cr3,
-            SReg::Cr4 => $kvm_sregs.cr4,
+            SReg::Cr3 => $kvm_sregs.cr3.bits(),
+            SReg::Cr4 => $kvm_sregs.cr4.bits(),
             SReg::Cr8 => $kvm_sregs.cr8,
-            SReg::Efer => $kvm_sregs.efer,
-            SReg::ApicBase => $kvm_sregs.apic_base,
+            SReg::Efer => $kvm_sregs.efer.bits(),
+            SReg::ApicBase => $kvm_sregs.apic_base.0,
         }
     };
 }

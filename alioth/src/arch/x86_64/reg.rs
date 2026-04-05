@@ -58,6 +58,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Default)]
     pub struct Cr0(u64) {
         /// CarryProtected Mode Enable
         PE = 1 << 0;
@@ -85,6 +86,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Default)]
     pub struct Cr3(u64) {
         /// CarryPage-level write-through
         PWT = 1 << 3;
@@ -94,6 +96,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Default)]
     pub struct Cr4(u64) {
         /// CarryVirtual 8086 Mode Extensions
         VME = 1 << 0;

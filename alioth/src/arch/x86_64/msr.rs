@@ -29,6 +29,7 @@ pub const IA32_TSC_AUX: u32 = 0xc000_0103;
 pub const IA32_MISC_ENABLE: u32 = 0x0000_01a0;
 
 bitflags! {
+    #[derive(Default)]
     pub struct Efer(u64) {
         /// SYSCALL enable
         SCE = 1 << 0;
