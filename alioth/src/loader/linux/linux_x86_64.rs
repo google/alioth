@@ -25,7 +25,7 @@ use crate::arch::layout::{
     APIC_START, BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMDLINE_LIMIT,
     KERNEL_CMDLINE_START, KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
-use crate::arch::msr::{ApicBase, Efer};
+use crate::arch::msr::{ApicBase, Efer, Msr};
 use crate::arch::paging::Entry;
 use crate::arch::reg::{
     Cr0, Cr4, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal,
@@ -251,11 +251,9 @@ pub fn load<P: AsRef<Path>>(
             (Reg::Rflags, Rflags::RESERVED_1.bits() as u64),
         ],
         sregs: vec![
-            (SReg::Efer, (Efer::LMA | Efer::LME).bits()),
             (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits()),
             (SReg::Cr3, pml4_start),
             (SReg::Cr4, Cr4::PAE.bits()),
-            (SReg::ApicBase, apic_base.0),
         ],
         seg_regs: vec![
             (SegReg::Cs, boot_cs),
@@ -268,6 +266,10 @@ pub fn load<P: AsRef<Path>>(
             (SegReg::Ldtr, boot_ldtr),
         ],
         dt_regs: vec![(DtReg::Gdtr, gdtr), (DtReg::Idtr, idtr)],
+        msrs: vec![
+            (Msr::EFER, (Efer::LMA | Efer::LME).bits()),
+            (Msr::APIC_BASE, apic_base.0),
+        ],
         initramfs: initramfs_range,
     })
 }

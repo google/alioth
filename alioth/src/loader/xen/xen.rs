@@ -28,7 +28,7 @@ use crate::arch::layout::{
     APIC_START, BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMDLINE_LIMIT,
     KERNEL_CMDLINE_START,
 };
-use crate::arch::msr::ApicBase;
+use crate::arch::msr::{ApicBase, Msr};
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::elf::{
     ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,
@@ -317,12 +317,7 @@ pub fn load<P: AsRef<Path>>(
             (Reg::Rflags, Rflags::RESERVED_1.bits() as u64),
             (Reg::Rip, entry_point),
         ],
-        sregs: vec![
-            (SReg::Cr0, Cr0::PE.bits()),
-            (SReg::Cr4, 0),
-            (SReg::Efer, 0),
-            (SReg::ApicBase, apic_base.0),
-        ],
+        sregs: vec![(SReg::Cr0, Cr0::PE.bits()), (SReg::Cr4, 0)],
         seg_regs: vec![
             (SegReg::Cs, boot_cs),
             (SegReg::Ds, boot_ds),
@@ -334,6 +329,7 @@ pub fn load<P: AsRef<Path>>(
             (SegReg::Ldtr, boot_ldtr),
         ],
         dt_regs: vec![(DtReg::Gdtr, gdtr), (DtReg::Idtr, idtr)],
+        msrs: vec![(Msr::APIC_BASE, apic_base.0), (Msr::EFER, 0)],
         initramfs: initramfs_range,
     })
 }

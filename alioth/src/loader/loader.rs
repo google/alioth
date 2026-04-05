@@ -29,6 +29,8 @@ use serde::Deserialize;
 use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
+use crate::arch::msr::Msr;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 use crate::errors::{DebugTrace, trace_error};
@@ -57,6 +59,8 @@ pub struct InitState {
     pub dt_regs: Vec<(DtReg, DtRegVal)>,
     #[cfg(target_arch = "x86_64")]
     pub seg_regs: Vec<(SegReg, SegRegVal)>,
+    #[cfg(target_arch = "x86_64")]
+    pub msrs: Vec<(Msr, u64)>,
     pub initramfs: Option<Range<u64>>,
 }
 

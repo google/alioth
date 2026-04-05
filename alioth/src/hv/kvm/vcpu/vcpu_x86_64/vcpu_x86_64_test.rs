@@ -18,7 +18,7 @@ use std::ptr::null_mut;
 use assert_matches::assert_matches;
 use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_SHARED, PROT_EXEC, PROT_READ, PROT_WRITE, mmap};
 
-use crate::arch::msr::Efer;
+use crate::arch::msr::{Efer, Msr};
 use crate::arch::paging::Entry;
 use crate::arch::reg::{Cr0, Cr4, Reg, SegAccess};
 use crate::ffi;
@@ -68,8 +68,6 @@ fn test_vcpu_regs() {
         (SReg::Cr3, 0x1362d001),
         (SReg::Cr4, 1 << 5),
         (SReg::Cr8, 0x0),
-        (SReg::Efer, (1 << 8) | (1 << 10)),
-        (SReg::ApicBase, 0xfee00900),
     ];
     let seg_regs = [
         (
@@ -280,7 +278,6 @@ fn test_kvm_run() {
     let idtr = DtRegVal { base: 0, limit: 0 };
     vcpu.set_sregs(
         &[
-            (SReg::Efer, (Efer::LMA | Efer::LME).bits()),
             (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits()),
             (SReg::Cr3, 0x2000),
             (SReg::Cr4, Cr4::PAE.bits()),
@@ -298,6 +295,8 @@ fn test_kvm_run() {
         &[(DtReg::Gdtr, gdtr), (DtReg::Idtr, idtr)],
     )
     .unwrap();
+    vcpu.set_msrs(&[(Msr::EFER, (Efer::LMA | Efer::LME).bits())])
+        .unwrap();
     vcpu.set_regs(&[
         (Reg::Rip, 0x1000),
         (Reg::Rax, 0x2),

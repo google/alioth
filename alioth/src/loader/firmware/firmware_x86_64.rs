@@ -20,6 +20,7 @@ use std::sync::Arc;
 use snafu::ResultExt;
 
 use crate::arch::layout::MEM_64_START;
+use crate::arch::msr::Msr;
 use crate::arch::reg::{Cr0, DtReg, DtRegVal, Reg, Rflags, SReg, SegAccess, SegReg, SegRegVal};
 use crate::loader::{InitState, Result, error};
 use crate::mem::mapped::ArcMemPages;
@@ -103,8 +104,8 @@ pub fn load<P: AsRef<Path>>(memory: &Memory, path: P) -> Result<(InitState, ArcM
             (SReg::Cr3, 0),
             (SReg::Cr4, 0),
             (SReg::Cr8, 0),
-            (SReg::Efer, 0),
         ],
+        msrs: vec![(Msr::EFER, 0)],
         seg_regs: vec![
             (SegReg::Cs, boot_cs),
             (SegReg::Ds, boot_ds),

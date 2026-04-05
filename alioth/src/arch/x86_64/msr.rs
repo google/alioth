@@ -14,19 +14,24 @@
 
 use bitfield::bitfield;
 
-use crate::bitflags;
+use crate::{bitflags, consts};
 
 // Intel Vol.4, Table 2-2.
-pub const IA32_EFER: u32 = 0xc000_0080;
-pub const IA32_STAR: u32 = 0xc000_0081;
-pub const IA32_LSTAR: u32 = 0xc000_0082;
-pub const IA32_CSTAR: u32 = 0xc000_0083;
-pub const IA32_FMASK: u32 = 0xc000_0084;
-pub const IA32_FS_BASE: u32 = 0xc000_0100;
-pub const IA32_GS_BASE: u32 = 0xc000_0101;
-pub const IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
-pub const IA32_TSC_AUX: u32 = 0xc000_0103;
-pub const IA32_MISC_ENABLE: u32 = 0x0000_01a0;
+consts! {
+    pub struct Msr(u32) {
+        EFER = 0xc000_0080;
+        STAR = 0xc000_0081;
+        LSTAR = 0xc000_0082;
+        CSTAR = 0xc000_0083;
+        FMASK = 0xc000_0084;
+        FS_BASE = 0xc000_0100;
+        GS_BASE = 0xc000_0101;
+        KERNEL_GS_BASE = 0xc000_0102;
+        TSC_AUX = 0xc000_0103;
+        MISC_ENABLE = 0x0000_01a0;
+        APIC_BASE = 0x0000_001b;
+    }
+}
 
 bitflags! {
     #[derive(Default)]

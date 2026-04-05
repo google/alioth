@@ -198,8 +198,6 @@ pub enum SReg {
     Cr3,
     Cr4,
     Cr8,
-    Efer,
-    ApicBase,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

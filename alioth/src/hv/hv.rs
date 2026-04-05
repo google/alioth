@@ -35,6 +35,8 @@ use snafu::{AsErrorSource, Snafu};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::CpuidIn;
 #[cfg(target_arch = "x86_64")]
+use crate::arch::msr::Msr;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 #[cfg(target_arch = "x86_64")]
@@ -207,7 +209,7 @@ pub trait Vcpu {
     fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()>;
+    fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;
 

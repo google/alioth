@@ -37,6 +37,8 @@ use snafu::ResultExt;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::CpuidIn;
 #[cfg(target_arch = "x86_64")]
+use crate::arch::msr::Msr;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::reg::{DtReg, DtRegVal, SegReg, SegRegVal};
 use crate::arch::reg::{Reg, SReg};
 use crate::ffi;
@@ -227,7 +229,7 @@ impl Vcpu for KvmVcpu {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_msrs(&mut self, msrs: &[(u32, u64)]) -> Result<()> {
+    fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()> {
         self.kvm_set_msrs(msrs)
     }
 

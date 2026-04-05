@@ -31,7 +31,7 @@ use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
     PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
-use crate::arch::msr::{IA32_MISC_ENABLE, MiscEnable};
+use crate::arch::msr::{MiscEnable, Msr};
 use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
 use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
@@ -241,6 +241,7 @@ where
             return Ok(());
         }
         vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
+        vcpu.set_msrs(&init_state.msrs)?;
         vcpu.set_regs(&init_state.regs)?;
         Ok(())
     }
@@ -257,7 +258,7 @@ where
             }
         }
         vcpu.set_cpuids(cpuids)?;
-        vcpu.set_msrs(&[(IA32_MISC_ENABLE, MiscEnable::FAST_STRINGS.bits())])?;
+        vcpu.set_msrs(&[(Msr::MISC_ENABLE, MiscEnable::FAST_STRINGS.bits())])?;
         Ok(())
     }
 
