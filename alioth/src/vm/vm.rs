@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
@@ -107,8 +109,14 @@ where
     H: Hypervisor,
 {
     board: Arc<Board<H::Vm>>,
+
     #[cfg(target_os = "linux")]
     iommu: Mutex<Option<Arc<Iommu>>>,
+    #[cfg(target_os = "linux")]
+    pub vfio_ioases: Mutex<HashMap<Box<str>, Arc<Ioas>>>,
+    #[cfg(target_os = "linux")]
+    pub vfio_containers: Mutex<HashMap<Box<str>, Arc<Container>>>,
+
     event_rx: Receiver<u16>,
     _event_tx: Sender<u16>,
 }
@@ -151,6 +159,10 @@ where
             _event_tx: event_tx,
             #[cfg(target_os = "linux")]
             iommu: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            vfio_ioases: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "linux")]
+            vfio_containers: Mutex::new(HashMap::new()),
         };
 
         Ok(vm)
@@ -311,7 +323,7 @@ where
     const DEFAULT_NAME: &str = "default";
 
     pub fn add_vfio_ioas(&self, param: IoasParam) -> Result<Arc<Ioas>, Error> {
-        let mut ioases = self.board.vfio_ioases.lock();
+        let mut ioases = self.vfio_ioases.lock();
         if ioases.contains_key(&param.name) {
             return error::AlreadyExists { name: param.name }.fail();
         }
@@ -337,7 +349,7 @@ where
 
     fn get_ioas(&self, name: Option<&str>) -> Result<Arc<Ioas>> {
         let ioas_name = name.unwrap_or(Self::DEFAULT_NAME);
-        if let Some(ioas) = self.board.vfio_ioases.lock().get(ioas_name) {
+        if let Some(ioas) = self.vfio_ioases.lock().get(ioas_name) {
             return Ok(ioas.clone());
         };
         if name.is_none() {
@@ -367,7 +379,7 @@ where
     }
 
     pub fn add_vfio_container(&self, param: ContainerParam) -> Result<Arc<Container>, Error> {
-        let mut containers = self.board.vfio_containers.lock();
+        let mut containers = self.vfio_containers.lock();
         if containers.contains_key(&param.name) {
             return error::AlreadyExists { name: param.name }.fail();
         }
@@ -387,7 +399,7 @@ where
 
     fn get_container(&self, name: Option<&str>) -> Result<Arc<Container>> {
         let container_name = name.unwrap_or(Self::DEFAULT_NAME);
-        if let Some(container) = self.board.vfio_containers.lock().get(container_name) {
+        if let Some(container) = self.vfio_containers.lock().get(container_name) {
             return Ok(container.clone());
         }
         if name.is_none() {

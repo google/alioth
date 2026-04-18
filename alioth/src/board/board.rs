@@ -19,8 +19,6 @@ mod aarch64;
 #[path = "board_x86_64/board_x86_64.rs"]
 mod x86_64;
 
-#[cfg(target_os = "linux")]
-use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -52,10 +50,6 @@ use crate::loader::{Executable, InitState, Payload, linux};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
-#[cfg(target_os = "linux")]
-use crate::vfio::container::Container;
-#[cfg(target_os = "linux")]
-use crate::vfio::iommu::Ioas;
 
 #[cfg(target_arch = "aarch64")]
 use self::aarch64::ArchBoard;
@@ -224,10 +218,6 @@ where
     pub pci_bus: PciBus,
     #[cfg(target_arch = "x86_64")]
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
-    #[cfg(target_os = "linux")]
-    pub vfio_ioases: Mutex<HashMap<Box<str>, Arc<Ioas>>>,
-    #[cfg(target_os = "linux")]
-    pub vfio_containers: Mutex<HashMap<Box<str>, Arc<Container>>>,
 
     mp_sync: Mutex<MpSync>,
     cond_var: Condvar,
@@ -262,10 +252,6 @@ where
             pci_bus: PciBus::new(),
             #[cfg(target_arch = "x86_64")]
             fw_cfg: Mutex::new(None),
-            #[cfg(target_os = "linux")]
-            vfio_ioases: Mutex::new(HashMap::new()),
-            #[cfg(target_os = "linux")]
-            vfio_containers: Mutex::new(HashMap::new()),
 
             mp_sync: Mutex::new(MpSync {
                 state: BoardState::Paused,
