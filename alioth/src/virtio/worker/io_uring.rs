@@ -15,9 +15,9 @@
 use std::iter;
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 use io_uring::cqueue::Entry as Cqe;
 use io_uring::squeue::Entry as Sqe;
 use io_uring::{SubmissionQueue, opcode, types};

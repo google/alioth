@@ -16,11 +16,11 @@ use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use assert_matches::assert_matches;
+use flume::TryRecvError;
 use rstest::rstest;
 use tempfile::TempDir;
 
@@ -78,9 +78,9 @@ fn entropy_test(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     assert_matches!(*dev.config(), EntropyConfig);
     assert_eq!(dev.feature(), FEATURE_BUILT_IN);
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = flume::unbounded();
     let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
-    let (irq_tx, irq_rx) = mpsc::channel();
+    let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
     let start_param = StartParam {
         feature: VirtioFeature::VERSION_1.bits(),

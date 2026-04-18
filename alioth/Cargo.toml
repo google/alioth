@@ -11,6 +11,7 @@ alioth-macros.workspace = true
 bitfield = "0.19.4"
 bitflags = "2.11.0"
 chrono = "0.4.44"
+flume.workspace = true
 libc = "0.2.184"
 log = "0.4"
 mio = { version = "1", features = ["net", "os-ext", "os-poll"] }

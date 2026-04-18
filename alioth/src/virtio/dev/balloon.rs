@@ -15,10 +15,10 @@
 use std::fmt::Debug;
 use std::io::{IoSlice, IoSliceMut};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
 use alioth_macros::Layout;
+use flume::Receiver;
 use libc::{_SC_PAGESIZE, sysconf};
 use mio::Registry;
 use mio::event::Event;

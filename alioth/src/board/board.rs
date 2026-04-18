@@ -23,9 +23,9 @@ mod x86_64;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use flume::Sender;
 use libc::{MAP_PRIVATE, MAP_SHARED};
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use serde::Deserialize;

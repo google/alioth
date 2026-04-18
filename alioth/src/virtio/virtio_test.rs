@@ -14,8 +14,8 @@
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
-use std::sync::mpsc::Sender;
 
+use flume::Sender;
 use rstest::fixture;
 
 use crate::hv::IoeventFd;

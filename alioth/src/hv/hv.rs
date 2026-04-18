@@ -117,8 +117,8 @@ pub enum Error {
     TdxErr { code: u64 },
 }
 
-impl From<std::sync::mpsc::RecvError> for Error {
-    fn from(error: std::sync::mpsc::RecvError) -> Self {
+impl From<flume::RecvError> for Error {
+    fn from(error: flume::RecvError) -> Self {
         let source = error.as_error_source();
         Error::BrokenChannel {
             _location: snafu::GenerateImplicitData::generate_with_source(source),
@@ -126,8 +126,8 @@ impl From<std::sync::mpsc::RecvError> for Error {
     }
 }
 
-impl<T: 'static> From<std::sync::mpsc::SendError<T>> for Error {
-    fn from(error: std::sync::mpsc::SendError<T>) -> Self {
+impl<T: 'static> From<flume::SendError<T>> for Error {
+    fn from(error: flume::SendError<T>) -> Self {
         let source = error.as_error_source();
         Error::BrokenChannel {
             _location: snafu::GenerateImplicitData::generate_with_source(source),

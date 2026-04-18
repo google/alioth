@@ -19,9 +19,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 #[cfg(target_os = "linux")]
 use io_uring::cqueue::Entry as Cqe;
 #[cfg(target_os = "linux")]

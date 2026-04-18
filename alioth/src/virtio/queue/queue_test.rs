@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::ptr::eq as ptr_eq;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, TryRecvError};
 
 use assert_matches::assert_matches;
+use flume::TryRecvError;
 use rstest::rstest;
 
 use crate::mem::mapped::RamBus;
@@ -183,7 +183,7 @@ fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
     assert!(ptr_eq(host_q.reg(), reg));
 
-    let (irq_tx, irq_rx) = mpsc::channel();
+    let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
     let str_0 = "Hello, World!";
@@ -338,7 +338,7 @@ fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>)
         &ram,
     );
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
-    let (irq_tx, irq_rx) = mpsc::channel();
+    let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
     let str_0 = "Hello, World!";
@@ -468,7 +468,7 @@ fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>
         &ram,
     );
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
-    let (irq_tx, irq_rx) = mpsc::channel();
+    let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
     let str_0 = "Hello, World!";

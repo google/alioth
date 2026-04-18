@@ -19,6 +19,7 @@ alioth-macros = { path = "alioth-macros", version = "0.12.0" }
 assert_matches = "1"
 ctor = "0.6"
 flexi_logger = "0.31"
+flume = "0.12.0"
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 pretty_assertions = "1"
 proc-macro2 = "1"

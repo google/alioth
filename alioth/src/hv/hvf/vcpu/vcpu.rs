@@ -17,10 +17,10 @@ mod vmexit;
 
 use std::collections::HashMap;
 use std::ptr::null_mut;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, mpsc};
 
+use flume::{Receiver, Sender};
 use parking_lot::Mutex;
 use snafu::ResultExt;
 
@@ -70,7 +70,7 @@ impl HvfVcpu {
         let ret = unsafe { hv_vcpu_set_sys_reg(vcpu_id, SReg::MPIDR_EL1, mpidr.0) };
         check_ret(ret).context(error::VcpuReg)?;
 
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = flume::unbounded();
 
         let power_on = Arc::new(AtomicBool::new(false));
         let handle = Arc::new(VcpuHandle {

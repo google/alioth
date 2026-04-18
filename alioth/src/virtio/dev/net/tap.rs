@@ -21,9 +21,9 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 use io_uring::cqueue::Entry as Cqe;
 use io_uring::opcode;
 use io_uring::types::Fd;

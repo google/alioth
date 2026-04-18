@@ -25,10 +25,10 @@ pub mod vsock;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use bitflags::Flags;
+use flume::{Receiver, Sender};
 use snafu::ResultExt;
 
 use crate::hv::IoeventFd;
@@ -194,7 +194,7 @@ where
         let queue_regs = queue_regs.collect::<Arc<_>>();
 
         let shared_mem_regions = dev.shared_mem_regions();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = flume::unbounded();
         let (handle, notifier) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
         log::debug!(
             "{name}: created with {:x?}, {:x?}",

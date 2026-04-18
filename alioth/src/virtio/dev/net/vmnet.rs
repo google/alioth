@@ -16,12 +16,12 @@ use std::ffi::CStr;
 use std::fmt::Debug;
 use std::io::{self, ErrorKind, Read};
 use std::ptr::null;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use flume::{Receiver, Sender};
 use libc::c_void;
 use mio::event::Event;
 use mio::{Interest, Registry, Token};
@@ -92,7 +92,7 @@ impl Net {
         ];
         let desc = unsafe { xpc_dictionary_create(keys.as_ptr(), vals.as_ptr(), 3) };
         let dispatch_queue = unsafe { dispatch_queue_create(c"virtio-net".as_ptr(), null()) };
-        let (sender, receiver) = mpsc::channel::<Result<NetConfig>>();
+        let (sender, receiver) = flume::unbounded::<Result<NetConfig>>();
 
         #[repr(C)]
         struct HandlerBlock {
@@ -180,7 +180,7 @@ impl Drop for Net {
         let interface = self.interface.load(Ordering::Acquire);
         let dispatch_queue = self.dispatch_queue.load(Ordering::Acquire);
 
-        let (sender, receiver) = mpsc::channel::<VmnetReturn>();
+        let (sender, receiver) = flume::unbounded::<VmnetReturn>();
 
         #[repr(C)]
         struct HandlerBlock {

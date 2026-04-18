@@ -15,10 +15,10 @@
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
+use flume::{Receiver, Sender};
 #[cfg(target_os = "linux")]
 use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
@@ -125,7 +125,7 @@ where
     pub fn new(hv: &H, config: BoardConfig) -> Result<Self> {
         let board = Arc::new(Board::new(hv, config)?);
 
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = flume::unbounded();
 
         let mut vcpus = board.vcpus.write();
         for index in 0..board.config.cpu.count {

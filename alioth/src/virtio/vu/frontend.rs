@@ -16,9 +16,9 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};

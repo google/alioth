@@ -15,11 +15,11 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::mem::size_of;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use assert_matches::assert_matches;
+use flume::{Receiver, Sender, TryRecvError};
 use rstest::rstest;
 use tempfile::TempDir;
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
@@ -133,9 +133,9 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         VsockFeature::STREAM.bits() | FEATURE_BUILT_IN
     );
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = flume::unbounded();
     let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
-    let (irq_tx, irq_rx) = mpsc::channel();
+    let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
     let start_param = StartParam {
         feature: VirtioFeature::VERSION_1.bits(),

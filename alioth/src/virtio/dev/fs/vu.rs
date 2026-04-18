@@ -19,9 +19,9 @@ use std::mem::size_of_val;
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_NONE, mmap};
 use mio::event::Event;
 use mio::unix::SourceFd;

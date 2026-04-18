@@ -22,8 +22,15 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
+
+use flume::Receiver;
+use mio::event::Event;
+use mio::unix::SourceFd;
+use mio::{Interest, Registry, Token};
+use serde::Deserialize;
+use serde_aco::Help;
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::ffi;
 use crate::hv::IoeventFd;
@@ -37,13 +44,6 @@ use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
-
-use mio::event::Event;
-use mio::unix::SourceFd;
-use mio::{Interest, Registry, Token};
-use serde::Deserialize;
-use serde_aco::Help;
-use zerocopy::{FromBytes, IntoBytes};
 
 const HEADER_SIZE: usize = size_of::<VsockHeader>();
 const SOCKET_TYPE: VsockType = VsockType::STREAM;

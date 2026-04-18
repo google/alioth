@@ -17,9 +17,9 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
+use flume::Receiver;
 use libc::O_NONBLOCK;
 use mio::Registry;
 use mio::event::Event;

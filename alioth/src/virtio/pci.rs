@@ -18,9 +18,9 @@ use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::mpsc::Sender;
 
 use alioth_macros::Layout;
+use flume::Sender;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
