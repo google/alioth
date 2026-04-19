@@ -21,14 +21,14 @@ mod x86_64;
 
 use std::ffi::CStr;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
-use flume::Sender;
 use libc::{MAP_PRIVATE, MAP_SHARED};
-use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
+#[cfg(target_arch = "x86_64")]
+use parking_lot::Mutex;
+use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_aco::Help;
-use snafu::{ResultExt, Snafu};
+use snafu::Snafu;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::cpuid::CpuidIn;
@@ -43,10 +43,8 @@ use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{DebugTrace, trace_error};
-use crate::hv::{Coco, Hypervisor, Vcpu, Vm, VmConfig, VmEntry, VmExit};
-#[cfg(target_arch = "x86_64")]
-use crate::loader::xen;
-use crate::loader::{Executable, InitState, Payload, linux};
+use crate::hv::{Coco, Hypervisor, Vm, VmConfig};
+use crate::loader::Payload;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
 use crate::pci::bus::PciBus;
@@ -64,44 +62,13 @@ pub enum Error {
     HvError { source: Box<crate::hv::Error> },
     #[snafu(display("Failed to access guest memory"), context(false))]
     Memory { source: Box<crate::mem::Error> },
-    #[snafu(display("Failed to load payload"), context(false))]
-    Loader { source: Box<crate::loader::Error> },
     #[snafu(display("Invalid CPU topology"))]
     InvalidCpuTopology,
-    #[snafu(display("Failed to create VCPU-{index}"))]
-    CreateVcpu {
-        index: u16,
-        source: Box<crate::hv::Error>,
-    },
-    #[snafu(display("Failed to run VCPU-{index}"))]
-    RunVcpu {
-        index: u16,
-        source: Box<crate::hv::Error>,
-    },
-    #[snafu(display("Failed to stop VCPU-{index}"))]
-    StopVcpu {
-        index: u16,
-        source: Box<crate::hv::Error>,
-    },
-    #[snafu(display("Failed to reset PCI devices"))]
-    ResetPci { source: Box<crate::pci::Error> },
-    #[snafu(display("Failed to configure firmware"))]
+    #[snafu(display("Failed to configure fw_cfg device"))]
     FwCfg { error: std::io::Error },
-    #[snafu(display("Missing payload"))]
-    MissingPayload,
-    #[snafu(display("Failed to notify the VMM thread"))]
-    NotifyVmm,
-    #[snafu(display("Another VCPU thread has signaled failure"))]
-    PeerFailure,
-    #[snafu(display("Unexpected state: {state:?}, want {want:?}"))]
-    UnexpectedState { state: BoardState, want: BoardState },
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Missing CPUID leaf {leaf:x?}"))]
     MissingCpuid { leaf: CpuidIn },
-    #[snafu(display("Firmware error"), context(false))]
-    Firmware { source: Box<crate::firmware::Error> },
-    #[snafu(display("Unknown firmware metadata"))]
-    UnknownFirmwareMetadata,
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -166,21 +133,6 @@ impl CpuConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoardState {
-    Paused,
-    Running,
-    Shutdown,
-    RebootPending,
-}
-
-#[derive(Debug)]
-struct MpSync {
-    state: BoardState,
-    fatal: bool,
-    count: u16,
-}
-
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
@@ -200,16 +152,12 @@ impl BoardConfig {
     }
 }
 
-type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<VcpuHandle>>;
-type VcpuHandle = JoinHandle<Result<()>>;
-
 pub struct Board<V>
 where
     V: Vm,
 {
     pub vm: V,
     pub memory: Memory,
-    pub vcpus: Arc<RwLock<Vec<VcpuHandle>>>,
     pub arch: ArchBoard<V>,
     pub config: BoardConfig,
     pub payload: RwLock<Option<Payload>>,
@@ -218,9 +166,6 @@ where
     pub pci_bus: PciBus,
     #[cfg(target_arch = "x86_64")]
     pub fw_cfg: Mutex<Option<Arc<Mutex<FwCfg>>>>,
-
-    mp_sync: Mutex<MpSync>,
-    cond_var: Condvar,
 }
 
 impl<V> Board<V>
@@ -246,92 +191,16 @@ where
             arch,
             config,
             payload: RwLock::new(None),
-            vcpus: Arc::new(RwLock::new(Vec::new())),
             io_devs: RwLock::new(Vec::new()),
             mmio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
             #[cfg(target_arch = "x86_64")]
             fw_cfg: Mutex::new(None),
-
-            mp_sync: Mutex::new(MpSync {
-                state: BoardState::Paused,
-                count: 0,
-                fatal: false,
-            }),
-            cond_var: Condvar::new(),
         };
 
         board.coco_init(vm_memory)?;
 
         Ok(board)
-    }
-
-    pub fn boot(&self) -> Result<()> {
-        self.resume()
-    }
-
-    pub fn resume(&self) -> Result<()> {
-        let mut mp_sync = self.mp_sync.lock();
-        if mp_sync.state == BoardState::Paused {
-            mp_sync.state = BoardState::Running;
-        } else {
-            return error::UnexpectedState {
-                state: mp_sync.state,
-                want: BoardState::Paused,
-            }
-            .fail();
-        }
-        self.cond_var.notify_all();
-        Ok(())
-    }
-
-    pub fn pause(&self) -> Result<()> {
-        let vcpus = self.vcpus.read();
-        let mut mp_sync = self.mp_sync.lock();
-        if mp_sync.state != BoardState::Running {
-            return error::UnexpectedState {
-                state: mp_sync.state,
-                want: BoardState::Running,
-            }
-            .fail();
-        }
-        mp_sync.state = BoardState::Paused;
-        self.stop_other_vcpus(None, &vcpus)?;
-        Ok(())
-    }
-
-    fn load_payload(&self, vcpu: &mut V::Vcpu) -> Result<InitState, Error> {
-        let payload = self.payload.read();
-        let Some(payload) = payload.as_ref() else {
-            return error::MissingPayload.fail();
-        };
-
-        if let Some(fw) = payload.firmware.as_ref() {
-            return self.setup_firmware(fw, payload, vcpu);
-        }
-
-        let Some(exec) = &payload.executable else {
-            return error::MissingPayload.fail();
-        };
-        let mem_regions = self.memory.mem_region_entries();
-        let init_state = match exec {
-            Executable::Linux(image) => linux::load(
-                &self.memory.ram_bus(),
-                &mem_regions,
-                image.as_ref(),
-                payload.cmdline.as_deref(),
-                payload.initramfs.as_deref(),
-            ),
-            #[cfg(target_arch = "x86_64")]
-            Executable::Pvh(image) => xen::load(
-                &self.memory.ram_bus(),
-                &mem_regions,
-                image.as_ref(),
-                payload.cmdline.as_deref(),
-                payload.initramfs.as_deref(),
-            ),
-        }?;
-        Ok(init_state)
     }
 
     fn add_pci_devs(&self) -> Result<()> {
@@ -361,182 +230,15 @@ where
         Ok(())
     }
 
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, index: u16) -> Result<BoardState> {
-        let mut vm_entry = VmEntry::None;
-        loop {
-            let vm_exit = vcpu.run(vm_entry).context(error::RunVcpu { index })?;
-            vm_entry = match vm_exit {
-                #[cfg(target_arch = "x86_64")]
-                VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
-                VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
-                VmExit::Shutdown => break Ok(BoardState::Shutdown),
-                VmExit::Reboot => break Ok(BoardState::RebootPending),
-                VmExit::Paused => break Ok(BoardState::Paused),
-                VmExit::Interrupted => {
-                    let mp_sync = self.mp_sync.lock();
-                    match mp_sync.state {
-                        BoardState::Shutdown => VmEntry::Shutdown,
-                        BoardState::RebootPending => VmEntry::Reboot,
-                        BoardState::Paused => VmEntry::Pause,
-                        BoardState::Running => VmEntry::None,
-                    }
-                }
-                VmExit::ConvertMemory { gpa, size, private } => {
-                    self.memory.mark_private_memory(gpa, size, private)?;
-                    VmEntry::None
-                }
-            };
+    pub(crate) fn init_devices(&self) -> Result<()> {
+        self.create_ram()?;
+        for (port, dev) in self.io_devs.read().iter() {
+            self.memory.add_io_dev(*port, dev.clone())?;
         }
-    }
-
-    fn sync_vcpus(&self, vcpus: &VcpuGuard) -> Result<()> {
-        let mut mp_sync = self.mp_sync.lock();
-        if mp_sync.fatal {
-            return error::PeerFailure.fail();
+        for (addr, dev) in self.mmio_devs.read().iter() {
+            self.memory.add_mmio_dev(*addr, dev.clone())?;
         }
-
-        mp_sync.count += 1;
-        if mp_sync.count == vcpus.len() as u16 {
-            mp_sync.count = 0;
-            self.cond_var.notify_all();
-        } else {
-            self.cond_var.wait(&mut mp_sync)
-        }
-
-        if mp_sync.fatal {
-            return error::PeerFailure.fail();
-        }
-
-        Ok(())
-    }
-
-    fn notify_vmm(&self, index: u16, event_tx: &Sender<u16>) -> Result<()> {
-        if event_tx.send(index).is_err() {
-            error::NotifyVmm.fail()
-        } else {
-            Ok(())
-        }
-    }
-
-    fn boot_init_sync(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
-        let vcpus = self.vcpus.read();
-        if index == 0 {
-            self.create_ram()?;
-            for (port, dev) in self.io_devs.read().iter() {
-                self.memory.add_io_dev(*port, dev.clone())?;
-            }
-            for (addr, dev) in self.mmio_devs.read().iter() {
-                self.memory.add_mmio_dev(*addr, dev.clone())?;
-            }
-            self.add_pci_devs()?;
-            let init_state = self.load_payload(vcpu)?;
-            self.init_boot_vcpu(vcpu, &init_state)?;
-            self.create_firmware_data(&init_state)?;
-        }
-        self.init_ap(index, vcpu, &vcpus)?;
-        self.coco_finalize(index, &vcpus)?;
-        self.sync_vcpus(&vcpus)
-    }
-
-    fn stop_other_vcpus(&self, current: Option<u16>, vcpus: &VcpuGuard) -> Result<()> {
-        for (index, handle) in vcpus.iter().enumerate() {
-            let index = index as u16;
-            if let Some(current) = current {
-                if current == index {
-                    continue;
-                }
-                log::info!("VCPU-{current}: stopping VCPU-{index}");
-            } else {
-                log::info!("Stopping VCPU-{index}");
-            }
-            let identity = self.encode_cpu_identity(index);
-            self.vm
-                .stop_vcpu(identity, handle)
-                .context(error::StopVcpu { index })?;
-        }
-        Ok(())
-    }
-
-    fn run_vcpu_inner(&self, index: u16, event_tx: &Sender<u16>) -> Result<(), Error> {
-        let mut vcpu = self.create_vcpu(index)?;
-        self.notify_vmm(index, event_tx)?;
-        self.init_vcpu(index, &mut vcpu)?;
-
-        'reboot: loop {
-            let mut mp_sync = self.mp_sync.lock();
-            loop {
-                match mp_sync.state {
-                    BoardState::Paused => self.cond_var.wait(&mut mp_sync),
-                    BoardState::Running => break,
-                    BoardState::Shutdown => break 'reboot Ok(()),
-                    BoardState::RebootPending => mp_sync.state = BoardState::Running,
-                }
-            }
-            drop(mp_sync);
-
-            self.boot_init_sync(index, &mut vcpu)?;
-
-            let request = 'pause: loop {
-                let request = self.vcpu_loop(&mut vcpu, index);
-
-                let vcpus = self.vcpus.read();
-                let mut mp_sync = self.mp_sync.lock();
-                if mp_sync.state == BoardState::Running {
-                    mp_sync.state = match request {
-                        Ok(BoardState::RebootPending) => BoardState::RebootPending,
-                        Ok(BoardState::Paused) => BoardState::Paused,
-                        _ => BoardState::Shutdown,
-                    };
-                    log::trace!("VCPU-{index}: change state to {:?}", mp_sync.state);
-                    self.stop_other_vcpus(Some(index), &vcpus)?;
-                }
-                loop {
-                    match mp_sync.state {
-                        BoardState::Running => break,
-                        BoardState::Paused => self.cond_var.wait(&mut mp_sync),
-                        BoardState::RebootPending | BoardState::Shutdown => break 'pause request,
-                    }
-                }
-            };
-
-            if index == 0 {
-                self.pci_bus.segment.reset().context(error::ResetPci)?;
-                self.memory.reset()?;
-            }
-            self.reset_vcpu(index, &mut vcpu)?;
-
-            request?;
-
-            let vcpus = self.vcpus.read();
-            self.sync_vcpus(&vcpus)?;
-        }
-    }
-
-    fn create_vcpu(&self, index: u16) -> Result<V::Vcpu> {
-        let identity = self.encode_cpu_identity(index);
-        let vcpu = self
-            .vm
-            .create_vcpu(index, identity)
-            .context(error::CreateVcpu { index })?;
-        Ok(vcpu)
-    }
-
-    pub fn run_vcpu(&self, index: u16, event_tx: Sender<u16>) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(index, &event_tx);
-
-        let _ = self.notify_vmm(index, &event_tx);
-
-        if matches!(ret, Ok(_) | Err(Error::PeerFailure { .. })) {
-            return Ok(());
-        }
-
-        log::warn!("VCPU-{index} reported error {ret:?}, unblocking other VCPUs...");
-        let mut mp_sync = self.mp_sync.lock();
-        mp_sync.fatal = true;
-        if mp_sync.count > 0 {
-            self.cond_var.notify_all();
-        }
-        ret
+        self.add_pci_devs()
     }
 
     fn create_ram_pages(

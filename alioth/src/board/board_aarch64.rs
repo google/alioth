@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::arch::layout::{
@@ -24,10 +23,10 @@ use crate::arch::layout::{
     RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::MpidrEl1;
-use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard};
+use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
-use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vcpu, Vm};
-use crate::loader::{Executable, InitState, Payload};
+use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vm};
+use crate::loader::{Executable, InitState};
 use crate::mem::{MemRegion, MemRegionType};
 
 enum Gic<V>
@@ -108,29 +107,6 @@ where
         encode_mpidr(&self.config.cpu.topology, index).0
     }
 
-    pub fn setup_firmware(&self, _: &Path, _: &Payload, _: &V::Vcpu) -> Result<InitState> {
-        unimplemented!()
-    }
-
-    pub fn init_ap(&self, _id: u16, _vcpu: &mut V::Vcpu, _vcpus: &VcpuGuard) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
-        vcpu.set_regs(&init_state.regs)?;
-        vcpu.set_sregs(&init_state.sregs)?;
-        Ok(())
-    }
-
-    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
-        self.reset_vcpu(index, vcpu)
-    }
-
-    pub fn reset_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
-        vcpu.reset(index == 0)?;
-        Ok(())
-    }
-
     pub fn create_ram(&self) -> Result<()> {
         let mem_size = self.config.mem.size;
         let memory = &self.memory;
@@ -155,10 +131,6 @@ where
     }
 
     pub fn coco_init(&self, _: Arc<V::Memory>) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn coco_finalize(&self, _id: u16, _vcpus: &VcpuGuard) -> Result<()> {
         Ok(())
     }
 

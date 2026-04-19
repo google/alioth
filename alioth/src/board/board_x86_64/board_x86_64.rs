@@ -18,7 +18,6 @@ mod tdx;
 use std::arch::x86_64::{__cpuid, CpuidResult};
 use std::collections::HashMap;
 use std::mem::{offset_of, size_of, size_of_val};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
@@ -31,8 +30,7 @@ use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
     PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
-use crate::arch::msr::{MiscEnable, Msr};
-use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, VcpuGuard, error};
+use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, error};
 use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
@@ -41,9 +39,8 @@ use crate::firmware::acpi::reg::{AcpiPmTimer, FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
     AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
 };
-use crate::hv::{Coco, Hypervisor, Vcpu, Vm};
-use crate::loader::{Executable, InitState, Payload, firmware};
-use crate::mem::mapped::ArcMemPages;
+use crate::hv::{Coco, Hypervisor, Vm};
+use crate::loader::{Executable, InitState, Payload};
 use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
 
@@ -51,9 +48,9 @@ pub struct ArchBoard<V>
 where
     V: Vm,
 {
-    cpuids: HashMap<CpuidIn, CpuidResult>,
-    sev_ap_eip: AtomicU32,
-    tdx_hob: AtomicU64,
+    pub(crate) cpuids: HashMap<CpuidIn, CpuidResult>,
+    pub(crate) sev_ap_eip: AtomicU32,
+    pub(crate) tdx_hob: AtomicU64,
     pub(crate) io_apic: Arc<IoApic<V::MsiSender>>,
 }
 
@@ -176,7 +173,7 @@ where
         encode_x2apic_id(&self.config.cpu.topology, index) as u64
     }
 
-    fn setup_fw_cfg(&self, payload: &Payload) -> Result<()> {
+    pub(crate) fn setup_fw_cfg(&self, payload: &Payload) -> Result<()> {
         let Some(dev) = &*self.fw_cfg.lock() else {
             return Ok(());
         };
@@ -190,79 +187,6 @@ where
         if let Some(initramfs) = &payload.initramfs {
             dev.add_initramfs_data(initramfs).context(error::FwCfg)?;
         };
-        Ok(())
-    }
-
-    fn setup_coco(&self, fw: &mut ArcMemPages, vcpu: &V::Vcpu) -> Result<()> {
-        let Some(coco) = &self.config.coco else {
-            return Ok(());
-        };
-        match coco {
-            Coco::AmdSev { policy } => self.setup_sev(fw, *policy),
-            Coco::AmdSnp { .. } => self.setup_snp(fw),
-            Coco::IntelTdx { .. } => self.setup_tdx(fw, vcpu),
-        }
-    }
-
-    pub fn setup_firmware(
-        &self,
-        fw: &Path,
-        payload: &Payload,
-        vcpu: &V::Vcpu,
-    ) -> Result<InitState> {
-        let (init_state, mut rom) = firmware::load(&self.memory, fw)?;
-        self.setup_coco(&mut rom, vcpu)?;
-        self.setup_fw_cfg(payload)?;
-        Ok(init_state)
-    }
-
-    pub fn init_ap(&self, index: u16, vcpu: &mut V::Vcpu, vcpus: &VcpuGuard) -> Result<()> {
-        let Some(coco) = &self.config.coco else {
-            return Ok(());
-        };
-        self.sync_vcpus(vcpus)?;
-        if index == 0 {
-            return Ok(());
-        }
-        match coco {
-            Coco::AmdSev { policy } => {
-                if policy.es() {
-                    self.sev_init_ap(vcpu)?;
-                }
-            }
-            Coco::AmdSnp { .. } => self.sev_init_ap(vcpu)?,
-            Coco::IntelTdx { .. } => self.tdx_init_ap(vcpu)?,
-        }
-        Ok(())
-    }
-
-    pub fn init_boot_vcpu(&self, vcpu: &mut V::Vcpu, init_state: &InitState) -> Result<()> {
-        if matches!(self.config.coco, Some(Coco::IntelTdx { .. })) {
-            return Ok(());
-        }
-        vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
-        vcpu.set_msrs(&init_state.msrs)?;
-        vcpu.set_regs(&init_state.regs)?;
-        Ok(())
-    }
-
-    pub fn init_vcpu(&self, index: u16, vcpu: &mut V::Vcpu) -> Result<()> {
-        let mut cpuids = self.arch.cpuids.clone();
-        let apic_id = self.encode_cpu_identity(index) as u32;
-        for (in_, out) in &mut cpuids {
-            if in_.func == 0x1 {
-                out.ebx &= 0x00ff_ffff;
-                out.ebx |= apic_id << 24;
-            } else if in_.func == 0xb || in_.func == 0x1f || in_.func == 0x80000026 {
-                out.edx = apic_id;
-            }
-        }
-        vcpu.set_cpuids(cpuids)?;
-        vcpu.set_msrs(&[(Msr::MISC_ENABLE, MiscEnable::FAST_STRINGS.bits())])?;
-        Ok(())
-    }
-
-    pub fn reset_vcpu(&self, _index: u16, _vcpu: &mut V::Vcpu) -> Result<()> {
         Ok(())
     }
 
@@ -322,21 +246,6 @@ where
             Coco::IntelTdx { attr } => self.tdx_init(*attr, memory)?,
         }
         Ok(())
-    }
-
-    pub fn coco_finalize(&self, index: u16, vcpus: &VcpuGuard) -> Result<()> {
-        let Some(coco) = &self.config.coco else {
-            return Ok(());
-        };
-        self.sync_vcpus(vcpus)?;
-        if index != 0 {
-            return Ok(());
-        };
-        match coco {
-            Coco::AmdSev { policy } => self.sev_finalize(*policy),
-            Coco::AmdSnp { .. } => self.snp_finalize(),
-            Coco::IntelTdx { .. } => self.tdx_finalize(),
-        }
     }
 
     fn patch_dsdt(&self, data: &mut [u8; 352]) {

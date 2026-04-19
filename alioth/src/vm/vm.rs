@@ -30,6 +30,7 @@ use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_CMOS_REG, PORT_COM1, PORT_FW_CFG_SELECTOR, PORT_FWDBG};
 use crate::board::{Board, BoardConfig};
+use crate::cpu::{Context, State, VcpuHandle, stop_vcpus, vcpu_thread};
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::cmos::Cmos;
@@ -72,13 +73,18 @@ use crate::virtio::pci::VirtioPciDevice;
 pub enum Error {
     #[snafu(display("Hypervisor internal error"), context(false))]
     HvError { source: Box<crate::hv::Error> },
-    #[snafu(display("Failed to create board"), context(false))]
-    CreateBoard { source: Box<crate::board::Error> },
     #[snafu(display("Failed to create VCPU-{index} thread"))]
-    VcpuThread { index: u16, error: std::io::Error },
+    CreateVcpu { index: u16, error: std::io::Error },
+    #[snafu(display("Failed to stop VCPUs"))]
+    StopVcpus { source: Box<crate::cpu::Error> },
+    #[snafu(display("VCPU-{index} thread exited unexpectedly"))]
+    VcpuExit {
+        index: u16,
+        source: Box<crate::cpu::Error>,
+    },
     #[snafu(display("Failed to create a console"))]
     CreateConsole { error: crate::device::Error },
-    #[snafu(display("Failed to create fw-cfg device"))]
+    #[snafu(display("Failed to configure firmware"))]
     FwCfg { error: std::io::Error },
     #[snafu(display("Failed to create a VirtIO device"), context(false))]
     CreateVirtio { source: Box<crate::virtio::Error> },
@@ -87,28 +93,29 @@ pub enum Error {
     #[cfg(target_os = "linux")]
     #[snafu(display("Failed to create a VFIO device"), context(false))]
     CreateVfio { source: Box<crate::vfio::Error> },
-    #[snafu(display("VCPU-{index} error"))]
-    VcpuError {
-        index: u16,
-        source: Box<crate::board::Error>,
-    },
     #[snafu(display("Failed to configure guest memory"), context(false))]
     Memory { source: Box<crate::mem::Error> },
+    #[snafu(display("Failed to setup board"), context(false))]
+    Board { source: Box<crate::board::Error> },
     #[cfg(target_os = "linux")]
     #[snafu(display("{name:?} already exists"))]
     AlreadyExists { name: Box<str> },
     #[cfg(target_os = "linux")]
     #[snafu(display("{name:?} does not exist"))]
     NotExist { name: Box<str> },
+    #[snafu(display("Unexpected state: {state:?}, want {want:?}"))]
+    UnexpectedState { state: State, want: State },
 }
 
-type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct Machine<H>
 where
     H: Hypervisor,
 {
-    board: Arc<Board<H::Vm>>,
+    ctx: Arc<Context<H::Vm>>,
+    event_rx: Receiver<u16>,
+    _event_tx: Sender<u16>,
 
     #[cfg(target_os = "linux")]
     iommu: Mutex<Option<Arc<Iommu>>>,
@@ -116,9 +123,6 @@ where
     pub vfio_ioases: Mutex<HashMap<Box<str>, Arc<Ioas>>>,
     #[cfg(target_os = "linux")]
     pub vfio_containers: Mutex<HashMap<Box<str>, Arc<Container>>>,
-
-    event_rx: Receiver<u16>,
-    _event_tx: Sender<u16>,
 }
 
 pub type VirtioPciDev<H> = VirtioPciDevice<
@@ -131,30 +135,31 @@ where
     H: Hypervisor,
 {
     pub fn new(hv: &H, config: BoardConfig) -> Result<Self> {
-        let board = Arc::new(Board::new(hv, config)?);
+        let ctx = Arc::new(Context::new(Board::new(hv, config)?));
 
         let (event_tx, event_rx) = flume::unbounded();
 
-        let mut vcpus = board.vcpus.write();
-        for index in 0..board.config.cpu.count {
+        let mut vcpus = ctx.vcpus.write();
+        for index in 0..ctx.board.config.cpu.count {
             let event_tx = event_tx.clone();
-            let board = board.clone();
+            let ctx = ctx.clone();
             let handle = thread::Builder::new()
                 .name(format!("vcpu_{index}"))
-                .spawn(move || board.run_vcpu(index, event_tx))
-                .context(error::VcpuThread { index })?;
+                .spawn(move || vcpu_thread(index, ctx, event_tx))
+                .context(error::CreateVcpu { index })?;
             if event_rx.recv_timeout(Duration::from_secs(2)).is_err() {
                 let err = std::io::ErrorKind::TimedOut.into();
-                Err(err).context(error::VcpuThread { index })?;
+                Err(err).context(error::CreateVcpu { index })?;
             }
+            let handle = VcpuHandle { thread: handle };
             vcpus.push(handle);
         }
         drop(vcpus);
 
-        board.arch_init()?;
+        ctx.board.arch_init()?;
 
         let vm = Machine {
-            board,
+            ctx,
             event_rx,
             _event_tx: event_tx,
             #[cfg(target_os = "linux")]
@@ -170,33 +175,34 @@ where
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
-        let io_apic = self.board.arch.io_apic.clone();
+        let io_apic = self.ctx.board.arch.io_apic.clone();
         let console = StdioConsole::new().context(error::CreateConsole)?;
         let com1 = Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?;
-        self.board.io_devs.write().push((PORT_COM1, Arc::new(com1)));
+        let mut io_devs = self.ctx.board.io_devs.write();
+        io_devs.push((PORT_COM1, Arc::new(com1)));
         Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_cmos(&self) -> Result<(), Error> {
-        let mut io_devs = self.board.io_devs.write();
+        let mut io_devs = self.ctx.board.io_devs.write();
         io_devs.push((PORT_CMOS_REG, Arc::new(Cmos::new(SystemClock))));
         Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
     pub fn add_fw_dbg(&self) -> Result<(), Error> {
-        let mut io_devs = self.board.io_devs.write();
+        let mut io_devs = self.ctx.board.io_devs.write();
         io_devs.push((PORT_FWDBG, Arc::new(FwDbg::new())));
         Ok(())
     }
 
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl011(&self) -> Result<(), Error> {
-        let irq_line = self.board.vm.create_irq_sender(1)?;
+        let irq_line = self.ctx.board.vm.create_irq_sender(1)?;
         let console = StdioConsole::new().context(error::CreateConsole)?;
         let pl011_dev = Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?;
-        let mut mmio_devs = self.board.mmio_devs.write();
+        let mut mmio_devs = self.ctx.board.mmio_devs.write();
         mmio_devs.push((PL011_START, Arc::new(pl011_dev)));
         Ok(())
     }
@@ -204,7 +210,7 @@ where
     #[cfg(target_arch = "aarch64")]
     pub fn add_pl031(&self) {
         let pl031_dev = Pl031::new(PL031_START, SystemClock);
-        let mut mmio_devs = self.board.mmio_devs.write();
+        let mut mmio_devs = self.ctx.board.mmio_devs.write();
         mmio_devs.push((PL031_START, Arc::new(pl031_dev)));
     }
 
@@ -212,11 +218,11 @@ where
         let bdf = if let Some(bdf) = bdf {
             bdf
         } else {
-            self.board.pci_bus.reserve(None).unwrap()
+            self.ctx.board.pci_bus.reserve(None).unwrap()
         };
         dev.config().get_header().set_bdf(bdf);
         log::info!("{bdf}: device: {}", dev.name());
-        self.board.pci_bus.add(bdf, dev);
+        self.ctx.board.pci_bus.add(bdf, dev);
         Ok(())
     }
 
@@ -236,11 +242,11 @@ where
             .collect::<Result<Vec<_>, _>>()
             .context(error::FwCfg)?;
         let fw_cfg = Arc::new(Mutex::new(
-            FwCfg::new(self.board.memory.ram_bus(), items).context(error::FwCfg)?,
+            FwCfg::new(self.ctx.board.memory.ram_bus(), items).context(error::FwCfg)?,
         ));
-        let mut io_devs = self.board.io_devs.write();
+        let mut io_devs = self.ctx.board.io_devs.write();
         io_devs.push((PORT_FW_CFG_SELECTOR, fw_cfg.clone()));
-        *self.board.fw_cfg.lock() = Some(fw_cfg.clone());
+        *self.ctx.board.fw_cfg.lock() = Some(fw_cfg.clone());
         Ok(fw_cfg)
     }
 
@@ -253,26 +259,26 @@ where
         P: DevParam<Device = D>,
         D: Virtio,
     {
-        if param.needs_mem_shared_fd() && !self.board.config.mem.has_shared_fd() {
+        if param.needs_mem_shared_fd() && !self.ctx.board.config.mem.has_shared_fd() {
             return error::MemNotSharedFd.fail();
         }
         let name = name.into();
-        let bdf = self.board.pci_bus.reserve(None).unwrap();
+        let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
         let dev = param.build(name.clone())?;
         if let Some(callback) = dev.mem_update_callback() {
-            self.board.memory.register_update_callback(callback)?;
+            self.ctx.board.memory.register_update_callback(callback)?;
         }
         if let Some(callback) = dev.mem_change_callback() {
-            self.board.memory.register_change_callback(callback)?;
+            self.ctx.board.memory.register_change_callback(callback)?;
         }
-        let registry = self.board.vm.create_ioeventfd_registry()?;
+        let registry = self.ctx.board.vm.create_ioeventfd_registry()?;
         let virtio_dev = VirtioDevice::new(
             name.clone(),
             dev,
-            self.board.memory.ram_bus(),
-            self.board.config.coco.is_some(),
+            self.ctx.board.memory.ram_bus(),
+            self.ctx.board.config.coco.is_some(),
         )?;
-        let msi_sender = self.board.vm.create_msi_sender(
+        let msi_sender = self.ctx.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
@@ -283,35 +289,7 @@ where
     }
 
     pub fn add_payload(&self, payload: Payload) {
-        *self.board.payload.write() = Some(payload)
-    }
-
-    pub fn boot(&self) -> Result<(), Error> {
-        self.board.boot()?;
-        Ok(())
-    }
-
-    pub fn wait(&self) -> Result<()> {
-        self.event_rx.recv().unwrap();
-        let vcpus = self.board.vcpus.read();
-        for _ in 1..vcpus.len() {
-            self.event_rx.recv().unwrap();
-        }
-        drop(vcpus);
-        let mut vcpus = self.board.vcpus.write();
-        let mut ret = Ok(());
-        for (index, handle) in vcpus.drain(..).enumerate() {
-            let Ok(r) = handle.join() else {
-                log::error!("Cannot join VCPU-{index}");
-                continue;
-            };
-            if r.is_err() && ret.is_ok() {
-                ret = r.context(error::Vcpu {
-                    index: index as u16,
-                });
-            }
-        }
-        ret
+        *self.ctx.board.payload.write() = Some(payload)
     }
 }
 
@@ -342,7 +320,7 @@ where
         };
         let ioas = Arc::new(Ioas::alloc_on(iommu)?);
         let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
-        self.board.memory.register_change_callback(update)?;
+        self.ctx.board.memory.register_change_callback(update)?;
         ioases.insert(param.name, ioas.clone());
         Ok(ioas)
     }
@@ -368,8 +346,8 @@ where
         let mut cdev = Cdev::new(&param.path)?;
         cdev.attach_iommu_ioas(ioas.clone())?;
 
-        let bdf = self.board.pci_bus.reserve(None).unwrap();
-        let msi_sender = self.board.vm.create_msi_sender(
+        let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
+        let msi_sender = self.ctx.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
@@ -392,7 +370,7 @@ where
         let update = Box::new(UpdateContainerMapping {
             container: container.clone(),
         });
-        self.board.memory.register_change_callback(update)?;
+        self.ctx.board.memory.register_change_callback(update)?;
         containers.insert(param.name, container.clone());
         Ok(container)
     }
@@ -431,12 +409,73 @@ where
     }
 
     fn add_vfio_devfd(&self, name: Arc<str>, devfd: DevFd) -> Result<()> {
-        let bdf = self.board.pci_bus.reserve(None).unwrap();
-        let msi_sender = self.board.vm.create_msi_sender(
+        let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
+        let msi_sender = self.ctx.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
         let dev = VfioPciDev::new(name.clone(), devfd, msi_sender)?;
         self.add_pci_dev(Some(bdf), Arc::new(dev))
+    }
+}
+
+impl<H> Machine<H>
+where
+    H: Hypervisor,
+{
+    pub fn boot(&self) -> Result<()> {
+        self.resume()
+    }
+
+    pub fn resume(&self) -> Result<()> {
+        let mut sync = self.ctx.sync.lock();
+        if !matches!(sync.state, State::Paused) {
+            return error::UnexpectedState {
+                state: sync.state,
+                want: State::Paused,
+            }
+            .fail();
+        }
+        sync.state = State::Running;
+        self.ctx.cond.notify_all();
+        Ok(())
+    }
+
+    pub fn pause(&self) -> Result<()> {
+        let vcpus = self.ctx.vcpus.read();
+        let mut sync = self.ctx.sync.lock();
+        if !matches!(sync.state, State::Running) {
+            return error::UnexpectedState {
+                state: sync.state,
+                want: State::Running,
+            }
+            .fail();
+        }
+        sync.state = State::Paused;
+        stop_vcpus(&self.ctx.board, None, &vcpus).context(error::StopVcpus)?;
+        Ok(())
+    }
+
+    pub fn wait(&self) -> Result<()> {
+        self.event_rx.recv().unwrap();
+        let vcpus = self.ctx.vcpus.read();
+        for _ in 1..vcpus.len() {
+            self.event_rx.recv().unwrap();
+        }
+        drop(vcpus);
+        let mut vcpus = self.ctx.vcpus.write();
+        let mut ret = Ok(());
+        for (index, handle) in vcpus.drain(..).enumerate() {
+            let Ok(r) = handle.thread.join() else {
+                log::error!("Cannot join VCPU-{index}");
+                continue;
+            };
+            if ret.is_ok() {
+                ret = r.context(error::VcpuExit {
+                    index: index as u16,
+                });
+            }
+        }
+        ret
     }
 }

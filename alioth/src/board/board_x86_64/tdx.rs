@@ -13,15 +13,11 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-use crate::arch::layout::MEM_64_START;
 use crate::arch::tdx::TdAttr;
-use crate::board::{Board, Result, error};
-use crate::firmware::ovmf::tdx::{TdvfSectionAttr, TdvfSectionType, create_hob, parse_entries};
-use crate::hv::{Vcpu, Vm, VmMemory};
+use crate::board::{Board, Result};
+use crate::hv::{Vm, VmMemory};
 use crate::mem::MarkPrivateMemory;
-use crate::mem::mapped::ArcMemPages;
 
 impl<V> Board<V>
 where
@@ -31,85 +27,6 @@ where
         self.vm.tdx_init_vm(attr, &self.arch.cpuids)?;
         let mark_private_memory = Box::new(MarkPrivateMemory { memory });
         self.memory.register_change_callback(mark_private_memory)?;
-        Ok(())
-    }
-
-    pub(crate) fn create_hob(&self, dst: &mut [u8], mut accepted: Vec<(u64, u64)>) -> Result<u64> {
-        let hob_phys = self.arch.tdx_hob.load(Ordering::Relaxed);
-        let mut entries = self.memory.mem_region_entries();
-        create_hob(dst, hob_phys, &mut entries, &mut accepted)?;
-        Ok(hob_phys)
-    }
-
-    pub(crate) fn setup_tdx(&self, fw: &mut ArcMemPages, vcpu: &V::Vcpu) -> Result<()> {
-        let data = fw.as_slice();
-        let entries = parse_entries(data)?;
-
-        let fw_gpa = MEM_64_START - data.len() as u64;
-        self.memory
-            .mark_private_memory(fw_gpa, data.len() as _, true)?;
-
-        let mut accepted = Vec::new();
-        let mut hob_ram = None;
-        for entry in entries {
-            match entry.r#type {
-                TdvfSectionType::TD_HOB => {
-                    let p = ArcMemPages::from_anonymous(entry.size as usize, None, None)?;
-                    hob_ram = Some(p);
-                    let tdx_hob = &self.arch.tdx_hob;
-                    tdx_hob.store(entry.address, Ordering::Relaxed);
-                    accepted.push((entry.address, entry.size));
-                }
-                TdvfSectionType::TEMP_MEM => {
-                    accepted.push((entry.address, entry.size));
-                }
-                _ => {}
-            };
-        }
-
-        let Some(hob_ram) = &mut hob_ram else {
-            return error::MissingPayload.fail();
-        };
-        let hob_phys = self.create_hob(hob_ram.as_slice_mut(), accepted)?;
-
-        vcpu.tdx_init_vcpu(hob_phys)?;
-
-        for entry in entries {
-            let tmp_mem;
-            let region = match entry.r#type {
-                TdvfSectionType::TD_HOB => hob_ram.as_slice(),
-                TdvfSectionType::TEMP_MEM => {
-                    tmp_mem = ArcMemPages::from_anonymous(entry.size as usize, None, None)?;
-                    tmp_mem.as_slice()
-                }
-                TdvfSectionType::BFV | TdvfSectionType::CFV => {
-                    let start = entry.data_offset as usize;
-                    let end = start + entry.size as usize;
-                    let Some(d) = data.get(start..end) else {
-                        return error::MissingPayload.fail();
-                    };
-                    d
-                }
-                t => {
-                    log::error!("Unknown entry type: {t:x?}");
-                    return error::UnknownFirmwareMetadata.fail();
-                }
-            };
-            let measure = entry.attributes.contains(TdvfSectionAttr::MR_EXTEND);
-            vcpu.tdx_init_mem_region(region, entry.address, measure)?;
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn tdx_init_ap(&self, vcpu: &mut V::Vcpu) -> Result<()> {
-        let hob = self.arch.tdx_hob.load(Ordering::Relaxed);
-        vcpu.tdx_init_vcpu(hob)?;
-        Ok(())
-    }
-
-    pub(crate) fn tdx_finalize(&self) -> Result<()> {
-        self.vm.tdx_finalize_vm()?;
         Ok(())
     }
 }

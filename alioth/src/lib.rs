@@ -18,6 +18,8 @@ pub mod arch;
 pub mod blk;
 #[path = "board/board.rs"]
 pub mod board;
+#[path = "cpu/cpu.rs"]
+pub mod cpu;
 #[path = "device/device.rs"]
 pub mod device;
 pub mod errors;
