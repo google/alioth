@@ -18,10 +18,9 @@ use std::sync::atomic::Ordering;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
-use crate::mem::mapped::RamBus;
 use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
-use crate::virtio::queue::{DescFlag, QueueReg, VirtQueue};
+use crate::virtio::queue::{DescFlag, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queues, fixture_ram_bus};
 
 const WRAP_COUNTER: u16 = 1 << 15;
@@ -29,7 +28,7 @@ const WRAP_COUNTER: u16 = 1 << 15;
 #[rstest]
 #[case(3, 0, 1, 1)]
 #[case(5, 4, 4, WRAP_COUNTER | 3)]
-#[case(3, WRAP_COUNTER | 0, 1, WRAP_COUNTER | 1)]
+#[case(3, WRAP_COUNTER, 1, WRAP_COUNTER | 1)]
 #[case(5, WRAP_COUNTER | 4, 1, 0)]
 fn index_wrapping_add(
     #[case] size: u16,
@@ -46,7 +45,7 @@ fn index_wrapping_add(
 #[rstest]
 #[case(3, 1, 1, 0)]
 #[case(5, WRAP_COUNTER | 3, 4, 4)]
-#[case(3, WRAP_COUNTER | 1, 1, WRAP_COUNTER | 0)]
+#[case(3, WRAP_COUNTER | 1, 1, WRAP_COUNTER)]
 #[case(5, 0, 1, WRAP_COUNTER | 4)]
 fn index_wrapping_sub(
     #[case] size: u16,
@@ -118,21 +117,25 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
     }
 }
 
-#[rstest]
-fn disabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
+#[test]
+fn disabled_queue() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
     reg.enabled.store(false, Ordering::Relaxed);
-    let split_queue = PackedQueue::new(reg, &*ram, false);
+    let split_queue = PackedQueue::new(reg, &ram, false);
     assert_matches!(split_queue, Ok(None));
 }
 
-#[rstest]
-fn enabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
-    let q = PackedQueue::new(reg, &*ram, false).unwrap().unwrap();
-    let mut guest_q = GuestQueue::new(PackedQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
+#[test]
+fn enabled_queue() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
+    let mut guest_q = GuestQueue::new(PackedQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -186,11 +189,13 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     assert_eq!(&b, str_2.as_bytes());
 }
 
-#[rstest]
-fn enable_notification(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
-    let q = PackedQueue::new(reg, &*ram, false).unwrap().unwrap();
+#[test]
+fn enable_notification() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
 
     q.enable_notification(false);
     assert_eq!(unsafe { &*q.notification }.flag, EventFlag::DISABLE);
@@ -207,14 +212,12 @@ fn enable_notification(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>)
 #[case(true, EventFlag::DESC, 0, 2, 1, false)]
 #[case(true, EventFlag::DESC, 0, 2, 2, true)]
 #[case(true, EventFlag::DESC, 0, 2, 3, true)]
-#[case(true, EventFlag::DESC, WRAP_COUNTER | 0, 2, 3, false)]
+#[case(true, EventFlag::DESC, WRAP_COUNTER, 2, 3, false)]
 #[case(true, EventFlag::DESC, WRAP_COUNTER | (QUEUE_SIZE - 1), 2, 2, false)]
 #[case(true, EventFlag::DESC, WRAP_COUNTER | (QUEUE_SIZE - 1), 2, 3, true)]
 #[case(true, EventFlag::DESC, QUEUE_SIZE - 1, WRAP_COUNTER | 1, 1, false)]
 #[case(true, EventFlag::DESC, QUEUE_SIZE - 1, WRAP_COUNTER | 1, 2, true)]
 fn is_interrupt_enabled(
-    fixture_ram_bus: RamBus,
-    fixture_queues: Box<[QueueReg]>,
     #[case] enable_event_idx: bool,
     #[case] event_flag: EventFlag,
     #[case] event_index: u16,
@@ -222,9 +225,11 @@ fn is_interrupt_enabled(
     #[case] delta: u16,
     #[case] expected: bool,
 ) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
-    let q = PackedQueue::new(reg, &*ram, enable_event_idx)
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    let q = PackedQueue::new(reg, &ram, enable_event_idx)
         .unwrap()
         .unwrap();
 

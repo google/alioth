@@ -16,17 +16,15 @@ use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use assert_matches::assert_matches;
 use flume::TryRecvError;
-use rstest::rstest;
 use tempfile::TempDir;
 
 use crate::ffi;
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::RamBus;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyParam};
 use crate::virtio::dev::{DevParam, StartParam, Virtio, WakeEvent};
 use crate::virtio::queue::QueueReg;
@@ -46,11 +44,11 @@ fn entry_config_test() {
     assert_matches!(config.write(0, 1, 0), Ok(Action::None));
 }
 
-#[rstest]
-fn entropy_test(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram_bus = Arc::new(fixture_ram_bus);
+#[test]
+fn entropy_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
     let ram = ram_bus.lock_layout();
-    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues);
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(1));
 
     let mut guest_q = GuestQueue::new(
         SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap(),

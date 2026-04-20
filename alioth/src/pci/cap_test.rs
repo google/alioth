@@ -86,9 +86,9 @@ fn test_msi_cap_mmio_32() {
     assert_matches!(msi_cap.write(0x2, 2, ctrl.0 as u64), Ok(_));
     assert_matches!(msi_cap.read(2, 2), Ok(v) => {
         let ctrl = MsiMsgCtrl(v as u16);
-        assert_eq!(ctrl.enable(), true);
+        assert!(ctrl.enable());
         assert_eq!(ctrl.multi_msg(), 3);
-        assert_eq!(ctrl.ext_msg_data(), false);
+        assert!(!ctrl.ext_msg_data());
     });
 
     assert_matches!(msi_cap.write(0x8, 4, 0xaa_cc00), Ok(_));
@@ -98,7 +98,7 @@ fn test_msi_cap_mmio_32() {
         assert_eq!(irqfd.get_addr_hi(), 0x0);
         assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
         assert_eq!(irqfd.get_data(), 0xcc00 + index as u32);
-        assert_eq!(irqfd.get_masked(), false);
+        assert!(!irqfd.get_masked());
     }
 
     ctrl.set_enable(false);
@@ -130,9 +130,9 @@ fn test_msi_cap_mmio_32_pvm() {
     assert_matches!(msi_cap.write(0x0, 4, (ctrl.0 as u64) << 16), Ok(_));
     assert_matches!(msi_cap.read(2, 2), Ok(v) => {
         let ctrl = MsiMsgCtrl(v as u16);
-        assert_eq!(ctrl.enable(), true);
+        assert!(ctrl.enable());
         assert_eq!(ctrl.multi_msg(), 3);
-        assert_eq!(ctrl.ext_msg_data(), false);
+        assert!(!ctrl.ext_msg_data());
     });
 
     assert_matches!(msi_cap.write(0x8, 4, 0xaa_cc00), Ok(_));
@@ -147,7 +147,7 @@ fn test_msi_cap_mmio_32_pvm() {
         assert_eq!(irqfd.get_addr_hi(), 0x0);
         assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
         assert_eq!(irqfd.get_data(), 0xcc00 + index as u32);
-        assert_eq!(irqfd.get_masked(), false);
+        assert!(!irqfd.get_masked());
     }
 }
 
@@ -173,9 +173,9 @@ fn test_msi_cap_mmio_64_pvm() {
     assert_matches!(msi_cap.write(0x2, 2, ctrl.0 as u64), Ok(_));
     assert_matches!(msi_cap.read(2, 2), Ok(v) => {
         let ctrl = MsiMsgCtrl(v as u16);
-        assert_eq!(ctrl.enable(), true);
+        assert!(ctrl.enable());
         assert_eq!(ctrl.multi_msg(), 3);
-        assert_eq!(ctrl.ext_msg_data(), true);
+        assert!(ctrl.ext_msg_data());
     });
 
     assert_matches!(msi_cap.write(0xc, 4, 0xaa_cc00), Ok(_));
@@ -189,7 +189,7 @@ fn test_msi_cap_mmio_64_pvm() {
         assert_eq!(irqfd.get_addr_hi(), 0x1);
         assert_eq!(irqfd.get_addr_lo(), 0xc000_d000);
         assert_eq!(irqfd.get_data(), 0xaa_cc00 + index as u32);
-        assert_eq!(irqfd.get_masked(), false);
+        assert!(!irqfd.get_masked());
     }
 
     assert_matches!(msi_cap.reset(), Ok(_));
@@ -281,12 +281,12 @@ fn test_msix_table_mmio() {
     assert_matches!(table.read(8, 4), Ok(0xabcd));
     assert_matches!(table.read(12, 4), Ok(0x0));
 
-    assert_matches!(table.write(16 + 0, 4, 0xff00_0000), Ok(Action::None));
+    assert_matches!(table.write(16, 4, 0xff00_0000), Ok(Action::None));
     assert_matches!(table.write(16 + 4, 4, 0x01), Ok(Action::None));
     assert_matches!(table.write(16 + 8, 4, 0xabcd), Ok(Action::None));
     assert_matches!(table.write_val(16 + 12, 4, 0x0), Ok(true));
 
-    assert_matches!(table.read(16 + 0, 4), Ok(0xff00_0000));
+    assert_matches!(table.read(16, 4), Ok(0xff00_0000));
     assert_matches!(table.read(16 + 4, 4), Ok(0x01));
     assert_matches!(table.read(16 + 8, 4), Ok(0xabcd));
     assert_matches!(table.read(16 + 12, 4), Ok(0x0));
@@ -326,7 +326,7 @@ fn test_pci_cap_list() {
 
     let cap_list = PciCapList::try_from(caps).unwrap();
 
-    assert_eq!(cap_list.is_empty(), false);
+    assert!(!cap_list.is_empty());
 
     assert_eq!(cap_list.size(), 4096);
     assert_matches!(cap_list.read(0x40, 1), Ok(0x11));

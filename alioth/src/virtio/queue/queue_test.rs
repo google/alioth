@@ -19,9 +19,7 @@ use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 use flume::TryRecvError;
-use rstest::rstest;
 
-use crate::mem::mapped::RamBus;
 use crate::virtio::Error;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
@@ -138,10 +136,7 @@ impl<'a> Read for Reader<'a> {
             return Ok(0);
         };
         let mut buf = s.as_mut();
-        loop {
-            let Some(data) = self.data.get(self.index) else {
-                break;
-            };
+        while let Some(data) = self.data.get(self.index) {
             match data {
                 ReaderData::Buf(data) => {
                     let c = buf.write(&data[self.pos..]).unwrap();
@@ -151,7 +146,7 @@ impl<'a> Read for Reader<'a> {
                         self.pos = 0;
                     }
                     count += c;
-                    if buf.len() == 0 {
+                    if buf.is_empty() {
                         let Some(s) = buf_iter.next() else {
                             break;
                         };
@@ -171,16 +166,18 @@ impl<'a> Read for Reader<'a> {
     }
 }
 
-#[rstest]
-fn test_copy_from_reader(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
+#[test]
+fn test_copy_from_reader() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
     let mut host_q = Queue::new(
-        SplitQueue::new(reg, &*ram, false).unwrap().unwrap(),
+        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
         reg,
         &ram,
     );
-    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
     assert!(ptr_eq(host_q.reg(), reg));
 
     let (irq_tx, irq_rx) = flume::unbounded();
@@ -295,10 +292,7 @@ impl<'a> Write for Writer<'a> {
             return Ok(0);
         };
         let mut buf = s.as_ref();
-        loop {
-            let Some(data) = self.data.get_mut(self.index) else {
-                break;
-            };
+        while let Some(data) = self.data.get_mut(self.index) {
             match data {
                 WriterData::Buf(data) => {
                     let c = buf.read(&mut data[self.pos..]).unwrap();
@@ -308,7 +302,7 @@ impl<'a> Write for Writer<'a> {
                         self.pos = 0;
                     }
                     count += c;
-                    if buf.len() == 0 {
+                    if buf.is_empty() {
                         let Some(s) = buf_iter.next() else {
                             break;
                         };
@@ -328,16 +322,18 @@ impl<'a> Write for Writer<'a> {
     }
 }
 
-#[rstest]
-fn test_copy_to_writer(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
+#[test]
+fn test_copy_to_writer() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
     let mut host_q = Queue::new(
-        SplitQueue::new(reg, &*ram, false).unwrap().unwrap(),
+        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
         reg,
         &ram,
     );
-    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -458,10 +454,12 @@ fn test_written_bytes() {
     assert_eq!(buf.as_slice(), str_1.as_bytes());
 }
 
-#[rstest]
-fn test_handle_deferred(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
+#[test]
+fn test_handle_deferred() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
     let mut host_q = Queue::new(
         SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
         reg,

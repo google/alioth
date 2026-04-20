@@ -78,7 +78,7 @@ fn test_fw_cfg_content_file_read() {
 #[case(FwCfgContent::Bytes(vec![0x01, 0x02, 0x03]), 2, &[0x03])]
 #[case(FwCfgContent::Bytes(vec![0x01, 0x02, 0x03]), 4, &[])]
 #[case(FwCfgContent::default(), 1, &[])]
-#[case(FwCfgContent::Slice(b"abcd"), 0, &[b'a', b'b', b'c', b'd'])]
+#[case(FwCfgContent::Slice(b"abcd"), 0, b"abcd")]
 #[case(FwCfgContent::Lu16(0xabcd_u16.into()), 0, &[0xcd, 0xab])]
 #[case(FwCfgContent::Lu16(0xabcd_u16.into()), 2, &[])]
 #[case(FwCfgContent::Lu32(0x1234_abcd_u32.into()), 0, &[0xcd, 0xab, 0x34, 0x12])]

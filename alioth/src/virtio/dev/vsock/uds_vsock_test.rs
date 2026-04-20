@@ -15,17 +15,16 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::mem::size_of;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use assert_matches::assert_matches;
 use flume::{Receiver, Sender, TryRecvError};
-use rstest::rstest;
 use tempfile::TempDir;
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
     ShutdownFlag, UdsVsockParam, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
@@ -51,6 +50,7 @@ fn vsock_config_test() {
     assert_matches!(config.write(0, 8, 0), Ok(Action::None));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_to_tx<'m, Q>(
     hdr: &VsockHeader,
     data: &[u8],
@@ -98,19 +98,19 @@ fn send_to_tx<'m, Q>(
     assert_eq!(used.len, 0);
 }
 
-#[rstest]
-fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[QueueReg]>) {
-    let ram_bus = Arc::new(fixture_ram_bus);
+#[test]
+fn vsock_conn_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
     let ram = ram_bus.lock_layout();
-    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues);
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
     let reg_tx = &regs[VsockVirtq::TX.raw() as usize];
     let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
     let mut rx_q = GuestQueue::new(
-        SplitQueue::new(reg_rx, &*ram, false).unwrap().unwrap(),
+        SplitQueue::new(reg_rx, &ram, false).unwrap().unwrap(),
         reg_rx,
     );
     let mut tx_q = GuestQueue::new(
-        SplitQueue::new(reg_tx, &*ram, false).unwrap().unwrap(),
+        SplitQueue::new(reg_tx, &ram, false).unwrap().unwrap(),
         reg_tx,
     );
 
@@ -127,7 +127,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
     assert_matches!(dev.id(), DeviceId::SOCKET);
     assert_eq!(dev.name(), "vsock");
     assert_eq!(dev.num_queues(), 3);
-    assert_eq!(dev.config().guest_cid, GUEST_CID as u32);
+    assert_eq!(dev.config().guest_cid, GUEST_CID);
     assert_eq!(
         dev.feature(),
         VsockFeature::STREAM.bits() | FEATURE_BUILT_IN
@@ -303,7 +303,7 @@ fn vsock_conn_test(fixture_ram_bus: RamBus, #[with(3)] fixture_queues: Box<[Queu
         false,
     );
     let mut g2h_read_buf = vec![0; g2h_data.len()];
-    h2g_stream.read(&mut g2h_read_buf).unwrap();
+    let _ = h2g_stream.read(&mut g2h_read_buf).unwrap();
     assert_eq!(String::from_utf8_lossy(&g2h_read_buf), g2h_data);
 
     // 3. Shutdown host-initiated connection

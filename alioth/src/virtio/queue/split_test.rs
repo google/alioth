@@ -16,12 +16,10 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
-use rstest::rstest;
 
-use crate::mem::mapped::RamBus;
+use crate::virtio::queue::VirtQueue;
 use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
-use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, fixture_queues, fixture_ram_bus};
 
 impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
@@ -71,21 +69,25 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
     }
 }
 
-#[rstest]
-fn disabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
+#[test]
+fn disabled_queue() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
     reg.enabled.store(false, Ordering::Relaxed);
-    let split_queue = SplitQueue::new(reg, &*ram, false);
+    let split_queue = SplitQueue::new(reg, &ram, false);
     assert_matches!(split_queue, Ok(None));
 }
 
-#[rstest]
-fn enabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
-    let q = SplitQueue::new(reg, &*ram, false).unwrap().unwrap();
-    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &*ram, false).unwrap().unwrap(), reg);
+#[test]
+fn enabled_queue() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    let q = SplitQueue::new(reg, &ram, false).unwrap().unwrap();
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
 
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
@@ -130,11 +132,13 @@ fn enabled_queue(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
     assert_eq!(used.len, str_2.len() as u32);
 }
 
-#[rstest]
-fn event_idx_enabled(fixture_ram_bus: RamBus, fixture_queues: Box<[QueueReg]>) {
-    let ram = fixture_ram_bus.lock_layout();
-    let reg = &fixture_queues[0];
-    let q = SplitQueue::new(reg, &*ram, true).unwrap().unwrap();
+#[test]
+fn event_idx_enabled() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    let q = SplitQueue::new(reg, &ram, true).unwrap().unwrap();
     unsafe { *q.used_event.unwrap() = 1 };
     assert_eq!(q.used_event(), Some(1));
 

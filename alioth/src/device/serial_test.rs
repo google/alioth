@@ -31,6 +31,7 @@ use crate::device::serial::{
 use crate::hv::tests::TestMsiSender;
 use crate::mem::emulated::Mmio;
 
+#[allow(clippy::type_complexity)]
 fn fixture_serial() -> (
     Serial<TestMsiSender, TestConsole>,
     Arc<IoApic<TestMsiSender>>,
@@ -58,12 +59,12 @@ fn test_serial_basic() {
     assert_matches!(serial.read(LINE_CONTROL_REGISTER, 1), Ok(0x83));
 
     // Write divisor latches
-    assert_matches!(serial.write(DIVISOR_LATCH_LSB as u64, 1, 0x12), Ok(_));
-    assert_matches!(serial.write(DIVISOR_LATCH_MSB as u64, 1, 0x34), Ok(_));
+    assert_matches!(serial.write(DIVISOR_LATCH_LSB, 1, 0x12), Ok(_));
+    assert_matches!(serial.write(DIVISOR_LATCH_MSB, 1, 0x34), Ok(_));
 
     // Read divisor latches
-    assert_matches!(serial.read(DIVISOR_LATCH_LSB as u64, 1), Ok(0x12));
-    assert_matches!(serial.read(DIVISOR_LATCH_MSB as u64, 1), Ok(0x34));
+    assert_matches!(serial.read(DIVISOR_LATCH_LSB, 1), Ok(0x12));
+    assert_matches!(serial.read(DIVISOR_LATCH_MSB, 1), Ok(0x34));
 
     // Disable DLAB
     assert_matches!(serial.write(LINE_CONTROL_REGISTER, 1, 0x03), Ok(_));

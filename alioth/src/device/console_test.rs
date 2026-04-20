@@ -39,13 +39,13 @@ impl TestConsole {
     }
 }
 
-impl<'a> Read for &'a TestConsole {
+impl Read for &TestConsole {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         Read::read(&mut *self.inbound.lock(), buf)
     }
 }
 
-impl<'a> Write for &'a TestConsole {
+impl Write for &TestConsole {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         Write::write(&mut *self.outbound.lock(), buf)
     }

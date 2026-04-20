@@ -59,12 +59,10 @@ pub(crate) fn enable_pin<M: MsiSender>(io_apci: &IoApic<M>, pin: u8, vector: u8,
     let offset = 0x10 + (pin as u64 * 2);
     io_apci.write(IOREGSEL, 4, offset).unwrap();
     io_apci
-        .write(IOWIN, 4, (redirtbl_entry.0 & 0xffffffff) as u64)
+        .write(IOWIN, 4, redirtbl_entry.0 & 0xffffffff)
         .unwrap();
     io_apci.write(IOREGSEL, 4, offset + 1).unwrap();
-    io_apci
-        .write(IOWIN, 4, (redirtbl_entry.0 >> 32) as u64)
-        .unwrap();
+    io_apci.write(IOWIN, 4, redirtbl_entry.0 >> 32).unwrap();
 }
 
 #[test]

@@ -16,7 +16,6 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 
 use flume::Sender;
-use rstest::fixture;
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
@@ -28,7 +27,6 @@ const MEM_SIZE: usize = 2 << 20;
 pub const DATA_ADDR: u64 = 0x0;
 const QUEUE_START: u64 = 1 << 20;
 
-#[fixture]
 pub fn fixture_ram_bus() -> RamBus {
     let host_pages = ArcMemPages::from_anonymous(MEM_SIZE, None, None).unwrap();
     let ram_bus = RamBus::new();
@@ -36,8 +34,7 @@ pub fn fixture_ram_bus() -> RamBus {
     ram_bus
 }
 
-#[fixture]
-pub fn fixture_queues(#[default(1)] count: u16) -> Box<[QueueReg]> {
+pub fn fixture_queues(count: u16) -> Box<[QueueReg]> {
     (0..count)
         .map(|i| {
             let base = QUEUE_START + i as u64 * 0x2000;

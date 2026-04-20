@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rstest::{fixture, rstest};
+use rstest::rstest;
 
 use super::{Action, Mmio, MmioBus};
 use crate::mem::Result;
@@ -51,7 +51,6 @@ impl Mmio for TestRange {
 // Creates a bus containing the following values:
 // | 0x01 | 0x23 | 0x67 0x45 | 0xef 0xcd 0xab 0x89
 //                           | 0x34 0x12 0xcd 0xab
-#[fixture]
 fn fixture_mmio_bus() -> MmioBus {
     let mut bus: MmioBus = MmioBus::new();
     for (offset, size, val) in [
@@ -91,14 +90,10 @@ fn fixture_mmio_bus() -> MmioBus {
 #[case(0x8, 1, u64::MAX)]
 #[case(0xa, 8, u64::MAX)]
 #[case(0xe, 2, 0xabcd)]
-fn test_mmio_bus_read(
-    fixture_mmio_bus: MmioBus,
-    #[case] addr: u64,
-    #[case] size: u8,
-    #[case] val: u64,
-) {
+fn test_mmio_bus_read(#[case] addr: u64, #[case] size: u8, #[case] val: u64) {
+    let mmio_bus = fixture_mmio_bus();
     assert_eq!(
-        fixture_mmio_bus.read(addr, size).unwrap(),
+        mmio_bus.read(addr, size).unwrap(),
         val,
         "Read from addr {addr:#x} with size {size} failed"
     )
@@ -119,12 +114,12 @@ fn test_mmio_bus_read(
 #[case(0x6, 4, 0xcd_ab98, 0xffff_00cd_ab98)]
 #[case(0x8, 1, 0xff, u64::MAX)]
 fn test_mmio_bus_write(
-    fixture_mmio_bus: MmioBus,
     #[case] addr: u64,
     #[case] size: u8,
     #[case] val: u64,
     #[case] expected: u64,
 ) {
-    assert!(fixture_mmio_bus.write(addr, size, val).is_ok());
-    assert_eq!(fixture_mmio_bus.read(addr, 8).unwrap(), expected);
+    let mmio_bus = fixture_mmio_bus();
+    assert!(mmio_bus.write(addr, size, val).is_ok());
+    assert_eq!(mmio_bus.read(addr, 8).unwrap(), expected);
 }
