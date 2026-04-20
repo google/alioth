@@ -116,20 +116,11 @@ pub struct CpuConfig {
 }
 
 impl CpuConfig {
-    pub fn fixup(&mut self) -> Result<()> {
-        if self.topology.sockets == 0 {
-            self.topology.sockets = 1;
-        }
+    pub fn validate(&self) -> bool {
         let vcpus_per_core = 1 + self.topology.smt as u16;
-        if self.topology.cores == 0 {
-            self.topology.cores = self.count / self.topology.sockets as u16 / vcpus_per_core;
-        }
         let vcpus_per_socket = self.topology.cores * vcpus_per_core;
         let count = self.topology.sockets as u16 * vcpus_per_socket;
-        if count != self.count {
-            return error::InvalidCpuTopology.fail();
-        }
-        Ok(())
+        count == self.count
     }
 }
 
@@ -147,8 +138,11 @@ impl BoardConfig {
         (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
     }
 
-    pub fn config_fixup(&mut self) -> Result<()> {
-        self.cpu.fixup()
+    pub fn validate(&self) -> Result<()> {
+        if !self.cpu.validate() {
+            return error::InvalidCpuTopology.fail();
+        }
+        Ok(())
     }
 }
 
@@ -172,11 +166,11 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub fn new<H>(hv: &H, mut config: BoardConfig) -> Result<Self>
+    pub fn new<H>(hv: &H, config: BoardConfig) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
-        config.config_fixup()?;
+        config.validate()?;
 
         let vm_config = VmConfig {
             coco: config.coco.clone(),

@@ -241,7 +241,7 @@ fn parse_cpu_arg(
     num_cpu: u16,
     objects: &HashMap<&str, &str>,
 ) -> Result<CpuConfig, Error> {
-    let config = if let Some(arg) = arg {
+    let mut config = if let Some(arg) = arg {
         serde_aco::from_args(&arg, objects).context(error::ParseArg { arg })?
     } else {
         eprintln!("Please update the cmd line to --cpu count={num_cpu}");
@@ -250,6 +250,13 @@ fn parse_cpu_arg(
             ..Default::default()
         }
     };
+    if config.topology.sockets == 0 {
+        config.topology.sockets = 1;
+    }
+    let vcpus_per_core = 1 + config.topology.smt as u16;
+    if config.topology.cores == 0 {
+        config.topology.cores = config.count / config.topology.sockets as u16 / vcpus_per_core;
+    }
     Ok(config)
 }
 

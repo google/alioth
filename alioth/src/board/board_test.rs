@@ -12,39 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use assert_matches::assert_matches;
 use rstest::rstest;
 
-use crate::board::{CpuConfig, CpuTopology, Error};
+use crate::board::{CpuConfig, CpuTopology};
 
-#[test]
-fn test_cpu_topology_fixup() {
-    let mut empty = CpuConfig {
-        count: 2,
-        topology: CpuTopology::default(),
-    };
-    empty.fixup().unwrap();
-    assert_matches!(
-        empty,
-        CpuConfig {
-            count: 2,
-            topology: CpuTopology {
-                smt: false,
-                cores: 2,
-                sockets: 1
-            }
-        }
-    );
-
-    let mut invalid = CpuConfig {
-        count: 2,
-        topology: CpuTopology {
-            smt: true,
-            cores: 2,
-            sockets: 1,
-        },
-    };
-    assert_matches!(invalid.fixup(), Err(Error::InvalidCpuTopology { .. }))
+#[rstest]
+#[case(CpuConfig {
+    count: 2,
+    topology: CpuTopology {
+        smt: false,
+        cores: 2,
+        sockets: 1,
+    },
+}, true)]
+#[case(CpuConfig {
+    count: 2,
+    topology: CpuTopology {
+        smt: true,
+        cores: 2,
+        sockets: 1,
+    },
+}, false)]
+fn test_cpu_topology_validate(#[case] config: CpuConfig, #[case] expected: bool) {
+    assert_eq!(config.validate(), expected);
 }
 
 #[rstest]

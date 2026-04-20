@@ -250,7 +250,7 @@ fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetParam) {
     HashMap::new(),
     CpuConfig {
         count: 16,
-        topology: CpuTopology::default(),
+        topology: CpuTopology { smt: false, cores: 16, sockets: 1 }
     }
 )]
 fn test_parse_cpu_arg(
