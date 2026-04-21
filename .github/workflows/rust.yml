@@ -1,6 +1,8 @@
 name: Rust
 
-permissions: read-all
+permissions:
+  contents: read
+  pull-requests: write
 
 on:
   push:
@@ -81,6 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
       - name: Download coverage reports
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -91,6 +95,15 @@ jobs:
         run: |
           sed -i 's#SF:/Users/#SF:/home/#g' lcov/*apple-darwin*.info
           npx lcov-result-merger 'lcov/lcov-*.info' lcov.info
-      - name: Upload coverage
-        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2.3.7
-        continue-on-error: true
+      - name: Upload Coverage
+        run: |
+          PR_ARGS=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.event.pull_request.base.sha }}
+            PR_ARGS="--pr ${{ github.event.pull_request.number }} --pr-base ${{ github.event.pull_request.base.sha }}"
+          fi
+          node tools/codecov/upload.mjs ./lcov.info $PR_ARGS
+        env:
+          CODECOV_URL: ${{ vars.CODECOV_URL }}
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,21 @@
+{
+  "name": "codecov-worker",
+  "version": "1.0.0",
+  "description": "A Cloudflare Worker for code coverage reporting",
+  "main": "src/index.tsx",
+  "scripts": {
+    "dev": "wrangler dev src/index.tsx",
+    "deploy": "wrangler deploy --minify src/index.tsx"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
+  },
+  "overrides": {
+    "undici": "^7.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240222.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.73.0"
+  }
+}
