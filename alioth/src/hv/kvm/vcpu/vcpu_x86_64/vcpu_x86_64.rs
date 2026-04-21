@@ -30,8 +30,9 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_msrs, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2,
-    kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_cpuid2, kvm_get_msrs, kvm_get_regs, kvm_get_sregs,
+    kvm_get_sregs2, kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
+    kvm_set_sregs2,
 };
 
 #[derive(Debug)]
@@ -310,6 +311,38 @@ impl KvmVcpu {
         let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.context(error::VcpuReg)?;
         let val = get_kvm_sreg!(kvm_sregs, reg);
         Ok(val)
+    }
+
+    pub fn kvm_get_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
+        let mut kvm_cpuid2 = KvmCpuid2 {
+            nent: KVM_MAX_CPUID_ENTRIES as u32,
+            padding: 0,
+            entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
+        };
+        unsafe { kvm_get_cpuid2(&self.fd, &mut kvm_cpuid2) }.context(error::GuestCpuid)?;
+        let cpuids: HashMap<CpuidIn, CpuidResult> = kvm_cpuid2
+            .entries
+            .iter()
+            .take(kvm_cpuid2.nent as usize)
+            .map(|e| {
+                let in_ = CpuidIn {
+                    func: e.function,
+                    index: if e.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX) {
+                        Some(e.index)
+                    } else {
+                        None
+                    },
+                };
+                let out = CpuidResult {
+                    eax: e.eax,
+                    ebx: e.ebx,
+                    ecx: e.ecx,
+                    edx: e.edx,
+                };
+                (in_, out)
+            })
+            .collect();
+        Ok(cpuids)
     }
 
     pub fn kvm_set_cpuids(&mut self, cpuids: &HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {

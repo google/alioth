@@ -206,6 +206,8 @@ pub trait Vcpu {
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
 
     #[cfg(target_arch = "x86_64")]
+    fn get_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>>;
+    #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]

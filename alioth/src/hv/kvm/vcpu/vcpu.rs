@@ -224,6 +224,11 @@ impl Vcpu for KvmVcpu {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn get_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
+        self.kvm_get_cpuids()
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {
         self.kvm_set_cpuids(&cpuids)
     }
