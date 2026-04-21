@@ -209,6 +209,8 @@ pub trait Vcpu {
     fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error>;
 
     #[cfg(target_arch = "x86_64")]
+    fn get_msrs(&self, msrs: &[Msr]) -> Result<Vec<u64>>;
+    #[cfg(target_arch = "x86_64")]
     fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;

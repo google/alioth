@@ -16,7 +16,7 @@ use std::fmt::{Debug, Formatter, Result};
 
 use bitfield::bitfield;
 
-use crate::arch::x86_64::msr::{ApicBase, Efer};
+use crate::arch::x86_64::msr::{ApicBase, Efer, Msr};
 use crate::arch::x86_64::reg::{Cr0, Cr3, Cr4};
 use crate::sys::ioctl::{ioctl_ior, ioctl_iowr};
 use crate::{
@@ -99,7 +99,7 @@ bitflags! {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmMsrEntry {
-    pub index: u32,
+    pub index: Msr,
     pub _reserved: u32,
     pub data: u64,
 }
@@ -691,6 +691,7 @@ ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
 ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
 ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
 ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
+ioctl_writeread_buf!(kvm_get_msrs, KVMIO, 0x88, KvmMsrs);
 ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);

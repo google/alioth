@@ -229,6 +229,11 @@ impl Vcpu for KvmVcpu {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn get_msrs(&self, msrs: &[Msr]) -> Result<Vec<u64>> {
+        self.kvm_get_msrs(msrs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()> {
         self.kvm_set_msrs(msrs)
     }
