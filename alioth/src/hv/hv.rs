@@ -90,6 +90,9 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to configure guest XSAVE"))]
     GuestXsave { error: std::io::Error },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("Failed to configure guest local APIC"))]
+    GuestLapic { error: std::io::Error },
     #[snafu(display("Failed to configure memory encryption"))]
     MemEncrypt { error: std::io::Error },
     #[snafu(display("Failed to configure an IrqFd"))]
@@ -217,6 +220,11 @@ pub trait Vcpu {
     fn get_xsave(&self, xsave: &mut [u32; 1024]) -> Result<()>;
     #[cfg(target_arch = "x86_64")]
     fn set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_lapic(&self, lapic: &mut [u32; 256]) -> Result<()>;
+    #[cfg(target_arch = "x86_64")]
+    fn set_lapic(&mut self, lapic: &[u32; 256]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;
 
