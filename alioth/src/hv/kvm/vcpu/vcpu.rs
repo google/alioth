@@ -243,6 +243,16 @@ impl Vcpu for KvmVcpu {
         self.kvm_set_msrs(msrs)
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn get_xsave(&self) -> Result<[u32; 1024]> {
+        self.kvm_get_xsave()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()> {
+        self.kvm_set_xsave(xsave)
+    }
+
     fn dump(&self) -> Result<(), Error> {
         Ok(())
     }

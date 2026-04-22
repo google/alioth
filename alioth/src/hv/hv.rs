@@ -86,6 +86,9 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to configure guest MSRs"))]
     GuestMsr { error: std::io::Error },
+    #[cfg(target_arch = "x86_64")]
+    #[snafu(display("Failed to configure guest XSAVE"))]
+    GuestXsave { error: std::io::Error },
     #[snafu(display("Failed to configure memory encryption"))]
     MemEncrypt { error: std::io::Error },
     #[snafu(display("Cannot create multiple VM memories"))]
@@ -214,6 +217,11 @@ pub trait Vcpu {
     fn get_msrs(&self, msrs: &[Msr]) -> Result<Vec<u64>>;
     #[cfg(target_arch = "x86_64")]
     fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_xsave(&self) -> Result<[u32; 1024]>;
+    #[cfg(target_arch = "x86_64")]
+    fn set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()>;
 
     fn dump(&self) -> Result<(), Error>;
 

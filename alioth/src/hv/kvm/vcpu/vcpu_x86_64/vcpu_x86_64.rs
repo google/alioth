@@ -20,6 +20,7 @@ use std::iter::zip;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
+use zerocopy::{FromBytes, IntoBytes, transmute};
 
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::msr::{Efer, Msr};
@@ -30,9 +31,9 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_cpuid2, kvm_get_msrs, kvm_get_regs, kvm_get_sregs,
-    kvm_get_sregs2, kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
-    kvm_set_sregs2,
+    KvmXsave, MAX_IO_MSRS, kvm_create_vcpu, kvm_get_cpuid2, kvm_get_msrs, kvm_get_regs,
+    kvm_get_sregs, kvm_get_sregs2, kvm_get_xsave, kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_msrs,
+    kvm_set_regs, kvm_set_sregs, kvm_set_sregs2, kvm_set_xsave,
 };
 
 #[derive(Debug)]
@@ -398,6 +399,17 @@ impl KvmVcpu {
             kvm_msrs.entries[i].data = *data;
         }
         unsafe { kvm_set_msrs(&self.fd, &kvm_msrs) }.context(error::GuestMsr)?;
+        Ok(())
+    }
+
+    pub fn kvm_get_xsave(&self) -> Result<[u32; 1024]> {
+        let kvm_xsave = unsafe { kvm_get_xsave(&self.fd) }.context(error::GuestXsave)?;
+        Ok(transmute!(kvm_xsave.region))
+    }
+
+    pub fn kvm_set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()> {
+        let kvm_xsave = KvmXsave::ref_from_bytes(xsave.as_bytes()).unwrap();
+        unsafe { kvm_set_xsave(&self.fd, kvm_xsave) }.context(error::GuestXsave)?;
         Ok(())
     }
 }

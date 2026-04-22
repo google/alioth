@@ -15,6 +15,7 @@
 use std::fmt::{Debug, Formatter, Result};
 
 use bitfield::bitfield;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::arch::x86_64::msr::{ApicBase, Efer, Msr};
 use crate::arch::x86_64::reg::{Cr0, Cr3, Cr4};
@@ -567,6 +568,12 @@ pub struct KvmEnableCap {
     pub pad: [u8; 64],
 }
 
+#[repr(C, align(16))]
+#[derive(Debug, Clone, FromBytes, KnownLayout, Immutable, IntoBytes)]
+pub struct KvmXsave {
+    pub region: [u32; 1024],
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmOneReg {
@@ -699,6 +706,9 @@ ioctl_writeread_buf!(kvm_get_cpuid2, KVMIO, 0x91, KvmCpuid2);
 
 ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
+
+ioctl_read!(kvm_get_xsave, KVMIO, 0xa4, KvmXsave);
+ioctl_write_ptr!(kvm_set_xsave, KVMIO, 0xa5, KvmXsave);
 
 ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
 ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
