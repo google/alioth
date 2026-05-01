@@ -17,7 +17,7 @@ license = "Apache-2.0"
 alioth = { path = "alioth", version = "0.12.0" }
 alioth-macros = { path = "alioth-macros", version = "0.12.0" }
 assert_matches = "1"
-ctor = "0.6"
+ctor = "0.12"
 flexi_logger = "0.31"
 flume = "0.12.0"
 parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
