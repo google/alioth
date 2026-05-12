@@ -14,9 +14,10 @@
 
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Result};
 use std::iter::zip;
+use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::ptr::{null_mut, read_unaligned, write_unaligned};
+use std::ptr::{read_unaligned, write_unaligned};
 
 use crate::ffi;
 
@@ -31,15 +32,11 @@ pub fn recv_msg_with_fds(
     fds: &mut [Option<OwnedFd>],
 ) -> Result<usize> {
     let mut cmsg_buf = [0u64; CMSG_BUF_LEN / size_of::<u64>()];
-    let mut uds_msg = libc::msghdr {
-        msg_name: null_mut(),
-        msg_namelen: 0,
-        msg_iov: bufs.as_mut_ptr() as _,
-        msg_iovlen: bufs.len() as _,
-        msg_control: cmsg_buf.as_mut_ptr() as _,
-        msg_controllen: CMSG_BUF_LEN as _,
-        msg_flags: 0,
-    };
+    let mut uds_msg = unsafe { MaybeUninit::<libc::msghdr>::zeroed().assume_init() };
+    uds_msg.msg_iov = bufs.as_mut_ptr() as _;
+    uds_msg.msg_iovlen = bufs.len() as _;
+    uds_msg.msg_control = cmsg_buf.as_mut_ptr() as _;
+    uds_msg.msg_controllen = CMSG_BUF_LEN as _;
     let flag = libc::MSG_CMSG_CLOEXEC;
     let size = ffi!(unsafe { libc::recvmsg(conn.as_raw_fd(), &mut uds_msg, flag) })?;
 
@@ -107,21 +104,17 @@ pub fn send_msg_with_fds(conn: &UnixStream, bufs: &[IoSlice], fds: &[BorrowedFd]
         0
     } as usize;
     let mut cmsg_buf = [0u64; CMSG_BUF_LEN / size_of::<u64>()];
-    let uds_msg = libc::msghdr {
-        msg_name: null_mut(),
-        msg_namelen: 0,
-        msg_iov: bufs.as_ptr() as _,
-        msg_iovlen: bufs.len() as _,
-        msg_control: cmsg_buf.as_mut_ptr() as _,
-        msg_controllen: buf_len as _,
-        msg_flags: 0,
-    };
+    let mut uds_msg = unsafe { MaybeUninit::<libc::msghdr>::zeroed().assume_init() };
+    uds_msg.msg_iov = bufs.as_ptr() as _;
+    uds_msg.msg_iovlen = bufs.len() as _;
+    uds_msg.msg_control = cmsg_buf.as_mut_ptr() as _;
+    uds_msg.msg_controllen = buf_len as _;
     if fds_size > 0 {
-        let cmsg = libc::cmsghdr {
-            cmsg_level: libc::SOL_SOCKET,
-            cmsg_type: libc::SCM_RIGHTS,
-            cmsg_len: unsafe { libc::CMSG_LEN(fds_size) } as _,
-        };
+        let mut cmsg = unsafe { MaybeUninit::<libc::cmsghdr>::zeroed().assume_init() };
+        cmsg.cmsg_level = libc::SOL_SOCKET;
+        cmsg.cmsg_type = libc::SCM_RIGHTS;
+        cmsg.cmsg_len = unsafe { libc::CMSG_LEN(fds_size) } as _;
+
         let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&uds_msg) };
         unsafe {
             write_unaligned(cmsg_ptr, cmsg);
