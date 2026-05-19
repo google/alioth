@@ -224,13 +224,33 @@ impl Vcpu for KvmVcpu {
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn get_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
+        self.kvm_get_cpuids()
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {
         self.kvm_set_cpuids(&cpuids)
     }
 
     #[cfg(target_arch = "x86_64")]
+    fn get_msrs(&self, msrs: &[Msr]) -> Result<Vec<u64>> {
+        self.kvm_get_msrs(msrs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
     fn set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()> {
         self.kvm_set_msrs(msrs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_xsave(&self) -> Result<[u32; 1024]> {
+        self.kvm_get_xsave()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()> {
+        self.kvm_set_xsave(xsave)
     }
 
     fn dump(&self) -> Result<(), Error> {

@@ -18,6 +18,7 @@ use crate::{bitflags, consts};
 
 // Intel Vol.4, Table 2-2.
 consts! {
+    #[derive(Default)]
     pub struct Msr(u32) {
         EFER = 0xc000_0080;
         STAR = 0xc000_0081;

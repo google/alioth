@@ -20,6 +20,7 @@ use std::iter::zip;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use snafu::ResultExt;
+use zerocopy::{FromBytes, IntoBytes, transmute};
 
 use crate::arch::cpuid::CpuidIn;
 use crate::arch::msr::{Efer, Msr};
@@ -30,8 +31,9 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_kvmclock_ctrl,
-    kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+    KvmXsave, MAX_IO_MSRS, kvm_create_vcpu, kvm_get_cpuid2, kvm_get_msrs, kvm_get_regs,
+    kvm_get_sregs, kvm_get_sregs2, kvm_get_xsave, kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_msrs,
+    kvm_set_regs, kvm_set_sregs, kvm_set_sregs2, kvm_set_xsave,
 };
 
 #[derive(Debug)]
@@ -312,6 +314,38 @@ impl KvmVcpu {
         Ok(val)
     }
 
+    pub fn kvm_get_cpuids(&self) -> Result<HashMap<CpuidIn, CpuidResult>> {
+        let mut kvm_cpuid2 = KvmCpuid2 {
+            nent: KVM_MAX_CPUID_ENTRIES as u32,
+            padding: 0,
+            entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
+        };
+        unsafe { kvm_get_cpuid2(&self.fd, &mut kvm_cpuid2) }.context(error::GuestCpuid)?;
+        let cpuids: HashMap<CpuidIn, CpuidResult> = kvm_cpuid2
+            .entries
+            .iter()
+            .take(kvm_cpuid2.nent as usize)
+            .map(|e| {
+                let in_ = CpuidIn {
+                    func: e.function,
+                    index: if e.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX) {
+                        Some(e.index)
+                    } else {
+                        None
+                    },
+                };
+                let out = CpuidResult {
+                    eax: e.eax,
+                    ebx: e.ebx,
+                    ecx: e.ecx,
+                    edx: e.edx,
+                };
+                (in_, out)
+            })
+            .collect();
+        Ok(cpuids)
+    }
+
     pub fn kvm_set_cpuids(&mut self, cpuids: &HashMap<CpuidIn, CpuidResult>) -> Result<(), Error> {
         if cpuids.len() > KVM_MAX_CPUID_ENTRIES {
             return kvm_error::CpuidTableTooLong.fail()?;
@@ -338,6 +372,22 @@ impl KvmVcpu {
         Ok(())
     }
 
+    pub fn kvm_get_msrs(&self, msrs: &[Msr]) -> Result<Vec<u64>> {
+        let mut kvm_msrs = KvmMsrs {
+            nmsrs: msrs.len() as u32,
+            _pad: 0,
+            entries: [KvmMsrEntry::default(); MAX_IO_MSRS],
+        };
+        for (i, index) in msrs.iter().enumerate() {
+            kvm_msrs.entries[i].index = *index;
+        }
+        unsafe { kvm_get_msrs(&self.fd, &mut kvm_msrs) }.context(error::GuestMsr)?;
+        Ok(kvm_msrs.entries[..msrs.len()]
+            .iter()
+            .map(|e| e.data)
+            .collect())
+    }
+
     pub fn kvm_set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()> {
         let mut kvm_msrs = KvmMsrs {
             nmsrs: msrs.len() as u32,
@@ -345,10 +395,21 @@ impl KvmVcpu {
             entries: [KvmMsrEntry::default(); MAX_IO_MSRS],
         };
         for (i, (index, data)) in msrs.iter().enumerate() {
-            kvm_msrs.entries[i].index = index.raw();
+            kvm_msrs.entries[i].index = *index;
             kvm_msrs.entries[i].data = *data;
         }
         unsafe { kvm_set_msrs(&self.fd, &kvm_msrs) }.context(error::GuestMsr)?;
+        Ok(())
+    }
+
+    pub fn kvm_get_xsave(&self) -> Result<[u32; 1024]> {
+        let kvm_xsave = unsafe { kvm_get_xsave(&self.fd) }.context(error::GuestXsave)?;
+        Ok(transmute!(kvm_xsave.region))
+    }
+
+    pub fn kvm_set_xsave(&mut self, xsave: &[u32; 1024]) -> Result<()> {
+        let kvm_xsave = KvmXsave::ref_from_bytes(xsave.as_bytes()).unwrap();
+        unsafe { kvm_set_xsave(&self.fd, kvm_xsave) }.context(error::GuestXsave)?;
         Ok(())
     }
 }
