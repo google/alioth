@@ -30,8 +30,8 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_kvmclock_ctrl,
-    kvm_set_cpuid2, kvm_set_msrs, kvm_set_regs, kvm_set_sregs, kvm_set_sregs2,
+    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_regs, kvm_get_sregs, kvm_kvmclock_ctrl, kvm_set_cpuid2,
+    kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
 };
 
 #[derive(Debug)]
@@ -231,45 +231,6 @@ impl KvmVcpu {
             Reg::Rip => kvm_regs.rip,
             Reg::Rflags => kvm_regs.rflags,
         };
-        Ok(val)
-    }
-
-    pub fn kvm_set_sregs2(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error> {
-        let mut kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
-        for (reg, val) in sregs {
-            set_kvm_sreg!(kvm_sregs2, reg, *val)
-        }
-        for (reg, val) in dt_regs {
-            set_kvm_dt_reg!(kvm_sregs2, reg, val);
-        }
-        for (reg, val) in seg_regs {
-            set_kvm_seg_reg!(kvm_sregs2, reg, val);
-        }
-        fix_kvm_efer!(kvm_sregs2);
-        unsafe { kvm_set_sregs2(&self.fd, &kvm_sregs2) }.context(error::VcpuReg)?;
-        Ok(())
-    }
-
-    pub fn kvm_get_dt_reg2(&self, reg: DtReg) -> Result<DtRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
-        let val = get_kvm_dt_reg!(kvm_sregs2, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_get_seg_reg2(&self, reg: SegReg) -> Result<SegRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
-        let val = get_kvm_seg_reg!(kvm_sregs2, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_get_sreg2(&self, reg: SReg) -> Result<u64> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }.context(error::VcpuReg)?;
-        let val = get_kvm_sreg!(kvm_sregs2, reg);
         Ok(val)
     }
 
