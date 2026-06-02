@@ -50,7 +50,7 @@ pub mod virtio;
 pub mod vm;
 
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn global_setup() {
     flexi_logger::init();
 }
