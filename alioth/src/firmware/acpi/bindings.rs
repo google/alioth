@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bitfield::bitfield;
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::bitflags;
 
@@ -85,7 +85,6 @@ pub const FADT_MAJOR_VERSION: u8 = 6;
 pub const FADT_MINOR_VERSION: u8 = 4;
 
 bitflags! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct AcpiFadtFlag(u32) {
         TMR_VAL_EXT = 1 << 8;
         RESET_REG_SUP = 1 << 10;

@@ -262,7 +262,6 @@ pub struct FuseFileLock {
 }
 
 consts! {
-    #[derive(FromBytes, Immutable, IntoBytes)]
     pub struct FuseOpcode(u32) {
         LOOKUP = 1;
         FORGET = 2;
@@ -724,7 +723,6 @@ pub struct FuseOutHeader {
 }
 
 consts! {
-    #[derive(FromBytes, KnownLayout, Immutable, IntoBytes)]
     pub struct FuseDirentType(u32) {
         UNKNOWN = 0x0;
         FIFO = 0x1;
@@ -901,7 +899,6 @@ pub struct FuseSecctxHeader {
 }
 
 consts! {
-    #[derive(Default, FromBytes, KnownLayout, Immutable, IntoBytes)]
     pub struct FuseExtType(u32) {
         MAX_NR_SECCTX = 31;
         EXT_GROUPS = 32;

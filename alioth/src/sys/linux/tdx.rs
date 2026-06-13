@@ -17,7 +17,6 @@ use crate::sys::kvm::{KVM_MAX_CPUID_ENTRIES, KvmCpuid2};
 use crate::{bitflags, consts};
 
 consts! {
-    #[derive(Default)]
     pub struct KvmTdxCmdId(u32) {
         CAPABILITIES = 0;
         INIT_VM = 1;

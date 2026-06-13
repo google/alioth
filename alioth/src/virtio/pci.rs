@@ -585,7 +585,6 @@ fn get_class(id: DeviceId) -> (u8, u8) {
 }
 
 consts! {
-    #[derive(Default, FromZeros, Immutable, IntoBytes)]
     pub struct VirtioPciCfg(u8) {
         COMMON = 1;
         NOTIFY = 2;

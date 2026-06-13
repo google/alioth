@@ -48,7 +48,6 @@ use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
 use crate::{bitflags, consts, impl_mmio_for_zerocopy};
 
 consts! {
-    #[derive(FromBytes)]
     pub struct RequestType(u32) {
         IN = 0;
         OUT = 1;
@@ -62,7 +61,6 @@ consts! {
 }
 
 consts! {
-    #[derive(FromBytes)]
     pub struct Status(u8) {
         OK = 0;
         IOERR = 1;

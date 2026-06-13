@@ -53,7 +53,6 @@ impl SlotBackend for Box<dyn PciConfigArea> {
 }
 
 bitflags! {
-    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
     pub struct Command(u16) {
         INTX_DISABLE = 1 << 10;
         SERR = 1 << 8;
@@ -71,7 +70,6 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
     pub struct Status(u16) {
         PARITY_ERR = 1 << 15;
         SYSTEM_ERR = 1 << 14;
@@ -92,7 +90,6 @@ bitflags! {
 }
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, KnownLayout, IntoBytes)]
     pub struct HeaderType(u8) {
         DEVICE = 0;
         BRIDGE = 1;

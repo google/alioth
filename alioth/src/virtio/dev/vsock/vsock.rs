@@ -27,7 +27,6 @@ pub use self::uds_vsock::{UdsVsock, UdsVsockParam};
 pub use self::vhost_vsock::{VhostVsock, VhostVsockParam};
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct VsockVirtq(u16) {
         RX = 0;
         TX = 1;
@@ -54,7 +53,6 @@ bitflags! {
 }
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct VsockOp(u16) {
         INVALID = 0;
         REQUEST = 1;
@@ -68,7 +66,6 @@ consts! {
 }
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct VsockType(u16) {
         STREAM = 1;
         SEQPACKET = 2;

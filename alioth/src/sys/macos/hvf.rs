@@ -58,7 +58,6 @@ consts! {
 }
 
 consts! {
-    #[derive(Default)]
     pub struct HvExitReason(u32) {
         CANCEL = 0;
         EXCEPTION = 1;

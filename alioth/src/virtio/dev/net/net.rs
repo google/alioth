@@ -41,7 +41,6 @@ pub struct NetConfig {
 impl_mmio_for_zerocopy!(NetConfig);
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct CtrlAck(u8) {
         OK = 0;
         ERR = 1;
@@ -49,14 +48,12 @@ consts! {
 }
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct CtrlClass(u8) {
         MQ = 4;
     }
 }
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes)]
     pub struct CtrlMq(u8) {
         VQ_PARIS_SET = 0;
     }

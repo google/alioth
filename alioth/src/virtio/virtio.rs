@@ -114,7 +114,6 @@ consts! {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct DevStatus(u8) {
         ACK = 1 << 0;
         DRIVER = 1 << 1;

@@ -78,7 +78,6 @@ const PERIPH_ID: [u32; 4] = [0x11, 0x10, 0x14, 0x00];
 const PCELL_ID: [u32; 4] = [0x0d, 0xf0, 0x05, 0xb1];
 
 bitflags! {
-    #[derive(Default)]
     pub struct Flag(u16) {
         RI = 1 << 8;
         /// Transmit FIFO empty
@@ -97,7 +96,6 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct Interrupt(u16) {
         /// Overrun error interrupt status.
         OERIS = 1 << 10;

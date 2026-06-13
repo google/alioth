@@ -60,11 +60,11 @@ impl<M: MsiSender> IoApic<M> {
             return Ok(());
         }
 
-        if entry.dest_mode() == DestinationMode::LOGICAL.raw() {
+        if entry.dest_mode() == DestinationMode::LOGICAL {
             log::warn!("IOAPIC: logical destination is not supported");
             return Ok(());
         }
-        if entry.trigger_mode() == TriggerMode::LEVEL.raw() {
+        if entry.trigger_mode() == TriggerMode::LEVEL {
             log::warn!("IOAPIC: level-triggered interrupts are not supported");
             return Ok(());
         }

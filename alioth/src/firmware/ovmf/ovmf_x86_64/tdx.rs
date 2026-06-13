@@ -43,7 +43,6 @@ pub struct TdvfMetadata {
 }
 
 consts! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct TdvfSectionType(u32) {
         BFV = 0;
         CFV = 1;
@@ -53,7 +52,6 @@ consts! {
 }
 
 bitflags! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct TdvfSectionAttr(u32) {
         MR_EXTEND = 1 << 0;
         PAGE_AUG = 1 << 1;

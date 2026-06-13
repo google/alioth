@@ -30,7 +30,6 @@ pub struct VfioInfoCapHeader {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct VfioDeviceInfoFlag(u32) {
         RESET = 1 << 0;
         PCI = 1 << 1;
@@ -56,7 +55,6 @@ pub struct VfioDeviceInfo {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct VfioRegionInfoFlag(u32) {
         READ = 1 << 0;
         WRITE = 1 << 1;
@@ -91,14 +89,12 @@ pub struct VfioRegionInfo {
 }
 
 consts! {
-    #[derive(Default)]
     pub struct VfioRegionInfoCap(u16) {
         MSIX_MAPPABLE = 3;
     }
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct VfioIrqInfoFlag(u32) {
         EVENTFD = 1 << 0;
         MASKABLE = 1 << 1;
@@ -108,7 +104,6 @@ bitflags! {
 }
 
 consts! {
-    #[derive(Default)]
     pub struct VfioPciIrq(u32) {
         INTX = 0;
         MSI = 1;
@@ -196,7 +191,6 @@ pub struct IommuIoasAlloc {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct IommuIoasMapFlag(u32) {
         FIXED_IOVA = 1 << 0;
         WRITEABLE = 1 << 1;
@@ -226,7 +220,6 @@ pub struct IommuIoasUnmap {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct VfioDmaMapFlag(u32) {
         READ = 1 << 0;
         WRITE = 1 << 1;
@@ -245,7 +238,6 @@ pub struct VfioIommuType1DmaMap {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct VfioDmaUnmapFlag(u32) {
         GET_DIRTY_BITMAP = 1 << 0;
         ALL = 1 << 1;

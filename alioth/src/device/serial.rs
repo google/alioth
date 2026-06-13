@@ -41,7 +41,6 @@ const SCRATCH_REGISTER: u64 = 0x7;
 
 // offset 0x1, Interrupt Enable Register (IER)
 bitflags! {
-    #[derive(Default)]
     pub struct InterruptEnable(u8) {
         MODEM_STATUS = 1 << 3;
         RECEIVER_LINE_STATUS = 1 << 2;
@@ -160,12 +159,6 @@ bitflags! {
     }
 }
 
-impl Default for LineStatus {
-    fn default() -> Self {
-        LineStatus::TX_EMPTY | LineStatus::TX_HOLDING_REGISTER_EMPTY
-    }
-}
-
 #[derive(Default, Debug)]
 struct SerialReg {
     interrupt_enable: InterruptEnable, // 0x1, Interrupt Enable Register (IER)
@@ -179,6 +172,15 @@ struct SerialReg {
     scratch: u8,      // 0x7, Scratch Register (SCR)
     divisor: u16,
     data: VecDeque<u8>,
+}
+
+impl SerialReg {
+    pub fn new() -> Self {
+        SerialReg {
+            line_status: LineStatus::TX_EMPTY | LineStatus::TX_HOLDING_REGISTER_EMPTY,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -338,7 +340,7 @@ where
     for<'a> &'a C: Read + Write,
 {
     pub fn new(base_port: u16, io_apci: Arc<IoApic<M>>, pin: u8, console: C) -> Result<Self> {
-        let reg = Arc::new(Mutex::new(SerialReg::default()));
+        let reg = Arc::new(Mutex::new(SerialReg::new()));
         let console = Arc::new(console);
         let name: Arc<str> = Arc::from(format!("serial_{base_port:#x}"));
         let uart_recv = SerialRecv {

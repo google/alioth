@@ -34,7 +34,6 @@ consts! {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct Efer(u64) {
         /// SYSCALL enable
         SCE = 1 << 0;

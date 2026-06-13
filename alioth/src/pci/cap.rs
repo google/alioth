@@ -31,7 +31,6 @@ use crate::utils::truncate_u64;
 use crate::{align_up, consts, impl_mmio_for_zerocopy, mask_bits, mem};
 
 consts! {
-    #[derive(Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     pub struct PciCapId(u8) {
         MSI = 0x05;
         VENDOR = 0x09;

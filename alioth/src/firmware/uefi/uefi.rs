@@ -17,7 +17,6 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use crate::{bitflags, consts};
 
 consts! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct HobType(u16) {
         HANDOFF = 0x0001;
         RESOURCE_DESCRIPTOR = 0x0003;
@@ -49,7 +48,6 @@ pub struct HobHandoffInfoTable {
 }
 
 consts! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct HobResourceType(u32) {
         SYSTEM_MEMORY = 0x00000000;
         MEMORY_UNACCEPTED = 0x00000007;
@@ -57,7 +55,6 @@ consts! {
 }
 
 bitflags! {
-    #[derive(Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct ResourceAttr(u32) {
         PRESENT =  1 << 0;
         INIT =  1 << 1;

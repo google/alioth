@@ -67,7 +67,6 @@ bitflags! {
 }
 
 consts! {
-    #[derive(Default, Immutable, KnownLayout, FromBytes, IntoBytes)]
     pub struct Qcow2Compression(u8) {
         DEFLATE = 0;
         ZSTD = 1;

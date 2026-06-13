@@ -44,7 +44,6 @@ const PERIPH_ID: [u8; 4] = [0x31, 0x10, 0x04, 0x00];
 const PCELL_ID: [u8; 4] = [0x0d, 0xf0, 0x05, 0xb1];
 
 bitflags! {
-    #[derive(Default)]
     struct Interrupt(u32) {
         RTCINTR = 1 << 0;
     }

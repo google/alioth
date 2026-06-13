@@ -127,7 +127,20 @@ macro_rules! consts {
         }
     ) => {
         #[repr(transparent)]
-        #[derive(PartialEq, Eq, Copy, Clone)]
+        #[derive(
+            Copy,
+            Clone,
+            Default,
+            PartialEq,
+            Eq,
+            Hash,
+            ::zerocopy::KnownLayout,
+            ::zerocopy::Immutable,
+            ::zerocopy::FromBytes,
+            ::zerocopy::IntoBytes,
+            ::serde::Serialize,
+            ::serde::Deserialize,
+        )]
         $(#[$attr])*
         $vs struct $EnumName($TyName);
 
@@ -194,7 +207,20 @@ macro_rules! bitflags {
         }
     ) => {
         #[repr(transparent)]
-        #[derive(PartialEq, Eq, Copy, Clone, Hash)]
+        #[derive(
+            Copy,
+            Clone,
+            Default,
+            PartialEq,
+            Eq,
+            Hash,
+            ::zerocopy::KnownLayout,
+            ::zerocopy::Immutable,
+            ::zerocopy::FromBytes,
+            ::zerocopy::IntoBytes,
+            ::serde::Serialize,
+            ::serde::Deserialize,
+        )]
         $(#[$attr])*
         $vs struct $FlagTy($TyName);
 

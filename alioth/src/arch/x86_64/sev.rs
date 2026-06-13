@@ -89,7 +89,6 @@ consts! {
     /// AMD SEV-SNP launch update page type.
     ///
     /// From SEV SNP Firmware ABI Specification, Revision 1.55, Table 67.
-    #[derive(Default)]
     pub struct SnpPageType(u8) {
         /// A normal data page.
         NORMAL = 1;

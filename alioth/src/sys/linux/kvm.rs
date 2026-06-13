@@ -44,7 +44,6 @@ pub struct KvmVmType(#[allow(dead_code)] pub u64);
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmCpuid2Flag(u32) {
         SIGNIFCANT_INDEX = 1 << 0;
     }
@@ -115,7 +114,6 @@ pub struct KvmMsrs<const N: usize> {
 pub const MAX_IO_MSRS: usize = 256;
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmMemFlag(u32) {
         LOG_DIRTY_PAGES = 1 << 0;
         READONLY = 1 << 1;
@@ -148,7 +146,6 @@ pub struct KvmUserspaceMemoryRegion2 {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmMemoryAttribute(u64) {
         PRIVATE = 1 << 3;
     }
@@ -383,7 +380,6 @@ pub union KvmSyncRegsBlock {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmIrqfdFlag(u32) {
         DEASSIGN = 1 << 0;
         RESAMPLE = 1 << 1;
@@ -484,7 +480,6 @@ impl<const N: usize> Debug for KvmIrqRouting<N> {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmMsiFlag(u32) {
         VALID_DEVID = 1 << 0;
     }
@@ -532,7 +527,6 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct KvmIoEventFdFlag(u32) {
         DATA_MATCH = 1 << 0;
         PIO = 1 << 1;

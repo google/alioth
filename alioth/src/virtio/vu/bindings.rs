@@ -90,12 +90,6 @@ consts! {
 }
 
 consts! {
-    pub struct VuFrontMsgSize((u32, usize)) {
-        GET_FEATURES = (0, size_of::<u64>());
-    }
-}
-
-consts! {
     pub struct VuBackMsg(u32) {
         IOTLB_MSG = 1;
         CONFIG_CHANGE_MSG = 2;

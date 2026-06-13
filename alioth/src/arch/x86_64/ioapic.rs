@@ -14,7 +14,7 @@
 
 use bitfield::bitfield;
 
-use crate::arch::x86_64::intr::DeliveryMode;
+use crate::arch::x86_64::intr::{DeliveryMode, DestinationMode, TriggerMode};
 
 pub const IOREGSEL: u64 = 0x00;
 pub const IOWIN: u64 = 0x10;
@@ -52,11 +52,11 @@ bitfield! {
     impl Debug;
     pub u8,	vector, set_vector : 7, 0;
     pub u8, from into DeliveryMode, delivery_mode, set_delivery_mode : 10, 8;
-    pub dest_mode, set_dest_mode : 11;
+    pub u8, from into DestinationMode, dest_mode, set_dest_mode : 11, 11;
     pub delivery_status, set_delivery_status : 12;
     pub riority, set_priority : 13;
     pub irr, set_irr : 14;
-    pub trigger_mode, set_trigger_mode : 15;
+    pub u8, from into TriggerMode, trigger_mode, set_trigger_mode : 15, 15;
     pub masked, set_masked : 16;
     pub u8, virt_dest_id_hi, set_virt_dest_id_hi : 55, 49;
     pub u8, dest_id, set_dest_id : 63, 56;

@@ -25,7 +25,6 @@ pub struct BlockDescriptor {
 }
 
 bitflags! {
-    #[derive(Default)]
     pub struct BlockFlag(c_int) {
         HAS_STRET = 1 << 29;
     }

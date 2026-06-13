@@ -37,7 +37,6 @@ pub struct SevMetaData {
 }
 
 consts! {
-    #[derive(KnownLayout, Immutable, FromBytes, IntoBytes)]
     pub struct SevDescType(u32) {
         SNP_DESC_MEM = 1;
         SNP_SECRETS = 2;
