@@ -67,7 +67,7 @@ bitfield! {
     impl Debug;
     impl new;
     pub u8, vector, set_vector : 7, 0;
-    pub u8, from into DeliveryMode, delivery_mode, set_delivery_mode : 11, 8;
+    pub u8, from into DeliveryMode, delivery_mode, set_delivery_mode : 10, 8;
     pub u8, level, set_level : 14;
     pub trigger_mode, set_trigger_mode : 15;
 }
