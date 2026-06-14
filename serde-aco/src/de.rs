@@ -170,7 +170,11 @@ impl<'s> de::Deserializer<'s> for &mut Deserializer<'s, '_> {
         if id.starts_with("id_") && s.is_empty() {
             visitor.visit_none()
         } else {
-            let mut sub_de = Deserializer { input: s, ..*self };
+            let mut sub_de = Deserializer {
+                input: s,
+                top_level: true,
+                ..*self
+            };
             visitor.visit_some(&mut sub_de)
         }
     }
@@ -580,6 +584,23 @@ mod test {
         assert_eq!(
             from_args::<Vec<Option<u32>>>("id_none,2", &map_none).unwrap(),
             vec![None, Some(2)]
+        );
+
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct SimpleStruct {
+            val: u32,
+            other: u32,
+        }
+        #[derive(Debug, Deserialize, PartialEq, Eq)]
+        struct TestOptionStruct {
+            opt: Option<SimpleStruct>,
+        }
+        assert_eq!(
+            from_args::<TestOptionStruct>("opt=id_s", &[("id_s", "val=12,other=34")].into())
+                .unwrap(),
+            TestOptionStruct {
+                opt: Some(SimpleStruct { val: 12, other: 34 })
+            }
         );
     }
 
