@@ -23,8 +23,8 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::ffi;
 use crate::utils::uds::{recv_msg_with_fds, send_msg_with_fds};
 use crate::virtio::vu::bindings::{
-    DeviceConfig, FsMap, MAX_CONFIG_SIZE, MemorySingleRegion, Message, MessageFlag, VirtqAddr,
-    VirtqState, VuBackMsg, VuFrontMsg,
+    DeviceConfig, MAX_CONFIG_SIZE, MemorySingleRegion, Message, MessageFlag, VhostUserMmap,
+    VirtqAddr, VirtqState, VuBackMsg, VuFrontMsg,
 };
 use crate::virtio::vu::{Result, error};
 
@@ -363,11 +363,11 @@ impl VuChannel {
         send(&self.conn, req.raw(), payload, &[], &mut [], fds)
     }
 
-    pub fn fs_map(&self, payload: &FsMap, fds: &[BorrowedFd]) -> Result<()> {
-        self.send(VuBackMsg::SHARED_OBJECT_ADD, payload, fds)
+    pub fn shmem_map(&self, payload: &VhostUserMmap, fd: BorrowedFd) -> Result<()> {
+        self.send(VuBackMsg::SHMEM_MAP, payload, &[fd])
     }
 
-    pub fn fs_unmap(&self, payload: &FsMap) -> Result<()> {
-        self.send(VuBackMsg::SHARED_OBJECT_REMOVE, payload, &[])
+    pub fn shmem_unmap(&self, payload: &VhostUserMmap) -> Result<()> {
+        self.send(VuBackMsg::SHMEM_UNMAP, payload, &[])
     }
 }

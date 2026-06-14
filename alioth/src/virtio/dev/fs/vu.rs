@@ -14,7 +14,6 @@
 
 use std::fs::File;
 use std::io::ErrorKind;
-use std::iter::zip;
 use std::mem::size_of_val;
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
@@ -37,10 +36,12 @@ use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::fs::{FsConfig, FsFeature};
+use crate::virtio::dev::fs::{DAX_SHMEM_ID, FsConfig, FsFeature};
 use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
-use crate::virtio::vu::bindings::{DeviceConfig, FsMap, VuBackMsg, VuFeature};
+use crate::virtio::vu::bindings::{
+    DeviceConfig, VhostUserMmap, VhostUserMmapFlag, VuBackMsg, VuFeature,
+};
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::vu::frontend::VuFrontend;
 use crate::virtio::vu::{Error, error as vu_error};
@@ -59,7 +60,7 @@ impl VuFs {
     pub fn new(param: VuFsParam, name: impl Into<Arc<str>>) -> Result<Self> {
         let mut extra_features = VuFeature::empty();
         if param.dax_window > 0 {
-            extra_features |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD
+            extra_features |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD | VuFeature::SHMEM
         };
         if param.tag.is_none() {
             extra_features |= VuFeature::CONFIG;
@@ -234,66 +235,67 @@ impl VirtioMio for VuFs {
             .fail()?;
         };
         loop {
-            let mut fds = [const { None }; 8];
+            let mut fds = [None];
             let msg = channel.recv_msg(&mut fds);
             let (request, size) = match msg {
                 Ok(m) => (m.request, m.size),
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e)?,
             };
-            let fs_map: FsMap = channel.recv_payload()?;
+            let payload: VhostUserMmap = channel.recv_payload()?;
 
-            if size as usize != size_of_val(&fs_map) {
+            if size as usize != size_of_val(&payload) {
                 return vu_error::PayloadSize {
-                    want: size_of_val(&fs_map),
+                    want: size_of_val(&payload),
                     got: size,
                 }
                 .fail()?;
             }
             match VuBackMsg::from(request) {
-                VuBackMsg::SHARED_OBJECT_ADD => {
-                    for (index, fd) in fds.iter().enumerate() {
-                        let Some(fd) = fd else {
-                            break;
-                        };
-                        let raw_fd = fd.as_raw_fd();
-                        let map_addr = dax_region.addr() + fs_map.cache_offset[index] as usize;
-                        log::trace!(
-                            "{}: mapping fd {raw_fd} to offset {:#x}",
-                            self.name(),
-                            fs_map.cache_offset[index]
-                        );
-                        ffi!(
-                            unsafe {
-                                mmap(
-                                    map_addr as _,
-                                    fs_map.len[index] as _,
-                                    fs_map.flags[index] as _,
-                                    MAP_SHARED | MAP_FIXED,
-                                    raw_fd,
-                                    fs_map.fd_offset[index] as _,
-                                )
-                            },
-                            MAP_FAILED
-                        )?;
-                    }
+                VuBackMsg::SHMEM_MAP => {
+                    let [Some(fd)] = fds else {
+                        return vu_error::MissingFd { req: request }.fail()?;
+                    };
+                    let shm_offset = payload.shm_offset;
+                    let map_addr = dax_region.addr() + shm_offset as usize;
+                    let prot = if payload.flags.contains(VhostUserMmapFlag::RW) {
+                        libc::PROT_READ | libc::PROT_WRITE
+                    } else {
+                        libc::PROT_READ
+                    };
+                    log::trace!(
+                        "{}: mapping fd {} to offset {shm_offset:#x}, size {:#x}",
+                        self.name(),
+                        fd.as_raw_fd(),
+                        payload.len,
+                    );
+                    ffi!(
+                        unsafe {
+                            mmap(
+                                map_addr as _,
+                                payload.len as _,
+                                prot,
+                                MAP_SHARED | MAP_FIXED,
+                                fd.as_raw_fd(),
+                                payload.fd_offset as _,
+                            )
+                        },
+                        MAP_FAILED
+                    )?;
                 }
-                VuBackMsg::SHARED_OBJECT_REMOVE => {
-                    for (len, offset) in zip(fs_map.len, fs_map.cache_offset) {
-                        if len == 0 {
-                            continue;
-                        }
-                        log::trace!(
-                            "{}: unmapping offset {offset:#x}, size {len:#x}",
-                            self.name()
-                        );
-                        let map_addr = dax_region.addr() + offset as usize;
-                        let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED;
-                        ffi!(
-                            unsafe { mmap(map_addr as _, len as _, PROT_NONE, flags, -1, 0) },
-                            MAP_FAILED
-                        )?;
-                    }
+                VuBackMsg::SHMEM_UNMAP => {
+                    let shm_offset = payload.shm_offset;
+                    let len = payload.len;
+                    log::trace!(
+                        "{}: unmapping offset {shm_offset:#x}, size {len:#x}",
+                        self.name(),
+                    );
+                    let map_addr = dax_region.addr() + shm_offset as usize;
+                    let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED;
+                    ffi!(
+                        unsafe { mmap(map_addr as _, len as _, PROT_NONE, flags, -1, 0) },
+                        MAP_FAILED
+                    )?;
                 }
                 _ => unimplemented!("{}: unknown request {request:#x}", self.name()),
             }
@@ -334,32 +336,34 @@ impl DaxRegion for VuDaxRegion {
         len: u64,
         flag: FuseSetupmappingFlag,
     ) -> fuse::Result<()> {
-        let mut fs_map = FsMap::new_zeroed();
-        fs_map.fd_offset[0] = f_offset;
-        fs_map.cache_offset[0] = m_offset;
-
-        let mut prot = 0;
-        if flag.contains(FuseSetupmappingFlag::READ) {
-            prot |= libc::PROT_READ;
+        let flags = if flag.contains(FuseSetupmappingFlag::WRITE) {
+            VhostUserMmapFlag::RW
+        } else {
+            VhostUserMmapFlag::empty()
         };
-        if flag.contains(FuseSetupmappingFlag::WRITE) {
-            prot |= libc::PROT_WRITE;
-        }
-        fs_map.flags[0] = prot as _;
 
-        fs_map.len[0] = len;
-        let fds = [fd.as_fd()];
+        let payload = VhostUserMmap {
+            shmid: DAX_SHMEM_ID,
+            fd_offset: f_offset,
+            shm_offset: m_offset,
+            len,
+            flags,
+            ..Default::default()
+        };
         self.channel
-            .fs_map(&fs_map, &fds)
+            .shmem_map(&payload, fd.as_fd())
             .box_trace(fuse::error::DaxMapping)
     }
 
     fn unmap(&self, m_offset: u64, len: u64) -> fuse::Result<()> {
-        let mut fs_map = FsMap::new_zeroed();
-        fs_map.cache_offset[0] = m_offset;
-        fs_map.len[0] = len;
+        let payload = VhostUserMmap {
+            shmid: DAX_SHMEM_ID,
+            shm_offset: m_offset,
+            len,
+            ..Default::default()
+        };
         self.channel
-            .fs_unmap(&fs_map)
+            .shmem_unmap(&payload)
             .box_trace(fuse::error::DaxMapping)
     }
 }

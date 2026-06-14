@@ -39,6 +39,7 @@ bitflags! {
         XEN_MMAP = 1 << 17;
         SHARED_OBJECT = 1 << 18;
         DEVICE_STATE = 1 << 19;
+        SHMEM = 1 << 21;
     }
 }
 
@@ -99,6 +100,8 @@ consts! {
         SHARED_OBJECT_ADD = 6;
         SHARED_OBJECT_REMOVE = 7;
         SHARED_OBJECT_LOOKUP = 8;
+        SHMEM_MAP = 9;
+        SHMEM_UNMAP = 10;
     }
 }
 
@@ -178,19 +181,27 @@ pub struct DeviceConfig {
     pub flags: u32,
 }
 
-#[derive(Debug, Clone, FromBytes, Immutable, IntoBytes, KnownLayout)]
-#[repr(C)]
-pub struct FsMap {
-    pub fd_offset: [u64; 8],
-    pub cache_offset: [u64; 8],
-    pub len: [u64; 8],
-    pub flags: [u64; 8],
-}
-
 #[derive(Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct Message {
     pub request: u32,
     pub flag: MessageFlag,
     pub size: u32,
+}
+
+bitflags! {
+    pub struct VhostUserMmapFlag(u64) {
+        RW = 1 << 0;
+    }
+}
+
+#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
+#[repr(C)]
+pub struct VhostUserMmap {
+    pub shmid: u8,
+    pub padding: [u8; 7],
+    pub fd_offset: u64,
+    pub shm_offset: u64,
+    pub len: u64,
+    pub flags: VhostUserMmapFlag,
 }

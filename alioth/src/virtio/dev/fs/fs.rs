@@ -44,6 +44,8 @@ use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender};
 use crate::{bitflags, ffi, impl_mmio_for_zerocopy};
 
+pub const DAX_SHMEM_ID: u8 = 0;
+
 impl DaxRegion for ArcMemPages {
     fn map(
         &self,

@@ -271,7 +271,8 @@ impl VuBackend {
                     | VuFeature::BACKEND_REQ
                     | VuFeature::BACKEND_SEND_FD
                     | VuFeature::CONFIG
-                    | VuFeature::STATUS;
+                    | VuFeature::STATUS
+                    | VuFeature::SHMEM;
                 self.session.reply(req, &feature.bits(), &[])?;
                 msg.flag.set_need_reply(false);
                 log::debug!("{name}: get protocol feature: {feature:x?}");
