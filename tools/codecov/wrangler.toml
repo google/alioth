@@ -1,0 +1,25 @@
+name = "alioth-codecov"
+main = "src/index.tsx"
+compatibility_date = "2024-02-27"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database for storing metadata (commit SHA, branch, overall coverage)
+[[d1_databases]]
+binding = "DB"
+database_name = "alioth-codecov-db"
+database_id = "721c795f-fda6-4110-a541-696a965c7966"
+
+# R2 Bucket for storing detailed coverage JSON payloads
+[[r2_buckets]]
+binding = "COVERAGE_BUCKET"
+bucket_name = "alioth-codecov-reports"
+
+[triggers]
+crons = ["0 0 * * *"] # Run daily at midnight UTC
+
+[vars]
+PROJECT_NAME = "Alioth"
+GITHUB_REPO = "google/alioth"
+RETENTION_DAYS = 90
+# Add any environment variables here, e.g., GitHub API tokens if needed later
+# GITHUB_TOKEN = "your_token_here"
