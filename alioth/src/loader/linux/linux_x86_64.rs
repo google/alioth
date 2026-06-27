@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ffi::CStr;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{size_of, size_of_val};
@@ -46,7 +45,7 @@ pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
     mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
-    cmdline: Option<&CStr>,
+    cmdline: Option<&str>,
     initramfs: Option<P>,
 ) -> Result<InitState, Error> {
     let mut boot_params = BootParams::new_zeroed();
@@ -104,17 +103,20 @@ pub fn load<P: AsRef<Path>>(
 
     // load cmd line
     if let Some(cmdline) = cmdline {
-        let cmdline = cmdline.to_bytes_with_nul();
-        let cmdline_limit =
-            std::cmp::min(boot_params.hdr.cmdline_size as u64, KERNEL_CMDLINE_LIMIT);
-        if cmdline.len() as u64 > cmdline_limit {
+        let bytes = cmdline.as_bytes();
+        let cmdline_limit = std::cmp::min(
+            boot_params.hdr.cmdline_size as u64 + 1,
+            KERNEL_CMDLINE_LIMIT,
+        );
+        if bytes.len() as u64 >= cmdline_limit {
             return error::CmdLineTooLong {
-                len: cmdline.len(),
-                limit: cmdline_limit,
+                len: bytes.len(),
+                limit: cmdline_limit - 1,
             }
             .fail();
         }
-        memory.write_range(KERNEL_CMDLINE_START, cmdline.len() as u64, cmdline)?;
+        memory.write_range(KERNEL_CMDLINE_START, bytes.len() as u64, bytes)?;
+        memory.write_t(KERNEL_CMDLINE_START + bytes.len() as u64, &0u8)?;
         boot_params.hdr.cmdline_ptr = KERNEL_CMDLINE_START as u32;
         boot_params.ext_cmdline_ptr = (KERNEL_CMDLINE_START >> 32) as u32;
     }

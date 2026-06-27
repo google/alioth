@@ -182,7 +182,7 @@ where
             dev.add_kernel_data(image).context(error::FwCfg)?;
         };
         if let Some(cmdline) = &payload.cmdline {
-            dev.add_kernel_cmdline(cmdline.to_owned());
+            dev.add_kernel_cmdline(cmdline).context(error::FwCfg)?;
         };
         if let Some(initramfs) = &payload.initramfs {
             dev.add_initramfs_data(initramfs).context(error::FwCfg)?;

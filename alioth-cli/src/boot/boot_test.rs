@@ -50,7 +50,7 @@ fn test_parse_args() {
     let args = BootArgs {
         firmware: Some(Path::new("stage0.bin").into()),
         kernel: Some(Path::new("vmlinuz").into()),
-        cmdline: Some(c"console=ttyS0".into()),
+        cmdline: Some("console=ttyS0".into()),
         initramfs: Some(Path::new("initramfs.cpio").into()),
         cpu: Some("count=16,topology=id_topo".into()),
         memory: Some("size=128G,backend=anon,shared=true".into()),
@@ -119,7 +119,7 @@ fn test_parse_args() {
         payload: Payload {
             executable: Some(Executable::Linux(Path::new("vmlinuz").into())),
             initramfs: Some(Path::new("initramfs.cpio").into()),
-            cmdline: Some(c"console=ttyS0".to_owned()),
+            cmdline: Some("console=ttyS0".into()),
             firmware: Some(Path::new("stage0.bin").into()),
         },
         net: vec![
@@ -299,7 +299,7 @@ fn test_parse_mem_arg(
 #[case(
     BootArgs {
         kernel: Some(Path::new("vmlinuz").into()),
-        cmdline: Some(c"console=ttyS0".into()),
+        cmdline: Some("console=ttyS0".into()),
         initramfs: Some(Path::new("initramfs.cpio").into()),
         ..Default::default()
     },
@@ -307,13 +307,13 @@ fn test_parse_mem_arg(
         firmware: None,
         initramfs: Some(Path::new("initramfs.cpio").into()),
         executable: Some(Executable::Linux(Path::new("vmlinuz").into())),
-        cmdline: Some(c"console=ttyS0".into()),
+        cmdline: Some("console=ttyS0".into()),
     }
 )]
 #[cfg_attr(target_arch = "x86_64", case(
     BootArgs {
         pvh: Some(Path::new("vmlinux.bin").into()),
-        cmdline: Some(c"console=ttyS0".into()),
+        cmdline: Some("console=ttyS0".into()),
         initramfs: Some(Path::new("initramfs.cpio").into()),
         ..Default::default()
     },
@@ -321,7 +321,7 @@ fn test_parse_mem_arg(
         firmware: None,
         initramfs: Some(Path::new("initramfs.cpio").into()),
         executable: Some(Executable::Pvh(Path::new("vmlinux.bin").into())),
-        cmdline: Some(c"console=ttyS0".into()),
+        cmdline: Some("console=ttyS0".into()),
     }
 ))]
 fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: Payload) {

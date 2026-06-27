@@ -15,7 +15,6 @@
 mod config;
 
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::mem;
 use std::path::{Path, PathBuf};
 
@@ -94,7 +93,7 @@ pub struct BootArgs {
 
     /// Command line to pass to the kernel, e.g. `console=ttyS0`.
     #[arg(short, long, alias = "cmd-line", value_name = "ARGS")]
-    cmdline: Option<CString>,
+    cmdline: Option<Box<str>>,
 
     /// Path to an initramfs image.
     #[arg(short, long, value_name = "PATH")]

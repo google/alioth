@@ -339,11 +339,15 @@ impl FwCfg {
         Ok(())
     }
 
-    pub fn add_kernel_cmdline(&mut self, s: CString) {
-        let bytes = s.into_bytes_with_nul();
+    pub fn add_kernel_cmdline(&mut self, s: &str) -> Result<()> {
+        let Ok(c_str) = CString::new(s) else {
+            return Err(ErrorKind::InvalidInput.into());
+        };
+        let bytes = c_str.into_bytes_with_nul();
         self.known_items[FW_CFG_CMDLINE_SIZE as usize] =
             FwCfgContent::Lu32((bytes.len() as u32).into());
         self.known_items[FW_CFG_CMDLINE_DATA as usize] = FwCfgContent::Bytes(bytes);
+        Ok(())
     }
 
     pub fn add_item(&mut self, item: FwCfgItem) -> Result<()> {
