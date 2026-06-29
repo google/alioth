@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Build Output
+dist/
+.wrangler/
+
+# Environment Variables
+.dev.vars
+
+# Operating System Files
+.DS_Store
+Thumbs.db
