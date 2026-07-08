@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #[cfg(target_arch = "x86_64")]
-#[path = "kvm_x86_64/kvm_x86_64.rs"]
+#[path = "kvm_amd64/kvm_amd64.rs"]
 mod x86_64;
 
 #[cfg(target_arch = "aarch64")]

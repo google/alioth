@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #[cfg(target_arch = "aarch64")]
-#[path = "vcpu_aarch64.rs"]
+#[path = "vcpu_arm64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
-#[path = "vcpu_x86_64/vcpu_x86_64.rs"]
+#[path = "vcpu_amd64/vcpu_amd64.rs"]
 mod x86_64;
 
 mod vmentry;

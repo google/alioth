@@ -116,5 +116,5 @@ impl KvmVm {
 }
 
 #[cfg(test)]
-#[path = "vm_x86_64_test.rs"]
+#[path = "vm_amd64_test.rs"]
 mod test;
