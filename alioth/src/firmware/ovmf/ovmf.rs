@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[path = "ovmf_x86_64/ovmf_x86_64.rs"]
+#[path = "ovmf_amd64/ovmf_amd64.rs"]
 pub mod x86_64;
 
 #[cfg(target_arch = "x86_64")]

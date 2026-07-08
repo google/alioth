@@ -315,5 +315,5 @@ impl KvmVcpu {
 }
 
 #[cfg(test)]
-#[path = "vcpu_x86_64_test.rs"]
+#[path = "vcpu_amd64_test.rs"]
 mod tests;

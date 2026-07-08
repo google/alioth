@@ -533,5 +533,5 @@ const PHANDLE_MSI: u32 = 3;
 const PHANDLE_CPU: u32 = 1 << 31;
 
 #[cfg(test)]
-#[path = "board_aarch64_test.rs"]
+#[path = "board_arm64_test.rs"]
 mod tests;

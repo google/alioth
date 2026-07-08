@@ -385,5 +385,5 @@ const DSDT_TEMPLATE: [u8; 352] = [
 const DSDT_OFFSET_PCI_QWORD_MEM: usize = 0x12b;
 
 #[cfg(test)]
-#[path = "board_x86_64_test.rs"]
+#[path = "board_amd64_test.rs"]
 mod tests;

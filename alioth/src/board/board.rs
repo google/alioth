@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #[cfg(target_arch = "aarch64")]
-#[path = "board_aarch64.rs"]
+#[path = "board_arm64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
-#[path = "board_x86_64/board_x86_64.rs"]
+#[path = "board_amd64/board_amd64.rs"]
 mod x86_64;
 
 use std::ffi::CStr;
