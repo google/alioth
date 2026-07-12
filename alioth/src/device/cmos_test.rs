@@ -55,7 +55,7 @@ fn test_cmos() {
         let value = cmos.read(0x1, 1).unwrap();
         assert_eq!(
             value as u32, expected,
-            "CMOS register {reg:#02x} should match getter",
+            "CMOS register {reg:#04x} should match getter",
         );
     }
 

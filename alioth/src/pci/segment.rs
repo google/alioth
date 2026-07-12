@@ -183,7 +183,7 @@ impl PciSegment {
 
     pub fn reset(&self) -> Result<()> {
         let devices = self.devices.read();
-        for (_, dev) in devices.iter() {
+        for dev in devices.values() {
             dev.reset()?;
             dev.config().reset()?;
         }
