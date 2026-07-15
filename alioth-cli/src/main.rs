@@ -44,11 +44,7 @@ struct Cli {
     /// If not set, environment variable $RUST_LOG is used.
     pub log_spec: Option<String>,
 
-    /// Log to file instead of STDERR.
-    #[arg(long)]
-    pub log_to_file: bool,
-
-    /// Path to a directory where the log file is stored.
+    /// Path to a directory where the log file is stored, otherwise log to STDERR.
     #[arg(long, value_name = "PATH")]
     pub log_dir: Option<Box<Path>>,
 
@@ -58,20 +54,18 @@ struct Cli {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let logger = if let Some(ref spec) = cli.log_spec {
+    let mut logger = if let Some(ref spec) = cli.log_spec {
         Logger::try_with_str(spec)
     } else {
         Logger::try_with_env_or_str("warn")
     }?;
-    let logger = if cli.log_to_file {
-        logger.log_to_file(
+    if let Some(log_dir) = cli.log_dir {
+        logger = logger.log_to_file(
             FileSpec::default()
                 .suppress_timestamp()
-                .o_directory(cli.log_dir),
-        )
-    } else {
-        logger
-    };
+                .directory(log_dir),
+        );
+    }
     let _handle = logger.start()?;
     log::debug!(
         "{} {} started...",
