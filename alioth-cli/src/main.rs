@@ -48,6 +48,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     pub log_dir: Option<Box<Path>>,
 
+    /// Name of the log file, if logging to a directory is enabled.
+    /// If not set, a default name is used.
+    #[arg(long, value_name = "NAME", requires = "log_dir")]
+    pub log_file: Option<Box<str>>,
+
     #[command(subcommand)]
     pub cmd: Command,
 }
@@ -60,11 +65,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Logger::try_with_env_or_str("warn")
     }?;
     if let Some(log_dir) = cli.log_dir {
-        logger = logger.log_to_file(
-            FileSpec::default()
-                .suppress_timestamp()
-                .directory(log_dir),
-        );
+        let spec = if let Some(name) = cli.log_file {
+            FileSpec::try_from(log_dir.join(&*name))?
+        } else {
+            FileSpec::default().directory(log_dir)
+        };
+        logger = logger.log_to_file(spec);
     }
     let _handle = logger.start()?;
     log::debug!(
