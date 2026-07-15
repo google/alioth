@@ -30,7 +30,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vu::bindings::{
     DeviceConfig, MemoryRegion, MemorySingleRegion, VirtqAddr, VirtqState, VuFeature,
@@ -429,12 +429,12 @@ impl VirtioMio for VuFrontend {
     }
 }
 
-pub struct VuFrontendParam {
+pub struct VuFrontendSpec {
     pub socket: Box<Path>,
     pub id: DeviceId,
 }
 
-impl DevParam for VuFrontendParam {
+impl DevSpec for VuFrontendSpec {
     type Device = VuFrontend;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {

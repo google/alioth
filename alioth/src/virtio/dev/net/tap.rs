@@ -43,7 +43,7 @@ use crate::sys::if_tun::{TunFeature, tun_set_iff, tun_set_offload, tun_set_vnet_
 use crate::virtio::dev::net::{
     CtrlAck, CtrlClass, CtrlHdr, CtrlMq, CtrlMqParisSet, NetConfig, NetFeature, VirtioNetHdr,
 };
-use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::{
     DescChain, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
 };
@@ -65,7 +65,7 @@ pub struct Net {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Help)]
-pub struct NetTapParam {
+pub struct TapNetSpec {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
     /// Maximum transmission unit.
@@ -88,7 +88,7 @@ pub struct NetTapParam {
     pub api: WorkerApi,
 }
 
-impl DevParam for NetTapParam {
+impl DevSpec for TapNetSpec {
     type Device = Net;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Net> {
@@ -108,13 +108,10 @@ fn new_socket(dev_tap: Option<&Path>, blocking: bool) -> Result<File> {
 }
 
 impl Net {
-    pub fn new(param: NetTapParam, name: impl Into<Arc<str>>) -> Result<Self> {
-        let mut socket = new_socket(
-            param.tap.as_deref(),
-            matches!(param.api, WorkerApi::IoUring),
-        )?;
-        let max_queue_pairs = max(param.queue_pairs, 1);
-        setup_socket(&mut socket, param.if_name.as_deref(), max_queue_pairs > 1)?;
+    pub fn new(spec: TapNetSpec, name: impl Into<Arc<str>>) -> Result<Self> {
+        let mut socket = new_socket(spec.tap.as_deref(), matches!(spec.api, WorkerApi::IoUring))?;
+        let max_queue_pairs = max(spec.queue_pairs, 1);
+        setup_socket(&mut socket, spec.if_name.as_deref(), max_queue_pairs > 1)?;
         let mut dev_feat = NetFeature::MAC
             | NetFeature::MTU
             | NetFeature::CSUM
@@ -131,17 +128,17 @@ impl Net {
         let net = Net {
             name: name.into(),
             config: Arc::new(NetConfig {
-                mac: param.mac,
+                mac: spec.mac,
                 max_queue_pairs,
-                mtu: param.mtu,
+                mtu: spec.mtu,
                 ..Default::default()
             }),
             tap_sockets: vec![socket],
             feature: dev_feat,
             driver_feature: NetFeature::empty(),
-            dev_tap: param.tap,
-            if_name: param.if_name,
-            api: param.api,
+            dev_tap: spec.tap,
+            if_name: spec.if_name,
+            api: spec.api,
         };
         Ok(net)
     }

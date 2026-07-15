@@ -46,7 +46,7 @@ use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::kvm::{KvmError, check_extension, kvm_error};
 use crate::hv::{
     Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Kvm, MemMapOption, MsiSender, Result,
-    Vm, VmConfig, VmMemory, error,
+    Vm, VmMemory, VmSpec, error,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
@@ -600,14 +600,14 @@ pub struct KvmVm {
 }
 
 impl KvmVm {
-    pub fn new(kvm: &Kvm, config: &VmConfig) -> Result<Self> {
+    pub fn new(kvm: &Kvm, spec: &VmSpec) -> Result<Self> {
         let vcpu_mmap_size =
             unsafe { kvm_get_vcpu_mmap_size(&kvm.fd) }.context(error::CreateVm)? as usize;
-        let kvm_vm_type = Self::determine_vm_type(config);
+        let kvm_vm_type = Self::determine_vm_type(spec);
         let vm_fd = unsafe { kvm_create_vm(&kvm.fd, kvm_vm_type) }.context(error::CreateVm)?;
         let fd = unsafe { OwnedFd::from_raw_fd(vm_fd) };
-        let arch = VmArch::new(kvm, config)?;
-        let memfd = Self::create_guest_memfd(config, &fd)?;
+        let arch = VmArch::new(kvm, spec)?;
+        let memfd = Self::create_guest_memfd(spec, &fd)?;
         let kvm_vm = KvmVm {
             vm: Arc::new(VmInner {
                 fd,
@@ -621,7 +621,7 @@ impl KvmVm {
             }),
             memory_created: false,
         };
-        kvm_vm.init(config)?;
+        kvm_vm.init(spec)?;
         Ok(kvm_vm)
     }
 }

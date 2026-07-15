@@ -31,7 +31,7 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
@@ -126,7 +126,7 @@ pub struct Balloon {
 }
 
 impl Balloon {
-    pub fn new(param: BalloonParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(spec: BalloonSpec, name: impl Into<Arc<str>>) -> Result<Self> {
         if unsafe { sysconf(_SC_PAGESIZE) } != 1 << 12 {
             let err = std::io::ErrorKind::Unsupported;
             Err(std::io::Error::from(err))?;
@@ -136,7 +136,7 @@ impl Balloon {
             ..Default::default()
         };
         let mut feature = BalloonFeature::all();
-        if !param.free_page_reporting {
+        if !spec.free_page_reporting {
             feature.remove(BalloonFeature::PAGE_REPORTING);
         };
         let name = name.into();
@@ -314,13 +314,13 @@ impl VirtioMio for Balloon {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Help)]
-pub struct BalloonParam {
+pub struct BalloonSpec {
     /// Enable free page reporting. [default: false]
     #[serde(default)]
     pub free_page_reporting: bool,
 }
 
-impl DevParam for BalloonParam {
+impl DevSpec for BalloonSpec {
     type Device = Balloon;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {

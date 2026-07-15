@@ -47,7 +47,7 @@ use crate::sys::xpc::{
     xpc_dictionary_get_uint64, xpc_uint64_create,
 };
 use crate::virtio::dev::net::{NetConfig, NetFeature, VirtioNetHdr};
-use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender};
@@ -76,8 +76,8 @@ fn check_ret(ret: VmnetReturn) -> Result<(), io::Error> {
 }
 
 impl Net {
-    pub fn new(param: NetVmnetParam, name: impl Into<Arc<str>>) -> Result<Self> {
-        let allocate_mac = param.mac.is_none();
+    pub fn new(spec: VmnetSpec, name: impl Into<Arc<str>>) -> Result<Self> {
+        let allocate_mac = spec.mac.is_none();
         let keys = unsafe {
             [
                 vmnet_operation_mode_key,
@@ -160,7 +160,7 @@ impl Net {
             Err(_) => Err(io::Error::other("failed to start vmnet interface").into()),
         }?;
 
-        if let Some(mac) = param.mac {
+        if let Some(mac) = spec.mac {
             config.mac = mac;
         }
 
@@ -454,12 +454,12 @@ fn write_to_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct NetVmnetParam {
+pub struct VmnetSpec {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: Option<MacAddr>,
 }
 
-impl DevParam for NetVmnetParam {
+impl DevSpec for VmnetSpec {
     type Device = Net;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {

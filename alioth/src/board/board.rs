@@ -43,10 +43,10 @@ use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{DebugTrace, trace_error};
-use crate::hv::{Coco, Hypervisor, Vm, VmConfig};
-use crate::loader::Payload;
+use crate::hv::{CocoSpec, Hypervisor, Vm, VmSpec};
+use crate::loader::PayloadSpec;
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{MemBackend, MemConfig, MemRegion, MemRegionType, Memory};
+use crate::mem::{MemBackend, MemRegion, MemRegionType, MemSpec, Memory};
 use crate::pci::bus::PciBus;
 
 #[cfg(target_arch = "aarch64")]
@@ -106,7 +106,7 @@ const fn default_cpu_count() -> u16 {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
-pub struct CpuConfig {
+pub struct CpuSpec {
     /// Number of VCPUs assigned to the guest. [default: 1]
     #[serde(default = "default_cpu_count")]
     pub count: u16,
@@ -115,7 +115,7 @@ pub struct CpuConfig {
     pub topology: CpuTopology,
 }
 
-impl CpuConfig {
+impl CpuSpec {
     pub fn validate(&self) -> bool {
         let vcpus_per_core = 1 + self.topology.smt as u16;
         let vcpus_per_socket = self.topology.cores * vcpus_per_core;
@@ -127,13 +127,13 @@ impl CpuConfig {
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
-pub struct BoardConfig {
-    pub mem: MemConfig,
-    pub cpu: CpuConfig,
-    pub coco: Option<Coco>,
+pub struct BoardSpec {
+    pub mem: MemSpec,
+    pub cpu: CpuSpec,
+    pub coco: Option<CocoSpec>,
 }
 
-impl BoardConfig {
+impl BoardSpec {
     pub fn pcie_mmio_64_start(&self) -> u64 {
         (self.mem.size.saturating_sub(RAM_32_SIZE) + MEM_64_START).next_power_of_two()
     }
@@ -153,8 +153,8 @@ where
     pub vm: V,
     pub memory: Memory,
     pub arch: ArchBoard<V>,
-    pub config: BoardConfig,
-    pub payload: RwLock<Option<Payload>>,
+    pub spec: BoardSpec,
+    pub payload: RwLock<Option<PayloadSpec>>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn MmioDev>)>>,
     pub mmio_devs: RwLock<Vec<(u64, Arc<dyn MmioDev>)>>,
     pub pci_bus: PciBus,
@@ -166,24 +166,24 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub fn new<H>(hv: &H, config: BoardConfig) -> Result<Self>
+    pub fn new<H>(hv: &H, spec: BoardSpec) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
-        config.validate()?;
+        spec.validate()?;
 
-        let vm_config = VmConfig {
-            coco: config.coco.clone(),
+        let vm_spec = VmSpec {
+            coco: spec.coco.clone(),
         };
-        let mut vm = hv.create_vm(&vm_config)?;
+        let mut vm = hv.create_vm(&vm_spec)?;
         let vm_memory = Arc::new(vm.create_vm_memory()?);
-        let arch = ArchBoard::new(hv, &vm, &config)?;
+        let arch = ArchBoard::new(hv, &vm, &spec)?;
 
         let board = Board {
             vm,
             memory: Memory::new(vm_memory.clone()),
             arch,
-            config,
+            spec,
             payload: RwLock::new(None),
             io_devs: RwLock::new(Vec::new()),
             mmio_devs: RwLock::new(Vec::new()),
@@ -208,7 +208,7 @@ where
                 MemRegionType::Reserved,
             )),
         )?;
-        let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
+        let pcie_mmio_64_start = self.spec.pcie_mmio_64_start();
         self.pci_bus.segment.assign_resources(&[
             (0x1000, 0x10000),
             (
@@ -240,18 +240,18 @@ where
         size: u64,
         #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] name: &CStr,
     ) -> Result<ArcMemPages> {
-        let mmap_flag = if self.config.mem.shared {
+        let mmap_flag = if self.spec.mem.shared {
             Some(MAP_SHARED)
         } else {
             Some(MAP_PRIVATE)
         };
-        let pages = match self.config.mem.backend {
+        let pages = match self.spec.mem.backend {
             #[cfg(target_os = "linux")]
             MemBackend::Memfd => ArcMemPages::from_memfd(name, size as usize, None),
             MemBackend::Anonymous => ArcMemPages::from_anonymous(size as usize, None, mmap_flag),
         }?;
         #[cfg(target_os = "linux")]
-        if self.config.mem.transparent_hugepage {
+        if self.spec.mem.transparent_hugepage {
             pages.madvise_hugepage()?;
         }
         Ok(pages)

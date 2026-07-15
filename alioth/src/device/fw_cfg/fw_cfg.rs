@@ -541,7 +541,7 @@ impl Pause for Mutex<FwCfg> {
 impl MmioDev for Mutex<FwCfg> {}
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Help)]
-pub enum FwCfgContentParam {
+pub enum FwCfgContentSpec {
     /// Path to a file with binary contents.
     #[serde(alias = "file")]
     File(Box<Path>),
@@ -551,15 +551,15 @@ pub enum FwCfgContentParam {
 }
 
 #[derive(Debug, PartialEq, Eq, Help)]
-pub struct FwCfgItemParam {
+pub struct FwCfgItemSpec {
     /// Selector key of an item.
     pub name: String,
     /// Item content.
     #[serde_aco(flatten)]
-    pub content: FwCfgContentParam,
+    pub content: FwCfgContentSpec,
 }
 
-impl<'de> Deserialize<'de> for FwCfgItemParam {
+impl<'de> Deserialize<'de> for FwCfgItemSpec {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -572,13 +572,13 @@ impl<'de> Deserialize<'de> for FwCfgItemParam {
             String,
         }
 
-        struct ParamVisitor;
+        struct SpecVisitor;
 
-        impl<'de> Visitor<'de> for ParamVisitor {
-            type Value = FwCfgItemParam;
+        impl<'de> Visitor<'de> for SpecVisitor {
+            type Value = FwCfgItemSpec;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct FwCfgItemParam")
+                formatter.write_str("struct FwCfgItemSpec")
             }
 
             fn visit_map<V>(self, mut map: V) -> std::result::Result<Self::Value, V::Error>
@@ -599,38 +599,38 @@ impl<'de> Deserialize<'de> for FwCfgItemParam {
                             if content.is_some() {
                                 return Err(de::Error::duplicate_field("string,file"));
                             }
-                            content = Some(FwCfgContentParam::String(map.next_value()?));
+                            content = Some(FwCfgContentSpec::String(map.next_value()?));
                         }
                         Field::File => {
                             if content.is_some() {
                                 return Err(de::Error::duplicate_field("string,file"));
                             }
-                            content = Some(FwCfgContentParam::File(map.next_value()?));
+                            content = Some(FwCfgContentSpec::File(map.next_value()?));
                         }
                     }
                 }
                 let name = name.ok_or_else(|| de::Error::missing_field("name"))?;
                 let content = content.ok_or_else(|| de::Error::missing_field("file,string"))?;
-                Ok(FwCfgItemParam { name, content })
+                Ok(FwCfgItemSpec { name, content })
             }
         }
 
         const FIELDS: &[&str] = &["name", "file", "string"];
-        deserializer.deserialize_struct("FwCfgItemParam", FIELDS, ParamVisitor)
+        deserializer.deserialize_struct("FwCfgItemSpec", FIELDS, SpecVisitor)
     }
 }
 
-impl FwCfgItemParam {
+impl FwCfgItemSpec {
     pub fn build(self) -> Result<FwCfgItem> {
         match self.content {
-            FwCfgContentParam::File(file) => {
+            FwCfgContentSpec::File(file) => {
                 let f = File::open(file)?;
                 Ok(FwCfgItem {
                     name: self.name,
                     content: FwCfgContent::File(0, f),
                 })
             }
-            FwCfgContentParam::String(string) => Ok(FwCfgItem {
+            FwCfgContentSpec::String(string) => Ok(FwCfgItem {
                 name: self.name,
                 content: FwCfgContent::Bytes(string.into()),
             }),

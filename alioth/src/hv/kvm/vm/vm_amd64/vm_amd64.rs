@@ -24,7 +24,7 @@ use crate::arch::intr::{MsiAddrHi, MsiAddrLo};
 use crate::arch::ioapic::NUM_PINS;
 use crate::hv::kvm::x86_64::sev::SevFd;
 use crate::hv::kvm::{KvmVm, kvm_error};
-use crate::hv::{Coco, Kvm, Result, VmConfig, error};
+use crate::hv::{CocoSpec, Kvm, Result, VmSpec, error};
 use crate::sys::kvm::{
     KvmCap, KvmCreateGuestMemfd, KvmVmType, KvmX2apicApiFlag, kvm_create_guest_memfd,
     kvm_set_identity_map_addr, kvm_set_tss_addr,
@@ -48,39 +48,39 @@ pub struct VmArch {
 }
 
 impl VmArch {
-    pub fn new(kvm: &Kvm, config: &VmConfig) -> Result<Self> {
-        let Some(coco) = &config.coco else {
+    pub fn new(kvm: &Kvm, spec: &VmSpec) -> Result<Self> {
+        let Some(coco) = &spec.coco else {
             return Ok(VmArch::default());
         };
         match coco {
-            Coco::AmdSev { .. } | Coco::AmdSnp { .. } => {
+            CocoSpec::AmdSev { .. } | CocoSpec::AmdSnp { .. } => {
                 let default_dev = Path::new("/dev/sev");
-                let dev_sev = kvm.config.dev_sev.as_deref().unwrap_or(default_dev);
+                let dev_sev = kvm.spec.dev_sev.as_deref().unwrap_or(default_dev);
                 let fd = SevFd::new(dev_sev)?;
                 Ok(VmArch { sev_fd: Some(fd) })
             }
-            Coco::IntelTdx { .. } => Ok(VmArch::default()),
+            CocoSpec::IntelTdx { .. } => Ok(VmArch::default()),
         }
     }
 }
 
 impl KvmVm {
-    pub fn determine_vm_type(config: &VmConfig) -> KvmVmType {
-        let Some(coco) = &config.coco else {
+    pub fn determine_vm_type(spec: &VmSpec) -> KvmVmType {
+        let Some(coco) = &spec.coco else {
             return KvmVmType::DEFAULT;
         };
         match coco {
-            Coco::AmdSev { .. } => KvmVmType::DEFAULT,
-            Coco::AmdSnp { .. } => KvmVmType::SNP,
-            Coco::IntelTdx { .. } => KvmVmType::TDX,
+            CocoSpec::AmdSev { .. } => KvmVmType::DEFAULT,
+            CocoSpec::AmdSnp { .. } => KvmVmType::SNP,
+            CocoSpec::IntelTdx { .. } => KvmVmType::TDX,
         }
     }
 
-    pub fn create_guest_memfd(config: &VmConfig, fd: &OwnedFd) -> Result<Option<OwnedFd>> {
-        let Some(coco) = &config.coco else {
+    pub fn create_guest_memfd(spec: &VmSpec, fd: &OwnedFd) -> Result<Option<OwnedFd>> {
+        let Some(coco) = &spec.coco else {
             return Ok(None);
         };
-        if !matches!(coco, Coco::AmdSnp { .. } | Coco::IntelTdx { .. }) {
+        if !matches!(coco, CocoSpec::AmdSnp { .. } | CocoSpec::IntelTdx { .. }) {
             return Ok(None);
         }
         let mut gmem = KvmCreateGuestMemfd {
@@ -91,7 +91,7 @@ impl KvmVm {
         Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
-    pub fn init(&self, config: &VmConfig) -> Result<()> {
+    pub fn init(&self, spec: &VmSpec) -> Result<()> {
         let x2apic_caps =
             KvmX2apicApiFlag::USE_32BIT_IDS | KvmX2apicApiFlag::DISABLE_BROADCAST_QUIRK;
         if let Err(e) = self.vm.enable_cap(KvmCap::X2APIC_API, x2apic_caps.bits()) {
@@ -103,11 +103,11 @@ impl KvmVm {
         unsafe { kvm_set_identity_map_addr(&self.vm.fd, &0xf000_3000) }
             .context(error::SetVmParam)?;
 
-        if let Some(coco) = &config.coco {
+        if let Some(coco) = &spec.coco {
             match coco {
-                Coco::AmdSev { policy } => self.sev_init(*policy),
-                Coco::AmdSnp { .. } => self.snp_init(),
-                Coco::IntelTdx { .. } => self.tdx_init(),
+                CocoSpec::AmdSev { policy } => self.sev_init(*policy),
+                CocoSpec::AmdSnp { .. } => self.snp_init(),
+                CocoSpec::IntelTdx { .. } => self.tdx_init(),
             }?;
         }
 

@@ -18,26 +18,26 @@ use std::collections::HashMap;
 use std::mem;
 use std::path::{Path, PathBuf};
 
-use alioth::board::{BoardConfig, CpuConfig};
+use alioth::board::{BoardSpec, CpuSpec};
 #[cfg(target_arch = "x86_64")]
-use alioth::device::fw_cfg::FwCfgItemParam;
+use alioth::device::fw_cfg::FwCfgItemSpec;
 use alioth::errors::{DebugTrace, trace_error};
 #[cfg(target_os = "macos")]
 use alioth::hv::Hvf;
 #[cfg(target_os = "linux")]
 use alioth::hv::Kvm;
-use alioth::hv::{Coco, HvConfig, Hypervisor};
-use alioth::loader::{Executable, Payload};
-use alioth::mem::{MemBackend, MemConfig};
+use alioth::hv::{CocoSpec, HvSpec, Hypervisor};
+use alioth::loader::{Executable, PayloadSpec};
+use alioth::mem::{MemBackend, MemSpec};
 #[cfg(target_os = "linux")]
-use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
 #[cfg(target_os = "linux")]
 use alioth::virtio::DeviceId;
-use alioth::virtio::dev::balloon::BalloonParam;
-use alioth::virtio::dev::blk::BlkFileParam;
-use alioth::virtio::dev::entropy::EntropyParam;
+use alioth::virtio::dev::balloon::BalloonSpec;
+use alioth::virtio::dev::blk::BlkFileSpec;
+use alioth::virtio::dev::entropy::EntropySpec;
 #[cfg(target_os = "linux")]
-use alioth::virtio::vu::frontend::VuFrontendParam;
+use alioth::virtio::vu::frontend::VuFrontendSpec;
 use alioth::virtio::worker::WorkerApi;
 use alioth::vm::Machine;
 use clap::Args;
@@ -46,7 +46,7 @@ use snafu::{ResultExt, Snafu};
 
 use crate::objects::{DOC_OBJECTS, parse_objects};
 
-use self::config::{BlkParam, Config, FsParam, NetParam, VsockParam};
+use self::config::{BlkSpec, FsSpec, NetSpec, VmSpec, VsockSpec};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -74,7 +74,7 @@ pub enum Error {
 #[command(arg_required_else_help = true, alias("run"))]
 pub struct BootArgs {
     #[arg(long, help(
-        help_text::<HvConfig>("Specify the Hypervisor to run on.")
+        help_text::<HvSpec>("Specify the Hypervisor to run on.")
     ), value_name = "HV")]
     hypervisor: Option<String>,
 
@@ -104,7 +104,7 @@ pub struct BootArgs {
     num_cpu: u16,
 
     #[arg(short('p'), long, help(
-        help_text::<CpuConfig>("Configure the VCPUs of the guest.")
+        help_text::<CpuSpec>("Configure the VCPUs of the guest.")
     ))]
     cpu: Option<Box<str>>,
 
@@ -113,7 +113,7 @@ pub struct BootArgs {
     mem_size: String,
 
     #[arg(short, long, help(
-        help_text::<MemConfig>("Specify the memory of the guest.")
+        help_text::<MemSpec>("Specify the memory of the guest.")
     ))]
     memory: Option<String>,
 
@@ -123,7 +123,7 @@ pub struct BootArgs {
 
     #[cfg(target_arch = "x86_64")]
     #[arg(long, help(
-        help_text::<FwCfgItemParam>("Add an extra item to the fw_cfg device.")
+        help_text::<FwCfgItemSpec>("Add an extra item to the fw_cfg device.")
     ), value_name = "ITEM")]
     fw_cfg: Vec<String>,
 
@@ -132,79 +132,79 @@ pub struct BootArgs {
     entropy: bool,
 
     #[arg(long, help(
-        help_text::<NetParam>("Add a VirtIO net device.")
+        help_text::<NetSpec>("Add a VirtIO net device.")
     ))]
     net: Vec<String>,
 
     #[arg(long, help(
-        help_text::<BlkParam>("Add a VirtIO block device.")
+        help_text::<BlkSpec>("Add a VirtIO block device.")
     ))]
     blk: Vec<String>,
 
     #[arg(long, help(
-        help_text::<Coco>("Enable confidential compute supported by host platform.")
+        help_text::<CocoSpec>("Enable confidential compute supported by host platform.")
     ))]
     coco: Option<String>,
 
     #[arg(long, help(
-        help_text::<FsParam>("Add a VirtIO filesystem device.")
+        help_text::<FsSpec>("Add a VirtIO filesystem device.")
     ))]
     fs: Vec<String>,
 
     #[arg(long, help(
-        help_text::<VsockParam>("Add a VirtIO vsock device.")
+        help_text::<VsockSpec>("Add a VirtIO vsock device.")
     ))]
     vsock: Option<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(help_text::<CdevParam>(
+    #[arg(long, help(help_text::<VfioCdevSpec>(
         "Assign a host PCI device to the guest using IOMMUFD API."
     ) ))]
     vfio_cdev: Vec<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(help_text::<IoasParam>("Create a new IO address space.")))]
+    #[arg(long, help(help_text::<VfioIoasSpec>("Create a new IO address space.")))]
     vfio_ioas: Vec<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(help_text::<GroupParam>(
+    #[arg(long, help(help_text::<VfioGroupSpec>(
         "Assign a host PCI device to the guest using legacy VFIO API."
     )))]
     vfio_group: Vec<String>,
 
     #[cfg(target_os = "linux")]
-    #[arg(long, help(help_text::<ContainerParam>("Add a new VFIO container.")))]
+    #[arg(long, help(help_text::<VfioContainerSpec>("Add a new VFIO container.")))]
     vfio_container: Vec<String>,
 
     #[arg(long)]
-    #[arg(long, help(help_text::<BalloonParam>("Add a VirtIO balloon device.")))]
+    #[arg(long, help(help_text::<BalloonSpec>("Add a VirtIO balloon device.")))]
     balloon: Option<String>,
 
     #[arg(short, long("object"), help = DOC_OBJECTS, value_name = "OBJECT")]
     objects: Vec<String>,
 }
 
-fn parse_net_arg(arg: &str, objects: &HashMap<&str, &str>) -> serde_aco::Result<NetParam> {
+fn parse_net_arg(arg: &str, objects: &HashMap<&str, &str>) -> serde_aco::Result<NetSpec> {
     #[cfg(target_os = "linux")]
     if let Ok(param) = serde_aco::from_args(arg, objects) {
         Ok(param)
     } else {
         let param = serde_aco::from_args(arg, objects)?;
-        Ok(NetParam::Tap(param))
+        Ok(NetSpec::Tap(param))
     }
 
     #[cfg(target_os = "macos")]
     serde_aco::from_args(arg, objects)
 }
 
-fn parse_blk_arg(arg: &str, objects: &HashMap<&str, &str>) -> BlkParam {
+fn parse_blk_arg(arg: &str, objects: &HashMap<&str, &str>) -> BlkSpec {
     if let Ok(param) = serde_aco::from_args(arg, objects) {
         param
     } else if let Ok(param) = serde_aco::from_args(arg, objects) {
-        BlkParam::File(param)
+        BlkSpec::File(param)
     } else {
         eprintln!("Please update the cmd line to --blk file,path={arg}");
-        BlkParam::File(BlkFileParam {
+        BlkSpec::File(BlkFileSpec {
             path: PathBuf::from(arg).into(),
             readonly: false,
             api: WorkerApi::Mio,
@@ -216,13 +216,13 @@ fn parse_mem_arg(
     arg: Option<String>,
     mem_size: String,
     objects: &HashMap<&str, &str>,
-) -> Result<MemConfig, Error> {
-    let config = if let Some(arg) = arg {
+) -> Result<MemSpec, Error> {
+    let spec = if let Some(arg) = arg {
         serde_aco::from_args(&arg, objects).context(error::ParseArg { arg })?
     } else {
         #[cfg(target_os = "linux")]
         eprintln!("Please update the cmd line to --memory size={mem_size},backend=memfd");
-        MemConfig {
+        MemSpec {
             size: serde_aco::from_args(&mem_size, objects)
                 .context(error::ParseArg { arg: mem_size })?,
             #[cfg(target_os = "linux")]
@@ -232,35 +232,35 @@ fn parse_mem_arg(
             ..Default::default()
         }
     };
-    Ok(config)
+    Ok(spec)
 }
 
 fn parse_cpu_arg(
     arg: Option<Box<str>>,
     num_cpu: u16,
     objects: &HashMap<&str, &str>,
-) -> Result<CpuConfig, Error> {
-    let mut config = if let Some(arg) = arg {
+) -> Result<CpuSpec, Error> {
+    let mut spec = if let Some(arg) = arg {
         serde_aco::from_args(&arg, objects).context(error::ParseArg { arg })?
     } else {
         eprintln!("Please update the cmd line to --cpu count={num_cpu}");
-        CpuConfig {
+        CpuSpec {
             count: num_cpu,
             ..Default::default()
         }
     };
-    if config.topology.sockets == 0 {
-        config.topology.sockets = 1;
+    if spec.topology.sockets == 0 {
+        spec.topology.sockets = 1;
     }
-    let vcpus_per_core = 1 + config.topology.smt as u16;
-    if config.topology.cores == 0 {
-        config.topology.cores = config.count / config.topology.sockets as u16 / vcpus_per_core;
+    let vcpus_per_core = 1 + spec.topology.smt as u16;
+    if spec.topology.cores == 0 {
+        spec.topology.cores = spec.count / spec.topology.sockets as u16 / vcpus_per_core;
     }
-    Ok(config)
+    Ok(spec)
 }
 
-fn parse_payload_arg(args: &mut BootArgs) -> Payload {
-    let mut payload = Payload {
+fn parse_payload_arg(args: &mut BootArgs) -> PayloadSpec {
+    let mut payload = PayloadSpec {
         firmware: args.firmware.take(),
         initramfs: args.initramfs.take(),
         cmdline: args.cmdline.take(),
@@ -274,19 +274,19 @@ fn parse_payload_arg(args: &mut BootArgs) -> Payload {
     payload
 }
 
-fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<Config, Error> {
+fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<VmSpec, Error> {
     let payload = parse_payload_arg(&mut args);
 
-    let mut board_config = BoardConfig::default();
+    let mut board_spec = BoardSpec::default();
     if let Some(arg) = args.coco {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        board_config.coco = Some(param);
+        board_spec.coco = Some(param);
     };
-    board_config.mem = parse_mem_arg(args.memory, args.mem_size, &objects)?;
-    board_config.cpu = parse_cpu_arg(args.cpu, args.num_cpu, &objects)?;
+    board_spec.mem = parse_mem_arg(args.memory, args.mem_size, &objects)?;
+    board_spec.cpu = parse_cpu_arg(args.cpu, args.num_cpu, &objects)?;
 
-    let mut config = Config {
-        board: board_config,
+    let mut spec = VmSpec {
+        board: board_spec,
         pvpanic: args.pvpanic,
         payload,
         ..Default::default()
@@ -295,64 +295,64 @@ fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<Config
     #[cfg(target_arch = "x86_64")]
     for arg in args.fw_cfg {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.fw_cfg.push(param);
+        spec.fw_cfg.push(param);
     }
 
     if args.entropy {
-        config.entropy = Some(EntropyParam::default());
+        spec.entropy = Some(EntropySpec::default());
     }
 
     for arg in args.net {
         let param = parse_net_arg(&arg, &objects).context(error::ParseArg { arg })?;
-        config.net.push(param);
+        spec.net.push(param);
     }
 
     for arg in args.blk {
         let param = parse_blk_arg(&arg, &objects);
-        config.blk.push(param);
+        spec.blk.push(param);
     }
 
     for arg in args.fs {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.fs.push(param);
+        spec.fs.push(param);
     }
 
     if let Some(arg) = args.vsock {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.vsock = Some(param);
+        spec.vsock = Some(param);
     }
 
     if let Some(arg) = args.balloon {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.balloon = Some(param);
+        spec.balloon = Some(param);
     }
 
     #[cfg(target_os = "linux")]
     for arg in args.vfio_ioas {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.vfio_ioas.push(param);
+        spec.vfio_ioas.push(param);
     }
     #[cfg(target_os = "linux")]
     for arg in args.vfio_cdev {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.vfio_cdev.push(param);
+        spec.vfio_cdev.push(param);
     }
     #[cfg(target_os = "linux")]
     for arg in args.vfio_container {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.vfio_container.push(param);
+        spec.vfio_container.push(param);
     }
     #[cfg(target_os = "linux")]
     for arg in args.vfio_group {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
-        config.vfio_group.push(param);
+        spec.vfio_group.push(param);
     }
 
-    Ok(config)
+    Ok(spec)
 }
 
-fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, alioth::vm::Error> {
-    let vm = Machine::new(hypervisor, config.board)?;
+fn create<H: Hypervisor>(hypervisor: &H, spec: VmSpec) -> Result<Machine<H>, alioth::vm::Error> {
+    let vm = Machine::new(hypervisor, spec.board)?;
 
     #[cfg(target_arch = "x86_64")]
     vm.add_com1()?;
@@ -361,103 +361,105 @@ fn create<H: Hypervisor>(hypervisor: &H, config: Config) -> Result<Machine<H>, a
     #[cfg(target_arch = "aarch64")]
     vm.add_pl031();
 
-    if config.pvpanic {
+    if spec.pvpanic {
         vm.add_pvpanic()?;
     }
 
     #[cfg(target_arch = "x86_64")]
-    if config.payload.firmware.is_some() {
+    if spec.payload.firmware.is_some() {
         vm.add_cmos()?;
         vm.add_fw_dbg()?;
     }
 
     #[cfg(target_arch = "x86_64")]
-    if config.payload.firmware.is_some() || !config.fw_cfg.is_empty() {
-        vm.add_fw_cfg(config.fw_cfg.into_iter())?;
+    if spec.payload.firmware.is_some() || !spec.fw_cfg.is_empty() {
+        vm.add_fw_cfg(spec.fw_cfg.into_iter())?;
     };
 
-    if let Some(param) = config.entropy {
-        vm.add_virtio_dev("virtio-entropy", param)?;
+    if let Some(entropy_spec) = spec.entropy {
+        vm.add_virtio_dev("virtio-entropy", entropy_spec)?;
     }
 
-    for (index, param) in config.net.into_iter().enumerate() {
-        match param {
+    for (index, net_spec) in spec.net.into_iter().enumerate() {
+        match net_spec {
             #[cfg(target_os = "linux")]
-            NetParam::Tap(tap_param) => vm.add_virtio_dev(format!("virtio-net-{index}"), tap_param),
+            NetSpec::Tap(tap_spec) => vm.add_virtio_dev(format!("virtio-net-{index}"), tap_spec),
             #[cfg(target_os = "linux")]
-            NetParam::Vu(sock) => {
-                let param = VuFrontendParam {
+            NetSpec::Vu(sock) => {
+                let vu_spec = VuFrontendSpec {
                     id: DeviceId::NET,
                     socket: sock.socket,
                 };
-                vm.add_virtio_dev(format!("vu-net-{index}"), param)
+                vm.add_virtio_dev(format!("vu-net-{index}"), vu_spec)
             }
             #[cfg(target_os = "macos")]
-            NetParam::Vmnet(p) => vm.add_virtio_dev(format!("virtio-net-{index}"), p),
+            NetSpec::Vmnet(vmnet_spec) => {
+                vm.add_virtio_dev(format!("virtio-net-{index}"), vmnet_spec)
+            }
         }?;
     }
 
-    for (index, param) in config.blk.into_iter().enumerate() {
-        match param {
-            BlkParam::File(p) => vm.add_virtio_dev(format!("virtio-blk-{index}"), p),
+    for (index, blk_spec) in spec.blk.into_iter().enumerate() {
+        match blk_spec {
+            BlkSpec::File(file_spec) => vm.add_virtio_dev(format!("virtio-blk-{index}"), file_spec),
             #[cfg(target_os = "linux")]
-            BlkParam::Vu(s) => {
-                let p = VuFrontendParam {
+            BlkSpec::Vu(s) => {
+                let vu_spec = VuFrontendSpec {
                     id: DeviceId::BLOCK,
                     socket: s.socket,
                 };
-                vm.add_virtio_dev(format!("vu-net-{index}"), p)
+                vm.add_virtio_dev(format!("vu-net-{index}"), vu_spec)
             }
         }?;
     }
 
-    for (index, param) in config.fs.into_iter().enumerate() {
-        match param {
-            FsParam::Dir(p) => vm.add_virtio_dev(format!("virtio-fs-{index}"), p),
+    for (index, fs_spec) in spec.fs.into_iter().enumerate() {
+        match fs_spec {
+            FsSpec::Dir(dir_spec) => vm.add_virtio_dev(format!("virtio-fs-{index}"), dir_spec),
             #[cfg(target_os = "linux")]
-            FsParam::Vu(p) => vm.add_virtio_dev(format!("vu-fs-{index}"), p),
+            FsSpec::Vu(vu_fs_spec) => vm.add_virtio_dev(format!("vu-fs-{index}"), vu_fs_spec),
         }?;
     }
 
-    if let Some(param) = config.vsock {
-        match param {
+    if let Some(vsock_spec) = spec.vsock {
+        match vsock_spec {
             #[cfg(target_os = "linux")]
-            VsockParam::Vhost(p) => vm.add_virtio_dev("vhost-vsock", p),
-            VsockParam::Uds(p) => vm.add_virtio_dev("uds-vsock", p),
+            VsockSpec::Vhost(vhost_spec) => vm.add_virtio_dev("vhost-vsock", vhost_spec),
+            VsockSpec::Uds(uds_spec) => vm.add_virtio_dev("uds-vsock", uds_spec),
             #[cfg(target_os = "linux")]
-            VsockParam::Vu(s) => {
-                let p = VuFrontendParam {
+            VsockSpec::Vu(s) => {
+                let vu_spec = VuFrontendSpec {
                     id: DeviceId::SOCKET,
                     socket: s.socket,
                 };
-                vm.add_virtio_dev("vu-vsock", p)
+                vm.add_virtio_dev("vu-vsock", vu_spec)
             }
         }?;
     }
 
-    if let Some(param) = config.balloon {
-        vm.add_virtio_dev("virtio-balloon", param)?;
+    if let Some(balloon_spec) = spec.balloon {
+        vm.add_virtio_dev("virtio-balloon", balloon_spec)?;
     }
 
     #[cfg(target_os = "linux")]
-    for param in config.vfio_ioas.into_iter() {
-        vm.add_vfio_ioas(param)?;
+    for ioas_spec in spec.vfio_ioas.into_iter() {
+        vm.add_vfio_ioas(ioas_spec)?;
     }
     #[cfg(target_os = "linux")]
-    for (index, param) in config.vfio_cdev.into_iter().enumerate() {
-        vm.add_vfio_cdev(format!("vfio-{index}").into(), param)?;
+    for (index, cdev_spec) in spec.vfio_cdev.into_iter().enumerate() {
+        vm.add_vfio_cdev(format!("vfio-{index}").into(), cdev_spec)?;
     }
 
     #[cfg(target_os = "linux")]
-    for param in config.vfio_container.into_iter() {
-        vm.add_vfio_container(param)?;
+    for container_spec in spec.vfio_container.into_iter() {
+        vm.add_vfio_container(container_spec)?;
     }
     #[cfg(target_os = "linux")]
-    for (index, param) in config.vfio_group.into_iter().enumerate() {
-        vm.add_vfio_devs_in_group(&index.to_string(), param)?;
+    for (index, group_spec) in spec.vfio_group.into_iter().enumerate() {
+        vm.add_vfio_devs_in_group(&index.to_string(), group_spec)?;
     }
 
-    vm.add_payload(config.payload);
+    vm.add_payload(spec.payload);
 
     Ok(vm)
 }
@@ -466,21 +468,21 @@ pub fn boot(mut args: BootArgs) -> Result<(), Error> {
     let object_args = mem::take(&mut args.objects);
     let objects = parse_objects(&object_args)?;
 
-    let hv_config = if let Some(arg) = args.hypervisor.take() {
+    let hv_spec = if let Some(arg) = args.hypervisor.take() {
         serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?
     } else {
-        HvConfig::default()
+        HvSpec::default()
     };
-    let hypervisor = match hv_config {
+    let hypervisor = match hv_spec {
         #[cfg(target_os = "linux")]
-        HvConfig::Kvm(kvm_config) => Kvm::new(kvm_config).context(error::Hypervisor)?,
+        HvSpec::Kvm(kvm_spec) => Kvm::new(kvm_spec).context(error::Hypervisor)?,
         #[cfg(target_os = "macos")]
-        HvConfig::Hvf => Hvf {},
+        HvSpec::Hvf => Hvf {},
     };
 
-    let config = parse_args(args, objects)?;
+    let spec = parse_args(args, objects)?;
 
-    let vm = create(&hypervisor, config).context(error::CreateVm)?;
+    let vm = create(&hypervisor, spec).context(error::CreateVm)?;
 
     vm.boot().context(error::BootVm)?;
     vm.wait().context(error::WaitVm)?;

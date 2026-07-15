@@ -38,7 +38,7 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, QueueReg, Status as QStatus, VirtQueue};
 use crate::virtio::worker::WorkerApi;
 #[cfg(target_os = "linux")]
@@ -135,7 +135,7 @@ pub struct BlockConfig {
 impl_mmio_for_zerocopy!(BlockConfig);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct BlkFileParam {
+pub struct BlkFileSpec {
     /// Path to a raw-formatted disk image.
     pub path: Box<Path>,
     /// Set the device as readonly. [default: false]
@@ -146,7 +146,7 @@ pub struct BlkFileParam {
     pub api: WorkerApi,
 }
 
-impl DevParam for BlkFileParam {
+impl DevSpec for BlkFileSpec {
     type Device = Block;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Block> {
@@ -183,20 +183,20 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(param: BlkFileParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(spec: BlkFileSpec, name: impl Into<Arc<str>>) -> Result<Self> {
         let access_disk = error::AccessFile {
-            path: param.path.as_ref(),
+            path: spec.path.as_ref(),
         };
         let disk = OpenOptions::new()
             .read(true)
-            .write(!param.readonly)
-            .open(&param.path)
+            .write(!spec.readonly)
+            .open(&spec.path)
             .context(access_disk)?;
 
         let ctx_lock = error::LockFile {
-            path: param.path.as_ref(),
+            path: spec.path.as_ref(),
         };
-        if param.readonly {
+        if spec.readonly {
             disk.try_lock_shared().context(ctx_lock)
         } else {
             disk.try_lock().context(ctx_lock)
@@ -210,7 +210,7 @@ impl Block {
         };
         let config = Arc::new(config);
         let mut feature = BlockFeature::FLUSH;
-        if param.readonly {
+        if spec.readonly {
             feature |= BlockFeature::RO;
         }
         Ok(Block {
@@ -218,7 +218,7 @@ impl Block {
             disk,
             config,
             feature,
-            api: param.api,
+            api: spec.api,
         })
     }
 

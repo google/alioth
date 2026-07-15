@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::cpu::{Result, VcpuHandle, VcpuThread};
 use crate::hv::{Vcpu, Vm};
-use crate::loader::{InitState, Payload};
+use crate::loader::{InitState, PayloadSpec};
 
 impl<V: Vm> VcpuThread<V> {
     pub(crate) fn init_vcpu(&mut self) -> Result<()> {
@@ -37,7 +37,7 @@ impl<V: Vm> VcpuThread<V> {
         Ok(())
     }
 
-    pub(crate) fn setup_firmware(&self, _: &Path, _: &Payload) -> Result<InitState> {
+    pub(crate) fn setup_firmware(&self, _: &Path, _: &PayloadSpec) -> Result<InitState> {
         unimplemented!()
     }
 

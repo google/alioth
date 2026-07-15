@@ -15,21 +15,21 @@
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
-use alioth::board::BoardConfig;
+use alioth::board::BoardSpec;
 #[cfg(target_arch = "x86_64")]
-use alioth::device::fw_cfg::FwCfgItemParam;
-use alioth::loader::Payload;
+use alioth::device::fw_cfg::FwCfgItemSpec;
+use alioth::loader::PayloadSpec;
 #[cfg(target_os = "linux")]
-use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
-use alioth::virtio::dev::balloon::BalloonParam;
-use alioth::virtio::dev::blk::BlkFileParam;
-use alioth::virtio::dev::entropy::EntropyParam;
-use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use alioth::virtio::dev::balloon::BalloonSpec;
+use alioth::virtio::dev::blk::BlkFileSpec;
+use alioth::virtio::dev::entropy::EntropySpec;
+use alioth::virtio::dev::fs::shared_dir::SharedDirSpec;
 #[cfg(target_os = "macos")]
-use alioth::virtio::dev::net::vmnet::NetVmnetParam;
-use alioth::virtio::dev::vsock::UdsVsockParam;
+use alioth::virtio::dev::net::vmnet::VmnetSpec;
+use alioth::virtio::dev::vsock::UdsVsockSpec;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::{fs::vu::VuFsParam, net::tap::NetTapParam, vsock::VhostVsockParam};
+use alioth::virtio::dev::{fs::vu::VuFsSpec, net::tap::TapNetSpec, vsock::VhostVsockSpec};
 use serde::Deserialize;
 use serde_aco::Help;
 
@@ -40,15 +40,15 @@ pub struct VuSocket {
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Help)]
-pub enum NetParam {
+pub enum NetSpec {
     /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
     #[cfg(target_os = "linux")]
     #[serde(alias = "tap")]
-    Tap(NetTapParam),
+    Tap(TapNetSpec),
     /// VirtIO net device backed by vmnet framework.
     #[cfg(target_os = "macos")]
     #[serde(alias = "vmnet")]
-    Vmnet(NetVmnetParam),
+    Vmnet(VmnetSpec),
     /// vhost-user net device over a Unix domain socket.
     #[cfg(target_os = "linux")]
     #[serde(alias = "vu")]
@@ -56,10 +56,10 @@ pub enum NetParam {
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Help)]
-pub enum BlkParam {
+pub enum BlkSpec {
     /// VirtIO block device backed a disk image file.
     #[serde(alias = "file")]
-    File(BlkFileParam),
+    File(BlkFileSpec),
     #[cfg(target_os = "linux")]
     #[serde(alias = "vu")]
     /// vhost-user block device over a Unix domain socket.
@@ -67,25 +67,25 @@ pub enum BlkParam {
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Clone, Help)]
-pub enum FsParam {
+pub enum FsSpec {
     /// VirtIO FS device backed by a shared directory.
     #[serde(alias = "dir")]
-    Dir(SharedDirParam),
+    Dir(SharedDirSpec),
     #[cfg(target_os = "linux")]
     /// VirtIO FS device backed by a vhost-user process, e.g. virtiofsd.
     #[serde(alias = "vu")]
-    Vu(VuFsParam),
+    Vu(VuFsSpec),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub enum VsockParam {
+pub enum VsockSpec {
     #[cfg(target_os = "linux")]
     /// Vsock device backed by host kernel vhost-vsock module.
     #[serde(alias = "vhost")]
-    Vhost(VhostVsockParam),
+    Vhost(VhostVsockSpec),
     /// Vsock device mapped to a Unix domain socket.
     #[serde(alias = "uds")]
-    Uds(UdsVsockParam),
+    Uds(UdsVsockSpec),
     #[cfg(target_os = "linux")]
     /// Vsock device backed by a vhost-user process.
     #[serde(alias = "vu")]
@@ -93,28 +93,28 @@ pub enum VsockParam {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
-pub struct Config {
-    pub board: BoardConfig,
+pub struct VmSpec {
+    pub board: BoardSpec,
 
-    pub payload: Payload,
+    pub payload: PayloadSpec,
 
-    pub net: Vec<NetParam>,
-    pub blk: Vec<BlkParam>,
-    pub fs: Vec<FsParam>,
-    pub vsock: Option<VsockParam>,
-    pub entropy: Option<EntropyParam>,
-    pub balloon: Option<BalloonParam>,
+    pub net: Vec<NetSpec>,
+    pub blk: Vec<BlkSpec>,
+    pub fs: Vec<FsSpec>,
+    pub vsock: Option<VsockSpec>,
+    pub entropy: Option<EntropySpec>,
+    pub balloon: Option<BalloonSpec>,
     pub pvpanic: bool,
 
     #[cfg(target_arch = "x86_64")]
-    pub fw_cfg: Vec<FwCfgItemParam>,
+    pub fw_cfg: Vec<FwCfgItemSpec>,
 
     #[cfg(target_os = "linux")]
-    pub vfio_cdev: Vec<CdevParam>,
+    pub vfio_cdev: Vec<VfioCdevSpec>,
     #[cfg(target_os = "linux")]
-    pub vfio_ioas: Vec<IoasParam>,
+    pub vfio_ioas: Vec<VfioIoasSpec>,
     #[cfg(target_os = "linux")]
-    pub vfio_group: Vec<GroupParam>,
+    pub vfio_group: Vec<VfioGroupSpec>,
     #[cfg(target_os = "linux")]
-    pub vfio_container: Vec<ContainerParam>,
+    pub vfio_container: Vec<VfioContainerSpec>,
 }

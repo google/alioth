@@ -25,8 +25,8 @@ use tempfile::TempDir;
 
 use crate::ffi;
 use crate::mem::emulated::{Action, Mmio};
-use crate::virtio::dev::entropy::{EntropyConfig, EntropyParam};
-use crate::virtio::dev::{DevParam, StartParam, Virtio, WakeEvent};
+use crate::virtio::dev::entropy::{EntropyConfig, EntropySpec};
+use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
@@ -65,7 +65,7 @@ fn entropy_test() {
     let pipe_path_c = CString::new(pipe_path.as_os_str().as_encoded_bytes()).unwrap();
     ffi!(unsafe { libc::mkfifo(pipe_path_c.as_ptr(), 0o600) }).unwrap();
 
-    let param = EntropyParam {
+    let param = EntropySpec {
         source: Some(pipe_path.clone().into()),
     };
     let dev = param.build("entropy").unwrap();

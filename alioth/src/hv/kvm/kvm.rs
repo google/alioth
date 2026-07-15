@@ -44,8 +44,8 @@ use crate::arch::cpuid::CpuidIn;
 use crate::errors::{DebugTrace, trace_error};
 use crate::ffi;
 #[cfg(target_arch = "x86_64")]
-use crate::hv::Coco;
-use crate::hv::{Hypervisor, MemMapOption, Result, VmConfig, error};
+use crate::hv::CocoSpec;
+use crate::hv::{Hypervisor, MemMapOption, Result, VmSpec, error};
 #[cfg(target_arch = "aarch64")]
 use crate::sys::kvm::KvmDevType;
 use crate::sys::kvm::{KVM_API_VERSION, KvmCap, kvm_check_extension, kvm_get_api_version};
@@ -96,11 +96,11 @@ pub enum KvmError {
 pub struct Kvm {
     fd: OwnedFd,
     #[cfg(target_arch = "x86_64")]
-    config: KvmConfig,
+    spec: KvmSpec,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, Help)]
-pub struct KvmConfig {
+pub struct KvmSpec {
     /// Path to the KVM device. [default: /dev/kvm]
     pub dev_kvm: Option<Box<Path>>,
     /// Path to the AMD SEV device. [default: /dev/sev]
@@ -111,8 +111,8 @@ pub struct KvmConfig {
 extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
 
 impl Kvm {
-    pub fn new(config: KvmConfig) -> Result<Self> {
-        let path = match &config.dev_kvm {
+    pub fn new(spec: KvmSpec) -> Result<Self> {
+        let path = match &spec.dev_kvm {
             Some(dev_kvm) => dev_kvm,
             None => Path::new("/dev/kvm"),
         };
@@ -134,7 +134,7 @@ impl Kvm {
         Ok(Kvm {
             fd: kvm_fd,
             #[cfg(target_arch = "x86_64")]
-            config,
+            spec,
         })
     }
 
@@ -146,12 +146,15 @@ impl Kvm {
 impl Hypervisor for Kvm {
     type Vm = KvmVm;
 
-    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm> {
-        KvmVm::new(self, config)
+    fn create_vm(&self, spec: &VmSpec) -> Result<Self::Vm> {
+        KvmVm::new(self, spec)
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self, coco: Option<&Coco>) -> Result<HashMap<CpuidIn, CpuidResult>> {
+    fn get_supported_cpuids(
+        &self,
+        coco: Option<&CocoSpec>,
+    ) -> Result<HashMap<CpuidIn, CpuidResult>> {
         Kvm::get_supported_cpuids(self, coco)
     }
 }

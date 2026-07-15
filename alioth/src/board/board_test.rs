@@ -14,10 +14,10 @@
 
 use rstest::rstest;
 
-use crate::board::{CpuConfig, CpuTopology};
+use crate::board::{CpuSpec, CpuTopology};
 
 #[rstest]
-#[case(CpuConfig {
+#[case(CpuSpec {
     count: 2,
     topology: CpuTopology {
         smt: false,
@@ -25,7 +25,7 @@ use crate::board::{CpuConfig, CpuTopology};
         sockets: 1,
     },
 }, true)]
-#[case(CpuConfig {
+#[case(CpuSpec {
     count: 2,
     topology: CpuTopology {
         smt: true,
@@ -33,8 +33,8 @@ use crate::board::{CpuConfig, CpuTopology};
         sockets: 1,
     },
 }, false)]
-fn test_cpu_topology_validate(#[case] config: CpuConfig, #[case] expected: bool) {
-    assert_eq!(config.validate(), expected);
+fn test_cpu_topology_validate(#[case] spec: CpuSpec, #[case] expected: bool) {
+    assert_eq!(spec.validate(), expected);
 }
 
 #[rstest]

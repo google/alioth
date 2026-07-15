@@ -23,7 +23,7 @@ use crate::arch::layout::{
     RAM_32_SIZE, RAM_32_START,
 };
 use crate::arch::reg::MpidrEl1;
-use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result};
+use crate::board::{Board, BoardSpec, CpuTopology, PCIE_MMIO_64_SIZE, Result};
 use crate::firmware::dt::{DeviceTree, Node, PropVal};
 use crate::hv::{GicV2, GicV2m, GicV3, Hypervisor, Its, Vm};
 use crate::loader::{Executable, InitState};
@@ -54,11 +54,11 @@ where
 }
 
 impl<V: Vm> ArchBoard<V> {
-    pub fn new<H>(_hv: &H, vm: &V, config: &BoardConfig) -> Result<Self>
+    pub fn new<H>(_hv: &H, vm: &V, spec: &BoardSpec) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
-        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, config.cpu.count) {
+        let gic = match vm.create_gic_v3(GIC_DIST_START, GIC_V3_REDIST_START, spec.cpu.count) {
             Ok(v3) => Gic::V3(v3),
             Err(e) => {
                 log::error!("Cannot create GIC v3: {e:?}trying v2...");
@@ -104,11 +104,11 @@ where
     V: Vm,
 {
     pub fn encode_cpu_identity(&self, index: u16) -> u64 {
-        encode_mpidr(&self.config.cpu.topology, index).0
+        encode_mpidr(&self.spec.cpu.topology, index).0
     }
 
     pub fn create_ram(&self) -> Result<()> {
-        let mem_size = self.config.mem.size;
+        let mem_size = self.spec.mem.size;
         let memory = &self.memory;
 
         let low_mem_size = std::cmp::min(mem_size, RAM_32_SIZE);
@@ -193,7 +193,7 @@ where
     }
 
     pub fn create_cpu_nodes(&self, root: &mut Node) {
-        let topology = &self.config.cpu.topology;
+        let topology = &self.spec.cpu.topology;
 
         let thread_node = |socket_id: u8, core_id: u16, thread_id: u8| {
             let phandle = PHANDLE_CPU | topology.decode(socket_id, core_id, thread_id) as u32;
@@ -234,7 +234,7 @@ where
                 .collect(),
         };
 
-        let cpus_nodes = (0..(self.config.cpu.count))
+        let cpus_nodes = (0..(self.spec.cpu.count))
             .map(|index| {
                 let mpidr = self.encode_cpu_identity(index);
                 (
@@ -318,7 +318,7 @@ where
         let ppi = 1;
         let level_trigger = 4;
         let cpu_mask = match self.arch.gic {
-            Gic::V2(_) => (1 << self.config.cpu.count) - 1,
+            Gic::V2(_) => (1 << self.spec.cpu.count) - 1,
             Gic::V3 { .. } => 0,
         };
         for pin in irq_pins {
@@ -405,7 +405,7 @@ where
                             GIC_DIST_START,
                             64 << 10,
                             GIC_V3_REDIST_START,
-                            self.config.cpu.count as u64 * (128 << 10),
+                            self.spec.cpu.count as u64 * (128 << 10),
                         ]),
                     ),
                     ("phandle", PropVal::U32(PHANDLE_GIC)),
@@ -435,7 +435,7 @@ where
         let Some(max_bus) = self.pci_bus.segment.max_bus() else {
             return;
         };
-        let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
+        let pcie_mmio_64_start = self.spec.pcie_mmio_64_start();
         let prefetchable = 1 << 30;
         let io = 0b01 << 24;
         let mem_32 = 0b10 << 24;

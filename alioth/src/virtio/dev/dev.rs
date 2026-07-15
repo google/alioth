@@ -431,7 +431,7 @@ where
     }
 }
 
-pub trait DevParam {
+pub trait DevSpec {
     type Device;
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device>;
     fn needs_mem_shared_fd(&self) -> bool {

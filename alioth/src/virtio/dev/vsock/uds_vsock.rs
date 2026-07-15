@@ -40,7 +40,7 @@ use crate::virtio::dev::vsock::{
     ShutdownFlag, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp, VsockType,
     VsockVirtq,
 };
-use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
 use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
@@ -49,14 +49,14 @@ const HEADER_SIZE: usize = size_of::<VsockHeader>();
 const SOCKET_TYPE: VsockType = VsockType::STREAM;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct UdsVsockParam {
+pub struct UdsVsockSpec {
     /// Vsock context id.
     pub cid: u32,
     /// Host-side Unix domain socket path.
     pub path: Box<Path>,
 }
 
-impl DevParam for UdsVsockParam {
+impl DevSpec for UdsVsockSpec {
     type Device = UdsVsock;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<UdsVsock> {
@@ -668,15 +668,15 @@ pub struct Connection {
 }
 
 impl UdsVsock {
-    fn new(param: UdsVsockParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    fn new(spec: UdsVsockSpec, name: impl Into<Arc<str>>) -> Result<Self> {
         let name = name.into();
-        let listener = UnixListener::bind(&param.path)?;
+        let listener = UnixListener::bind(&spec.path)?;
         listener.set_nonblocking(true)?;
         let vsock = UdsVsock {
             name,
-            path: param.path,
+            path: spec.path,
             config: Arc::new(VsockConfig {
-                guest_cid: param.cid,
+                guest_cid: spec.cid,
                 ..Default::default()
             }),
             listener,

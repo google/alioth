@@ -37,7 +37,7 @@ use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{LayoutChanged, MemRegion, MemRegionType};
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::fs::{DAX_SHMEM_ID, FsConfig, FsFeature};
-use crate::virtio::dev::{DevParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vu::bindings::{
     DeviceConfig, VhostUserMmap, VhostUserMmapFlag, VuBackMsg, VuFeature,
@@ -57,16 +57,16 @@ pub struct VuFs {
 }
 
 impl VuFs {
-    pub fn new(param: VuFsParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(spec: VuFsSpec, name: impl Into<Arc<str>>) -> Result<Self> {
         let mut extra_features = VuFeature::empty();
-        if param.dax_window > 0 {
+        if spec.dax_window > 0 {
             extra_features |= VuFeature::BACKEND_REQ | VuFeature::BACKEND_SEND_FD | VuFeature::SHMEM
         };
-        if param.tag.is_none() {
+        if spec.tag.is_none() {
             extra_features |= VuFeature::CONFIG;
         }
-        let frontend = VuFrontend::new(name, &param.socket, DeviceId::FILE_SYSTEM, extra_features)?;
-        let config = if let Some(tag) = param.tag {
+        let frontend = VuFrontend::new(name, &spec.socket, DeviceId::FILE_SYSTEM, extra_features)?;
+        let config = if let Some(tag) = spec.tag {
             assert!(tag.len() <= 36);
             assert_ne!(tag.len(), 0);
             let mut config = FsConfig::new_zeroed();
@@ -88,8 +88,8 @@ impl VuFs {
             config
         };
 
-        let dax_region = if param.dax_window > 0 {
-            let size = align_up!(param.dax_window, 12);
+        let dax_region = if spec.dax_window > 0 {
+            let size = align_up!(spec.dax_window, 12);
             Some(ArcMemPages::from_anonymous(size, Some(PROT_NONE), None)?)
         } else {
             None
@@ -104,7 +104,7 @@ impl VuFs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct VuFsParam {
+pub struct VuFsSpec {
     /// Path to the vhost-user UNIX domain socket.
     pub socket: Box<Path>,
     /// Mount tag seen by the guest.
@@ -115,7 +115,7 @@ pub struct VuFsParam {
     pub dax_window: usize,
 }
 
-impl DevParam for VuFsParam {
+impl DevSpec for VuFsSpec {
     type Device = VuFs;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {

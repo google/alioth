@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use alioth::errors::{DebugTrace, trace_error};
 use alioth::mem::mapped::RamBus;
-use alioth::virtio::dev::blk::BlkFileParam;
-use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
-use alioth::virtio::dev::net::tap::NetTapParam;
-use alioth::virtio::dev::vsock::UdsVsockParam;
-use alioth::virtio::dev::{DevParam, Virtio, VirtioDevice};
+use alioth::virtio::dev::blk::BlkFileSpec;
+use alioth::virtio::dev::fs::shared_dir::SharedDirSpec;
+use alioth::virtio::dev::net::tap::TapNetSpec;
+use alioth::virtio::dev::vsock::UdsVsockSpec;
+use alioth::virtio::dev::{DevSpec, Virtio, VirtioDevice};
 use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
 use clap::{Args, Subcommand};
 use serde::Deserialize;
@@ -84,13 +84,13 @@ where
 #[derive(Subcommand, Debug, Clone)]
 pub enum DevType {
     /// VirtIO net device backed by TUN/TAP, MacVTap, or IPVTap.
-    Net(DevArgs<NetTapParam>),
+    Net(DevArgs<TapNetSpec>),
     /// VirtIO block device backed by a file.
-    Blk(DevArgs<BlkFileParam>),
+    Blk(DevArgs<BlkFileSpec>),
     /// VirtIO filesystem device backed by a shared host directory.
-    Fs(DevArgs<SharedDirParam>),
+    Fs(DevArgs<SharedDirSpec>),
     /// VirtIO vsock device backed by a Unix domain socket.
-    Vsock(DevArgs<UdsVsockParam>),
+    Vsock(DevArgs<UdsVsockSpec>),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -111,7 +111,7 @@ fn create_dev<D, P>(
 ) -> Result<VirtioDevice<VuIrqSender, VuEventfd>, Error>
 where
     D: Virtio,
-    P: DevParam<Device = D> + Help + for<'a> Deserialize<'a> + Send + Sync + 'static,
+    P: DevSpec<Device = D> + Help + for<'a> Deserialize<'a> + Send + Sync + 'static,
 {
     let name: Arc<str> = name.into();
     let objects = parse_objects(&args.objects)?;

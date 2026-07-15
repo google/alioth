@@ -17,7 +17,7 @@ use std::os::fd::OwnedFd;
 use crate::hv::kvm::Result;
 use crate::hv::kvm::device::KvmDevice;
 use crate::hv::kvm::vm::KvmVm;
-use crate::hv::{GicV2, GicV2m, GicV3, Its, Kvm, VmConfig};
+use crate::hv::{GicV2, GicV2m, GicV3, Its, Kvm, VmSpec};
 use crate::sys::kvm::{
     KvmDevArmVgicCtrl, KvmDevArmVgicGrp, KvmDevType, KvmVgicAddrType, KvmVgicV3RedistRegion,
     KvmVmType,
@@ -179,21 +179,21 @@ impl Its for KvmIts {
 pub struct VmArch;
 
 impl VmArch {
-    pub fn new(_kvm: &Kvm, _config: &VmConfig) -> Result<Self> {
+    pub fn new(_kvm: &Kvm, _spec: &VmSpec) -> Result<Self> {
         Ok(VmArch)
     }
 }
 
 impl KvmVm {
-    pub fn determine_vm_type(_config: &VmConfig) -> KvmVmType {
+    pub fn determine_vm_type(_spec: &VmSpec) -> KvmVmType {
         KvmVmType(0)
     }
 
-    pub fn create_guest_memfd(_config: &VmConfig, _fd: &OwnedFd) -> Result<Option<OwnedFd>> {
+    pub fn create_guest_memfd(_spec: &VmSpec, _fd: &OwnedFd) -> Result<Option<OwnedFd>> {
         Ok(None)
     }
 
-    pub fn init(&self, _config: &VmConfig) -> Result<()> {
+    pub fn init(&self, _spec: &VmSpec) -> Result<()> {
         Ok(())
     }
 }

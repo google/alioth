@@ -20,7 +20,7 @@ use std::fmt::{Display, Formatter};
 use std::io::ErrorKind;
 use std::os::raw::c_void;
 
-use crate::hv::{Hypervisor, Result, VmConfig};
+use crate::hv::{Hypervisor, Result, VmSpec};
 use crate::sys::os::os_release;
 
 use self::vm::HvfVm;
@@ -81,7 +81,7 @@ pub struct Hvf {}
 impl Hypervisor for Hvf {
     type Vm = HvfVm;
 
-    fn create_vm(&self, _config: &VmConfig) -> Result<Self::Vm> {
+    fn create_vm(&self, _spec: &VmSpec) -> Result<Self::Vm> {
         HvfVm::new()
     }
 }

@@ -18,7 +18,7 @@ use crate::arch::sev::{SevPolicy, SnpPolicy};
 use crate::arch::tdx::TdAttr;
 use crate::hv::kvm::vm::KvmVm;
 use crate::hv::kvm::vm::x86_64::translate_msi_addr;
-use crate::hv::{Coco, VmConfig};
+use crate::hv::{CocoSpec, VmSpec};
 use crate::sys::kvm::KvmVmType;
 
 #[rstest]
@@ -33,31 +33,31 @@ fn test_translate_msi_addr(#[case] addr: u64, #[case] expected: u64) {
 }
 
 #[rstest]
-#[case(VmConfig { coco: None }, KvmVmType::DEFAULT)]
+#[case(VmSpec { coco: None }, KvmVmType::DEFAULT)]
 #[case(
-    VmConfig {
-        coco: Some(Coco::AmdSev {
+    VmSpec {
+        coco: Some(CocoSpec::AmdSev {
             policy: SevPolicy(0x5)
         })
     },
     KvmVmType::DEFAULT
 )]
 #[case(
-    VmConfig {
-        coco: Some(Coco::AmdSnp {
+    VmSpec {
+        coco: Some(CocoSpec::AmdSnp {
             policy: SnpPolicy(0x30000)
         })
     },
     KvmVmType::SNP
 )]
 #[case(
-    VmConfig {
-        coco: Some(Coco::IntelTdx {
+    VmSpec {
+        coco: Some(CocoSpec::IntelTdx {
             attr: TdAttr::empty()
         })
     },
     KvmVmType::TDX
 )]
-fn test_determine_vm_type(#[case] config: VmConfig, #[case] vm_type: KvmVmType) {
-    assert_eq!(KvmVm::determine_vm_type(&config), vm_type)
+fn test_determine_vm_type(#[case] spec: VmSpec, #[case] vm_type: KvmVmType) {
+    assert_eq!(KvmVm::determine_vm_type(&spec), vm_type)
 }

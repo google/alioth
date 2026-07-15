@@ -19,15 +19,15 @@ use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WR
 
 use super::*;
 use crate::ffi;
-use crate::hv::kvm::KvmConfig;
-use crate::hv::{Hypervisor, Kvm, MemMapOption, VmConfig};
+use crate::hv::kvm::KvmSpec;
+use crate::hv::{Hypervisor, Kvm, MemMapOption, VmSpec};
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_mem_map() {
-    let kvm = Kvm::new(KvmConfig::default()).unwrap();
-    let vm_config = VmConfig { coco: None };
-    let mut vm = kvm.create_vm(&vm_config).unwrap();
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let spec = VmSpec { coco: None };
+    let mut vm = kvm.create_vm(&spec).unwrap();
     let vm_memory = vm.create_vm_memory().unwrap();
 
     let prot = PROT_WRITE | PROT_READ | PROT_EXEC;

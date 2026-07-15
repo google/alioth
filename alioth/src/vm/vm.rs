@@ -29,14 +29,14 @@ use snafu::{ResultExt, Snafu};
 use crate::arch::layout::{PL011_START, PL031_START};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{PORT_CMOS_REG, PORT_COM1, PORT_FW_CFG_SELECTOR, PORT_FWDBG};
-use crate::board::{Board, BoardConfig};
+use crate::board::{Board, BoardSpec};
 use crate::cpu::{Context, State, VcpuHandle, stop_vcpus, vcpu_thread};
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::cmos::Cmos;
 use crate::device::console::StdioConsole;
 #[cfg(target_arch = "x86_64")]
-use crate::device::fw_cfg::{FwCfg, FwCfgItemParam};
+use crate::device::fw_cfg::{FwCfg, FwCfgItemSpec};
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_dbg::FwDbg;
 #[cfg(target_arch = "aarch64")]
@@ -47,7 +47,7 @@ use crate::device::pl031::Pl031;
 use crate::device::serial::Serial;
 use crate::errors::{DebugTrace, trace_error};
 use crate::hv::{Hypervisor, IoeventFdRegistry, Vm};
-use crate::loader::Payload;
+use crate::loader::PayloadSpec;
 use crate::pci::pvpanic::PvPanic;
 use crate::pci::{Bdf, Pci};
 #[cfg(target_os = "linux")]
@@ -63,8 +63,8 @@ use crate::vfio::iommu::{Ioas, Iommu, UpdateIommuIoas};
 #[cfg(target_os = "linux")]
 use crate::vfio::pci::VfioPciDev;
 #[cfg(target_os = "linux")]
-use crate::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
-use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
+use crate::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use crate::virtio::dev::{DevSpec, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 
 #[trace_error]
@@ -134,13 +134,13 @@ impl<H> Machine<H>
 where
     H: Hypervisor,
 {
-    pub fn new(hv: &H, config: BoardConfig) -> Result<Self> {
-        let ctx = Arc::new(Context::new(Board::new(hv, config)?));
+    pub fn new(hv: &H, spec: BoardSpec) -> Result<Self> {
+        let ctx = Arc::new(Context::new(Board::new(hv, spec)?));
 
         let (event_tx, event_rx) = flume::unbounded();
 
         let mut vcpus = ctx.vcpus.write();
-        for index in 0..ctx.board.config.cpu.count {
+        for index in 0..ctx.board.spec.cpu.count {
             let event_tx = event_tx.clone();
             let ctx = ctx.clone();
             let handle = thread::Builder::new()
@@ -235,10 +235,10 @@ where
     #[cfg(target_arch = "x86_64")]
     pub fn add_fw_cfg(
         &self,
-        params: impl Iterator<Item = FwCfgItemParam>,
+        specs: impl Iterator<Item = FwCfgItemSpec>,
     ) -> Result<Arc<Mutex<FwCfg>>, Error> {
-        let items = params
-            .map(|p| p.build())
+        let items = specs
+            .map(|spec| spec.build())
             .collect::<Result<Vec<_>, _>>()
             .context(error::FwCfg)?;
         let fw_cfg = Arc::new(Mutex::new(
@@ -253,18 +253,18 @@ where
     pub fn add_virtio_dev<D, P>(
         &self,
         name: impl Into<Arc<str>>,
-        param: P,
+        spec: P,
     ) -> Result<Arc<VirtioPciDev<H>>, Error>
     where
-        P: DevParam<Device = D>,
+        P: DevSpec<Device = D>,
         D: Virtio,
     {
-        if param.needs_mem_shared_fd() && !self.ctx.board.config.mem.has_shared_fd() {
+        if spec.needs_mem_shared_fd() && !self.ctx.board.spec.mem.has_shared_fd() {
             return error::MemNotSharedFd.fail();
         }
         let name = name.into();
         let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
-        let dev = param.build(name.clone())?;
+        let dev = spec.build(name.clone())?;
         if let Some(callback) = dev.mem_update_callback() {
             self.ctx.board.memory.register_update_callback(callback)?;
         }
@@ -276,7 +276,7 @@ where
             name.clone(),
             dev,
             self.ctx.board.memory.ram_bus(),
-            self.ctx.board.config.coco.is_some(),
+            self.ctx.board.spec.coco.is_some(),
         )?;
         let msi_sender = self.ctx.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
@@ -288,7 +288,7 @@ where
         Ok(dev)
     }
 
-    pub fn add_payload(&self, payload: Payload) {
+    pub fn add_payload(&self, payload: PayloadSpec) {
         *self.ctx.board.payload.write() = Some(payload)
     }
 }
@@ -300,16 +300,16 @@ where
 {
     const DEFAULT_NAME: &str = "default";
 
-    pub fn add_vfio_ioas(&self, param: IoasParam) -> Result<Arc<Ioas>, Error> {
+    pub fn add_vfio_ioas(&self, spec: VfioIoasSpec) -> Result<Arc<Ioas>, Error> {
         let mut ioases = self.vfio_ioases.lock();
-        if ioases.contains_key(&param.name) {
-            return error::AlreadyExists { name: param.name }.fail();
+        if ioases.contains_key(&spec.name) {
+            return error::AlreadyExists { name: spec.name }.fail();
         }
         let maybe_iommu = &mut *self.iommu.lock();
         let iommu = if let Some(iommu) = maybe_iommu {
             iommu.clone()
         } else {
-            let iommu_path = if let Some(dev_iommu) = &param.dev_iommu {
+            let iommu_path = if let Some(dev_iommu) = &spec.dev_iommu {
                 dev_iommu
             } else {
                 Path::new("/dev/iommu")
@@ -321,7 +321,7 @@ where
         let ioas = Arc::new(Ioas::alloc_on(iommu)?);
         let update = Box::new(UpdateIommuIoas { ioas: ioas.clone() });
         self.ctx.board.memory.register_change_callback(update)?;
-        ioases.insert(param.name, ioas.clone());
+        ioases.insert(spec.name, ioas.clone());
         Ok(ioas)
     }
 
@@ -331,7 +331,7 @@ where
             return Ok(ioas.clone());
         };
         if name.is_none() {
-            self.add_vfio_ioas(IoasParam {
+            self.add_vfio_ioas(VfioIoasSpec {
                 name: Self::DEFAULT_NAME.into(),
                 dev_iommu: None,
             })
@@ -340,10 +340,10 @@ where
         }
     }
 
-    pub fn add_vfio_cdev(&self, name: Arc<str>, param: CdevParam) -> Result<(), Error> {
-        let ioas = self.get_ioas(param.ioas.as_deref())?;
+    pub fn add_vfio_cdev(&self, name: Arc<str>, spec: VfioCdevSpec) -> Result<(), Error> {
+        let ioas = self.get_ioas(spec.ioas.as_deref())?;
 
-        let mut cdev = Cdev::new(&param.path)?;
+        let mut cdev = Cdev::new(&spec.path)?;
         cdev.attach_iommu_ioas(ioas.clone())?;
 
         let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
@@ -356,12 +356,12 @@ where
         Ok(())
     }
 
-    pub fn add_vfio_container(&self, param: ContainerParam) -> Result<Arc<Container>, Error> {
+    pub fn add_vfio_container(&self, spec: VfioContainerSpec) -> Result<Arc<Container>, Error> {
         let mut containers = self.vfio_containers.lock();
-        if containers.contains_key(&param.name) {
-            return error::AlreadyExists { name: param.name }.fail();
+        if containers.contains_key(&spec.name) {
+            return error::AlreadyExists { name: spec.name }.fail();
         }
-        let vfio_path = if let Some(dev_vfio) = &param.dev_vfio {
+        let vfio_path = if let Some(dev_vfio) = &spec.dev_vfio {
             dev_vfio
         } else {
             Path::new("/dev/vfio/vfio")
@@ -371,7 +371,7 @@ where
             container: container.clone(),
         });
         self.ctx.board.memory.register_change_callback(update)?;
-        containers.insert(param.name, container.clone());
+        containers.insert(spec.name, container.clone());
         Ok(container)
     }
 
@@ -381,7 +381,7 @@ where
             return Ok(container.clone());
         }
         if name.is_none() {
-            self.add_vfio_container(ContainerParam {
+            self.add_vfio_container(VfioContainerSpec {
                 name: Self::DEFAULT_NAME.into(),
                 dev_vfio: None,
             })
@@ -393,13 +393,13 @@ where
         }
     }
 
-    pub fn add_vfio_devs_in_group(&self, name: &str, param: GroupParam) -> Result<()> {
-        let container = self.get_container(param.container.as_deref())?;
-        let mut group = Group::new(&param.path)?;
+    pub fn add_vfio_devs_in_group(&self, name: &str, spec: VfioGroupSpec) -> Result<()> {
+        let container = self.get_container(spec.container.as_deref())?;
+        let mut group = Group::new(&spec.path)?;
         group.attach(container, VfioIommu::TYPE1_V2)?;
 
         let group = Arc::new(group);
-        for device in param.devices {
+        for device in spec.devices {
             let devfd = DevFd::new(group.clone(), &device)?;
             let name = format!("{name}-{device}");
             self.add_vfio_devfd(name.into(), devfd)?;

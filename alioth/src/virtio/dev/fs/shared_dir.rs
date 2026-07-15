@@ -21,11 +21,11 @@ use serde_aco::Help;
 
 use crate::fuse::passthrough::Passthrough;
 use crate::virtio::Result;
-use crate::virtio::dev::DevParam;
+use crate::virtio::dev::DevSpec;
 use crate::virtio::dev::fs::{Fs, FsConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct SharedDirParam {
+pub struct SharedDirSpec {
     /// Mount tag seen by the guest.
     pub tag: String,
     /// Path to the shared dir.
@@ -36,7 +36,7 @@ pub struct SharedDirParam {
     pub dax_window: usize,
 }
 
-impl DevParam for SharedDirParam {
+impl DevSpec for SharedDirSpec {
     type Device = Fs<Passthrough>;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Fs<Passthrough>> {

@@ -15,25 +15,25 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use alioth::board::{BoardConfig, CpuConfig, CpuTopology};
+use alioth::board::{BoardSpec, CpuSpec, CpuTopology};
 #[cfg(target_arch = "x86_64")]
-use alioth::device::fw_cfg::{FwCfgContentParam, FwCfgItemParam};
+use alioth::device::fw_cfg::{FwCfgContentSpec, FwCfgItemSpec};
 use alioth::device::net::MacAddr;
-use alioth::loader::{Executable, Payload};
-use alioth::mem::{MemBackend, MemConfig};
+use alioth::loader::{Executable, PayloadSpec};
+use alioth::mem::{MemBackend, MemSpec};
 #[cfg(target_os = "linux")]
-use alioth::vfio::{CdevParam, ContainerParam, GroupParam, IoasParam};
-use alioth::virtio::dev::balloon::BalloonParam;
-use alioth::virtio::dev::blk::BlkFileParam;
-use alioth::virtio::dev::entropy::EntropyParam;
-use alioth::virtio::dev::fs::shared_dir::SharedDirParam;
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use alioth::virtio::dev::balloon::BalloonSpec;
+use alioth::virtio::dev::blk::BlkFileSpec;
+use alioth::virtio::dev::entropy::EntropySpec;
+use alioth::virtio::dev::fs::shared_dir::SharedDirSpec;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::fs::vu::VuFsParam;
+use alioth::virtio::dev::fs::vu::VuFsSpec;
 #[cfg(target_os = "linux")]
-use alioth::virtio::dev::net::tap::NetTapParam;
+use alioth::virtio::dev::net::tap::TapNetSpec;
 #[cfg(target_os = "macos")]
-use alioth::virtio::dev::net::vmnet::NetVmnetParam;
-use alioth::virtio::dev::vsock::UdsVsockParam;
+use alioth::virtio::dev::net::vmnet::VmnetSpec;
+use alioth::virtio::dev::vsock::UdsVsockSpec;
 use alioth::virtio::worker::WorkerApi;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
@@ -43,7 +43,7 @@ use crate::boot::{
     parse_payload_arg,
 };
 
-use super::{BlkParam, Config, FsParam, NetParam, VsockParam};
+use super::{BlkSpec, FsSpec, NetSpec, VmSpec, VsockSpec};
 
 #[test]
 fn test_parse_args() {
@@ -96,10 +96,10 @@ fn test_parse_args() {
         #[cfg(target_os = "linux")]
         ("id_gpus", "0000:06:0d.0,0000:06:0d.1"),
     ]);
-    let config = parse_args(args, objects).unwrap();
-    let want = Config {
-        board: BoardConfig {
-            cpu: CpuConfig {
+    let spec = parse_args(args, objects).unwrap();
+    let want = VmSpec {
+        board: BoardSpec {
+            cpu: CpuSpec {
                 count: 16,
                 topology: CpuTopology {
                     smt: true,
@@ -107,7 +107,7 @@ fn test_parse_args() {
                     sockets: 1,
                 },
             },
-            mem: MemConfig {
+            mem: MemSpec {
                 size: 128 << 30,
                 backend: MemBackend::Anonymous,
                 shared: true,
@@ -116,7 +116,7 @@ fn test_parse_args() {
             },
             coco: None,
         },
-        payload: Payload {
+        payload: PayloadSpec {
             executable: Some(Executable::Linux(Path::new("vmlinuz").into())),
             initramfs: Some(Path::new("initramfs.cpio").into()),
             cmdline: Some("console=ttyS0".into()),
@@ -124,14 +124,14 @@ fn test_parse_args() {
         },
         net: vec![
             #[cfg(target_os = "linux")]
-            NetParam::Tap(NetTapParam {
+            NetSpec::Tap(TapNetSpec {
                 mac: MacAddr([0x02, 0x32, 0x10, 0xd0, 0x00, 0x01]),
                 mtu: 1500,
                 tap: Some(Path::new("/dev/tap86").into()),
                 ..Default::default()
             }),
             #[cfg(target_os = "linux")]
-            NetParam::Tap(NetTapParam {
+            NetSpec::Tap(TapNetSpec {
                 mac: MacAddr([0xea, 0xc2, 0x14, 0x80, 0x10, 0x01]),
                 mtu: 1500,
                 if_name: Some("tap1".into()),
@@ -140,88 +140,88 @@ fn test_parse_args() {
                 ..Default::default()
             }),
             #[cfg(target_os = "macos")]
-            NetParam::Vmnet(NetVmnetParam {
+            NetSpec::Vmnet(VmnetSpec {
                 mac: Some(MacAddr([0xa0, 0xd0, 0xea, 0x8a, 0xd3, 0x37])),
             }),
         ],
         blk: vec![
-            BlkParam::File(BlkFileParam {
+            BlkSpec::File(BlkFileSpec {
                 path: Path::new("ubuntu-25.04-server-cloudimg.raw").into(),
                 readonly: false,
                 api: WorkerApi::Mio,
             }),
-            BlkParam::File(BlkFileParam {
+            BlkSpec::File(BlkFileSpec {
                 path: Path::new("cloudinit.img").into(),
                 readonly: true,
                 api: WorkerApi::Mio,
             }),
         ],
         fs: vec![
-            FsParam::Dir(SharedDirParam {
+            FsSpec::Dir(SharedDirSpec {
                 path: Path::new("/home").into(),
                 tag: "home".into(),
                 dax_window: 1 << 30,
             }),
             #[cfg(target_os = "linux")]
-            FsParam::Vu(VuFsParam {
+            FsSpec::Vu(VuFsSpec {
                 socket: Path::new("fs.vsock").into(),
                 tag: Some("vufs".into()),
                 dax_window: 0,
             }),
         ],
-        vsock: Some(VsockParam::Uds(UdsVsockParam {
+        vsock: Some(VsockSpec::Uds(UdsVsockSpec {
             cid: 3,
             path: Path::new("vsock_3.sock").into(),
         })),
-        entropy: Some(EntropyParam::default()),
-        balloon: Some(BalloonParam {
+        entropy: Some(EntropySpec::default()),
+        balloon: Some(BalloonSpec {
             free_page_reporting: true,
         }),
         pvpanic: true,
         #[cfg(target_arch = "x86_64")]
         fw_cfg: vec![
-            FwCfgItemParam {
+            FwCfgItemSpec {
                 name: "item1".into(),
-                content: FwCfgContentParam::File(Path::new("file1").into()),
+                content: FwCfgContentSpec::File(Path::new("file1").into()),
             },
-            FwCfgItemParam {
+            FwCfgItemSpec {
                 name: "item2".into(),
-                content: FwCfgContentParam::String("string2".into()),
+                content: FwCfgContentSpec::String("string2".into()),
             },
         ],
         #[cfg(target_os = "linux")]
-        vfio_cdev: vec![CdevParam {
+        vfio_cdev: vec![VfioCdevSpec {
             path: Path::new("/dev/vfio/devices/vfio0").into(),
             ioas: Some("default".into()),
         }],
         #[cfg(target_os = "linux")]
-        vfio_ioas: vec![IoasParam {
+        vfio_ioas: vec![VfioIoasSpec {
             name: "default".into(),
             dev_iommu: Some(Path::new("/dev/iommu").into()),
         }],
         #[cfg(target_os = "linux")]
-        vfio_container: vec![ContainerParam {
+        vfio_container: vec![VfioContainerSpec {
             name: "gpu_container".into(),
             dev_vfio: Some(Path::new("/dev/vfio/vfio").into()),
         }],
         #[cfg(target_os = "linux")]
-        vfio_group: vec![GroupParam {
+        vfio_group: vec![VfioGroupSpec {
             path: Path::new("/dev/vfio/26").into(),
             container: Some("gpu_container".into()),
             devices: vec!["0000:06:0d.0".into(), "0000:06:0d.1".into()],
         }],
     };
-    assert_eq!(config, want);
+    assert_eq!(spec, want);
 }
 
 #[rstest]
 #[cfg_attr(target_os = "macos", case(
     "vmnet",
-    NetParam::Vmnet(NetVmnetParam { mac: None })
+    NetSpec::Vmnet(VmnetSpec { mac: None })
 ))]
 #[cfg_attr(target_os = "linux", case(
     "tap,tap=/dev/tap86,mac=02:32:10:d0:00:01,mtu=1500,api=iouring",
-    NetParam::Tap(NetTapParam {
+    NetSpec::Tap(TapNetSpec {
         mac: MacAddr([0x02, 0x32, 0x10, 0xd0, 0x00, 0x01]),
         mtu: 1500,
         tap: Some(Path::new("/dev/tap86").into()),
@@ -229,7 +229,7 @@ fn test_parse_args() {
         ..Default::default()
     }),
 ))]
-fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetParam) {
+fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetSpec) {
     let objects = HashMap::new();
     assert_eq!(parse_net_arg(arg, &objects).unwrap(), want);
 }
@@ -239,7 +239,7 @@ fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetParam) {
     Some("count=16,topology=id_topo".into()),
     0,
     HashMap::from([("id_topo", "cores=8,sockets=2,smt=false")]),
-    CpuConfig {
+    CpuSpec {
         count: 16,
         topology: CpuTopology { smt: false, cores: 8, sockets: 2 },
     }
@@ -248,7 +248,7 @@ fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetParam) {
     None,
     16,
     HashMap::new(),
-    CpuConfig {
+    CpuSpec {
         count: 16,
         topology: CpuTopology { smt: false, cores: 16, sockets: 1 }
     }
@@ -257,7 +257,7 @@ fn test_parse_cpu_arg(
     #[case] arg: Option<Box<str>>,
     #[case] num_cpu: u16,
     #[case] objects: HashMap<&str, &str>,
-    #[case] want: CpuConfig,
+    #[case] want: CpuSpec,
 ) {
     assert_eq!(parse_cpu_arg(arg, num_cpu, &objects).unwrap(), want,);
 }
@@ -266,7 +266,7 @@ fn test_parse_cpu_arg(
 #[case(
     None,
     "32G",
-    MemConfig {
+    MemSpec {
         size: 32 << 30,
         #[cfg(target_os = "linux")]
         backend: MemBackend::Memfd,
@@ -278,21 +278,17 @@ fn test_parse_cpu_arg(
 #[cfg_attr(target_os = "linux", case(
     Some("size=32g,backend=memfd,shared=true,thp=true".into()),
     "",
-    MemConfig {
+    MemSpec {
         size: 32 << 30,
         backend: MemBackend::Memfd,
         shared: true,
         transparent_hugepage: true
     }
 ))]
-fn test_parse_mem_arg(
-    #[case] arg: Option<String>,
-    #[case] mem_size: &str,
-    #[case] want: MemConfig,
-) {
+fn test_parse_mem_arg(#[case] arg: Option<String>, #[case] mem_size: &str, #[case] want: MemSpec) {
     let objects = HashMap::new();
-    let config = parse_mem_arg(arg, mem_size.to_owned(), &objects).unwrap();
-    assert_eq!(config, want);
+    let spec = parse_mem_arg(arg, mem_size.to_owned(), &objects).unwrap();
+    assert_eq!(spec, want);
 }
 
 #[rstest]
@@ -303,7 +299,7 @@ fn test_parse_mem_arg(
         initramfs: Some(Path::new("initramfs.cpio").into()),
         ..Default::default()
     },
-    Payload {
+    PayloadSpec {
         firmware: None,
         initramfs: Some(Path::new("initramfs.cpio").into()),
         executable: Some(Executable::Linux(Path::new("vmlinuz").into())),
@@ -317,21 +313,21 @@ fn test_parse_mem_arg(
         initramfs: Some(Path::new("initramfs.cpio").into()),
         ..Default::default()
     },
-    Payload {
+    PayloadSpec {
         firmware: None,
         initramfs: Some(Path::new("initramfs.cpio").into()),
         executable: Some(Executable::Pvh(Path::new("vmlinux.bin").into())),
         cmdline: Some("console=ttyS0".into()),
     }
 ))]
-fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: Payload) {
+fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: PayloadSpec) {
     assert_eq!(parse_payload_arg(&mut args), want);
 }
 
 #[rstest]
 #[case(
     "file,path=ubuntu-25.04-server-cloudimg.raw",
-    BlkParam::File(BlkFileParam {
+    BlkSpec::File(BlkFileSpec {
         path: Path::new("ubuntu-25.04-server-cloudimg.raw").into(),
         readonly: false,
         api: WorkerApi::Mio
@@ -339,7 +335,7 @@ fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: Payload) {
 )]
 #[case(
     "path=cloudinit.img,readonly=true",
-    BlkParam::File(BlkFileParam {
+    BlkSpec::File(BlkFileSpec {
         path: Path::new("cloudinit.img").into(),
         readonly: true,
         api: WorkerApi::Mio
@@ -347,7 +343,7 @@ fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: Payload) {
 )]
 #[case(
     "ubuntu-25.04-server-cloudimg.raw",
-    BlkParam::File(BlkFileParam {
+    BlkSpec::File(BlkFileSpec {
         path: Path::new("ubuntu-25.04-server-cloudimg.raw").into(),
         readonly: false,
         api: WorkerApi::Mio
@@ -355,13 +351,13 @@ fn test_parse_payload_arg(#[case] mut args: BootArgs, #[case] want: Payload) {
 )]
 #[cfg_attr(target_os = "linux", case(
     "file,path=ubuntu-25.04-server-cloudimg.raw,api=io_uring",
-    BlkParam::File(BlkFileParam {
+    BlkSpec::File(BlkFileSpec {
         path: Path::new("ubuntu-25.04-server-cloudimg.raw").into(),
         readonly: false,
         api: WorkerApi::IoUring
     })
 ))]
-fn test_parse_blk_arg(#[case] arg: &str, #[case] want: BlkParam) {
+fn test_parse_blk_arg(#[case] arg: &str, #[case] want: BlkSpec) {
     let objects = HashMap::new();
     assert_eq!(parse_blk_arg(arg, &objects), want);
 }

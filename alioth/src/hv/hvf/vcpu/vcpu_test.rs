@@ -19,14 +19,14 @@ use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
 
 use crate::arch::reg::Reg;
 use crate::ffi;
-use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmConfig, VmEntry, VmExit, VmMemory};
+use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmEntry, VmExit, VmMemory, VmSpec};
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_vcpu_regs() {
     let hvf = Hvf {};
-    let config = VmConfig { coco: None };
-    let vm = hvf.create_vm(&config).unwrap();
+    let spec = VmSpec { coco: None };
+    let vm = hvf.create_vm(&spec).unwrap();
     let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     let regs = [
         (Reg::X0, 0),
@@ -74,8 +74,8 @@ fn test_vcpu_regs() {
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_vcpu_run() {
     let hvf = Hvf {};
-    let config = VmConfig { coco: None };
-    let mut vm = hvf.create_vm(&config).unwrap();
+    let spec = VmSpec { coco: None };
+    let mut vm = hvf.create_vm(&spec).unwrap();
     let memory = vm.create_vm_memory().unwrap();
 
     let prot = PROT_WRITE | PROT_READ;

@@ -48,7 +48,7 @@ use crate::errors::{DebugTrace, trace_error};
 #[cfg(target_os = "macos")]
 pub use self::hvf::Hvf;
 #[cfg(target_os = "linux")]
-pub use self::kvm::{Kvm, KvmConfig, KvmError};
+pub use self::kvm::{Kvm, KvmError, KvmSpec};
 
 #[trace_error]
 #[derive(Snafu, DebugTrace)]
@@ -139,11 +139,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Deserialize, Clone, Help)]
 #[cfg_attr(target_os = "macos", derive(Default))]
-pub enum HvConfig {
+pub enum HvSpec {
     /// KVM backed by the Linux kernel.
     #[cfg(target_os = "linux")]
     #[serde(alias = "kvm")]
-    Kvm(KvmConfig),
+    Kvm(KvmSpec),
     /// macOS Hypervisor Framework.
     #[cfg(target_os = "macos")]
     #[default]
@@ -152,9 +152,9 @@ pub enum HvConfig {
 }
 
 #[cfg(target_os = "linux")]
-impl Default for HvConfig {
+impl Default for HvSpec {
     fn default() -> Self {
-        HvConfig::Kvm(KvmConfig::default())
+        HvSpec::Kvm(KvmSpec::default())
     }
 }
 
@@ -309,7 +309,7 @@ pub trait Its: Debug + Send + Sync + 'static {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub enum Coco {
+pub enum CocoSpec {
     /// Enable AMD SEV or SEV-ES.
     #[cfg(target_arch = "x86_64")]
     #[serde(alias = "sev")]
@@ -337,8 +337,8 @@ pub enum Coco {
 }
 
 #[derive(Debug)]
-pub struct VmConfig {
-    pub coco: Option<Coco>,
+pub struct VmSpec {
+    pub coco: Option<CocoSpec>,
 }
 
 pub trait Vm {
@@ -416,10 +416,13 @@ pub trait Vm {
 pub trait Hypervisor {
     type Vm: Vm + Sync + Send + 'static;
 
-    fn create_vm(&self, config: &VmConfig) -> Result<Self::Vm, Error>;
+    fn create_vm(&self, spec: &VmSpec) -> Result<Self::Vm, Error>;
 
     #[cfg(target_arch = "x86_64")]
-    fn get_supported_cpuids(&self, coco: Option<&Coco>) -> Result<HashMap<CpuidIn, CpuidResult>>;
+    fn get_supported_cpuids(
+        &self,
+        coco: Option<&CocoSpec>,
+    ) -> Result<HashMap<CpuidIn, CpuidResult>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

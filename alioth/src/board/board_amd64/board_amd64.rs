@@ -30,7 +30,7 @@ use crate::arch::layout::{
     BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
     PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
-use crate::board::{Board, BoardConfig, CpuTopology, PCIE_MMIO_64_SIZE, Result, error};
+use crate::board::{Board, BoardSpec, CpuTopology, PCIE_MMIO_64_SIZE, Result, error};
 use crate::device::ioapic::IoApic;
 use crate::firmware::acpi::bindings::{
     AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
@@ -39,8 +39,8 @@ use crate::firmware::acpi::reg::{AcpiPmTimer, FadtReset, FadtSleepControl};
 use crate::firmware::acpi::{
     AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
 };
-use crate::hv::{Coco, Hypervisor, Vm};
-use crate::loader::{Executable, InitState, Payload};
+use crate::hv::{CocoSpec, Hypervisor, Vm};
+use crate::loader::{Executable, InitState, PayloadSpec};
 use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::utils::wrapping_sum;
 
@@ -71,14 +71,14 @@ fn add_topology(cpuids: &mut HashMap<CpuidIn, CpuidResult>, func: u32, levels: &
 }
 
 impl<V: Vm> ArchBoard<V> {
-    pub fn new<H>(hv: &H, vm: &V, config: &BoardConfig) -> Result<Self>
+    pub fn new<H>(hv: &H, vm: &V, spec: &BoardSpec) -> Result<Self>
     where
         H: Hypervisor<Vm = V>,
     {
-        let mut cpuids = hv.get_supported_cpuids(config.coco.as_ref())?;
+        let mut cpuids = hv.get_supported_cpuids(spec.coco.as_ref())?;
 
-        let threads_per_core = 1 + config.cpu.topology.smt as u16;
-        let threads_per_socket = config.cpu.topology.cores * threads_per_core;
+        let threads_per_core = 1 + spec.cpu.topology.smt as u16;
+        let threads_per_socket = spec.cpu.topology.cores * threads_per_core;
 
         add_topology(
             &mut cpuids,
@@ -138,8 +138,8 @@ impl<V: Vm> ArchBoard<V> {
             cpuids.insert(CpuidIn { func, index: None }, host_cpuid);
         }
 
-        if let Some(coco) = &config.coco
-            && matches!(coco, Coco::AmdSev { .. } | Coco::AmdSnp { .. })
+        if let Some(coco) = &spec.coco
+            && matches!(coco, CocoSpec::AmdSev { .. } | CocoSpec::AmdSnp { .. })
         {
             sev::adjust_cpuid(coco, &mut cpuids)?;
         }
@@ -170,10 +170,10 @@ where
     V: Vm,
 {
     pub fn encode_cpu_identity(&self, index: u16) -> u64 {
-        encode_x2apic_id(&self.config.cpu.topology, index) as u64
+        encode_x2apic_id(&self.spec.cpu.topology, index) as u64
     }
 
-    pub(crate) fn setup_fw_cfg(&self, payload: &Payload) -> Result<()> {
+    pub(crate) fn setup_fw_cfg(&self, payload: &PayloadSpec) -> Result<()> {
         let Some(dev) = &*self.fw_cfg.lock() else {
             return Ok(());
         };
@@ -191,14 +191,14 @@ where
     }
 
     pub fn create_ram(&self) -> Result<()> {
-        let config = &self.config;
+        let spec = &self.spec;
         let memory = &self.memory;
 
-        let low_mem_size = std::cmp::min(config.mem.size, RAM_32_SIZE);
+        let low_mem_size = std::cmp::min(spec.mem.size, RAM_32_SIZE);
         let pages_low = self.create_ram_pages(low_mem_size, c"ram-low")?;
         let region_low = MemRegion {
             ranges: vec![MemRange::Ram(pages_low.clone())],
-            entries: if self.config.coco.is_none() {
+            entries: if self.spec.coco.is_none() {
                 vec![
                     MemRegionEntry {
                         size: BIOS_DATA_END,
@@ -227,8 +227,8 @@ where
         };
         memory.add_region(0, Arc::new(region_low))?;
 
-        if config.mem.size > RAM_32_SIZE {
-            let mem_hi_size = config.mem.size - RAM_32_SIZE;
+        if spec.mem.size > RAM_32_SIZE {
+            let mem_hi_size = spec.mem.size - RAM_32_SIZE;
             let mem_hi = self.create_ram_pages(mem_hi_size, c"ram-high")?;
             let region_hi = MemRegion::with_ram(mem_hi.clone(), MemRegionType::Ram);
             memory.add_region(MEM_64_START, Arc::new(region_hi))?;
@@ -237,19 +237,19 @@ where
     }
 
     pub fn coco_init(&self, memory: Arc<V::Memory>) -> Result<()> {
-        let Some(coco) = &self.config.coco else {
+        let Some(coco) = &self.spec.coco else {
             return Ok(());
         };
         match coco {
-            Coco::AmdSev { policy } => self.sev_init(*policy, memory)?,
-            Coco::AmdSnp { policy } => self.snp_init(*policy, memory)?,
-            Coco::IntelTdx { attr } => self.tdx_init(*attr, memory)?,
+            CocoSpec::AmdSev { policy } => self.sev_init(*policy, memory)?,
+            CocoSpec::AmdSnp { policy } => self.snp_init(*policy, memory)?,
+            CocoSpec::IntelTdx { attr } => self.tdx_init(*attr, memory)?,
         }
         Ok(())
     }
 
     fn patch_dsdt(&self, data: &mut [u8; 352]) {
-        let pcie_mmio_64_start = self.config.pcie_mmio_64_start();
+        let pcie_mmio_64_start = self.spec.pcie_mmio_64_start();
         let pcei_mmio_64_max = pcie_mmio_64_start - 1 + PCIE_MMIO_64_SIZE;
         data[DSDT_OFFSET_PCI_QWORD_MEM..(DSDT_OFFSET_PCI_QWORD_MEM + 8)]
             .copy_from_slice(&pcie_mmio_64_start.to_le_bytes());
@@ -284,7 +284,7 @@ where
 
         let offset_madt = offset_fadt + size_of_val(&fadt);
         debug_assert_eq!(offset_madt % 4, 0);
-        let apic_ids: Vec<u32> = (0..self.config.cpu.count)
+        let apic_ids: Vec<u32> = (0..self.spec.cpu.count)
             .map(|index| self.encode_cpu_identity(index) as u32)
             .collect();
         let (madt, madt_ioapic, madt_apics) = create_madt(&apic_ids);
@@ -324,7 +324,7 @@ where
         memory.add_io_dev(PORT_ACPI_RESET, Arc::new(FadtReset))?;
         memory.add_io_dev(PORT_ACPI_SLEEP_CONTROL, Arc::new(FadtSleepControl))?;
         memory.add_io_dev(PORT_ACPI_TIMER, Arc::new(AcpiPmTimer::new()))?;
-        if self.config.coco.is_none() {
+        if self.spec.coco.is_none() {
             let ram = memory.ram_bus();
             acpi_table.relocate(EBDA_START + size_of::<AcpiTableRsdp>() as u64);
             acpi_table.update_checksums();
@@ -344,8 +344,8 @@ where
             dev.add_acpi(acpi_table).context(error::FwCfg)?;
             let mem_regions = memory.mem_region_entries();
             dev.add_e820(&mem_regions).context(error::FwCfg)?;
-            dev.add_ram_size(self.config.mem.size);
-            dev.add_cpu_count(self.config.cpu.count);
+            dev.add_ram_size(self.spec.mem.size);
+            dev.add_cpu_count(self.spec.cpu.count);
         }
         Ok(())
     }

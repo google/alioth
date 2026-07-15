@@ -33,21 +33,21 @@ use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::vhost::{VHOST_FILE_UNBIND, VirtqAddr, VirtqFile, VirtqState};
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
-use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue};
 use crate::virtio::vhost::{UpdateVsockMem, VhostDev, error};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
-pub struct VhostVsockParam {
+pub struct VhostVsockSpec {
     /// Vsock context id.
     pub cid: u32,
     /// Path to the host device file. [default: /dev/vhost-vsock]
     pub dev: Option<Box<Path>>,
 }
 
-impl DevParam for VhostVsockParam {
+impl DevSpec for VhostVsockSpec {
     type Device = VhostVsock;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {
@@ -65,14 +65,14 @@ pub struct VhostVsock {
 }
 
 impl VhostVsock {
-    pub fn new(param: VhostVsockParam, name: impl Into<Arc<str>>) -> Result<VhostVsock> {
+    pub fn new(spec: VhostVsockSpec, name: impl Into<Arc<str>>) -> Result<VhostVsock> {
         let name = name.into();
-        let vhost_dev = match param.dev {
+        let vhost_dev = match spec.dev {
             Some(dev) => VhostDev::new(dev),
             None => VhostDev::new("/dev/vhost-vsock"),
         }?;
         vhost_dev.set_owner()?;
-        vhost_dev.vsock_set_guest_cid(param.cid as _)?;
+        vhost_dev.vsock_set_guest_cid(spec.cid as _)?;
         if let Ok(backend_feature) = vhost_dev.get_backend_features() {
             log::debug!("{name}: vhost-vsock backend feature: {backend_feature:x?}");
             vhost_dev.set_backend_features(&backend_feature)?;
@@ -90,7 +90,7 @@ impl VhostVsock {
             name,
             vhost_dev: Arc::new(vhost_dev),
             config: VsockConfig {
-                guest_cid: param.cid,
+                guest_cid: spec.cid,
                 ..Default::default()
             },
             features: known_feat as u64,

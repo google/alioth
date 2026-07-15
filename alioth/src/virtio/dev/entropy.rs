@@ -31,7 +31,7 @@ use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevParam, DeviceId, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
 use crate::virtio::queue::{QueueReg, VirtQueue, copy_from_reader};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result, error};
@@ -66,11 +66,11 @@ pub struct Entropy {
 }
 
 impl Entropy {
-    pub fn new(param: EntropyParam, name: impl Into<Arc<str>>) -> Result<Self> {
+    pub fn new(spec: EntropySpec, name: impl Into<Arc<str>>) -> Result<Self> {
         let name = name.into();
         let mut options = OpenOptions::new();
         options.custom_flags(O_NONBLOCK).read(true);
-        let path = param.source.as_deref().unwrap_or(Path::new("/dev/urandom"));
+        let path = spec.source.as_deref().unwrap_or(Path::new("/dev/urandom"));
         let file = options.open(path).context(error::AccessFile { path })?;
         Ok(Entropy {
             name,
@@ -166,12 +166,12 @@ impl VirtioMio for Entropy {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Help)]
-pub struct EntropyParam {
+pub struct EntropySpec {
     /// Source of entropy [default: /dev/urandom]
     pub source: Option<Box<Path>>,
 }
 
-impl DevParam for EntropyParam {
+impl DevSpec for EntropySpec {
     type Device = Entropy;
 
     fn build(self, name: impl Into<Arc<str>>) -> Result<Self::Device> {

@@ -82,7 +82,7 @@ fn default_memory_size() -> u64 {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
-pub struct MemConfig {
+pub struct MemSpec {
     /// Total guest memory size in bytes. [default: 1G]
     #[serde(default = "default_memory_size")]
     pub size: u64,
@@ -111,7 +111,7 @@ pub enum MemBackend {
     Memfd,
 }
 
-impl MemConfig {
+impl MemSpec {
     pub fn has_shared_fd(&self) -> bool {
         match &self.backend {
             #[cfg(target_os = "linux")]

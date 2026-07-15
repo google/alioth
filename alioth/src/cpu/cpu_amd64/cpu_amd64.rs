@@ -19,8 +19,8 @@ use std::path::Path;
 
 use crate::arch::msr::{MiscEnable, Msr};
 use crate::cpu::{Result, VcpuHandle, VcpuThread};
-use crate::hv::{Coco, Vcpu, Vm};
-use crate::loader::{InitState, Payload, firmware};
+use crate::hv::{CocoSpec, Vcpu, Vm};
+use crate::loader::{InitState, PayloadSpec, firmware};
 use crate::mem::mapped::ArcMemPages;
 
 impl<V: Vm> VcpuThread<V> {
@@ -43,7 +43,7 @@ impl<V: Vm> VcpuThread<V> {
     }
 
     pub(crate) fn init_boot_vcpu(&mut self, init: &InitState) -> Result<()> {
-        if matches!(self.ctx.board.config.coco, Some(Coco::IntelTdx { .. })) {
+        if matches!(self.ctx.board.spec.coco, Some(CocoSpec::IntelTdx { .. })) {
             return Ok(());
         }
         self.vcpu
@@ -53,7 +53,7 @@ impl<V: Vm> VcpuThread<V> {
     }
 
     pub(crate) fn init_ap(&mut self, vcpus: &[VcpuHandle]) -> Result<()> {
-        let Some(coco) = &self.ctx.board.config.coco else {
+        let Some(coco) = &self.ctx.board.spec.coco else {
             return Ok(());
         };
         self.sync_vcpus(vcpus)?;
@@ -61,30 +61,30 @@ impl<V: Vm> VcpuThread<V> {
             return Ok(());
         }
         match coco {
-            Coco::AmdSev { policy } => {
+            CocoSpec::AmdSev { policy } => {
                 if policy.es() {
                     self.sev_init_ap()?;
                 }
             }
-            Coco::AmdSnp { .. } => self.sev_init_ap()?,
-            Coco::IntelTdx { .. } => self.tdx_init_ap()?,
+            CocoSpec::AmdSnp { .. } => self.sev_init_ap()?,
+            CocoSpec::IntelTdx { .. } => self.tdx_init_ap()?,
         }
         Ok(())
     }
 
     pub(crate) fn setup_coco(&self, fw: &mut ArcMemPages) -> Result<()> {
-        let Some(coco) = &self.ctx.board.config.coco else {
+        let Some(coco) = &self.ctx.board.spec.coco else {
             return Ok(());
         };
         match coco {
-            Coco::AmdSev { policy } => self.setup_sev(fw, *policy),
-            Coco::AmdSnp { .. } => self.setup_snp(fw),
-            Coco::IntelTdx { .. } => self.setup_tdx(fw),
+            CocoSpec::AmdSev { policy } => self.setup_sev(fw, *policy),
+            CocoSpec::AmdSnp { .. } => self.setup_snp(fw),
+            CocoSpec::IntelTdx { .. } => self.setup_tdx(fw),
         }
     }
 
     pub(crate) fn coco_finalize(&self, vcpus: &[VcpuHandle]) -> Result<()> {
-        let Some(coco) = &self.ctx.board.config.coco else {
+        let Some(coco) = &self.ctx.board.spec.coco else {
             return Ok(());
         };
         self.sync_vcpus(vcpus)?;
@@ -92,13 +92,13 @@ impl<V: Vm> VcpuThread<V> {
             return Ok(());
         };
         match coco {
-            Coco::AmdSev { policy } => self.sev_finalize(*policy),
-            Coco::AmdSnp { .. } => self.snp_finalize(),
-            Coco::IntelTdx { .. } => self.tdx_finalize(),
+            CocoSpec::AmdSev { policy } => self.sev_finalize(*policy),
+            CocoSpec::AmdSnp { .. } => self.snp_finalize(),
+            CocoSpec::IntelTdx { .. } => self.tdx_finalize(),
         }
     }
 
-    pub(crate) fn setup_firmware(&self, fw: &Path, payload: &Payload) -> Result<InitState> {
+    pub(crate) fn setup_firmware(&self, fw: &Path, payload: &PayloadSpec) -> Result<InitState> {
         let (init_state, mut rom) = firmware::load(&self.ctx.board.memory, fw)?;
         self.setup_coco(&mut rom)?;
         self.ctx.board.setup_fw_cfg(payload)?;

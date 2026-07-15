@@ -22,9 +22,9 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::{bitflags, consts, impl_mmio_for_zerocopy};
 
-pub use self::uds_vsock::{UdsVsock, UdsVsockParam};
+pub use self::uds_vsock::{UdsVsock, UdsVsockSpec};
 #[cfg(target_os = "linux")]
-pub use self::vhost_vsock::{VhostVsock, VhostVsockParam};
+pub use self::vhost_vsock::{VhostVsock, VhostVsockSpec};
 
 consts! {
     pub struct VsockVirtq(u16) {

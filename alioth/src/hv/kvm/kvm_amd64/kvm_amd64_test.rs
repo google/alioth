@@ -17,13 +17,13 @@ use std::arch::x86_64::CpuidResult;
 use rstest::rstest;
 
 use crate::arch::cpuid::CpuidIn;
-use crate::hv::kvm::{Kvm, KvmConfig};
+use crate::hv::kvm::{Kvm, KvmSpec};
 use crate::sys::kvm::{KVM_CPUID_SIGNATURE, KvmCpuid2Flag, KvmCpuidEntry2};
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_get_supported_cpuid() {
-    let kvm = Kvm::new(KvmConfig::default()).unwrap();
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
     let mut kvm_cpuid_exist = false;
     let supported_cpuids = kvm.get_supported_cpuids(None).unwrap();
     for (in_, out) in &supported_cpuids {

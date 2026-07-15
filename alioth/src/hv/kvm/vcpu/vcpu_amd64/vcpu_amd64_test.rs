@@ -30,12 +30,12 @@ use crate::hv::{
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_vcpu_regs() {
-    use crate::hv::VmConfig;
-    use crate::hv::kvm::KvmConfig;
+    use crate::hv::VmSpec;
+    use crate::hv::kvm::KvmSpec;
 
-    let kvm = Kvm::new(KvmConfig::default()).unwrap();
-    let vm_config = VmConfig { coco: None };
-    let vm = kvm.create_vm(&vm_config).unwrap();
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let spec = VmSpec { coco: None };
+    let vm = kvm.create_vm(&spec).unwrap();
     let mut vcpu = vm.create_vcpu(0, 0).unwrap();
     let regs = [
         (Reg::Rax, 0xa93f90f6ce9c8040),
@@ -176,12 +176,12 @@ fn test_vcpu_regs() {
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_kvm_run() {
-    use crate::hv::VmConfig;
-    use crate::hv::kvm::KvmConfig;
+    use crate::hv::VmSpec;
+    use crate::hv::kvm::KvmSpec;
 
-    let kvm = Kvm::new(KvmConfig::default()).unwrap();
-    let vm_config = VmConfig { coco: None };
-    let mut vm = kvm.create_vm(&vm_config).unwrap();
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let spec = VmSpec { coco: None };
+    let mut vm = kvm.create_vm(&spec).unwrap();
     let memory = vm.create_vm_memory().unwrap();
 
     let prot = PROT_WRITE | PROT_EXEC | PROT_READ;

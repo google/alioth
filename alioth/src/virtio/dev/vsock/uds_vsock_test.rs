@@ -27,10 +27,10 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
-    ShutdownFlag, UdsVsockParam, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
+    ShutdownFlag, UdsVsockSpec, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
     VsockType, VsockVirtq,
 };
-use crate::virtio::dev::{DevParam, StartParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::{GuestQueue, VirtQueueGuest};
@@ -118,7 +118,7 @@ fn vsock_conn_test() {
     let sock_path = temp_dir.path().join("vsock.sock");
 
     const GUEST_CID: u32 = 3;
-    let param = UdsVsockParam {
+    let param = UdsVsockSpec {
         cid: GUEST_CID,
         path: sock_path.clone().into(),
     };

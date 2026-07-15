@@ -36,7 +36,7 @@ use crate::errors::{DebugTrace, trace_error};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
-pub struct Payload {
+pub struct PayloadSpec {
     pub firmware: Option<Box<Path>>,
     pub executable: Option<Executable>,
     pub initramfs: Option<Box<Path>>,
