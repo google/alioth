@@ -31,10 +31,11 @@ use crate::arch::layout::{PL011_START, PL031_START};
 use crate::arch::layout::{PORT_CMOS_REG, PORT_COM1, PORT_FW_CFG_SELECTOR, PORT_FWDBG};
 use crate::board::{Board, BoardSpec};
 use crate::cpu::{Context, State, VcpuHandle, stop_vcpus, vcpu_thread};
+use crate::device::MmioDev;
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::cmos::Cmos;
-use crate::device::console::StdioConsole;
+use crate::device::console::{ConsoleSpec, LogConsole, StdioConsole};
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemSpec};
 #[cfg(target_arch = "x86_64")]
@@ -174,12 +175,20 @@ where
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub fn add_com1(&self) -> Result<(), Error> {
+    pub fn add_com1(&self, spec: &ConsoleSpec) -> Result<(), Error> {
         let io_apic = self.ctx.board.arch.io_apic.clone();
-        let console = StdioConsole::new().context(error::CreateConsole)?;
-        let com1 = Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?;
+        let com1: Arc<dyn MmioDev> = match spec {
+            ConsoleSpec::Stdio => {
+                let console = StdioConsole::new().context(error::CreateConsole)?;
+                Arc::new(Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?)
+            }
+            ConsoleSpec::Log(spec) => {
+                let console = LogConsole::new(spec).context(error::CreateConsole)?;
+                Arc::new(Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?)
+            }
+        };
         let mut io_devs = self.ctx.board.io_devs.write();
-        io_devs.push((PORT_COM1, Arc::new(com1)));
+        io_devs.push((PORT_COM1, com1));
         Ok(())
     }
 
@@ -198,12 +207,20 @@ where
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub fn add_pl011(&self) -> Result<(), Error> {
+    pub fn add_pl011(&self, spec: &ConsoleSpec) -> Result<(), Error> {
         let irq_line = self.ctx.board.vm.create_irq_sender(1)?;
-        let console = StdioConsole::new().context(error::CreateConsole)?;
-        let pl011_dev = Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?;
+        let pl011_dev: Arc<dyn MmioDev> = match spec {
+            ConsoleSpec::Stdio => {
+                let console = StdioConsole::new().context(error::CreateConsole)?;
+                Arc::new(Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?)
+            }
+            ConsoleSpec::Log(spec) => {
+                let console = LogConsole::new(spec).context(error::CreateConsole)?;
+                Arc::new(Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?)
+            }
+        };
         let mut mmio_devs = self.ctx.board.mmio_devs.write();
-        mmio_devs.push((PL011_START, Arc::new(pl011_dev)));
+        mmio_devs.push((PL011_START, pl011_dev));
         Ok(())
     }
 

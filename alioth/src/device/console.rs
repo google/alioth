@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use std::fmt::Debug;
+use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::mem::MaybeUninit;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -24,6 +26,8 @@ use libc::{
 };
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
+use serde::Deserialize;
+use serde_aco::Help;
 
 use crate::device::Result;
 use crate::ffi;
@@ -33,6 +37,61 @@ pub trait Console: Debug + Send + Sync + 'static {
     const TOKEN_INPUT: Token;
     fn activate(&self, registry: &Registry) -> io::Result<()>;
     fn deactivate(&self, registry: &Registry) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
+pub struct LogConsoleSpec {
+    /// Path to the log file.
+    pub path: Box<Path>,
+    /// Append logs to the file if it already exits.
+    #[serde(default)]
+    pub append: bool,
+}
+
+#[derive(Debug)]
+pub struct LogConsole {
+    file: File,
+}
+
+impl LogConsole {
+    pub fn new(spec: &LogConsoleSpec) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(spec.append)
+            .open(&spec.path)?;
+        Ok(LogConsole { file })
+    }
+}
+
+impl Console for LogConsole {
+    const TOKEN_INPUT: Token = Token(0);
+
+    fn activate(&self, _registry: &Registry) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn deactivate(&self, _registry: &Registry) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for &LogConsole {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Write for &LogConsole {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut file = &self.file;
+        file.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut file = &self.file;
+        file.flush()
+    }
 }
 
 #[derive(Debug)]
@@ -129,6 +188,17 @@ impl Console for StdioConsole {
     fn deactivate(&self, registry: &Registry) -> io::Result<()> {
         registry.deregister(&mut SourceFd(&STDIN_FILENO))
     }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Help)]
+pub enum ConsoleSpec {
+    /// Redirect guest console to host stdio (requires TTY).
+    #[default]
+    #[serde(alias = "stdio")]
+    Stdio,
+    /// Redirect guest console to a log file.
+    #[serde(alias = "log")]
+    Log(LogConsoleSpec),
 }
 
 pub trait UartRecv: Send + 'static {

@@ -98,6 +98,7 @@ fn test_parse_args() {
     ]);
     let spec = parse_args(args, objects).unwrap();
     let want = VmSpec {
+        console: Default::default(),
         board: BoardSpec {
             cpu: CpuSpec {
                 count: 16,
