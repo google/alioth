@@ -84,20 +84,36 @@ pub struct CpuTopology {
     #[serde(default)]
     /// Number of sockets.
     pub sockets: u8,
+    #[serde(default)]
+    /// Use thread-contiguous logical CPU ID mapping when SMT is on.
+    pub thread_contiguous: bool,
 }
 
 impl CpuTopology {
     pub fn encode(&self, index: u16) -> (u8, u16, u8) {
-        let total_cores = self.cores * self.sockets as u16;
-        let thread_id = index / total_cores;
-        let core_id = index % total_cores % self.cores;
-        let socket_id = index % total_cores / self.cores;
-        (socket_id as u8, core_id, thread_id as u8)
+        if self.thread_contiguous {
+            let threads_per_core = self.smt as u16 + 1;
+            let thread_id = index % threads_per_core;
+            let core_id = index / threads_per_core % self.cores;
+            let socket_id = index / threads_per_core / self.cores;
+            (socket_id as u8, core_id, thread_id as u8)
+        } else {
+            let total_cores = self.cores * self.sockets as u16;
+            let thread_id = index / total_cores;
+            let core_id = index % total_cores % self.cores;
+            let socket_id = index % total_cores / self.cores;
+            (socket_id as u8, core_id, thread_id as u8)
+        }
     }
 
     pub fn decode(&self, socket_id: u8, core_id: u16, thread_id: u8) -> u16 {
-        let total_cores = self.cores * self.sockets as u16;
-        thread_id as u16 * total_cores + core_id + socket_id as u16 * self.cores
+        if self.thread_contiguous {
+            let threads_per_core = self.smt as u16 + 1;
+            (socket_id as u16 * self.cores + core_id) * threads_per_core + thread_id as u16
+        } else {
+            let total_cores = self.cores * self.sockets as u16;
+            thread_id as u16 * total_cores + core_id + socket_id as u16 * self.cores
+        }
     }
 }
 

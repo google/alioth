@@ -23,6 +23,7 @@ use crate::board::{CpuSpec, CpuTopology};
         smt: false,
         cores: 2,
         sockets: 1,
+        ..Default::default()
     },
 }, true)]
 #[case(CpuSpec {
@@ -31,6 +32,7 @@ use crate::board::{CpuSpec, CpuTopology};
         smt: true,
         cores: 2,
         sockets: 1,
+        ..Default::default()
     },
 }, false)]
 fn test_cpu_topology_validate(#[case] spec: CpuSpec, #[case] expected: bool) {
@@ -38,15 +40,23 @@ fn test_cpu_topology_validate(#[case] spec: CpuSpec, #[case] expected: bool) {
 }
 
 #[rstest]
-#[case(CpuTopology{smt: false, cores: 1, sockets: 1}, 0, (0, 0, 0))]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 0, (0, 0, 0))]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 1, (0, 1, 0))]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 2, (0, 0, 1))]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 3, (0, 1, 1))]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 4, (0, 4, 0))]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 11, (1, 5, 0))]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 14, (0, 2, 1))]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 23, (1, 5, 1))]
+#[case(CpuTopology{smt: false, cores: 1, sockets: 1, thread_contiguous: false}, 0, (0, 0, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 0, (0, 0, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 1, (0, 1, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 2, (0, 0, 1))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 3, (0, 1, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 4, (0, 4, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 11, (1, 5, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 14, (0, 2, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 23, (1, 5, 1))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 0, (0, 0, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 1, (0, 0, 1))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 2, (0, 1, 0))]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 3, (0, 1, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: true}, 4, (0, 2, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: true}, 11, (0, 5, 1))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: true}, 14, (1, 1, 0))]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: true}, 23, (1, 5, 1))]
 fn test_cpu_topology_encode_decode(
     #[case] topology: CpuTopology,
     #[case] index: u16,
