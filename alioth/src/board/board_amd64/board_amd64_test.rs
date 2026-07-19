@@ -18,15 +18,19 @@ use crate::board::CpuTopology;
 use crate::board::x86_64::encode_x2apic_id;
 
 #[rstest]
-#[case(CpuTopology{smt: false, cores: 1, sockets: 1}, 0, 0)]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 0, 0)]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 1, 2)]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 2, 1)]
-#[case(CpuTopology{smt: true, cores: 2, sockets: 1}, 3, 3)]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 4, 8)]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 11, 26)]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 14, 5)]
-#[case(CpuTopology{smt: true, cores: 6, sockets: 2}, 23, 27)]
+#[case(CpuTopology{smt: false, cores: 1, sockets: 1, ..Default::default()}, 0, 0)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 0, 0)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 1, 2)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 2, 1)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: false}, 3, 3)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 0, 0)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 1, 1)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 2, 2)]
+#[case(CpuTopology{smt: true, cores: 2, sockets: 1, thread_contiguous: true}, 3, 3)]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 4, 8)]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 11, 26)]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 14, 5)]
+#[case(CpuTopology{smt: true, cores: 6, sockets: 2, thread_contiguous: false}, 23, 27)]
 fn test_encode_x2apic(#[case] topology: CpuTopology, #[case] index: u16, #[case] x2apic: u32) {
     assert_eq!(encode_x2apic_id(&topology, index), x2apic)
 }

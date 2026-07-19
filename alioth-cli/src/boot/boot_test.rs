@@ -106,6 +106,7 @@ fn test_parse_args() {
                     smt: true,
                     cores: 8,
                     sockets: 1,
+                    thread_contiguous: false,
                 },
             },
             mem: MemSpec {
@@ -242,7 +243,7 @@ fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetSpec) {
     HashMap::from([("id_topo", "cores=8,sockets=2,smt=false")]),
     CpuSpec {
         count: 16,
-        topology: CpuTopology { smt: false, cores: 8, sockets: 2 },
+        topology: CpuTopology { smt: false, cores: 8, sockets: 2, thread_contiguous: false },
     }
 )]
 #[case(
@@ -251,7 +252,7 @@ fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetSpec) {
     HashMap::new(),
     CpuSpec {
         count: 16,
-        topology: CpuTopology { smt: false, cores: 16, sockets: 1 }
+        topology: CpuTopology { smt: false, cores: 16, sockets: 1, thread_contiguous: false }
     }
 )]
 fn test_parse_cpu_arg(
