@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use alioth::board::BoardSpec;
+use alioth::device::console::ConsoleSpec;
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::FwCfgItemSpec;
 use alioth::loader::PayloadSpec;
@@ -98,6 +99,7 @@ pub struct VmSpec {
 
     pub payload: PayloadSpec,
 
+    pub console: ConsoleSpec,
     pub net: Vec<NetSpec>,
     pub blk: Vec<BlkSpec>,
     pub fs: Vec<FsSpec>,

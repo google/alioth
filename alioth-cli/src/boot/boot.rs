@@ -19,6 +19,7 @@ use std::mem;
 use std::path::{Path, PathBuf};
 
 use alioth::board::{BoardSpec, CpuSpec};
+use alioth::device::console::ConsoleSpec;
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::FwCfgItemSpec;
 use alioth::errors::{DebugTrace, trace_error};
@@ -155,6 +156,11 @@ pub struct BootArgs {
         help_text::<VsockSpec>("Add a VirtIO vsock device.")
     ))]
     vsock: Option<String>,
+
+    #[arg(long, help(
+        help_text::<ConsoleSpec>("Configure guest console.")
+    ))]
+    console: Option<Box<str>>,
 
     #[cfg(target_os = "linux")]
     #[arg(long, help(help_text::<VfioCdevSpec>(
@@ -322,6 +328,11 @@ fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<VmSpec
         spec.vsock = Some(param);
     }
 
+    if let Some(arg) = args.console {
+        let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
+        spec.console = param;
+    }
+
     if let Some(arg) = args.balloon {
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
         spec.balloon = Some(param);
@@ -355,9 +366,9 @@ fn create<H: Hypervisor>(hypervisor: &H, spec: VmSpec) -> Result<Machine<H>, ali
     let vm = Machine::new(hypervisor, spec.board)?;
 
     #[cfg(target_arch = "x86_64")]
-    vm.add_com1()?;
+    vm.add_com1(&spec.console)?;
     #[cfg(target_arch = "aarch64")]
-    vm.add_pl011()?;
+    vm.add_pl011(&spec.console)?;
     #[cfg(target_arch = "aarch64")]
     vm.add_pl031();
 
