@@ -108,6 +108,10 @@ where
         self.reg
     }
 
+    pub fn desc_avail(&self) -> bool {
+        self.q.desc_avail(self.avail)
+    }
+
     fn push_used(&mut self, chain: DescChain, len: u32) {
         self.q.set_used(self.used, chain.id, len);
         self.used = self.q.index_add(self.used, chain.delta);

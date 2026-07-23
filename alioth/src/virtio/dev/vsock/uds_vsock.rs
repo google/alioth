@@ -161,6 +161,7 @@ impl UdsVsock {
             reader,
             writer: BufWriter::new(writer),
             buf_alloc: buf_size as u32,
+            eof: false,
         };
         self.connections.insert((host_port, port), conn);
         let count = self.host_ports.entry(host_port).or_default();
@@ -228,6 +229,7 @@ impl UdsVsock {
     fn handle_tx_response<'m, Q, S>(
         &mut self,
         hdr: &VsockHeader,
+        registry: &Registry,
         rx_q: &mut Queue<'_, 'm, Q>,
         irq_sender: &S,
     ) -> Result<()>
@@ -262,7 +264,7 @@ impl UdsVsock {
             "{}: host:{host_port} -> vm:{guest_port}: established",
             self.name
         );
-        self.transfer_rx_data(host_port, guest_port, rx_q, irq_sender)
+        self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
     }
 
     fn remove_conn(&mut self, host_port: u32, guest_port: u32, registry: &Registry) -> Result<()> {
@@ -384,6 +386,7 @@ impl UdsVsock {
             reader: BufReader::new(reader),
             writer: BufWriter::new(writer),
             buf_alloc: buf_size as u32,
+            eof: false,
             state: ConnState::Established {
                 fwd_cnt: Wrapping(0),
             },
@@ -451,7 +454,7 @@ impl UdsVsock {
         );
         match hdr.op {
             VsockOp::REQUEST => self.handle_tx_request(hdr, registry, irq_sender, rx_q),
-            VsockOp::RESPONSE => self.handle_tx_response(hdr, rx_q, irq_sender),
+            VsockOp::RESPONSE => self.handle_tx_response(hdr, registry, rx_q, irq_sender),
             VsockOp::RST => self.handle_tx_rst(hdr, registry),
             VsockOp::RW => self.transfer_tx_data(hdr, body, readable),
             VsockOp::CREDIT_UPDATE => {
@@ -506,9 +509,10 @@ impl UdsVsock {
             hdr: &mut VsockHeader,
             conn: &mut BufReader<UnixStream>,
             buffers: &mut [IoSliceMut],
-        ) -> Result<usize> {
+        ) -> Result<(usize, bool)> {
             let mut nskip = 0;
             let mut nread = 0;
+            let mut eof = false;
             for buf in buffers.iter_mut() {
                 let r = if HEADER_SIZE > nskip {
                     let Some((_, data)) = buf.split_at_mut_checked(HEADER_SIZE - nskip) else {
@@ -524,7 +528,10 @@ impl UdsVsock {
                     conn.read(buf)
                 };
                 let n = match r {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
                     Ok(n) => n,
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                     Err(e) => Err(e)?,
@@ -537,7 +544,7 @@ impl UdsVsock {
             hdr.len = nread as u32;
             let mut hdr_buf = hdr.as_bytes();
             let _ = hdr_buf.read_vectored(buffers);
-            Ok(nread)
+            Ok((nread, eof))
         }
 
         let rx_idx = VsockVirtq::RX.raw();
@@ -548,6 +555,9 @@ impl UdsVsock {
             );
             return Ok(());
         };
+        if conn.eof {
+            return Ok(());
+        }
         let ConnState::Established { fwd_cnt } = conn.state else {
             log::error!("{}: unexpected state {:?}", self.name, conn.state);
             return Ok(());
@@ -564,7 +574,11 @@ impl UdsVsock {
             ..Default::default()
         };
         rx_q.handle_desc(rx_idx, irq_sender, |desc| {
-            let nread = copy_to_rx(&mut hdr, &mut conn.reader, &mut desc.writable)? as u32;
+            if conn.eof {
+                return Ok(Status::Break);
+            }
+            let (nread, read_eof) = copy_to_rx(&mut hdr, &mut conn.reader, &mut desc.writable)?;
+            conn.eof |= read_eof;
             if nread == 0 {
                 return Ok(Status::Break);
             }
@@ -573,9 +587,73 @@ impl UdsVsock {
                 self.name
             );
             Ok(Status::Done {
-                len: nread + HEADER_SIZE as u32,
+                len: (nread + HEADER_SIZE) as u32,
             })
         })?;
+        Ok(())
+    }
+
+    fn process_rx_data<'m, Q, S>(
+        &mut self,
+        host_port: u32,
+        guest_port: u32,
+        registry: &Registry,
+        rx_q: &mut Queue<'_, 'm, Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+    {
+        self.transfer_rx_data(host_port, guest_port, rx_q, irq_sender)?;
+
+        let eof = self
+            .connections
+            .get(&(host_port, guest_port))
+            .is_some_and(|conn| conn.eof);
+        if eof && rx_q.desc_avail() {
+            let hdr = VsockHeader {
+                src_cid: self.config.guest_cid,
+                dst_cid: VSOCK_CID_HOST,
+                src_port: guest_port,
+                dst_port: host_port,
+                type_: SOCKET_TYPE,
+                ..Default::default()
+            };
+            self.respond_rst(&hdr, irq_sender, rx_q)?;
+            self.remove_conn(host_port, guest_port, registry)?;
+        }
+        Ok(())
+    }
+
+    fn flush_rx_data<'m, Q, S>(
+        &mut self,
+        registry: &Registry,
+        rx_q: &mut Queue<'_, 'm, Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+    {
+        if self.connections.is_empty() {
+            return Ok(());
+        }
+        let mut ports: Vec<_> = self
+            .connections
+            .iter()
+            .map(|(ports, conn)| (*ports, conn.eof))
+            .collect();
+        // Sort connections to process those with EOF first.
+        // !eof maps true to false, and false to true. Since false < true,
+        // this puts eof=true connections at the front of the list.
+        ports.sort_by_key(|(_, eof)| !eof);
+        for ((host_port, guest_port), _) in ports {
+            if !rx_q.desc_avail() {
+                break;
+            }
+            self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)?;
+        }
         Ok(())
     }
 
@@ -665,6 +743,7 @@ pub struct Connection {
     reader: BufReader<UnixStream>,
     writer: BufWriter<UnixStream>,
     buf_alloc: u32,
+    eof: bool,
 }
 
 impl UdsVsock {
@@ -770,7 +849,7 @@ impl VirtioMio for UdsVsock {
             self.handle_conn_request(token, socket, rx_q, irq_sender)
         } else if let Some(port_pair) = self.ports.get(&token) {
             let (host_port, guest_port) = port_pair.to_owned();
-            self.transfer_rx_data(host_port, guest_port, rx_q, irq_sender)
+            self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
         } else {
             log::error!("{}: invalid token: {token:#x?}", self.name);
             Ok(())
@@ -791,7 +870,19 @@ impl VirtioMio for UdsVsock {
         let name = &self.name;
         match index {
             VsockVirtq::TX => self.handle_tx(active_mio)?,
-            VsockVirtq::RX => log::debug!("{name}: queue RX buffer available"),
+            VsockVirtq::RX => {
+                log::debug!("{name}: queue RX buffer available");
+                let registry = active_mio.poll.registry();
+                let irq_sender = active_mio.irq_sender;
+                let Some(Some(rx_q)) = active_mio.queues.get_mut(VsockVirtq::RX.raw() as usize)
+                else {
+                    return error::InvalidQueueIndex {
+                        index: VsockVirtq::RX.raw(),
+                    }
+                    .fail();
+                };
+                self.flush_rx_data(registry, rx_q, irq_sender)?;
+            }
             VsockVirtq::EVENT => log::debug!("{name}: queue EVENT buffer available"),
             _ => log::error!("{name}: unknown queue index {index:?}"),
         }
