@@ -18,7 +18,6 @@ use std::sync::Arc;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
-use crate::hv::{self, MemMapOption, VmMemory};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, IoRegion, MemRegion, MemRegionEntry, MemRegionType, Memory};
 use crate::pci::cap::{MsixCap, MsixCapMmio, NullCap, PciCap, PciCapHdr, PciCapId, PciCapList};
@@ -268,30 +267,9 @@ fn test_emulated_config() {
     assert_matches!(config.read(0x42, 2), Ok(0));
 }
 
-#[derive(Debug)]
-struct FakeVmMemory;
-
-impl VmMemory for FakeVmMemory {
-    fn mem_map(&self, _gpa: u64, _size: u64, _hva: usize, _option: MemMapOption) -> hv::Result<()> {
-        unreachable!()
-    }
-
-    fn unmap(&self, _gpa: u64, _size: u64) -> hv::Result<()> {
-        unreachable!()
-    }
-
-    fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> hv::Result<()> {
-        unreachable!()
-    }
-
-    fn reset(&self) -> hv::Result<()> {
-        unreachable!()
-    }
-}
-
 #[test]
 fn test_mem_bar_layout_change() {
-    let memory = Memory::new(Arc::new(FakeVmMemory));
+    let memory = Memory::new();
     let header = fixture_emulated_header();
 
     let callback = assert_matches!(
@@ -351,7 +329,7 @@ fn test_mem_bar_layout_change() {
 
 #[test]
 fn test_io_bar_layout_change() {
-    let memory = Memory::new(Arc::new(FakeVmMemory));
+    let memory = Memory::new();
     let header = fixture_emulated_header();
 
     let callback = assert_matches!(

@@ -24,7 +24,7 @@ use crate::arch::reg::{Cr0, Cr4, Reg, SegAccess};
 use crate::ffi;
 use crate::hv::{
     DtReg, DtRegVal, Hypervisor, Kvm, MemMapOption, SReg, SegReg, SegRegVal, Vcpu, Vm, VmEntry,
-    VmExit, VmMemory,
+    VmExit,
 };
 
 #[test]
@@ -181,8 +181,7 @@ fn test_kvm_run() {
 
     let kvm = Kvm::new(KvmSpec::default()).unwrap();
     let spec = VmSpec { coco: None };
-    let mut vm = kvm.create_vm(&spec).unwrap();
-    let memory = vm.create_vm_memory().unwrap();
+    let vm = kvm.create_vm(&spec).unwrap();
 
     let prot = PROT_WRITE | PROT_EXEC | PROT_READ;
     let flag = MAP_ANONYMOUS | MAP_SHARED;
@@ -197,9 +196,7 @@ fn test_kvm_run() {
         exec: true,
         ..Default::default()
     };
-    memory
-        .mem_map(0, 0x5000, user_mem as usize, mmap_option)
-        .unwrap();
+    vm.map(0, 0x5000, user_mem as usize, mmap_option).unwrap();
 
     // layout
     // 0x1000 - 0x1f00 code

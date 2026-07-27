@@ -74,8 +74,12 @@ where
         let range_ref = ram.get_slice::<u8>(desc.base as u64, desc.len as u64)?;
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(range_ref.as_ptr() as _, range_ref.len()) };
-        let memory = &self.ctx.board.memory;
-        memory.mark_private_memory(desc.base as _, desc.len as _, true)?;
+        self.ctx.board.memory.mark_private_memory(
+            &*self.ctx.board.vm,
+            desc.base as _,
+            desc.len as _,
+            true,
+        )?;
         let vm = &self.ctx.board.vm;
         let ret = vm.snp_launch_update(bytes, desc.base as _, page_type);
         if ret.is_err() && desc.type_ == SevDescType::CPUID {
@@ -93,7 +97,7 @@ where
     pub(crate) fn setup_sev(&self, fw: &mut ArcMemPages, policy: SevPolicy) -> Result<()> {
         let board = &self.ctx.board;
 
-        board.memory.register_encrypted_pages(fw)?;
+        board.vm.register_encrypted_range(fw.as_slice())?;
 
         let data = fw.as_slice_mut();
         if policy.es() {
@@ -104,8 +108,8 @@ where
     }
 
     pub(crate) fn setup_snp(&self, fw: &mut ArcMemPages) -> Result<()> {
-        let memory = &self.ctx.board.memory;
-        memory.register_encrypted_pages(fw)?;
+        let vm = &self.ctx.board.vm;
+        vm.register_encrypted_range(fw.as_slice())?;
 
         let data = fw.as_slice_mut();
         self.parse_sev_ap_eip(data)?;
@@ -114,8 +118,8 @@ where
         }
         let fw_gpa = MEM_64_START - data.len() as u64;
 
-        memory.mark_private_memory(fw_gpa, data.len() as _, true)?;
-        let vm = &self.ctx.board.vm;
+        let memory = &self.ctx.board.memory;
+        memory.mark_private_memory(&**vm, fw_gpa, data.len() as _, true)?;
         vm.snp_launch_update(data, fw_gpa, SnpPageType::NORMAL)?;
         Ok(())
     }

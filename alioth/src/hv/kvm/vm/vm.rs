@@ -46,7 +46,7 @@ use crate::hv::kvm::vcpu::KvmVcpu;
 use crate::hv::kvm::{KvmError, check_extension, kvm_error};
 use crate::hv::{
     Error, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Kvm, MemMapOption, MsiSender, Result,
-    Vm, VmMemory, VmSpec, error,
+    Vm, VmSpec, error,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::sys::kvm::KVM_IRQCHIP_IOAPIC;
@@ -152,139 +152,6 @@ impl Display for VmInner {
     }
 }
 
-type MemSlots = (u32, HashMap<(u64, u64), u32>);
-
-#[derive(Debug)]
-pub struct KvmMemory {
-    slots: Mutex<MemSlots>,
-    vm: Arc<VmInner>,
-}
-
-impl KvmMemory {
-    pub fn new(vm: &KvmVm) -> Self {
-        KvmMemory {
-            slots: Mutex::new((0, HashMap::new())),
-            vm: vm.vm.clone(),
-        }
-    }
-
-    fn unmap(&self, slot: u32, gpa: u64, size: u64) -> Result<()> {
-        let flags = KvmMemFlag::empty();
-        let region = KvmUserspaceMemoryRegion {
-            slot,
-            guest_phys_addr: gpa,
-            memory_size: 0,
-            userspace_addr: 0,
-            flags,
-        };
-        unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
-            .context(error::GuestUnmap { gpa, size })?;
-        log::trace!(
-            "{}: slot-{slot}: unmapped: {gpa:#018x}, size={size:#x}",
-            self.vm
-        );
-        Ok(())
-    }
-}
-
-impl VmMemory for KvmMemory {
-    fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<(), Error> {
-        let mut flags = KvmMemFlag::empty();
-        if !option.read || !option.exec {
-            return kvm_error::MmapOption { option }.fail()?;
-        }
-        if !option.write {
-            flags |= KvmMemFlag::READONLY;
-        }
-        if option.log_dirty {
-            flags |= KvmMemFlag::LOG_DIRTY_PAGES;
-        }
-        let (slot_id, slots) = &mut *self.slots.lock();
-        if let Some(memfd) = &self.vm.memfd {
-            flags |= KvmMemFlag::GUEST_MEMFD;
-            let region = KvmUserspaceMemoryRegion2 {
-                slot: *slot_id,
-                guest_phys_addr: gpa as _,
-                memory_size: size as _,
-                userspace_addr: hva as _,
-                flags,
-                guest_memfd: memfd.as_raw_fd() as _,
-                guest_memfd_offset: gpa,
-                ..Default::default()
-            };
-            unsafe { kvm_set_user_memory_region2(&self.vm.fd, &region) }
-        } else {
-            let region = KvmUserspaceMemoryRegion {
-                slot: *slot_id,
-                guest_phys_addr: gpa as _,
-                memory_size: size as _,
-                userspace_addr: hva as _,
-                flags,
-            };
-            unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
-        }
-        .context(error::GuestMap { hva, gpa, size })?;
-        slots.insert((gpa, size), *slot_id);
-        log::trace!(
-            "{}: slot-{slot_id}: mapped: {gpa:#018x} -> {hva:#018x}, size = {size:#x}",
-            self.vm
-        );
-        *slot_id += 1;
-        Ok(())
-    }
-
-    fn unmap(&self, gpa: u64, size: u64) -> Result<(), Error> {
-        let (_, slots) = &mut *self.slots.lock();
-        let Some(slot) = slots.remove(&(gpa, size)) else {
-            return Err(ErrorKind::NotFound.into()).context(error::GuestUnmap { gpa, size });
-        };
-        self.unmap(slot, gpa, size)
-    }
-
-    fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
-        let region = KvmEncRegion {
-            addr: range.as_ptr() as u64,
-            size: range.len() as u64,
-        };
-        unsafe { kvm_memory_encrypt_reg_region(&self.vm.fd, &region) }
-            .context(error::MemEncrypt)?;
-        Ok(())
-    }
-
-    fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
-        let region = KvmEncRegion {
-            addr: range.as_ptr() as u64,
-            size: range.len() as u64,
-        };
-        unsafe { kvm_memory_encrypt_unreg_region(&self.vm.fd, &region) }
-            .context(error::MemEncrypt)?;
-        Ok(())
-    }
-
-    fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
-        let attr = KvmMemoryAttributes {
-            address: gpa,
-            size,
-            attributes: if private {
-                KvmMemoryAttribute::PRIVATE
-            } else {
-                KvmMemoryAttribute::empty()
-            },
-            flags: 0,
-        };
-        unsafe { kvm_set_memory_attributes(&self.vm.fd, &attr) }.context(error::MemEncrypt)?;
-        Ok(())
-    }
-
-    fn reset(&self) -> Result<()> {
-        let (slot_id, slots) = &mut *self.slots.lock();
-        for ((gpa, size), slot) in slots.drain() {
-            self.unmap(slot, gpa, size)?;
-        }
-        *slot_id = 0;
-        Ok(())
-    }
-}
 #[derive(Debug)]
 pub struct KvmIrqSender {
     pin: u8,
@@ -594,9 +461,16 @@ impl IoeventFdRegistry for KvmIoeventFdRegistry {
     }
 }
 
+#[derive(Debug, Default)]
+struct MemSlots {
+    next_id: u32,
+    mapped: HashMap<(u64, u64), u32>,
+}
+
+#[derive(Debug)]
 pub struct KvmVm {
     pub vm: Arc<VmInner>,
-    memory_created: bool,
+    mem_slots: Mutex<MemSlots>,
 }
 
 impl KvmVm {
@@ -619,7 +493,7 @@ impl KvmVm {
                 pin_map: AtomicU32::new(0),
                 arch,
             }),
-            memory_created: false,
+            mem_slots: Mutex::new(MemSlots::default()),
         };
         kvm_vm.init(spec)?;
         Ok(kvm_vm)
@@ -637,7 +511,6 @@ impl Vm for KvmVm {
     type IrqSender = KvmIrqSender;
     #[cfg(target_arch = "aarch64")]
     type Its = aarch64::KvmIts;
-    type Memory = KvmMemory;
     type MsiSender = KvmMsiSender;
     type Vcpu = KvmVcpu;
 
@@ -649,16 +522,6 @@ impl Vm for KvmVm {
         ffi!(unsafe { libc::pthread_kill(handle.as_pthread_t() as _, SIGRTMIN()) })
             .context(error::StopVcpu)?;
         Ok(())
-    }
-
-    fn create_vm_memory(&mut self) -> Result<Self::Memory, Error> {
-        if self.memory_created {
-            error::MemoryCreated.fail()
-        } else {
-            let kvm_memory = KvmMemory::new(self);
-            self.memory_created = true;
-            Ok(kvm_memory)
-        }
     }
 
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error> {
@@ -699,6 +562,112 @@ impl Vm for KvmVm {
         Ok(KvmIoeventFdRegistry {
             vm: self.vm.clone(),
         })
+    }
+
+    fn map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<(), Error> {
+        let mut flags = KvmMemFlag::empty();
+        if !option.read || !option.exec {
+            return kvm_error::MmapOption { option }.fail()?;
+        }
+        if !option.write {
+            flags |= KvmMemFlag::READONLY;
+        }
+        if option.log_dirty {
+            flags |= KvmMemFlag::LOG_DIRTY_PAGES;
+        }
+        let mut slots = self.mem_slots.lock();
+        let slot_id = slots.next_id;
+        slots.next_id += 1;
+        if let Some(memfd) = &self.vm.memfd {
+            flags |= KvmMemFlag::GUEST_MEMFD;
+            let region = KvmUserspaceMemoryRegion2 {
+                slot: slot_id,
+                guest_phys_addr: gpa as _,
+                memory_size: size as _,
+                userspace_addr: hva as _,
+                flags,
+                guest_memfd: memfd.as_raw_fd() as _,
+                guest_memfd_offset: gpa,
+                ..Default::default()
+            };
+            unsafe { kvm_set_user_memory_region2(&self.vm.fd, &region) }
+        } else {
+            let region = KvmUserspaceMemoryRegion {
+                slot: slot_id,
+                guest_phys_addr: gpa as _,
+                memory_size: size as _,
+                userspace_addr: hva as _,
+                flags,
+            };
+            unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
+        }
+        .context(error::GuestMap { hva, gpa, size })?;
+        slots.mapped.insert((gpa, size), slot_id);
+        log::trace!(
+            "{}: slot-{slot_id}: mapped: {gpa:#018x} -> {hva:#018x}, size = {size:#x}",
+            self.vm
+        );
+        Ok(())
+    }
+
+    fn unmap(&self, gpa: u64, size: u64) -> Result<(), Error> {
+        let mem_slots = &mut *self.mem_slots.lock();
+        let Some(slot) = mem_slots.mapped.remove(&(gpa, size)) else {
+            return Err(ErrorKind::NotFound.into()).context(error::GuestUnmap { gpa, size });
+        };
+        let flags = KvmMemFlag::empty();
+        let region = KvmUserspaceMemoryRegion {
+            slot,
+            guest_phys_addr: gpa,
+            memory_size: 0,
+            userspace_addr: 0,
+            flags,
+        };
+        unsafe { kvm_set_user_memory_region(&self.vm.fd, &region) }
+            .context(error::GuestUnmap { gpa, size })?;
+        log::trace!(
+            "{}: slot-{slot}: unmapped: {gpa:#018x}, size={size:#x}",
+            self.vm
+        );
+        if mem_slots.mapped.is_empty() {
+            mem_slots.next_id = 0;
+        }
+        Ok(())
+    }
+
+    fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let region = KvmEncRegion {
+            addr: range.as_ptr() as u64,
+            size: range.len() as u64,
+        };
+        unsafe { kvm_memory_encrypt_reg_region(&self.vm.fd, &region) }
+            .context(error::MemEncrypt)?;
+        Ok(())
+    }
+
+    fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let region = KvmEncRegion {
+            addr: range.as_ptr() as u64,
+            size: range.len() as u64,
+        };
+        unsafe { kvm_memory_encrypt_unreg_region(&self.vm.fd, &region) }
+            .context(error::MemEncrypt)?;
+        Ok(())
+    }
+
+    fn mark_private_memory(&self, gpa: u64, size: u64, private: bool) -> Result<()> {
+        let attr = KvmMemoryAttributes {
+            address: gpa,
+            size,
+            attributes: if private {
+                KvmMemoryAttribute::PRIVATE
+            } else {
+                KvmMemoryAttribute::empty()
+            },
+            flags: 0,
+        };
+        unsafe { kvm_set_memory_attributes(&self.vm.fd, &attr) }.context(error::MemEncrypt)?;
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]

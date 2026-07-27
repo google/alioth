@@ -27,8 +27,7 @@ use crate::hv::{Hypervisor, Kvm, MemMapOption, VmSpec};
 fn test_mem_map() {
     let kvm = Kvm::new(KvmSpec::default()).unwrap();
     let spec = VmSpec { coco: None };
-    let mut vm = kvm.create_vm(&spec).unwrap();
-    let vm_memory = vm.create_vm_memory().unwrap();
+    let vm = kvm.create_vm(&spec).unwrap();
 
     let prot = PROT_WRITE | PROT_READ | PROT_EXEC;
     let flag = MAP_ANONYMOUS | MAP_PRIVATE;
@@ -44,7 +43,7 @@ fn test_mem_map() {
         log_dirty: true,
     };
     assert_matches!(
-        vm_memory.mem_map(0x0, 0x1000, user_mem as usize, option_no_write),
+        vm.map(0x0, 0x1000, user_mem as usize, option_no_write),
         Err(Error::KvmErr { .. })
     );
     let option_no_exec = MemMapOption {
@@ -54,7 +53,7 @@ fn test_mem_map() {
         log_dirty: true,
     };
     assert_matches!(
-        vm_memory.mem_map(0x0, 0x1000, user_mem as usize, option_no_exec),
+        vm.map(0x0, 0x1000, user_mem as usize, option_no_exec),
         Err(Error::KvmErr { .. })
     );
     let option = MemMapOption {
@@ -63,7 +62,5 @@ fn test_mem_map() {
         exec: true,
         log_dirty: true,
     };
-    vm_memory
-        .mem_map(0x0, 0x1000, user_mem as usize, option)
-        .unwrap();
+    vm.map(0x0, 0x1000, user_mem as usize, option).unwrap();
 }

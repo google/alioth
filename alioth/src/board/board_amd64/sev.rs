@@ -22,7 +22,7 @@ use crate::arch::cpuid::{
 };
 use crate::arch::sev::{SevPolicy, SnpPolicy};
 use crate::board::{Board, Result, error};
-use crate::hv::{CocoSpec, Vm, VmMemory};
+use crate::hv::{CocoSpec, Vm};
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged, MarkPrivateMemory};
 
@@ -108,33 +108,40 @@ impl<V> Board<V>
 where
     V: Vm,
 {
-    pub(crate) fn sev_init(&self, policy: SevPolicy, memory: Arc<V::Memory>) -> Result<()> {
+    pub(crate) fn sev_init(&self, policy: SevPolicy) -> Result<()> {
         self.vm.sev_launch_start(policy)?;
-        let encrypt_pages = Box::new(EncryptPages { memory });
+        let encrypt_pages = Box::new(EncryptPages {
+            vm: self.vm.clone(),
+        });
         self.memory.register_change_callback(encrypt_pages)?;
         Ok(())
     }
 
-    pub(crate) fn snp_init(&self, policy: SnpPolicy, memory: Arc<V::Memory>) -> Result<()> {
+    pub(crate) fn snp_init(&self, policy: SnpPolicy) -> Result<()> {
         self.vm.snp_launch_start(policy)?;
         let encrypt_pages = Box::new(EncryptPages {
-            memory: memory.clone(),
+            vm: self.vm.clone(),
         });
         self.memory.register_change_callback(encrypt_pages)?;
-        let mark_private_memory = Box::new(MarkPrivateMemory { memory });
+        let mark_private_memory = Box::new(MarkPrivateMemory {
+            vm: self.vm.clone(),
+        });
         self.memory.register_change_callback(mark_private_memory)?;
         Ok(())
     }
 }
 
 #[derive(Debug)]
-pub struct EncryptPages {
-    memory: Arc<dyn VmMemory>,
+pub struct EncryptPages<V> {
+    vm: Arc<V>,
 }
 
-impl LayoutChanged for EncryptPages {
+impl<V> LayoutChanged for EncryptPages<V>
+where
+    V: Vm,
+{
     fn ram_added(&self, _: u64, pages: &ArcMemPages) -> mem::Result<()> {
-        self.memory.register_encrypted_range(pages.as_slice())?;
+        self.vm.register_encrypted_range(pages.as_slice())?;
         Ok(())
     }
 

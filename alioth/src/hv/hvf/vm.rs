@@ -28,7 +28,7 @@ use crate::hv::hvf::vcpu::{HvfVcpu, VcpuHandle};
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
     GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
-    MsiSender, Result, Vm, VmMemory, error,
+    MsiSender, Result, Vm, error,
 };
 use crate::sys::hvf::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
@@ -37,51 +37,6 @@ use crate::sys::hvf::{
     hv_gic_send_msi, hv_gic_set_spi, hv_vcpus_exit, hv_vm_create, hv_vm_destroy, hv_vm_map,
     hv_vm_unmap,
 };
-
-#[derive(Debug)]
-pub struct HvfMemory;
-
-impl VmMemory for HvfMemory {
-    fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
-    }
-
-    fn mem_map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<()> {
-        if option.log_dirty {
-            return error::Capability { cap: "log dirty" }.fail();
-        }
-        let mut flags = HvMemoryFlag::empty();
-        if option.read {
-            flags |= HvMemoryFlag::READ;
-        }
-        if option.write {
-            flags |= HvMemoryFlag::WRITE;
-        }
-        if option.exec {
-            flags |= HvMemoryFlag::EXEC;
-        }
-        let ret = unsafe { hv_vm_map(hva as *const u8, gpa, size as usize, flags) };
-        check_ret(ret).context(error::GuestMap { hva, gpa, size })
-    }
-
-    fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
-    }
-
-    fn unmap(&self, gpa: u64, size: u64) -> Result<()> {
-        let ret = unsafe { hv_vm_unmap(gpa, size as usize) };
-        check_ret(ret).context(error::GuestUnmap { gpa, size })?;
-        Ok(())
-    }
-
-    fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
-        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
-    }
-
-    fn reset(&self) -> Result<()> {
-        Ok(())
-    }
-}
 
 #[derive(Debug)]
 pub struct HvfIrqSender {
@@ -287,7 +242,6 @@ impl Vm for HvfVm {
     type IoeventFdRegistry = HvfIoeventFdRegistry;
     type IrqSender = HvfIrqSender;
     type Its = HvfIts;
-    type Memory = HvfMemory;
     type MsiSender = HvfMsiSender;
     type Vcpu = HvfVcpu;
 
@@ -310,8 +264,40 @@ impl Vm for HvfVm {
         HvfVcpu::new(self, index, identity)
     }
 
-    fn create_vm_memory(&mut self) -> Result<Self::Memory> {
-        Ok(HvfMemory)
+    fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
+    }
+
+    fn map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<()> {
+        if option.log_dirty {
+            return error::Capability { cap: "log dirty" }.fail();
+        }
+        let mut flags = HvMemoryFlag::empty();
+        if option.read {
+            flags |= HvMemoryFlag::READ;
+        }
+        if option.write {
+            flags |= HvMemoryFlag::WRITE;
+        }
+        if option.exec {
+            flags |= HvMemoryFlag::EXEC;
+        }
+        let ret = unsafe { hv_vm_map(hva as *const u8, gpa, size as usize, flags) };
+        check_ret(ret).context(error::GuestMap { hva, gpa, size })
+    }
+
+    fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
+    }
+
+    fn unmap(&self, gpa: u64, size: u64) -> Result<()> {
+        let ret = unsafe { hv_vm_unmap(gpa, size as usize) };
+        check_ret(ret).context(error::GuestUnmap { gpa, size })?;
+        Ok(())
+    }
+
+    fn mark_private_memory(&self, _gpa: u64, _size: u64, _private: bool) -> Result<()> {
+        Err(ErrorKind::Unsupported.into()).context(error::MemEncrypt)
     }
 
     fn stop_vcpu<T>(&self, identity: u64, _handle: &JoinHandle<T>) -> Result<()> {

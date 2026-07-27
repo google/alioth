@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use crate::arch::tdx::TdAttr;
 use crate::board::{Board, Result};
-use crate::hv::{Vm, VmMemory};
+use crate::hv::Vm;
 use crate::mem::MarkPrivateMemory;
 
 impl<V> Board<V>
 where
     V: Vm,
 {
-    pub(crate) fn tdx_init(&self, attr: TdAttr, memory: Arc<dyn VmMemory>) -> Result<()> {
+    pub(crate) fn tdx_init(&self, attr: TdAttr) -> Result<()> {
         self.vm.tdx_init_vm(attr, &self.arch.cpuids)?;
-        let mark_private_memory = Box::new(MarkPrivateMemory { memory });
+        let mark_private_memory = Box::new(MarkPrivateMemory {
+            vm: self.vm.clone(),
+        });
         self.memory.register_change_callback(mark_private_memory)?;
         Ok(())
     }

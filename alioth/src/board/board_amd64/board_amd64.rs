@@ -236,14 +236,14 @@ where
         Ok(())
     }
 
-    pub fn coco_init(&self, memory: Arc<V::Memory>) -> Result<()> {
+    pub fn coco_init(&self) -> Result<()> {
         let Some(coco) = &self.spec.coco else {
             return Ok(());
         };
         match coco {
-            CocoSpec::AmdSev { policy } => self.sev_init(*policy, memory)?,
-            CocoSpec::AmdSnp { policy } => self.snp_init(*policy, memory)?,
-            CocoSpec::IntelTdx { attr } => self.tdx_init(*attr, memory)?,
+            CocoSpec::AmdSev { policy } => self.sev_init(*policy)?,
+            CocoSpec::AmdSnp { policy } => self.snp_init(*policy)?,
+            CocoSpec::IntelTdx { attr } => self.tdx_init(*attr)?,
         }
         Ok(())
     }

@@ -19,7 +19,7 @@ use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
 
 use crate::arch::reg::Reg;
 use crate::ffi;
-use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmEntry, VmExit, VmMemory, VmSpec};
+use crate::hv::{Hvf, Hypervisor, MemMapOption, Vcpu, Vm, VmEntry, VmExit, VmSpec};
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
@@ -75,8 +75,7 @@ fn test_vcpu_regs() {
 fn test_vcpu_run() {
     let hvf = Hvf {};
     let spec = VmSpec { coco: None };
-    let mut vm = hvf.create_vm(&spec).unwrap();
-    let memory = vm.create_vm_memory().unwrap();
+    let vm = hvf.create_vm(&spec).unwrap();
 
     let prot = PROT_WRITE | PROT_READ;
     let flag = MAP_ANONYMOUS | MAP_PRIVATE;
@@ -91,9 +90,7 @@ fn test_vcpu_run() {
         exec: true,
         ..Default::default()
     };
-    memory
-        .mem_map(0, 0x4000, user_mem as usize, mmap_option)
-        .unwrap();
+    vm.map(0, 0x4000, user_mem as usize, mmap_option).unwrap();
 
     const CODE: [u8; 20] = [
         0x00, 0x00, 0x8a, 0xd2, // mov x0, #0x5000

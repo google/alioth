@@ -43,10 +43,10 @@ use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{DebugTrace, trace_error};
-use crate::hv::{CocoSpec, Hypervisor, Vm, VmSpec};
+use crate::hv::{CocoSpec, Hypervisor, MemMapOption, Vm, VmSpec};
 use crate::loader::PayloadSpec;
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{MemBackend, MemRegion, MemRegionType, MemSpec, Memory};
+use crate::mem::{self, LayoutChanged, MemBackend, MemRegion, MemRegionType, MemSpec, Memory};
 use crate::pci::bus::PciBus;
 
 #[cfg(target_arch = "aarch64")]
@@ -162,11 +162,45 @@ impl BoardSpec {
     }
 }
 
+#[derive(Debug)]
+struct ChangeVmMemory<V> {
+    vm: Arc<V>,
+}
+
+impl<V> LayoutChanged for ChangeVmMemory<V>
+where
+    V: Vm,
+{
+    fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        let opt = MemMapOption {
+            read: true,
+            write: true,
+            exec: true,
+            log_dirty: false,
+        };
+        self.vm.map(gpa, pages.size(), pages.addr(), opt)?;
+        Ok(())
+    }
+
+    fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.vm.unmap(gpa, pages.size())?;
+        Ok(())
+    }
+
+    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_added(gpa, pages)
+    }
+
+    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_removed(gpa, pages)
+    }
+}
+
 pub struct Board<V>
 where
     V: Vm,
 {
-    pub vm: V,
+    pub vm: Arc<V>,
     pub memory: Memory,
     pub arch: ArchBoard<V>,
     pub spec: BoardSpec,
@@ -191,13 +225,14 @@ where
         let vm_spec = VmSpec {
             coco: spec.coco.clone(),
         };
-        let mut vm = hv.create_vm(&vm_spec)?;
-        let vm_memory = Arc::new(vm.create_vm_memory()?);
+        let vm = Arc::new(hv.create_vm(&vm_spec)?);
         let arch = ArchBoard::new(hv, &vm, &spec)?;
+        let memory = Memory::new();
+        memory.register_change_callback(Box::new(ChangeVmMemory { vm: vm.clone() }))?;
 
         let board = Board {
             vm,
-            memory: Memory::new(vm_memory.clone()),
+            memory,
             arch,
             spec,
             payload: RwLock::new(None),
@@ -208,7 +243,7 @@ where
             fw_cfg: Mutex::new(None),
         };
 
-        board.coco_init(vm_memory)?;
+        board.coco_init()?;
 
         Ok(board)
     }

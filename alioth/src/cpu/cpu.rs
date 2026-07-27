@@ -225,7 +225,7 @@ impl<V: Vm> VcpuThread<V> {
                     }
                 }
                 VmExit::ConvertMemory { gpa, size, private } => {
-                    memory.mark_private_memory(gpa, size, private)?;
+                    memory.mark_private_memory(&*self.ctx.board.vm, gpa, size, private)?;
                     VmEntry::None
                 }
             };

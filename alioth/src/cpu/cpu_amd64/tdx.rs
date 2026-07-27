@@ -37,7 +37,8 @@ where
 
         let fw_gpa = MEM_64_START - data.len() as u64;
         let memory = &self.ctx.board.memory;
-        memory.mark_private_memory(fw_gpa, data.len() as _, true)?;
+        let vm = &self.ctx.board.vm;
+        memory.mark_private_memory(&**vm, fw_gpa, data.len() as _, true)?;
 
         let mut accepted = Vec::new();
         let mut hob_ram = None;
