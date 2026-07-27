@@ -141,4 +141,12 @@ impl LayoutChanged for EncryptPages {
     fn ram_removed(&self, _: u64, _: &ArcMemPages) -> mem::Result<()> {
         Ok(())
     }
+
+    fn dev_mem_added(&self, _: u64, _: &ArcMemPages) -> mem::Result<()> {
+        Ok(())
+    }
+
+    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages) -> mem::Result<()> {
+        Ok(())
+    }
 }

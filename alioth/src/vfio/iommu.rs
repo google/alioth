@@ -137,4 +137,13 @@ impl LayoutChanged for UpdateIommuIoas {
         ret.box_trace(mem::error::ChangeLayout)?;
         Ok(())
     }
+
+    fn dev_mem_added(&self, _gpa: u64, _pages: &ArcMemPages) -> mem::Result<()> {
+        // Iommufd does not support mapping device memory into IOAS.
+        Ok(())
+    }
+
+    fn dev_mem_removed(&self, _gpa: u64, _pages: &ArcMemPages) -> mem::Result<()> {
+        Ok(())
+    }
 }

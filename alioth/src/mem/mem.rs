@@ -245,6 +245,8 @@ impl SlotBackend for Arc<IoRegion> {
 pub trait LayoutChanged: Debug + Send + Sync + 'static {
     fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
     fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
+    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
+    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
 }
 
 pub trait LayoutUpdated: Debug + Send + Sync + 'static {
@@ -353,20 +355,26 @@ impl Memory {
         let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
+            if let MemRange::Ram(r) | MemRange::DevMem(r) = range {
+                self.ram_bus.add(gpa, r.clone())?;
+                self.map_to_vm(gpa, r)?;
+                ram_updated = true;
+            }
             match range {
                 MemRange::Emulated(r) => {
                     let mut mmio_bus = self.mmio_bus.write();
                     mmio_bus.add(gpa, r.clone())?
                 }
                 MemRange::Ram(r) => {
-                    self.map_to_vm(gpa, r)?;
                     for callback in &callbacks.changed {
                         callback.ram_added(gpa, r)?;
                     }
-                    self.ram_bus.add(gpa, r.clone())?;
-                    ram_updated = true;
                 }
-                MemRange::DevMem(r) => self.map_to_vm(gpa, r)?,
+                MemRange::DevMem(r) => {
+                    for callback in &callbacks.changed {
+                        callback.dev_mem_added(gpa, r)?;
+                    }
+                }
                 MemRange::Span(_) => {}
             }
             offset += range.size();
@@ -390,20 +398,26 @@ impl Memory {
         let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
+            if let MemRange::Ram(r) | MemRange::DevMem(r) = range {
+                self.ram_bus.remove(gpa)?;
+                self.unmap_from_vm(gpa, r)?;
+                ram_updated = true;
+            }
             match range {
                 MemRange::Emulated(_) => {
                     let mut mmio_bus = self.mmio_bus.write();
                     mmio_bus.remove(gpa)?;
                 }
                 MemRange::Ram(r) => {
-                    self.ram_bus.remove(gpa)?;
                     for callback in callbacks.changed.iter().rev() {
                         callback.ram_removed(gpa, r)?;
                     }
-                    self.unmap_from_vm(gpa, r)?;
-                    ram_updated = true;
                 }
-                MemRange::DevMem(r) => self.unmap_from_vm(gpa, r)?,
+                MemRange::DevMem(r) => {
+                    for callback in callbacks.changed.iter().rev() {
+                        callback.dev_mem_removed(gpa, r)?;
+                    }
+                }
                 MemRange::Span(_) => {}
             };
             offset += range.size();
@@ -618,6 +632,14 @@ impl LayoutChanged for MarkPrivateMemory {
     }
 
     fn ram_removed(&self, _: u64, _: &ArcMemPages) -> Result<()> {
+        Ok(())
+    }
+
+    fn dev_mem_added(&self, _: u64, _: &ArcMemPages) -> Result<()> {
+        Ok(())
+    }
+
+    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages) -> Result<()> {
         Ok(())
     }
 }

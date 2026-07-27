@@ -119,4 +119,12 @@ impl LayoutChanged for UpdateContainerMapping {
         ret.box_trace(mem::error::ChangeLayout)?;
         Ok(())
     }
+
+    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_added(gpa, pages)
+    }
+
+    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_removed(gpa, pages)
+    }
 }

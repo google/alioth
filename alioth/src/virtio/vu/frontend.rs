@@ -89,6 +89,14 @@ impl LayoutChanged for UpdateVuMem {
         log::trace!("{}: remove memory region: {:x?}", self.name, region.region);
         Ok(())
     }
+
+    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_added(gpa, pages)
+    }
+
+    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+        self.ram_removed(gpa, pages)
+    }
 }
 
 #[derive(Debug)]
