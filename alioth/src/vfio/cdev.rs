@@ -13,25 +13,26 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 
 use snafu::ResultExt;
 
 use crate::sys::vfio::{
-    VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt,
-    vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd, vfio_device_detach_iommufd_pt,
+    VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo,
+    VfioIrqInfo, VfioRegionInfo, vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd,
+    vfio_device_detach_iommufd_pt,
 };
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, Kdev};
 use crate::vfio::iommu::Ioas;
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Cdev {
-    fd: File,
+    kdev: Kdev,
     ioas: Option<Arc<Ioas>>,
 }
 
@@ -44,7 +45,10 @@ impl Cdev {
             .context(error::AccessDevice {
                 path: path.as_ref(),
             })?;
-        Ok(Cdev { fd, ioas: None })
+        Ok(Cdev {
+            kdev: Kdev::new(fd),
+            ioas: None,
+        })
     }
 }
 
@@ -55,13 +59,13 @@ impl Cdev {
             iommufd: ioas.iommu.fd.as_raw_fd(),
             ..Default::default()
         };
-        unsafe { vfio_device_bind_iommufd(&self.fd, &bind) }?;
+        unsafe { vfio_device_bind_iommufd(&self.kdev, &bind) }?;
         let attach = VfioDeviceAttachIommufdPt {
             argsz: size_of::<VfioDeviceAttachIommufdPt>() as u32,
             pt_id: ioas.id,
             ..Default::default()
         };
-        unsafe { vfio_device_attach_iommufd_pt(&self.fd, &attach) }?;
+        unsafe { vfio_device_attach_iommufd_pt(&self.kdev, &attach) }?;
         self.ioas.replace(ioas);
         Ok(())
     }
@@ -69,27 +73,71 @@ impl Cdev {
     pub fn detach_iommu_ioas(&mut self) -> Result<()> {
         if self.ioas.is_none() {
             return Ok(());
-        };
+        }
         let detach = VfioDeviceDetachIommufdPt {
             argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
             flags: 0,
         };
-        unsafe { vfio_device_detach_iommufd_pt(&self.fd, &detach) }?;
+        unsafe { vfio_device_detach_iommufd_pt(&self.kdev, &detach) }?;
         self.ioas = None;
         Ok(())
     }
 }
 
 impl Device for Cdev {
-    fn fd(&self) -> &File {
-        &self.fd
+    fn get_info(&self) -> Result<VfioDeviceInfo> {
+        self.kdev.get_info()
+    }
+
+    fn get_region_info(&self, index: u32) -> Result<VfioRegionInfo> {
+        self.kdev.get_region_info(index)
+    }
+
+    fn get_irq_info(&self, index: u32) -> Result<VfioIrqInfo> {
+        self.kdev.get_irq_info(index)
+    }
+
+    fn reset(&self) -> Result<()> {
+        self.kdev.reset()
+    }
+
+    fn set_irq_eventfd(
+        &self,
+        index: u32,
+        start: u32,
+        eventfds: &[Option<BorrowedFd<'_>>],
+    ) -> Result<()> {
+        self.kdev.set_irq_eventfd(index, start, eventfds)
+    }
+
+    fn disable_irq(&self, index: u32) -> Result<()> {
+        self.kdev.disable_irq(index)
+    }
+
+    fn read_region(&self, region: &VfioRegionInfo, offset: u64, buf: &mut [u8]) -> Result<()> {
+        self.kdev.read_region(region, offset, buf)
+    }
+
+    fn write_region(&self, region: &VfioRegionInfo, offset: u64, buf: &[u8]) -> Result<()> {
+        self.kdev.write_region(region, offset, buf)
+    }
+
+    fn get_region_mmap_fd(&self, index: u32) -> Result<Option<OwnedFd>> {
+        self.kdev.get_region_mmap_fd(index)
+    }
+
+    fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd> {
+        self.kdev.get_dma_buf_fd(index, offset, size)
     }
 }
 
 impl Drop for Cdev {
     fn drop(&mut self) {
         if let Err(e) = self.detach_iommu_ioas() {
-            log::error!("Cdev-{}: detaching ioas: {e:?}", self.fd.as_raw_fd())
+            log::error!(
+                "Cdev-{}: detaching ioas: {e:?}",
+                self.kdev.as_fd().as_raw_fd()
+            )
         }
     }
 }
