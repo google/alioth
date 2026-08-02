@@ -22,7 +22,7 @@ use alioth::device::net::MacAddr;
 use alioth::loader::{Executable, PayloadSpec};
 use alioth::mem::{MemBackend, MemSpec};
 #[cfg(target_os = "linux")]
-use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec};
 use alioth::virtio::dev::balloon::BalloonSpec;
 use alioth::virtio::dev::blk::BlkFileSpec;
 use alioth::virtio::dev::entropy::EntropySpec;
@@ -89,6 +89,8 @@ fn test_parse_args() {
         vfio_group: vec!["path=/dev/vfio/26,container=gpu_container,devices=id_gpus".into()],
         #[cfg(target_os = "linux")]
         vfio_container: vec!["name=gpu_container,dev_vfio=/dev/vfio/vfio".into()],
+        #[cfg(target_os = "linux")]
+        vfio_user: vec!["socket=/tmp/nvme.sock".into()],
         ..Default::default()
     };
     let objects = HashMap::from([
@@ -211,6 +213,10 @@ fn test_parse_args() {
             path: Path::new("/dev/vfio/26").into(),
             container: Some("gpu_container".into()),
             devices: vec!["0000:06:0d.0".into(), "0000:06:0d.1".into()],
+        }],
+        #[cfg(target_os = "linux")]
+        vfio_user: vec![VfioUserSpec {
+            socket: Path::new("/tmp/nvme.sock").into(),
         }],
     };
     assert_eq!(spec, want);

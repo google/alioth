@@ -90,6 +90,12 @@ pub struct VfioContainerSpec {
     pub dev_vfio: Option<Box<Path>>,
 }
 
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
+pub struct VfioUserSpec {
+    /// Path to the vfio-user UNIX domain socket.
+    pub socket: Box<Path>,
+}
+
 #[cfg(test)]
 #[path = "vfio_test.rs"]
 mod tests;

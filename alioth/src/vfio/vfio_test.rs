@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use crate::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec};
 
 #[test]
 fn test_vfio_specs_deserialization() {
@@ -44,4 +44,9 @@ fn test_vfio_specs_deserialization() {
         container_spec.dev_vfio.unwrap().to_str().unwrap(),
         "/dev/vfio/vfio"
     );
+
+    // VfioUserSpec
+    let user_aco = "socket=/tmp/vfio-user.sock";
+    let user_spec: VfioUserSpec = serde_aco::from_arg(user_aco).unwrap();
+    assert_eq!(user_spec.socket.to_str().unwrap(), "/tmp/vfio-user.sock");
 }
