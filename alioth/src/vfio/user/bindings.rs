@@ -51,6 +51,7 @@ bitfield! {
     #[derive(Copy, Clone, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub struct VfioUserHeaderFlag(u32);
     impl Debug;
+    impl new;
     pub u8, from into VfioUserMessageType, ty, set_ty: 3, 0;
     pub no_reply, set_no_reply: 4;
     pub error, set_error: 5;

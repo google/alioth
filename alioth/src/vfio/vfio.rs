@@ -49,6 +49,8 @@ pub enum Error {
     NotSupportedHeader { ty: u8 },
     #[snafu(display("Setting container iommu to {new:?}, but it already has {current:?}"))]
     SetContainerIommu { current: VfioIommu, new: VfioIommu },
+    #[snafu(display("vfio-user protocol error: {msg}"))]
+    VfioUser { msg: String },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
