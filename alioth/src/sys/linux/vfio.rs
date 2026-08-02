@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use bitfield::bitfield;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::sys::ioctl::ioctl_io;
 use crate::{
@@ -80,7 +81,7 @@ consts! {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
 pub struct VfioRegionInfo {
     pub argsz: u32,
     pub flags: VfioRegionInfoFlag,
@@ -116,7 +117,7 @@ consts! {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, KnownLayout, Immutable, FromBytes, IntoBytes)]
 pub struct VfioIrqInfo {
     pub argsz: u32,
     pub flags: VfioIrqInfoFlag,
