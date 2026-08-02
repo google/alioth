@@ -14,3 +14,4 @@
 
 pub mod bindings;
 pub mod conn;
+pub mod device;
