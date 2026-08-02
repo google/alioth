@@ -285,7 +285,8 @@ impl Memory {
                 let gpa = addr + offset;
                 match range {
                     MemRange::Ram(r) => callback.ram_added(gpa, r)?,
-                    MemRange::Span(_) | MemRange::Emulated(_) | MemRange::DevMem(_) => {}
+                    MemRange::DevMem(r) => callback.dev_mem_added(gpa, r)?,
+                    MemRange::Span(_) | MemRange::Emulated(_) => {}
                 }
                 offset += range.size();
             }
