@@ -13,11 +13,9 @@
 // limitations under the License.
 
 use std::cmp::{max, min};
-use std::iter::zip;
 use std::mem::size_of;
 use std::ops::Range;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::os::unix::fs::FileExt;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -41,8 +39,7 @@ use crate::pci::config::{
 };
 use crate::pci::{self, Pci, PciBar};
 use crate::sys::vfio::{
-    VfioDeviceInfoFlag, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq, VfioPciRegion,
-    VfioRegionInfo, VfioRegionInfoFlag,
+    VfioDeviceInfoFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo, VfioRegionInfoFlag,
 };
 use crate::vfio::device::Device;
 use crate::vfio::{Result, error};
@@ -52,36 +49,67 @@ fn round_up_range(range: Range<usize>) -> Range<usize> {
     (align_down!(range.start, 12))..(align_up!(range.end, 12))
 }
 
-fn create_mapped_bar_pages<D: Device>(
-    dev: &VfioDev<D>,
-    region: &VfioRegionInfo,
+fn create_mapped_bar_pages(
+    fd: OwnedFd,
+    region_flags: VfioRegionInfoFlag,
     offset: u64,
     size: usize,
+    dma_buf: Option<OwnedFd>,
 ) -> Result<(ArcMemPages, Option<OwnedFd>)> {
-    let dma_buf = match dev.dev.get_dma_buf_fd(region.index, offset, size) {
-        Ok(fd) => Some(fd),
-        Err(e) => {
-            log::warn!("{}: failed to get dma buf fd: {e:?}", dev.name);
-            None
-        }
-    };
-
     let mut prot = 0;
-    if region.flags.contains(VfioRegionInfoFlag::READ) {
+    if region_flags.contains(VfioRegionInfoFlag::READ) {
         prot |= PROT_READ;
     }
-    if region.flags.contains(VfioRegionInfoFlag::WRITE) {
+    if region_flags.contains(VfioRegionInfoFlag::WRITE) {
         prot |= PROT_WRITE;
     }
-    let dev_fd = dev.dev.fd().try_clone()?;
-    let dev_fd_offset = region.offset + offset;
-    let mapped_pages = ArcMemPages::from_file(dev_fd, dev_fd_offset as i64, size, prot)?;
+    let mapped_pages = ArcMemPages::from_file(fd.into(), offset as i64, size, prot)?;
     Ok((mapped_pages, dma_buf))
+}
+
+fn create_device_range<D>(
+    dev: Arc<VfioDev<D>>,
+    region_info: Arc<VfioRegionInfo>,
+    offset: usize,
+    size: usize,
+) -> Result<MemRange>
+where
+    D: Device,
+{
+    if let Some(fd) = dev.dev.get_region_mmap_fd(region_info.index)? {
+        let dma_buf = match dev
+            .dev
+            .get_dma_buf_fd(region_info.index, offset as u64, size)
+        {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                log::warn!("{}: failed to get dma buf fd: {e:?}", dev.name);
+                None
+            }
+        };
+        let (pages, dma_buf) = create_mapped_bar_pages(
+            fd,
+            region_info.flags,
+            region_info.offset + offset as u64,
+            size,
+            dma_buf,
+        )?;
+        Ok(MemRange::DevMem { pages, dma_buf })
+    } else {
+        log::warn!("{}: region {} is not mappable", dev.name, region_info.index);
+        let pth = PthBarRegion {
+            cdev: dev.clone(),
+            size,
+            offset: offset as u64,
+            region: region_info.clone(),
+        };
+        Ok(MemRange::Emulated(Arc::new(pth)))
+    }
 }
 
 fn create_splitted_bar_region<I, M, D>(
     dev: Arc<VfioDev<D>>,
-    region_info: &VfioRegionInfo,
+    region_info: Arc<VfioRegionInfo>,
     table_range: Range<usize>,
     pba_range: Range<usize>,
     msix_table: Arc<MsixTableMmio<I>>,
@@ -117,8 +145,12 @@ where
         ranges: vec![],
     };
     if excluded_page1.start > 0 {
-        let (pages, dma_buf) = create_mapped_bar_pages(&dev, region_info, 0, excluded_page1.start)?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        region.ranges.push(create_device_range(
+            dev.clone(),
+            region_info.clone(),
+            0,
+            excluded_page1.start,
+        )?);
     }
     if excluded_page1.end - excluded_page1.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -128,19 +160,18 @@ where
             pba: Arc::new([]),
             pba_range: pba_range.clone(),
             cdev: dev.clone(),
-            cdev_offset: region_info.offset,
+            region: region_info.clone(),
             region_start: excluded_page1.start,
             region_size: excluded_page1.end - excluded_page1.start,
         })));
     }
     if excluded_page2.start - excluded_page1.end > 0 {
-        let (pages, dma_buf) = create_mapped_bar_pages(
-            &dev,
-            region_info,
-            excluded_page1.end as u64,
+        region.ranges.push(create_device_range(
+            dev.clone(),
+            region_info.clone(),
+            excluded_page1.end,
             excluded_page2.start - excluded_page1.end,
-        )?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        )?);
     }
     if excluded_page2.end - excluded_page2.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -150,27 +181,26 @@ where
             pba: Arc::new([]),
             pba_range,
             cdev: dev.clone(),
-            cdev_offset: region_info.offset,
+            region: region_info.clone(),
             region_start: excluded_page2.start,
             region_size: excluded_page2.end - excluded_page2.start,
         })));
     }
     if excluded_page2.end < region_info.size as usize {
-        let (pages, dma_buf) = create_mapped_bar_pages(
-            &dev,
-            region_info,
-            excluded_page2.end as u64,
+        region.ranges.push(create_device_range(
+            dev.clone(),
+            region_info.clone(),
+            excluded_page2.end,
             region_info.size as usize - excluded_page2.end,
-        )?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        )?);
     }
     Ok(region)
 }
 
-fn create_mappable_bar_region<I, M, D>(
+fn create_bar_region<I, M, D>(
     cdev: Arc<VfioDev<D>>,
     index: u32,
-    region_info: &VfioRegionInfo,
+    region_info: Arc<VfioRegionInfo>,
     msix_cap: Option<&MsixCap>,
     msix_table: Arc<MsixTableMmio<I>>,
     msi_sender: Arc<M>,
@@ -230,7 +260,8 @@ where
 
 #[derive(Debug)]
 struct PthConfigArea<D> {
-    offset: u64, // offset to dev
+    offset: u64, // offset in config space
+    region: Arc<VfioRegionInfo>,
     size: u64,
     dev: Arc<VfioDev<D>>,
 }
@@ -244,11 +275,13 @@ where
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
-        self.dev.dev.read(self.offset + offset, size)
+        self.dev.dev.read(&self.region, self.offset + offset, size)
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
-        self.dev.dev.write(self.offset + offset, size, val)?;
+        self.dev
+            .dev
+            .write(&self.region, self.offset + offset, size, val)?;
         Ok(Action::None)
     }
 }
@@ -316,6 +349,7 @@ pub struct PthBarRegion<D> {
     cdev: Arc<VfioDev<D>>,
     size: usize,
     offset: u64,
+    region: Arc<VfioRegionInfo>,
 }
 
 impl<D> Mmio for PthBarRegion<D>
@@ -327,19 +361,23 @@ where
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
+        let addr = self.offset + offset;
         log::trace!(
-            "{}: emulated read at {offset:#x}, size={size}",
-            self.cdev.name
+            "{}: emulated read at region {}, offset {addr:#x}, size={size}",
+            self.cdev.name,
+            self.region.index,
         );
-        self.cdev.dev.read(self.offset + offset, size)
+        self.cdev.dev.read(&self.region, addr, size)
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
+        let addr = self.offset + offset;
         log::trace!(
-            "{}: emulated write at {offset:#x}, val={val:#x}, size={size}",
-            self.cdev.name
+            "{}: emulated write at region {}, offset {addr:#x}, val={val:#x}, size={size}",
+            self.cdev.name,
+            self.region.index
         );
-        self.cdev.dev.write(self.offset + offset, size, val)?;
+        self.cdev.dev.write(&self.region, addr, size, val)?;
         Ok(Action::None)
     }
 }
@@ -392,18 +430,19 @@ where
 
         let msi_sender = Arc::new(msi_sender);
 
-        let region_config = cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?;
+        let region_config = Arc::new(cdev.dev.get_region_info(VfioPciRegion::CONFIG.raw())?);
 
         let pci_command = Command::IO | Command::MEM | Command::BUS_MASTER | Command::INTX_DISABLE;
         cdev.dev.write(
-            region_config.offset + CommonHeader::OFFSET_COMMAND as u64,
+            &region_config,
+            CommonHeader::OFFSET_COMMAND as u64,
             CommonHeader::SIZE_COMMAND as u8,
             pci_command.bits() as _,
         )?;
 
         let mut buf = vec![0u32; region_config.size as usize >> 2];
         let buf = buf.as_mut_bytes();
-        cdev.dev.fd().read_at(buf, region_config.offset)?;
+        cdev.dev.read_region(&region_config, 0, buf)?;
 
         let (mut dev_header, _) = DeviceHeader::read_from_prefix(buf).unwrap();
         let header_type = dev_header.common.header_type.raw() & !(1 << 7);
@@ -480,19 +519,12 @@ where
                 .map(|_| msi_sender.create_irqfd())
                 .collect::<Result<Box<_>, _>>()?;
 
-            let mut eventfds = [-1; 32];
-            for (fd, irqfd) in zip(&mut eventfds, &irqfds) {
-                *fd = irqfd.as_fd().as_raw_fd();
+            let mut eventfds = vec![];
+            for irqfd in &irqfds {
+                eventfds.push(Some(irqfd.as_fd()));
             }
-            let set_eventfd = VfioIrqSet {
-                argsz: (size_of::<VfioIrqSet<0>>() + size_of::<i32>() * count) as u32,
-                flags: VfioIrqSetFlag::DATA_EVENTFD | VfioIrqSetFlag::ACTION_TRIGGER,
-                index: VfioPciIrq::MSI.raw(),
-                start: 0,
-                count: count as u32,
-                data: VfioIrqSetData { eventfds },
-            };
-            cdev.dev.set_irqs(&set_eventfd)?;
+            cdev.dev
+                .set_irq_eventfd(VfioPciIrq::MSI.raw(), 0, &eventfds)?;
 
             let mut msi_cap_mmio = MsiCapMmio::new(hdr.control, irqfds);
             msi_cap_mmio.set_next(hdr.header.next);
@@ -507,9 +539,10 @@ where
                 extra_areas.add(
                     area_end,
                     Box::new(PthConfigArea {
-                        offset: region_config.offset + area_end,
+                        offset: area_end,
                         size: offset - area_end,
                         dev: cdev.clone(),
+                        region: region_config.clone(),
                     }),
                 )?;
             }
@@ -520,9 +553,10 @@ where
             extra_areas.add(
                 area_end,
                 Box::new(PthConfigArea {
-                    offset: region_config.offset + area_end,
+                    offset: area_end,
                     size: region_config.size - area_end,
                     dev: cdev.clone(),
+                    region: region_config.clone(),
                 }),
             )?;
         }
@@ -549,29 +583,18 @@ where
         let bar_vals = config_header.bars();
 
         for index in VfioPciRegion::BAR0.raw()..=VfioPciRegion::BAR5.raw() {
-            let region_info = cdev.dev.get_region_info(index)?;
+            let region_info = Arc::new(cdev.dev.get_region_info(index)?);
             if region_info.size == 0 {
                 continue;
             }
-            let region = if region_info.flags.contains(VfioRegionInfoFlag::MMAP) {
-                create_mappable_bar_region(
-                    cdev.clone(),
-                    index,
-                    &region_info,
-                    msix_cap.as_ref(),
-                    msix_table.clone(),
-                    msi_sender.clone(),
-                )?
-            } else {
-                MemRegion::with_emulated(
-                    Arc::new(PthBarRegion {
-                        cdev: cdev.clone(),
-                        size: region_info.size as usize,
-                        offset: region_info.offset,
-                    }),
-                    MemRegionType::Hidden,
-                )
-            };
+            let region = create_bar_region(
+                cdev.clone(),
+                index,
+                region_info,
+                msix_cap.as_ref(),
+                msix_table.clone(),
+                msi_sender.clone(),
+            )?;
             let index = index as usize;
             let bar_val = bar_vals[index];
             if bar_val & BAR_IO == BAR_IO {
@@ -601,7 +624,7 @@ where
         let is_irqfd = |e| matches!(e, &MsixTableMmioEntry::IrqFd(_));
         if self.msix_table.entries.read().iter().any(is_irqfd) {
             let dev = &self.config.dev;
-            if let Err(e) = dev.dev.disable_all_irqs(VfioPciIrq::MSIX) {
+            if let Err(e) = dev.dev.disable_irq(VfioPciIrq::MSIX.raw()) {
                 log::error!("{}: failed to disable MSIX IRQs: {e:?}", dev.name)
             }
         }
@@ -623,7 +646,7 @@ where
     pba: Arc<[AtomicU64]>, // TODO
     pba_range: Range<usize>,
     cdev: Arc<VfioDev<D>>,
-    cdev_offset: u64,
+    region: Arc<VfioRegionInfo>,
     region_start: usize,
     region_size: usize,
 }
@@ -665,26 +688,20 @@ where
         // subindex for the first time.
         // As long as the following set_irqs() succeeds, we can safely ignore
         // the error here.
-        let _ = self.cdev.dev.disable_all_irqs(VfioPciIrq::MSIX);
+        let _ = self.cdev.dev.disable_irq(VfioPciIrq::MSIX.raw());
 
-        let mut eventfds = [-1; 2048];
+        let mut eventfds = vec![None; entries.len()];
         let mut count = 0;
-        for (index, (entry, fd)) in std::iter::zip(entries.iter(), &mut eventfds).enumerate() {
-            let MsixTableMmioEntry::IrqFd(irqfd) = entry else {
-                continue;
-            };
-            count = index + 1;
-            *fd = irqfd.as_fd().as_raw_fd();
+        for (index, (entry, fd)) in entries.iter().zip(&mut eventfds).enumerate() {
+            if let MsixTableMmioEntry::IrqFd(irqfd) = entry {
+                *fd = Some(irqfd.as_fd());
+                count = index + 1;
+            }
         }
-        let vfio_irq_set_eventfd = VfioIrqSet {
-            argsz: (size_of::<VfioIrqSet<0>>() + size_of::<i32>() * count) as u32,
-            flags: VfioIrqSetFlag::DATA_EVENTFD | VfioIrqSetFlag::ACTION_TRIGGER,
-            index: VfioPciIrq::MSIX.raw(),
-            start: 0,
-            count: count as u32,
-            data: VfioIrqSetData { eventfds },
-        };
-        self.cdev.dev.set_irqs(&vfio_irq_set_eventfd)
+        eventfds.truncate(count);
+        self.cdev
+            .dev
+            .set_irq_eventfd(VfioPciIrq::MSIX.raw(), 0, &eventfds)
     }
 }
 
@@ -708,7 +725,7 @@ where
             Ok(0)
         } else {
             log::trace!("{name}: emulated BAR read at {offset:#x}, size={size}",);
-            self.cdev.dev.read(self.cdev_offset + offset as u64, size)
+            self.cdev.dev.read(&self.region, offset as u64, size)
         }
     }
 
@@ -729,7 +746,7 @@ where
             log::trace!("{name}: emulated BAR write at {offset:#x}, size={size}, val={val:#x}",);
             self.cdev
                 .dev
-                .write(self.cdev_offset + offset as u64, size, val)?;
+                .write(&self.region, offset as u64, size, val)?;
         }
         Ok(Action::None)
     }

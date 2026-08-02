@@ -13,25 +13,26 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 
 use snafu::ResultExt;
 
 use crate::sys::vfio::{
-    VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt,
-    vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd, vfio_device_detach_iommufd_pt,
+    VfioDeviceAttachIommufdPt, VfioDeviceBindIommufd, VfioDeviceDetachIommufdPt, VfioDeviceInfo,
+    VfioIrqInfo, VfioRegionInfo, vfio_device_attach_iommufd_pt, vfio_device_bind_iommufd,
+    vfio_device_detach_iommufd_pt,
 };
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, VfioIoDevice};
 use crate::vfio::iommu::Ioas;
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]
 pub struct Cdev {
-    fd: File,
+    io_dev: VfioIoDevice,
     ioas: Option<Arc<Ioas>>,
 }
 
@@ -44,7 +45,8 @@ impl Cdev {
             .context(error::AccessDevice {
                 path: path.as_ref(),
             })?;
-        Ok(Cdev { fd, ioas: None })
+        let io_dev = VfioIoDevice::new(fd)?;
+        Ok(Cdev { io_dev, ioas: None })
     }
 }
 
@@ -55,13 +57,13 @@ impl Cdev {
             iommufd: ioas.iommu.fd.as_raw_fd(),
             ..Default::default()
         };
-        unsafe { vfio_device_bind_iommufd(&self.fd, &bind) }?;
+        unsafe { vfio_device_bind_iommufd(self.io_dev.fd(), &bind) }?;
         let attach = VfioDeviceAttachIommufdPt {
             argsz: size_of::<VfioDeviceAttachIommufdPt>() as u32,
             pt_id: ioas.id,
             ..Default::default()
         };
-        unsafe { vfio_device_attach_iommufd_pt(&self.fd, &attach) }?;
+        unsafe { vfio_device_attach_iommufd_pt(self.io_dev.fd(), &attach) }?;
         self.ioas.replace(ioas);
         Ok(())
     }
@@ -69,27 +71,71 @@ impl Cdev {
     pub fn detach_iommu_ioas(&mut self) -> Result<()> {
         if self.ioas.is_none() {
             return Ok(());
-        };
+        }
         let detach = VfioDeviceDetachIommufdPt {
             argsz: size_of::<VfioDeviceDetachIommufdPt>() as u32,
             flags: 0,
         };
-        unsafe { vfio_device_detach_iommufd_pt(&self.fd, &detach) }?;
+        unsafe { vfio_device_detach_iommufd_pt(self.io_dev.fd(), &detach) }?;
         self.ioas = None;
         Ok(())
     }
 }
 
 impl Device for Cdev {
-    fn fd(&self) -> &File {
-        &self.fd
+    fn get_info(&self) -> Result<VfioDeviceInfo> {
+        self.io_dev.get_info()
+    }
+
+    fn get_region_info(&self, index: u32) -> Result<VfioRegionInfo> {
+        self.io_dev.get_region_info(index)
+    }
+
+    fn get_irq_info(&self, index: u32) -> Result<VfioIrqInfo> {
+        self.io_dev.get_irq_info(index)
+    }
+
+    fn reset(&self) -> Result<()> {
+        self.io_dev.reset()
+    }
+
+    fn set_irq_eventfd(
+        &self,
+        index: u32,
+        start: u32,
+        eventfds: &[Option<BorrowedFd<'_>>],
+    ) -> Result<()> {
+        self.io_dev.set_irq_eventfd(index, start, eventfds)
+    }
+
+    fn disable_irq(&self, index: u32) -> Result<()> {
+        self.io_dev.disable_irq(index)
+    }
+
+    fn read_region(&self, region: &VfioRegionInfo, offset: u64, buf: &mut [u8]) -> Result<()> {
+        self.io_dev.read_region(region, offset, buf)
+    }
+
+    fn write_region(&self, region: &VfioRegionInfo, offset: u64, buf: &[u8]) -> Result<()> {
+        self.io_dev.write_region(region, offset, buf)
+    }
+
+    fn get_region_mmap_fd(&self, index: u32) -> Result<Option<OwnedFd>> {
+        self.io_dev.get_region_mmap_fd(index)
+    }
+
+    fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd> {
+        self.io_dev.get_dma_buf_fd(index, offset, size)
     }
 }
 
 impl Drop for Cdev {
     fn drop(&mut self) {
         if let Err(e) = self.detach_iommu_ioas() {
-            log::error!("Cdev-{}: detaching ioas: {e:?}", self.fd.as_raw_fd())
+            log::error!(
+                "Cdev-{}: detaching ioas: {e:?}",
+                self.io_dev.fd().as_raw_fd()
+            )
         }
     }
 }
