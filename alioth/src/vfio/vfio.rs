@@ -18,6 +18,8 @@ pub mod device;
 pub mod group;
 pub mod iommu;
 pub mod pci;
+#[path = "user/user.rs"]
+pub mod user;
 
 use std::path::Path;
 
