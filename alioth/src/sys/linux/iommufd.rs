@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod if_tun;
-pub mod ioctl;
-pub mod iommufd;
-pub mod kvm;
-pub mod sev;
-pub mod tdx;
-pub mod vfio;
-pub mod vhost;
+use crate::ioctl_write_ptr;
+use crate::sys::ioctl::ioctl_io;
+use crate::sys::vfio::IommuIoasMapFlag;
+
+pub const IOMMUFD_TYPE: u8 = b';';
+
+#[repr(C)]
+pub struct IommuIoasMapFile {
+    pub size: u32,
+    pub flags: IommuIoasMapFlag,
+    pub ioas_id: u32,
+    pub fd: i32,
+    pub start: u64,
+    pub length: u64,
+    pub iova: u64,
+}
+
+ioctl_write_ptr! {
+    iommu_ioas_map_file,
+    ioctl_io(IOMMUFD_TYPE, 0x8f),
+    IommuIoasMapFile
+}

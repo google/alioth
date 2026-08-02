@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::fs::File;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -120,11 +120,21 @@ impl LayoutChanged for UpdateContainerMapping {
         Ok(())
     }
 
-    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_added(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_added(gpa, pages)
     }
 
-    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_removed(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_removed(gpa, pages)
     }
 }

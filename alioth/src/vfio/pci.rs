@@ -13,11 +13,10 @@
 // limitations under the License.
 
 use std::cmp::min;
-use std::fs::File;
 use std::iter::zip;
 use std::mem::size_of;
 use std::ops::Range;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -53,21 +52,31 @@ fn round_up_range(range: Range<usize>) -> Range<usize> {
     (align_down!(range.start, 12))..(align_up!(range.end, 12))
 }
 
-fn create_mapped_bar_pages(
-    fd: &File,
-    region_flags: VfioRegionInfoFlag,
-    offset: i64,
+fn create_mapped_bar_pages<D: Device>(
+    dev: &VfioDev<D>,
+    region: &VfioRegionInfo,
+    offset: u64,
     size: usize,
-) -> Result<ArcMemPages> {
+) -> Result<(ArcMemPages, Option<OwnedFd>)> {
+    let dma_buf = match dev.dev.get_dma_buf_fd(region.index, offset, size) {
+        Ok(fd) => Some(fd),
+        Err(e) => {
+            log::warn!("{}: failed to get dma buf fd: {e:?}", dev.name);
+            None
+        }
+    };
+
     let mut prot = 0;
-    if region_flags.contains(VfioRegionInfoFlag::READ) {
+    if region.flags.contains(VfioRegionInfoFlag::READ) {
         prot |= PROT_READ;
     }
-    if region_flags.contains(VfioRegionInfoFlag::WRITE) {
+    if region.flags.contains(VfioRegionInfoFlag::WRITE) {
         prot |= PROT_WRITE;
     }
-    let mapped_pages = ArcMemPages::from_file(fd.try_clone()?, offset, size, prot)?;
-    Ok(mapped_pages)
+    let dev_fd = dev.dev.fd().try_clone()?;
+    let dev_fd_offset = region.offset + offset;
+    let mapped_pages = ArcMemPages::from_file(dev_fd, dev_fd_offset as i64, size, prot)?;
+    Ok((mapped_pages, dma_buf))
 }
 
 fn create_splitted_bar_region<I, M, D>(
@@ -107,12 +116,8 @@ where
         ranges: vec![],
     };
     if excluded_page1.start > 0 {
-        region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            dev.dev.fd(),
-            region_info.flags,
-            region_info.offset as i64,
-            excluded_page1.start,
-        )?));
+        let (pages, dma_buf) = create_mapped_bar_pages(&dev, region_info, 0, excluded_page1.start)?;
+        region.ranges.push(MemRange::DevMem { pages, dma_buf });
     }
     if excluded_page1.end - excluded_page1.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -128,12 +133,13 @@ where
         })));
     }
     if excluded_page2.start - excluded_page1.end > 0 {
-        region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            dev.dev.fd(),
-            region_info.flags,
-            region_info.offset as i64 + excluded_page1.end as i64,
+        let (pages, dma_buf) = create_mapped_bar_pages(
+            &dev,
+            region_info,
+            excluded_page1.end as u64,
             excluded_page2.start - excluded_page1.end,
-        )?));
+        )?;
+        region.ranges.push(MemRange::DevMem { pages, dma_buf });
     }
     if excluded_page2.end - excluded_page2.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -149,12 +155,13 @@ where
         })));
     }
     if excluded_page2.end < region_info.size as usize {
-        region.ranges.push(MemRange::DevMem(create_mapped_bar_pages(
-            dev.dev.fd(),
-            region_info.flags,
-            region_info.offset as i64 + excluded_page2.end as i64,
+        let (pages, dma_buf) = create_mapped_bar_pages(
+            &dev,
+            region_info,
+            excluded_page2.end as u64,
             region_info.size as usize - excluded_page2.end,
-        )?));
+        )?;
+        region.ranges.push(MemRange::DevMem { pages, dma_buf });
     }
     Ok(region)
 }

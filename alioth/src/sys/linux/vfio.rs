@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bitfield::bitfield;
+
 use crate::sys::ioctl::ioctl_io;
 use crate::{
     bitflags, consts, ioctl_none, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val,
@@ -262,6 +264,48 @@ consts! {
     }
 }
 
+consts! {
+    pub struct DeviceFeature(u16) {
+        DMA_BUF = 11;
+    }
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct VfioRegionDmaRange {
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct VfioDeviceFeatureDmaBuf<const N: usize> {
+    pub region_index: u32,
+    pub open_flags: u32,
+    pub flags: u32,
+    pub nr_ranges: u32,
+    pub dma_ranges: [VfioRegionDmaRange; N],
+}
+
+bitfield! {
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    pub struct VfioDeviceFeatureFlag(u32);
+    impl Debug;
+    impl new;
+    pub u16, from into DeviceFeature, index, set_index: 15, 0;
+    pub get, set_get: 16;
+    pub set, set_set: 17;
+    pub probe, set_probe: 18;
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct VfioDeviceFeature<T> {
+    pub argsz: u32,
+    pub flags: VfioDeviceFeatureFlag,
+    pub data: T,
+}
+
 ioctl_writeread!(
     vfio_device_get_info,
     ioctl_io(VFIO_TYPE, 107),
@@ -281,6 +325,13 @@ ioctl_writeread!(
 ioctl_write_buf!(vfio_device_set_irqs, ioctl_io(VFIO_TYPE, 110), VfioIrqSet);
 
 ioctl_none!(vfio_device_reset, VFIO_TYPE, 111);
+
+ioctl_write_ptr!(
+    vfio_device_feature,
+    ioctl_io(VFIO_TYPE, 117),
+    VfioDeviceFeature<T>,
+    T
+);
 
 ioctl_write_ptr!(
     vfio_device_bind_iommufd,

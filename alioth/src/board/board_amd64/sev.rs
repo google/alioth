@@ -14,6 +14,7 @@
 
 use std::arch::x86_64::{__cpuid, CpuidResult};
 use std::collections::HashMap;
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 
 use crate::arch::cpuid::{
@@ -149,11 +150,11 @@ where
         Ok(())
     }
 
-    fn dev_mem_added(&self, _: u64, _: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_added(&self, _: u64, _: &ArcMemPages, _: Option<BorrowedFd>) -> mem::Result<()> {
         Ok(())
     }
 
-    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages, _: Option<BorrowedFd>) -> mem::Result<()> {
         Ok(())
     }
 }

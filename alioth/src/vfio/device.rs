@@ -15,14 +15,15 @@
 use std::fmt::Debug;
 use std::fs::File;
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 
 use crate::mem;
 use crate::sys::vfio::{
+    DeviceFeature, VfioDeviceFeature, VfioDeviceFeatureDmaBuf, VfioDeviceFeatureFlag,
     VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioPciIrq,
-    VfioRegionInfo, vfio_device_get_info, vfio_device_get_irq_info, vfio_device_get_region_info,
-    vfio_device_reset, vfio_device_set_irqs,
+    VfioRegionDmaRange, VfioRegionInfo, vfio_device_feature, vfio_device_get_info,
+    vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset, vfio_device_set_irqs,
 };
 use crate::vfio::Result;
 
@@ -36,6 +37,25 @@ pub trait Device: Debug + Send + Sync + 'static {
         };
         unsafe { vfio_device_get_info(self.fd(), &mut device_info) }?;
         Ok(device_info)
+    }
+
+    fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd> {
+        let req = VfioDeviceFeature {
+            argsz: size_of::<VfioDeviceFeature<VfioDeviceFeatureDmaBuf<1>>>() as u32,
+            flags: VfioDeviceFeatureFlag::new(DeviceFeature::DMA_BUF, true, false, false),
+            data: VfioDeviceFeatureDmaBuf {
+                region_index: index,
+                open_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+                flags: 0,
+                nr_ranges: 1,
+                dma_ranges: [VfioRegionDmaRange {
+                    offset,
+                    length: size as u64,
+                }],
+            },
+        };
+        let fd = unsafe { vfio_device_feature(self.fd(), &req) }?;
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
     fn get_region_info(&self, index: u32) -> Result<VfioRegionInfo> {

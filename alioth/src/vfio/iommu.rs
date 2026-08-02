@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use snafu::ResultExt;
 use crate::errors::BoxTrace;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged};
+use crate::sys::iommufd::{IommuIoasMapFile, iommu_ioas_map_file};
 use crate::sys::vfio::{
     IommuDestroy, IommuIoasAlloc, IommuIoasMap, IommuIoasMapFlag, IommuIoasUnmap, iommu_destroy,
     iommu_ioas_alloc, iommu_ioas_map, iommu_ioas_unmap,
@@ -99,6 +100,28 @@ impl Ioas {
         Ok(())
     }
 
+    pub fn map_file(&self, fd: BorrowedFd, start: u64, iova: u64, len: u64) -> Result<()> {
+        let ioas_map_file = IommuIoasMapFile {
+            size: size_of::<IommuIoasMapFile>() as u32,
+            flags: IommuIoasMapFlag::READABLE
+                | IommuIoasMapFlag::WRITEABLE
+                | IommuIoasMapFlag::FIXED_IOVA,
+            ioas_id: self.id,
+            fd: fd.as_raw_fd(),
+            start,
+            length: len,
+            iova,
+        };
+        log::debug!(
+            "ioas-{}-{}: mapped file: {iova:#018x} -> fd = {:?}, offset = {start:#x}, size = {len:#x}",
+            fd.as_raw_fd(),
+            self.iommu.fd.as_raw_fd(),
+            self.id,
+        );
+        unsafe { iommu_ioas_map_file(&self.iommu.fd, &ioas_map_file) }?;
+        Ok(())
+    }
+
     pub fn unmap(&self, iova: u64, len: u64) -> Result<()> {
         let ioas_unmap = IommuIoasUnmap {
             size: size_of::<IommuIoasUnmap>() as u32,
@@ -138,12 +161,31 @@ impl LayoutChanged for UpdateIommuIoas {
         Ok(())
     }
 
-    fn dev_mem_added(&self, _gpa: u64, _pages: &ArcMemPages) -> mem::Result<()> {
-        // Iommufd does not support mapping device memory into IOAS.
-        Ok(())
+    fn dev_mem_added(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        dma_buf: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
+        if let Some(fd) = dma_buf {
+            self.ioas
+                .map_file(fd, 0, gpa, pages.size())
+                .box_trace(mem::error::ChangeLayout)
+        } else {
+            self.ioas
+                .map(pages.addr(), gpa, pages.size())
+                .box_trace(mem::error::ChangeLayout)
+        }
     }
 
-    fn dev_mem_removed(&self, _gpa: u64, _pages: &ArcMemPages) -> mem::Result<()> {
-        Ok(())
+    fn dev_mem_removed(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
+        self.ioas
+            .unmap(gpa, pages.size())
+            .box_trace(mem::error::ChangeLayout)
     }
 }

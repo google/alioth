@@ -80,9 +80,9 @@ macro_rules! ioctl_write_val {
 
 #[macro_export]
 macro_rules! ioctl_write_ptr {
-    ($name:ident, $code:expr, $ty:ty) => {
+    ($name:ident, $code:expr, $ty:ty, $($g:ident),*) => {
         #[allow(clippy::missing_safety_doc)]
-        pub unsafe fn $name<F: ::std::os::fd::AsFd>(
+        pub unsafe fn $name<F: ::std::os::fd::AsFd, $($g),*>(
             fd: &F,
             val: &$ty,
         ) -> ::std::io::Result<libc::c_int> {
@@ -95,6 +95,9 @@ macro_rules! ioctl_write_ptr {
                 )
             })
         }
+    };
+    ($name:ident, $code:expr, $ty:ty) => {
+        $crate::ioctl_write_ptr!($name, $code, $ty, );
     };
     ($name:ident, $type_:expr, $nr:expr, $ty:ty) => {
         $crate::ioctl_write_ptr!(

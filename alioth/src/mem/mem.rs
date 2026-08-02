@@ -18,6 +18,7 @@ pub mod mapped;
 
 use std::any::{Any, type_name};
 use std::fmt::Debug;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -124,7 +125,10 @@ impl MemSpec {
 #[derive(Debug)]
 pub enum MemRange {
     Ram(ArcMemPages),
-    DevMem(ArcMemPages),
+    DevMem {
+        pages: ArcMemPages,
+        dma_buf: Option<OwnedFd>,
+    },
     Emulated(Arc<dyn Mmio>),
     Span(u64),
 }
@@ -132,7 +136,7 @@ pub enum MemRange {
 impl MemRange {
     pub fn size(&self) -> u64 {
         match self {
-            MemRange::Ram(pages) | MemRange::DevMem(pages) => pages.size(),
+            MemRange::Ram(pages) | MemRange::DevMem { pages, .. } => pages.size(),
             MemRange::Emulated(range) => Mmio::size(range),
             MemRange::Span(size) => *size,
         }
@@ -186,7 +190,10 @@ impl MemRegion {
     pub fn with_dev_mem(pages: ArcMemPages, type_: MemRegionType) -> MemRegion {
         let size = pages.size();
         MemRegion {
-            ranges: vec![MemRange::DevMem(pages)],
+            ranges: vec![MemRange::DevMem {
+                pages,
+                dma_buf: None,
+            }],
             entries: vec![MemRegionEntry { type_, size }],
             callbacks: Mutex::new(vec![]),
         }
@@ -245,8 +252,8 @@ impl SlotBackend for Arc<IoRegion> {
 pub trait LayoutChanged: Debug + Send + Sync + 'static {
     fn ram_added(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
     fn ram_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
-    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
-    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> Result<()>;
+    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages, fd: Option<BorrowedFd>) -> Result<()>;
+    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages, fd: Option<BorrowedFd>) -> Result<()>;
 }
 
 pub trait LayoutUpdated: Debug + Send + Sync + 'static {
@@ -285,7 +292,9 @@ impl Memory {
                 let gpa = addr + offset;
                 match range {
                     MemRange::Ram(r) => callback.ram_added(gpa, r)?,
-                    MemRange::DevMem(r) => callback.dev_mem_added(gpa, r)?,
+                    MemRange::DevMem { pages, dma_buf } => {
+                        callback.dev_mem_added(gpa, pages, dma_buf.as_ref().map(AsFd::as_fd))?
+                    }
                     MemRange::Span(_) | MemRange::Emulated(_) => {}
                 }
                 offset += range.size();
@@ -328,8 +337,8 @@ impl Memory {
         let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
-            if let MemRange::Ram(r) | MemRange::DevMem(r) = range {
-                self.ram_bus.add(gpa, r.clone())?;
+            if let MemRange::Ram(pages) | MemRange::DevMem { pages, .. } = range {
+                self.ram_bus.add(gpa, pages.clone())?;
                 ram_updated = true;
             }
             match range {
@@ -342,9 +351,9 @@ impl Memory {
                         callback.ram_added(gpa, r)?;
                     }
                 }
-                MemRange::DevMem(r) => {
+                MemRange::DevMem { pages: r, dma_buf } => {
                     for callback in &callbacks.changed {
-                        callback.dev_mem_added(gpa, r)?;
+                        callback.dev_mem_added(gpa, r, dma_buf.as_ref().map(AsFd::as_fd))?;
                     }
                 }
                 MemRange::Span(_) => {}
@@ -370,7 +379,7 @@ impl Memory {
         let mut ram_updated = false;
         for range in &region.ranges {
             let gpa = addr + offset;
-            if let MemRange::Ram(_) | MemRange::DevMem(_) = range {
+            if let MemRange::Ram(_) | MemRange::DevMem { .. } = range {
                 self.ram_bus.remove(gpa)?;
                 ram_updated = true;
             }
@@ -384,9 +393,9 @@ impl Memory {
                         callback.ram_removed(gpa, r)?;
                     }
                 }
-                MemRange::DevMem(r) => {
+                MemRange::DevMem { pages, dma_buf } => {
                     for callback in callbacks.changed.iter().rev() {
-                        callback.dev_mem_removed(gpa, r)?;
+                        callback.dev_mem_removed(gpa, pages, dma_buf.as_ref().map(AsFd::as_fd))?;
                     }
                 }
                 MemRange::Span(_) => {}
@@ -512,11 +521,11 @@ impl Memory {
         'out: while let Some((mut addr, region)) = regions.search_next(start) {
             let next_start = addr + region.size();
             for range in &region.ranges {
-                let (MemRange::DevMem(r) | MemRange::Ram(r)) = range else {
+                let (MemRange::DevMem { pages, .. } | MemRange::Ram(pages)) = range else {
                     addr += range.size();
                     continue;
                 };
-                let range_end = addr + r.size();
+                let range_end = addr + pages.size();
                 if range_end <= start {
                     addr = range_end;
                     continue;
@@ -603,11 +612,11 @@ where
         Ok(())
     }
 
-    fn dev_mem_added(&self, _: u64, _: &ArcMemPages) -> Result<()> {
+    fn dev_mem_added(&self, _: u64, _: &ArcMemPages, _: Option<BorrowedFd>) -> Result<()> {
         Ok(())
     }
 
-    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages) -> Result<()> {
+    fn dev_mem_removed(&self, _: u64, _: &ArcMemPages, _: Option<BorrowedFd>) -> Result<()> {
         Ok(())
     }
 }

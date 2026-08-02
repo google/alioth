@@ -20,6 +20,7 @@ mod aarch64;
 mod x86_64;
 
 use std::ffi::CStr;
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 
 use libc::{MAP_PRIVATE, MAP_SHARED};
@@ -187,11 +188,21 @@ where
         Ok(())
     }
 
-    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_added(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_added(gpa, pages)
     }
 
-    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_removed(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_removed(gpa, pages)
     }
 }

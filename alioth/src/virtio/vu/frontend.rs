@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -90,11 +90,21 @@ impl LayoutChanged for UpdateVuMem {
         Ok(())
     }
 
-    fn dev_mem_added(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_added(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_added(gpa, pages)
     }
 
-    fn dev_mem_removed(&self, gpa: u64, pages: &ArcMemPages) -> mem::Result<()> {
+    fn dev_mem_removed(
+        &self,
+        gpa: u64,
+        pages: &ArcMemPages,
+        _: Option<BorrowedFd>,
+    ) -> mem::Result<()> {
         self.ram_removed(gpa, pages)
     }
 }
