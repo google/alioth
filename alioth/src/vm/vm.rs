@@ -64,7 +64,14 @@ use crate::vfio::iommu::{Ioas, Iommu, UpdateIommuIoas};
 #[cfg(target_os = "linux")]
 use crate::vfio::pci::VfioPciDev;
 #[cfg(target_os = "linux")]
-use crate::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use crate::vfio::user::conn::VfioUserSession;
+#[cfg(target_os = "linux")]
+use crate::vfio::user::device::{UpdateVfioUserMapping, VfioUserDevice};
+#[cfg(target_os = "linux")]
+use crate::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
+
 use crate::virtio::dev::{DevSpec, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
 
@@ -370,6 +377,28 @@ where
         )?;
         let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
         self.add_pci_dev(Some(bdf), Arc::new(dev))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn add_vfio_user_dev(&self, name: Arc<str>, spec: VfioUserSpec) -> Result<(), Error> {
+        let stream = UnixStream::connect(&spec.socket).map_err(crate::vfio::Error::from)?;
+
+        let session = Arc::new(VfioUserSession::new(stream));
+        session.negotiate_version()?;
+
+        let dev = VfioUserDevice::new(session.clone())?;
+
+        let bdf = self.ctx.board.pci_bus.reserve(None).unwrap();
+        let msi_sender = self.ctx.board.vm.create_msi_sender(
+            #[cfg(target_arch = "aarch64")]
+            u32::from(bdf.0),
+        )?;
+        let dev = VfioPciDev::new(name.clone(), dev, msi_sender)?;
+        self.add_pci_dev(Some(bdf), Arc::new(dev))?;
+
+        let update = Box::new(UpdateVfioUserMapping::new(session.clone()));
+        self.ctx.board.memory.register_change_callback(update)?;
         Ok(())
     }
 
