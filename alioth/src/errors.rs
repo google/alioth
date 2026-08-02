@@ -30,6 +30,7 @@ impl Error for Box<dyn DebugTrace + Send + Sync + 'static> {
 }
 
 pub trait BoxTrace<'a, T> {
+    #[track_caller]
     fn box_trace<C, E>(self, context: C) -> Result<T, E>
     where
         C: IntoError<E, Source = Box<dyn DebugTrace + Send + Sync + 'a>>,
