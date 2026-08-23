@@ -37,7 +37,7 @@ jobs:
     needs: [build_alioth, build_bootloader]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Required to create/modify releases
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Get tag message
@@ -66,9 +66,12 @@ jobs:
             -C $PWD/docs macos-signing.md
           xz alioth-*-*.tar
       - name: Create Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
-        with:
-          files: alioth-*-*.tar.xz
-          fail_on_unmatched_files: true
-          draft: true
-          body: ${{ steps.tag_message.outputs.msg }}
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          STEPS_TAG_MESSAGE_OUTPUTS_MSG: ${{ steps.tag_message.outputs.msg }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Release ${GITHUB_REF_NAME}" \
+            --notes "${STEPS_TAG_MESSAGE_OUTPUTS_MSG}" \
+            --draft \
+            alioth-*-*.tar.xz
