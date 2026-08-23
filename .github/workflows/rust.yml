@@ -52,11 +52,13 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly
+          target: ${{ matrix.target.name }}
           components: rustfmt,llvm-tools
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
+          target: ${{ matrix.target.name }}
           components: clippy
       - name: Install tools
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
@@ -65,7 +67,7 @@ jobs:
       - name: Check dependencies
         run: cargo deny check
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --target ${{ matrix.target.name }} --verbose
       - name: Format
         run: cargo +nightly fmt --check
         if: matrix.target.name == 'x86_64-unknown-linux-gnu'
@@ -74,11 +76,11 @@ jobs:
           RUST_LOG: "trace"
         run: |
           cargo +nightly llvm-cov clean --workspace
-          cargo +nightly llvm-cov --branch \
+          cargo +nightly llvm-cov test --target ${{ matrix.target.name }} --branch \
               --no-clean --workspace --ignore-filename-regex '.*_test.rs$' \
               --lcov --output-path lcov-${{ matrix.target.name }}.info
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --target ${{ matrix.target.name }} -- -D warnings
       - name: Upload coverage report artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
