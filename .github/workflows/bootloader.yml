@@ -1,5 +1,8 @@
 name: Build Bootloader
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   workflow_call:
