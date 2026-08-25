@@ -365,12 +365,8 @@ where
                     0
                 }
             }
-            VirtioCommonCfg::LAYOUT_QUEUE_NOTIFY_DATA => {
-                todo!()
-            }
-            VirtioCommonCfg::LAYOUT_QUEUE_RESET => {
-                todo!()
-            }
+            VirtioCommonCfg::LAYOUT_QUEUE_NOTIFY_DATA => 0,
+            VirtioCommonCfg::LAYOUT_QUEUE_RESET => 0,
             _ => {
                 log::error!(
                     "{}: read invalid register: offset = {offset:#x}, size = {size}",
@@ -512,7 +508,9 @@ where
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_RESET => {
-                todo!()
+                if val != 0 {
+                    log::warn!("{}: queue reset requested but not supported", self.name);
+                }
             }
             (offset, _)
                 if offset >= VirtioPciRegister::OFFSET_QUEUE_NOTIFY

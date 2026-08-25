@@ -101,4 +101,17 @@ fn test_virtio_pci_queue_registers() {
         mmio.read(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT.0 as u64, 4),
         Ok(0xdead_beef)
     );
+
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_NOTIFY_DATA.0 as u64, 2),
+        Ok(0)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_RESET.0 as u64, 2),
+        Ok(0)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_RESET.0 as u64, 2, 1),
+        Ok(Action::None)
+    );
 }
