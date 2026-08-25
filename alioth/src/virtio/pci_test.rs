@@ -19,7 +19,7 @@ use assert_matches::assert_matches;
 use parking_lot::RwLock;
 
 use crate::hv::tests::TestMsiSender;
-use crate::mem::emulated::Mmio;
+use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::MsixTableMmio;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::Register;
@@ -86,5 +86,19 @@ fn test_virtio_pci_queue_registers() {
     assert_matches!(
         mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_HI.0 as u64, 4),
         Ok(0x0123_4567)
+    );
+
+    // Feature select 32-bit round trip
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT.0 as u64,
+            4,
+            0xdead_beef
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT.0 as u64, 4),
+        Ok(0xdead_beef)
     );
 }

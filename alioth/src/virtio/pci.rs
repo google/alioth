@@ -386,10 +386,10 @@ where
         let reg = &self.reg;
         match (offset as usize, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
-                reg.device_feature_sel.store(val as u8, Ordering::Release);
+                reg.device_feature_sel.store(val as u32, Ordering::Release);
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT => {
-                reg.driver_feature_sel.store(val as u8, Ordering::Release);
+                reg.driver_feature_sel.store(val as u32, Ordering::Release);
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
                 let sel = reg.driver_feature_sel.load(Ordering::Acquire);

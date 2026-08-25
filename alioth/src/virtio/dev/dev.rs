@@ -78,8 +78,8 @@ pub trait Virtio: Debug + Send + Sync + 'static {
 pub struct Register {
     pub device_feature: [u32; 4],
     pub driver_feature: [AtomicU32; 4],
-    pub device_feature_sel: AtomicU8,
-    pub driver_feature_sel: AtomicU8,
+    pub device_feature_sel: AtomicU32,
+    pub driver_feature_sel: AtomicU32,
     pub queue_sel: AtomicU16,
     pub status: AtomicU8,
 }
