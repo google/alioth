@@ -336,7 +336,7 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    get_atomic_high32(&q.driver) as u64
+                    get_atomic_low32(&q.driver) as u64
                 } else {
                     0
                 }
@@ -352,7 +352,7 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    get_atomic_high32(&q.device) as u64
+                    get_atomic_low32(&q.device) as u64
                 } else {
                     0
                 }
@@ -943,3 +943,7 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "pci_test.rs"]
+mod tests;
