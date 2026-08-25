@@ -114,4 +114,23 @@ fn test_virtio_pci_queue_registers() {
         mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_RESET.0 as u64, 2, 1),
         Ok(Action::None)
     );
+
+    // Queue size cannot be modified while queue is enabled
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_SELECT.0 as u64, 2, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_ENABLE.0 as u64, 2, 1),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_SIZE.0 as u64, 2, 0xffff),
+        Ok(Action::None)
+    );
+    assert_ne!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_SIZE.0 as u64, 2)
+            .unwrap(),
+        0xffff
+    );
 }

@@ -442,8 +442,9 @@ where
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SIZE => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed) as usize;
-                if let Some(q) = self.queues.get(q_sel) {
-                    // TODO: validate queue size
+                if let Some(q) = self.queues.get(q_sel)
+                    && !q.enabled.load(Ordering::Acquire)
+                {
                     q.size.store(val as u16, Ordering::Release);
                 }
             }
