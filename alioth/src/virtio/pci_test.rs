@@ -22,9 +22,9 @@ use crate::hv::tests::TestMsiSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::MsixTableMmio;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::Register;
+use crate::virtio::dev::{Register, WakeEvent};
 use crate::virtio::pci::{
-    PciIrqSender, VirtioCommonCfg, VirtioPciMsixVector, VirtioPciRegisterMmio,
+    PciIrqSender, VirtioCommonCfg, VirtioPciMsixVector, VirtioPciRegister, VirtioPciRegisterMmio,
 };
 use crate::virtio::queue::QueueReg;
 use crate::virtio::tests::FakeIoeventFd;
@@ -37,7 +37,7 @@ fn test_virtio_pci_queue_registers() {
         device: AtomicU64::new(0x0123_4567_89ab_cdef),
         ..Default::default()
     }]);
-    let (event_tx, _event_rx) = flume::unbounded();
+    let (event_tx, event_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
     let msi_sender = TestMsiSender::default();
     let msix_table = Arc::new(MsixTableMmio {
@@ -54,7 +54,7 @@ fn test_virtio_pci_queue_registers() {
     let mmio = VirtioPciRegisterMmio::<_, FakeIoeventFd> {
         name: "test-virtio-pci".into(),
         reg: Register::default(),
-        queues,
+        queues: queues.clone(),
         irq_sender,
         ioeventfds: None,
         event_tx,
@@ -133,4 +133,30 @@ fn test_virtio_pci_queue_registers() {
             .unwrap(),
         0xffff
     );
+
+    // Valid queue notify (to valid queue offset) wakes up the queue
+    assert_matches!(
+        mmio.write(VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64, 2, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Notify { q_index: 0 }));
+
+    // Queue notify offset for out of bounds queue returns the reserved slot (queues.len())
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_SELECT.0 as u64, 2, 0xffff),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_NOTIFY_OFF.0 as u64, 2),
+        Ok(1)
+    );
+
+    // Queue notify to reserved invalid slot does not wake up any queue
+    let invalid_notify_offset =
+        VirtioPciRegister::OFFSET_QUEUE_NOTIFY + size_of::<u32>() * queues.len();
+    assert_matches!(
+        mmio.write(invalid_notify_offset as u64, 2, 0),
+        Ok(Action::None)
+    );
+    assert!(event_rx.is_empty());
 }

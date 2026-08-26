@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cmp::min;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -253,7 +254,9 @@ where
     E: IoeventFd,
 {
     fn size(&self) -> u64 {
-        (size_of::<VirtioPciRegister>() + size_of::<u32>() * self.queues.len()) as u64
+        // Reserve an extra 4-byte slot at the end of the notify capability to safely
+        // sink notifications from invalid/out-of-bounds queue indices.
+        (size_of::<VirtioPciRegister>() + size_of::<u32>() * (self.queues.len() + 1)) as u64
     }
 
     fn read(&self, offset: u64, size: u8) -> mem::Result<u64> {
@@ -315,7 +318,10 @@ where
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_NOTIFY_OFF => {
-                reg.queue_sel.load(Ordering::Acquire) as u64
+                let q_sel = reg.queue_sel.load(Ordering::Acquire);
+                // Route invalid queue indices to the additional reserved slot (self.queues.len())
+                // so guest MMIO writes do not access unmapped BAR memory or trigger valid queues.
+                min(q_sel, self.queues.len() as u16) as u64
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
@@ -706,24 +712,19 @@ where
 
         let msix_table_offset = 0;
         let msix_table_size = size_of::<MsixTableEntry>() * table_entries;
-
         let msix_pba_offset = 8 << 10;
-
-        let virtio_register_offset = 12 << 10;
-        let device_config_offset =
-            virtio_register_offset + size_of::<VirtioPciRegister>() + size_of::<u32>() * num_queues;
-
-        let msix_msg_ctrl = MsixMsgCtrl::new(table_entries as u16);
 
         let cap_msix = MsixCap {
             header: PciCapHdr {
                 id: PciCapId::MSIX,
                 ..Default::default()
             },
-            control: msix_msg_ctrl,
+            control: MsixMsgCtrl::new(table_entries as u16),
             table_offset: MsixCapOffset::new(msix_table_offset as u32, 0),
             pba_offset: MsixCapOffset::new(msix_pba_offset as u32, 0),
         };
+
+        let virtio_register_offset = 12 << 10;
         let cap_common = VirtioPciCap {
             header: PciCapHdr {
                 id: PciCapId::VENDOR,
@@ -761,11 +762,13 @@ where
                 bar: 0,
                 id: 0,
                 offset: (virtio_register_offset + VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u32,
-                length: (size_of::<u32>() * num_queues) as u32,
+                // Include an extra 4-byte slot to sink writes for invalid queue indices.
+                length: (size_of::<u32>() * (num_queues + 1)) as u32,
                 ..Default::default()
             },
             multiplier: size_of::<u32>() as u32,
         };
+        let device_config_offset = cap_notify.cap.offset + cap_notify.cap.length;
         let cap_device_config = VirtioPciCap {
             header: PciCapHdr {
                 id: PciCapId::VENDOR,
