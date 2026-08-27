@@ -16,11 +16,12 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 
 use flume::Sender;
+use rstest::rstest;
 
 use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
-use crate::virtio::{IrqSender, Result};
+use crate::virtio::{DevStatus, IrqSender, Result};
 
 pub const QUEUE_SIZE: u16 = QUEUE_SIZE_MAX;
 const MEM_SIZE: usize = 2 << 20;
@@ -88,3 +89,84 @@ impl AsFd for FakeIoeventFd {
 }
 
 impl IoeventFd for FakeIoeventFd {}
+
+#[rstest]
+// Valid states in standard initialization sequence
+#[case(DevStatus::empty(), true)]
+#[case(DevStatus::ACK, true)]
+#[case(DevStatus::ACK | DevStatus::DRIVER, true)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK, true)]
+#[case(
+    DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK,
+    true,
+)]
+// Valid states with auxiliary flags (FAILED, NEEDS_RESET)
+#[case(DevStatus::FAILED, true)]
+#[case(DevStatus::ACK | DevStatus::FAILED, true)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::FAILED, true)]
+#[case(
+    DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::FAILED,
+    true,
+)]
+#[case(
+    DevStatus::ACK
+        | DevStatus::DRIVER
+        | DevStatus::FEATURES_OK
+        | DevStatus::DRIVER_OK
+        | DevStatus::FAILED,
+    true,
+)]
+#[case(DevStatus::NEEDS_RESET, true)]
+#[case(DevStatus::ACK | DevStatus::NEEDS_RESET, true)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::NEEDS_RESET, true)]
+#[case(
+    DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::NEEDS_RESET,
+    true,
+)]
+#[case(
+    DevStatus::ACK
+        | DevStatus::DRIVER
+        | DevStatus::FEATURES_OK
+        | DevStatus::DRIVER_OK
+        | DevStatus::NEEDS_RESET,
+    true,
+)]
+#[case(DevStatus::FAILED | DevStatus::NEEDS_RESET, true)]
+#[case(
+    DevStatus::ACK
+        | DevStatus::DRIVER
+        | DevStatus::FEATURES_OK
+        | DevStatus::DRIVER_OK
+        | DevStatus::FAILED
+        | DevStatus::NEEDS_RESET,
+    true,
+)]
+// Invalid states (skipping steps or isolated bits)
+#[case(DevStatus::DRIVER, false)]
+#[case(DevStatus::FEATURES_OK, false)]
+#[case(DevStatus::DRIVER_OK, false)]
+#[case(DevStatus::ACK | DevStatus::FEATURES_OK, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER_OK, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::DRIVER_OK, false)]
+#[case(DevStatus::DRIVER | DevStatus::FEATURES_OK, false)]
+#[case(DevStatus::DRIVER | DevStatus::DRIVER_OK, false)]
+#[case(DevStatus::FEATURES_OK | DevStatus::DRIVER_OK, false)]
+#[case(DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK, false)]
+// Invalid states with auxiliary flags
+#[case(DevStatus::DRIVER | DevStatus::FAILED, false)]
+#[case(DevStatus::FEATURES_OK | DevStatus::FAILED, false)]
+#[case(DevStatus::DRIVER_OK | DevStatus::FAILED, false)]
+#[case(DevStatus::ACK | DevStatus::FEATURES_OK | DevStatus::FAILED, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER_OK | DevStatus::FAILED, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::DRIVER_OK | DevStatus::FAILED, false)]
+#[case(DevStatus::DRIVER | DevStatus::NEEDS_RESET, false)]
+#[case(DevStatus::FEATURES_OK | DevStatus::NEEDS_RESET, false)]
+#[case(DevStatus::DRIVER_OK | DevStatus::NEEDS_RESET, false)]
+#[case(DevStatus::ACK | DevStatus::FEATURES_OK | DevStatus::NEEDS_RESET, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER_OK | DevStatus::NEEDS_RESET, false)]
+#[case(DevStatus::ACK | DevStatus::DRIVER | DevStatus::DRIVER_OK | DevStatus::NEEDS_RESET, false)]
+// Unknown bits
+#[case(DevStatus(0xff), false)]
+fn test_dev_status_is_valid(#[case] status: DevStatus, #[case] valid: bool) {
+    assert_eq!(status.is_valid(), valid);
+}

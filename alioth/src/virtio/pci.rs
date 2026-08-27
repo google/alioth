@@ -418,26 +418,32 @@ where
                 }
             }
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
-                let status = DevStatus::from_bits_truncate(val as u8);
-                let old = reg.status.swap(status.bits(), Ordering::AcqRel);
-                let old = DevStatus::from_bits_retain(old);
-                if (old ^ status).contains(DevStatus::DRIVER_OK) {
-                    let event = if status.contains(DevStatus::DRIVER_OK) {
-                        let mut feature = 0;
-                        for (i, v) in reg.driver_feature.iter().enumerate() {
-                            feature |= (v.load(Ordering::Acquire) as u128) << (i << 5);
-                        }
-                        let param = StartParam {
-                            feature,
-                            irq_sender: self.irq_sender.clone(),
-                            ioeventfds: self.ioeventfds.clone(),
-                        };
-                        WakeEvent::Start { param }
-                    } else {
-                        self.reset();
-                        WakeEvent::Reset
+                let status = DevStatus::from_bits_retain(val as u8);
+                let old = DevStatus::from_bits_retain(reg.status.load(Ordering::Acquire));
+                // Allows multi-step transitions in a single MMIO write
+                if !(status.is_valid() && status.contains(old) || status.is_empty()) {
+                    log::warn!("{}: invalid status change: {old:#x} -> {val:#x}", self.name);
+                    return Ok(Action::None);
+                }
+                reg.status.store(status.bits(), Ordering::Release);
+                if status.is_empty() {
+                    self.reset();
+                    if old.contains(DevStatus::DRIVER_OK) {
+                        self.wake_up_dev(WakeEvent::Reset);
+                    }
+                } else if !old.contains(DevStatus::DRIVER_OK)
+                    && status.contains(DevStatus::DRIVER_OK)
+                {
+                    let mut feature = 0;
+                    for (i, v) in reg.driver_feature.iter().enumerate() {
+                        feature |= (v.load(Ordering::Acquire) as u128) << (i << 5);
+                    }
+                    let param = StartParam {
+                        feature,
+                        irq_sender: self.irq_sender.clone(),
+                        ioeventfds: self.ioeventfds.clone(),
                     };
-                    self.wake_up_dev(event);
+                    self.wake_up_dev(WakeEvent::Start { param });
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SELECT => {

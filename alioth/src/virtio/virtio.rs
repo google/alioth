@@ -29,6 +29,7 @@ use std::fmt::Debug;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
 
+use bitflags::Flags;
 use snafu::Snafu;
 
 use crate::errors::{DebugTrace, trace_error};
@@ -121,6 +122,23 @@ bitflags! {
         FEATURES_OK = 1 << 3;
         NEEDS_RESET = 1 << 6;
         FAILED = 1 << 7;
+    }
+}
+
+impl DevStatus {
+    pub fn is_valid(&self) -> bool {
+        if self.contains_unknown_bits() {
+            return false;
+        }
+
+        let status = *self
+            & (DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK);
+
+        status == DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK
+            || status == DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK
+            || status == DevStatus::ACK | DevStatus::DRIVER
+            || status == DevStatus::ACK
+            || status == DevStatus::empty()
     }
 }
 
