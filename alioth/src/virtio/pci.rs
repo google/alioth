@@ -394,9 +394,18 @@ where
                 reg.driver_feature_sel.store(val as u32, Ordering::Release);
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
-                let sel = reg.driver_feature_sel.load(Ordering::Acquire);
-                if let Some(feature) = reg.driver_feature.get(sel as usize) {
-                    feature.store(val as u32, Ordering::Release);
+                let sel = reg.driver_feature_sel.load(Ordering::Acquire) as usize;
+                if let Some(feature) = reg.driver_feature.get(sel) {
+                    let status = DevStatus::from_bits_retain(reg.status.load(Ordering::Acquire));
+                    if status.contains(DevStatus::FEATURES_OK) {
+                        // VirtIO spec 1.4, Sec 3.1.1
+                        log::warn!(
+                            "{}: cannot change driver features after FEATURES_OK",
+                            self.name
+                        );
+                    } else {
+                        feature.store(val as u32 & reg.device_feature[sel], Ordering::Release);
+                    }
                 } else if val != 0 {
                     log::error!("{}: unknown feature {val:#x} for sel {sel}", self.name);
                 }

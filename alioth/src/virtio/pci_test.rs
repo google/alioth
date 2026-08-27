@@ -54,7 +54,10 @@ fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver) {
     });
     let mmio = VirtioPciRegisterMmio {
         name: "test-virtio-pci".into(),
-        reg: Register::default(),
+        reg: Register {
+            device_feature: [u32::MAX; 4],
+            ..Default::default()
+        },
         queues,
         irq_sender,
         ioeventfds: None,
@@ -216,22 +219,6 @@ fn test_virtio_pci_device_status_valid_transitions() {
     );
     assert!(event_rx.is_empty());
 
-    // Transition ACK | DRIVER -> ACK | DRIVER | FEATURES_OK
-    let ack_driver_features = ack_driver | DevStatus::FEATURES_OK;
-    assert_matches!(
-        mmio.write(
-            VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0 as u64,
-            1,
-            ack_driver_features.bits() as u64
-        ),
-        Ok(Action::None)
-    );
-    assert_matches!(
-        mmio.read(VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0 as u64, 1),
-        Ok(status) if status == ack_driver_features.bits() as u64
-    );
-    assert!(event_rx.is_empty());
-
     // Set driver features
     assert_matches!(
         mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 0),
@@ -257,6 +244,22 @@ fn test_virtio_pci_device_status_valid_transitions() {
         ),
         Ok(Action::None)
     );
+
+    // Transition ACK | DRIVER -> ACK | DRIVER | FEATURES_OK
+    let ack_driver_features = ack_driver | DevStatus::FEATURES_OK;
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0 as u64,
+            1,
+            ack_driver_features.bits() as u64
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0 as u64, 1),
+        Ok(status) if status == ack_driver_features.bits() as u64
+    );
+    assert!(event_rx.is_empty());
 
     // Transition ACK | DRIVER | FEATURES_OK -> ACK | DRIVER | FEATURES_OK | DRIVER_OK
     let all_ok = ack_driver_features | DevStatus::DRIVER_OK;
@@ -758,5 +761,109 @@ fn test_virtio_pci_device_status_reset_without_driver_ok() {
     assert_matches!(
         mmio.read(VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR.0 as u64, 2),
         Ok(vector) if vector == VIRTIO_MSI_NO_VECTOR as u64
+    );
+}
+
+#[test]
+fn test_virtio_pci_driver_features() {
+    let queues = Arc::new([QueueReg::default()]);
+    let (mut mmio, _event_rx) = create_test_mmio(queues);
+    mmio.reg.device_feature = [0x1234_5678, 0x0000_0005, 0, 0];
+
+    // Bank 0: only offered device features are accepted
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64,
+            4,
+            0xffff_ffff
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
+        Ok(0x1234_5678)
+    );
+
+    // Bank 1: only offered device features are accepted
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 1),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64,
+            4,
+            0xffff_ffff
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
+        Ok(0x0000_0005)
+    );
+
+    // Bank 2 (no device features offered): writes are masked to 0
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 2),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64,
+            4,
+            0xffff_ffff
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
+        Ok(0)
+    );
+
+    // Out-of-bounds bank selection does not store and does not panic
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64,
+            4,
+            10
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4, 0x1234),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
+        Ok(0)
+    );
+
+    // Set status to ACK | DRIVER | FEATURES_OK
+    let features_ok = DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK;
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0 as u64,
+            1,
+            features_ok.bits() as u64
+        ),
+        Ok(Action::None)
+    );
+
+    // Feature writes after FEATURES_OK must be ignored
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
+        Ok(0x1234_5678)
     );
 }
