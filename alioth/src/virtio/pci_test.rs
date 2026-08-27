@@ -22,7 +22,6 @@ use crate::hv::tests::TestMsiSender;
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::MsixTableMmio;
 use crate::sync::notifier::Notifier;
-use crate::virtio::DevStatus;
 use crate::virtio::dev::{Register, WakeEvent};
 use crate::virtio::pci::{
     PciIrqSender, VIRTIO_MSI_NO_VECTOR, VirtioCommonCfg, VirtioPciMsixVector, VirtioPciRegister,
@@ -30,6 +29,7 @@ use crate::virtio::pci::{
 };
 use crate::virtio::queue::QueueReg;
 use crate::virtio::tests::FakeIoeventFd;
+use crate::virtio::{DevStatus, VirtioFeature};
 
 type TestMmio = VirtioPciRegisterMmio<TestMsiSender, FakeIoeventFd>;
 type TestWakeReceiver = flume::Receiver<WakeEvent<PciIrqSender<TestMsiSender>, FakeIoeventFd>>;
@@ -865,5 +865,115 @@ fn test_virtio_pci_driver_features() {
     assert_matches!(
         mmio.read(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64, 4),
         Ok(0x1234_5678)
+    );
+}
+
+#[test]
+fn test_virtio_pci_queue_alignment() {
+    let queues = Arc::new([QueueReg {
+        desc: AtomicU64::new(0x1000_0000),
+        driver: AtomicU64::new(0x2000_0000),
+        device: AtomicU64::new(0x3000_0000),
+        ..Default::default()
+    }]);
+    let (mmio, _event_rx) = create_test_mmio(queues);
+
+    // Select queue 0
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_SELECT.0 as u64, 2, 0),
+        Ok(Action::None)
+    );
+
+    // LAYOUT_QUEUE_DESC_LO: must be 16-byte aligned
+    // Unaligned write (e.g. offset 8) should be ignored
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO.0 as u64, 4, 0x1008),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO.0 as u64, 4),
+        Ok(0x1000_0000)
+    );
+    // Aligned write (16-byte aligned) should succeed
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO.0 as u64, 4, 0x1010),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO.0 as u64, 4),
+        Ok(0x1010)
+    );
+
+    // LAYOUT_QUEUE_DEVICE_LO: must be 4-byte aligned
+    // Unaligned write (e.g. 2) should be ignored
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO.0 as u64, 4, 0x3002),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO.0 as u64, 4),
+        Ok(0x3000_0000)
+    );
+    // Aligned write (4-byte aligned) should succeed
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO.0 as u64, 4, 0x3004),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO.0 as u64, 4),
+        Ok(0x3004)
+    );
+
+    // LAYOUT_QUEUE_DRIVER_LO without RING_PACKED (split queue):
+    // 2-byte aligned is allowed, unaligned 1-byte is rejected
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4, 0x2001),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4),
+        Ok(0x2000_0000)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4, 0x2002),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4),
+        Ok(0x2002)
+    );
+
+    // Enable RING_PACKED in driver feature
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0 as u64, 4, 1),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0 as u64,
+            4,
+            (VirtioFeature::RING_PACKED.bits() >> 32) as u64
+        ),
+        Ok(Action::None)
+    );
+
+    // LAYOUT_QUEUE_DRIVER_LO with RING_PACKED:
+    // 2-byte aligned (not 4-byte aligned) must now be rejected
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4, 0x4002),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4),
+        Ok(0x2002)
+    );
+    // 4-byte aligned is accepted
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4, 0x4004),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO.0 as u64, 4),
+        Ok(0x4004)
     );
 }

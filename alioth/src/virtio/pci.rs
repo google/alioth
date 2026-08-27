@@ -42,7 +42,7 @@ use crate::sync::notifier::Notifier;
 use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
 use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::queue::QueueReg;
-use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, error};
+use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
 use crate::{consts, impl_mmio_for_zerocopy, mem};
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
@@ -443,12 +443,8 @@ where
                 } else if !old.contains(DevStatus::DRIVER_OK)
                     && status.contains(DevStatus::DRIVER_OK)
                 {
-                    let mut feature = 0;
-                    for (i, v) in reg.driver_feature.iter().enumerate() {
-                        feature |= (v.load(Ordering::Acquire) as u128) << (i << 5);
-                    }
                     let param = StartParam {
-                        feature,
+                        feature: reg.get_driver_feature(),
                         irq_sender: self.irq_sender.clone(),
                         ioeventfds: self.ioeventfds.clone(),
                     };
@@ -496,7 +492,14 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    set_atomic_low32(&q.desc, val as u32)
+                    if val.is_multiple_of(16) {
+                        set_atomic_low32(&q.desc, val as u32)
+                    } else {
+                        log::warn!(
+                            "{}: queue {q_sel}: unaligned descriptor area: {val:x}",
+                            self.name
+                        )
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DESC_HI => {
@@ -508,7 +511,20 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    set_atomic_low32(&q.driver, val as u32)
+                    let feat = VirtioFeature::from_bits_retain(reg.get_driver_feature());
+                    let align = if feat.contains(VirtioFeature::RING_PACKED) {
+                        4
+                    } else {
+                        2
+                    };
+                    if val.is_multiple_of(align) {
+                        set_atomic_low32(&q.driver, val as u32);
+                    } else {
+                        log::warn!(
+                            "{}: queue {q_sel}: unaligned driver area: {val:x}",
+                            self.name
+                        );
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_HI => {
@@ -520,7 +536,14 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    set_atomic_low32(&q.device, val as u32)
+                    if val.is_multiple_of(4) {
+                        set_atomic_low32(&q.device, val as u32)
+                    } else {
+                        log::warn!(
+                            "{}: queue {q_sel}: unaligned device area: {val:x}",
+                            self.name
+                        )
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_HI => {

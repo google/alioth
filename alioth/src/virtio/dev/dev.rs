@@ -24,7 +24,7 @@ pub mod vsock;
 
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
 use bitflags::Flags;
@@ -82,6 +82,16 @@ pub struct Register {
     pub driver_feature_sel: AtomicU32,
     pub queue_sel: AtomicU16,
     pub status: AtomicU8,
+}
+
+impl Register {
+    pub fn get_driver_feature(&self) -> u128 {
+        let mut result = 0u128;
+        for (i, feature) in self.driver_feature.iter().enumerate() {
+            result |= (feature.load(Ordering::Acquire) as u128) << (i << 5);
+        }
+        result
+    }
 }
 
 const TOKEN_WARKER: u64 = 1 << 63;
@@ -438,3 +448,7 @@ pub trait DevSpec {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "dev_test.rs"]
+mod tests;
