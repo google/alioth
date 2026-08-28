@@ -85,7 +85,7 @@ impl IrqFd for TestIrqFd {
 
 impl AsFd for TestIrqFd {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        unreachable!()
+        unsafe { BorrowedFd::borrow_raw(0) }
     }
 }
 
