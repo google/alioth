@@ -29,7 +29,7 @@ use crate::virtio::pci::{
     PciIrqSender, VIRTIO_MSI_NO_VECTOR, VirtioCommonCfg, VirtioPciMsixVector, VirtioPciRegister,
     VirtioPciRegisterMmio,
 };
-use crate::virtio::queue::QueueReg;
+use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
 use crate::virtio::tests::FakeIoeventFd;
 use crate::virtio::{DevStatus, VirtioFeature};
 
@@ -783,6 +783,107 @@ fn test_device_status_reset_without_driver_ok() {
         mmio.read(VirtioCommonCfg::OFFSET_CONFIG_MSIX_VECTOR as u64, 2),
         Ok(vector) if vector == VIRTIO_MSI_NO_VECTOR as u64
     );
+}
+
+#[test]
+fn test_device_reset_queue_registers() {
+    let queues = Arc::new([
+        QueueReg {
+            size: AtomicU16::new(QUEUE_SIZE_MAX),
+            ..Default::default()
+        },
+        QueueReg {
+            size: AtomicU16::new(QUEUE_SIZE_MAX),
+            ..Default::default()
+        },
+    ]);
+    let (mmio, event_rx) = create_test_mmio(queues.clone());
+
+    // Initialize MSI-X table with 2 Entry slots
+    *mmio.irq_sender.msix_table.entries.write() = vec![
+        MsixTableMmioEntry::Entry(MsixTableEntry::default()),
+        MsixTableMmioEntry::Entry(MsixTableEntry::default()),
+    ]
+    .into_boxed_slice();
+
+    for (offset, size, val) in [
+        // Configure queue 0
+        (VirtioCommonCfg::OFFSET_QUEUE_SELECT, 2, 0),
+        (VirtioCommonCfg::OFFSET_QUEUE_SIZE, 2, 128),
+        (VirtioCommonCfg::OFFSET_QUEUE_DESC_LO, 4, 0x1000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DESC_HI, 4, 0x1111),
+        (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO, 4, 0x2000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_HI, 4, 0x2222),
+        (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_LO, 4, 0x3000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_HI, 4, 0x3333),
+        (VirtioCommonCfg::OFFSET_QUEUE_MSIX_VECTOR, 2, 0),
+        (VirtioCommonCfg::OFFSET_QUEUE_ENABLE, 2, 1),
+        // Configure queue 1
+        (VirtioCommonCfg::OFFSET_QUEUE_SELECT, 2, 1),
+        (VirtioCommonCfg::OFFSET_QUEUE_SIZE, 2, 128),
+        (VirtioCommonCfg::OFFSET_QUEUE_DESC_LO, 4, 0x4000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DESC_HI, 4, 0x4444),
+        (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO, 4, 0x5000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_HI, 4, 0x5555),
+        (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_LO, 4, 0x6000),
+        (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_HI, 4, 0x6666),
+        (VirtioCommonCfg::OFFSET_QUEUE_MSIX_VECTOR, 2, 1),
+        (VirtioCommonCfg::OFFSET_QUEUE_ENABLE, 2, 1),
+    ] {
+        assert_matches!(mmio.write(offset as u64, size, val), Ok(Action::None));
+    }
+
+    // Set device status to DRIVER_OK
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
+            1,
+            (DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK)
+                .bits() as u64
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Start { .. }));
+
+    // Reset device: write status = 0
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
+        Ok(Action::None)
+    );
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset));
+    assert!(event_rx.is_empty());
+
+    // Verify all queue registers are reset
+    for (q_index, _) in queues.iter().enumerate() {
+        assert_matches!(
+            mmio.write(
+                VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64,
+                2,
+                q_index as u64
+            ),
+            Ok(Action::None)
+        );
+        for (offset, size, expected) in [
+            (VirtioCommonCfg::OFFSET_QUEUE_SIZE, 2, QUEUE_SIZE_MAX as u64),
+            (VirtioCommonCfg::OFFSET_QUEUE_DESC_LO, 4, 0),
+            (VirtioCommonCfg::OFFSET_QUEUE_DESC_HI, 4, 0),
+            (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO, 4, 0),
+            (VirtioCommonCfg::OFFSET_QUEUE_DRIVER_HI, 4, 0),
+            (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_LO, 4, 0),
+            (VirtioCommonCfg::OFFSET_QUEUE_DEVICE_HI, 4, 0),
+            (
+                VirtioCommonCfg::OFFSET_QUEUE_MSIX_VECTOR,
+                2,
+                VIRTIO_MSI_NO_VECTOR as u64,
+            ),
+            (VirtioCommonCfg::OFFSET_QUEUE_ENABLE, 2, 0),
+        ] {
+            assert_matches!(
+                mmio.read(offset as u64, size),
+                Ok(val) if val == expected
+            );
+        }
+    }
 }
 
 #[rstest]
