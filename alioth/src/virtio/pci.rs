@@ -462,7 +462,15 @@ where
                 if let Some(q) = self.queues.get(q_sel)
                     && !q.enabled.load(Ordering::Acquire)
                 {
-                    q.size.store(val as u16, Ordering::Release);
+                    if val.is_power_of_two()
+                        || VirtioFeature(self.reg.get_driver_feature())
+                            .contains(VirtioFeature::RING_PACKED)
+                            && val > 0
+                    {
+                        q.size.store(val as u16, Ordering::Release);
+                    } else {
+                        log::warn!("{}: queue {q_sel}: invalid queue size: {val}", self.name);
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_MSIX_VECTOR => {

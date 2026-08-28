@@ -69,6 +69,8 @@ pub enum Error {
     InvalidDescriptor { id: u16 },
     #[snafu(display("Invalid queue index {index}"))]
     InvalidQueueIndex { index: u16 },
+    #[snafu(display("Invalid queue size {size}"))]
+    InvalidQueueSize { size: u16 },
     #[snafu(display("Invalid msix vector {vector}"))]
     InvalidMsixVector { vector: u16 },
     #[snafu(display("Invalid virtq buffer"))]

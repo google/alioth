@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use assert_matches::assert_matches;
 use rstest::rstest;
 
+use crate::virtio::Error;
 use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
 use crate::virtio::queue::{DescFlag, VirtQueue};
@@ -126,6 +127,18 @@ fn disabled_queue() {
     reg.enabled.store(false, Ordering::Relaxed);
     let split_queue = PackedQueue::new(reg, &ram, false);
     assert_matches!(split_queue, Ok(None));
+}
+
+#[test]
+fn invalid_queue_size() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+
+    reg.size.store(0, Ordering::Relaxed);
+    let split_queue = PackedQueue::new(reg, &ram, false);
+    assert_matches!(split_queue, Err(Error::InvalidQueueSize { size: 0, .. }));
 }
 
 #[test]

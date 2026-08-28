@@ -125,6 +125,9 @@ impl<'m> SplitQueue<'m> {
             return Ok(None);
         }
         let size = reg.size.load(Ordering::Acquire) as u64;
+        if size == 0 || !size.is_power_of_two() {
+            return error::InvalidQueueSize { size: size as u16 }.fail();
+        }
         let mut avail_event = None;
         let mut used_event = None;
         let used = reg.device.load(Ordering::Acquire);

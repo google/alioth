@@ -20,8 +20,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::consts;
 use crate::mem::mapped::Ram;
-use crate::virtio::Result;
 use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
+use crate::virtio::{Result, error};
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
@@ -99,6 +99,9 @@ impl<'m> PackedQueue<'m> {
             return Ok(None);
         }
         let size = reg.size.load(Ordering::Acquire);
+        if size == 0 {
+            return error::InvalidQueueSize { size }.fail();
+        }
         let desc = reg.desc.load(Ordering::Acquire);
         let notification: *mut DescEvent = ram.get_ptr(reg.device.load(Ordering::Acquire))?;
         Ok(Some(PackedQueue {
