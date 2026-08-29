@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, BorrowedFd};
+use std::sync::Arc;
 
 use parking_lot::{Condvar, Mutex, RwLock};
+use snafu::ResultExt;
 
-use crate::hv::{IrqFd, IrqSender, MsiSender, Result};
+use crate::hv::{IoeventFd, IrqFd, IrqSender, MsiSender, Result, error};
 
 #[derive(Debug)]
 struct TestIrqFdInner {
@@ -115,18 +118,73 @@ impl IrqSender for TestIrqSender {
 
 #[derive(Debug, Default)]
 pub struct TestMsiSender {
-    pub messages: std::sync::Arc<parking_lot::Mutex<Vec<(u64, u32)>>>,
+    pub messages: Arc<Mutex<Vec<(u64, u32)>>>,
+    pub fail_mode: Option<ErrorKind>,
 }
 
 impl MsiSender for TestMsiSender {
     type IrqFd = TestIrqFd;
 
-    fn send(&self, addr: u64, data: u32) -> std::result::Result<(), crate::hv::Error> {
+    fn send(&self, addr: u64, data: u32) -> Result<()> {
+        if let Some(kind) = self.fail_mode {
+            return Err(io::Error::from(kind)).context(error::SendInterrupt);
+        }
         self.messages.lock().push((addr, data));
         Ok(())
     }
 
-    fn create_irqfd(&self) -> std::result::Result<Self::IrqFd, crate::hv::Error> {
+    fn create_irqfd(&self) -> Result<Self::IrqFd> {
+        if let Some(kind) = self.fail_mode {
+            return Err(io::Error::from(kind)).context(error::IrqFd);
+        }
         Ok(TestIrqFd::default())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct TestIoeventFd;
+
+impl AsFd for TestIoeventFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        unsafe { BorrowedFd::borrow_raw(0) }
+    }
+}
+
+impl IoeventFd for TestIoeventFd {}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RegisteredAddr {
+    pub gpa: u64,
+    pub len: u8,
+    pub data: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+pub struct TestIoeventFdRegistry {
+    pub registered: Arc<Mutex<Vec<RegisteredAddr>>>,
+    pub deregistered: Arc<Mutex<usize>>,
+    pub fail_mode: Option<ErrorKind>,
+}
+
+impl super::IoeventFdRegistry for TestIoeventFdRegistry {
+    type IoeventFd = TestIoeventFd;
+
+    fn create(&self) -> Result<Self::IoeventFd> {
+        if let Some(kind) = self.fail_mode {
+            return Err(io::Error::from(kind)).context(error::IoeventFd);
+        }
+        Ok(TestIoeventFd)
+    }
+
+    fn register(&self, _fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+        self.registered
+            .lock()
+            .push(RegisteredAddr { gpa, len, data });
+        Ok(())
+    }
+
+    fn deregister(&self, _fd: &Self::IoeventFd) -> Result<()> {
+        *self.deregistered.lock() += 1;
+        Ok(())
     }
 }

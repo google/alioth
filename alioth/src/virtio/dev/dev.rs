@@ -158,7 +158,7 @@ where
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub notifier: Arc<Notifier>,
     pub event_tx: Sender<WakeEvent<S, E>>,
-    worker_handle: Option<JoinHandle<()>>,
+    pub(crate) worker_handle: Option<JoinHandle<()>>,
 }
 
 impl<S, E> VirtioDevice<S, E>
