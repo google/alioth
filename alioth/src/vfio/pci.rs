@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::iter::zip;
 use std::mem::size_of;
 use std::ops::Range;
@@ -94,18 +94,19 @@ where
 {
     let table_pages = round_up_range(table_range.clone());
     let pba_pages = round_up_range(pba_range.clone());
-    let (excluded_page1, excluded_page2) = if table_pages.clone().eq(0..0) {
+    let (excluded_page1, excluded_page2) = if table_pages == (0..0) {
         (0..0, pba_pages)
-    } else if pba_pages.clone().eq(0..0) {
+    } else if pba_pages == (0..0) {
         (0..0, table_pages)
-    } else if table_pages.start <= pba_pages.start && table_pages.end >= pba_pages.start {
-        (0..0, table_pages.start..pba_pages.end)
-    } else if pba_pages.start <= table_pages.start && pba_pages.end >= table_pages.start {
-        (0..0, pba_pages.start..table_pages.end)
-    } else if table_pages.end < pba_pages.start {
+    } else if table_pages.end <= pba_pages.start {
         (table_pages, pba_pages)
-    } else {
+    } else if pba_pages.end <= table_pages.start {
         (pba_pages, table_pages)
+    } else {
+        (
+            0..0,
+            min(table_pages.start, pba_pages.start)..max(table_pages.end, pba_pages.end),
+        )
     };
     let mut region = MemRegion {
         callbacks: Mutex::new(vec![]),
