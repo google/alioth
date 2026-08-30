@@ -425,32 +425,38 @@ where
                     log::error!("{}: invalid cap offset: {cap_offset:#x}", cdev.name);
                     break;
                 };
-                let (cap_header, _) = PciCapHdr::ref_from_prefix(cap_buf).unwrap();
+                let Ok((cap_header, _)) = PciCapHdr::ref_from_prefix(cap_buf) else {
+                    log::error!(
+                        "{}: invalid cap header at offset: {cap_offset:#x}",
+                        cdev.name
+                    );
+                    break;
+                };
                 if cap_header.id == PciCapId::MSIX {
-                    let Ok((mut c, _)) = MsixCap::read_from_prefix(cap_buf) else {
+                    if let Ok((mut c, _)) = MsixCap::read_from_prefix(cap_buf) {
+                        c.control.set_enabled(false);
+                        c.control.set_masked(false);
+                        msix_info = Some((cap_offset, c.clone()));
+                    } else {
                         log::error!(
                             "{}: MSIX capability is at an invalid offset: {cap_offset:#x}",
                             cdev.name
                         );
-                        continue;
-                    };
-                    c.control.set_enabled(false);
-                    c.control.set_masked(false);
-                    msix_info = Some((cap_offset, c.clone()));
+                    }
                 } else if cap_header.id == PciCapId::MSI {
-                    let Ok((mut c, _)) = MsiCapHdr::read_from_prefix(cap_buf) else {
+                    if let Ok((mut c, _)) = MsiCapHdr::read_from_prefix(cap_buf) {
+                        log::info!("{}: MSI cap header: {c:#x?}", cdev.name);
+                        c.control.set_enable(false);
+                        c.control.set_ext_msg_data_cap(true);
+                        let multi_msg_cap = min(5, c.control.multi_msg_cap());
+                        c.control.set_multi_msg_cap(multi_msg_cap);
+                        msi_info = Some((cap_offset, c));
+                    } else {
                         log::error!(
                             "{}: MSI capability is at an invalid offset: {cap_offset:#x}",
                             cdev.name
                         );
-                        continue;
-                    };
-                    log::info!("{}: MSI cap header: {c:#x?}", cdev.name);
-                    c.control.set_enable(false);
-                    c.control.set_ext_msg_data_cap(true);
-                    let multi_msg_cap = min(5, c.control.multi_msg_cap());
-                    c.control.set_multi_msg_cap(multi_msg_cap);
-                    msi_info = Some((cap_offset, c));
+                    }
                 }
                 cap_offset = cap_header.next as usize;
             }
