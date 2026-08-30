@@ -29,7 +29,9 @@ use crate::vfio::container::{Container, UpdateContainerMapping};
 use crate::vfio::device::{Device, VfioIoDevice};
 use crate::vfio::group::Group;
 use crate::vfio::iommu::{Iommu, UpdateIommuIoas};
-use crate::vfio::{Error, Result, VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use crate::vfio::{
+    Error, Result, VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec,
+};
 
 #[derive(Debug, Default)]
 struct MemoryDevice {
@@ -182,6 +184,11 @@ fn test_vfio_specs_deserialization() {
         container_spec.dev_vfio.unwrap().to_str().unwrap(),
         "/dev/vfio/vfio"
     );
+
+    // VfioUserSpec
+    let user_aco = "socket=/tmp/vfio-user.sock";
+    let user_spec: VfioUserSpec = serde_aco::from_arg(user_aco).unwrap();
+    assert_eq!(user_spec.socket.to_str().unwrap(), "/tmp/vfio-user.sock");
 }
 
 #[test]

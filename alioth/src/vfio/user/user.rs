@@ -15,3 +15,7 @@
 pub mod bindings;
 pub mod conn;
 pub mod device;
+
+#[cfg(test)]
+#[path = "user_test.rs"]
+mod tests;
