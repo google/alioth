@@ -143,7 +143,7 @@ pub trait Fuse {
     fuse_method!(release, &FuseReleaseIn, ());
     fuse_method!(syncfs, &FuseSyncfsIn, ());
     fuse_method!(ioctl, &FuseIoctlIn, FuseIoctlOut);
-    fuse_method!(get_xattr, &[u8], &mut [u8]);
+    fuse_method!(get_xattr, &[u8], &mut [IoSliceMut]);
     fuse_method!(set_xattr, &[u8], ());
     fuse_method!(create, &FuseCreateIn, &[u8], FuseCreateOut);
     fuse_method!(write, &FuseWriteIn, &[IoSlice], FuseWriteOut);
