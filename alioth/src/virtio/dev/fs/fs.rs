@@ -250,7 +250,7 @@ where
             FuseOpcode::GETATTR => opcode_branch!(get_attr, &_, _),
             FuseOpcode::OPEN => opcode_branch!(open, &_, _),
             FuseOpcode::OPENDIR => opcode_branch!(open_dir, &_, _),
-            FuseOpcode::READDIR => opcode_branch!(read_dir, &_, &mut [u8]),
+            FuseOpcode::READDIR => opcode_branch!(read_dir, &_, &mut [IoSliceMut]),
             FuseOpcode::RELEASEDIR => opcode_branch!(release_dir, &_, _),
             FuseOpcode::LOOKUP => opcode_branch!(lookup, &[u8], _),
             FuseOpcode::FORGET => opcode_branch!(forget, &_, _),

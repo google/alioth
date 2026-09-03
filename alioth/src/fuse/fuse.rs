@@ -133,7 +133,7 @@ pub trait Fuse {
     fuse_method!(get_attr, &FuseGetattrIn, FuseAttrOut);
     fuse_method!(open, &FuseOpenIn, FuseOpenOut);
     fuse_method!(open_dir, &FuseOpenIn, FuseOpenOut);
-    fuse_method!(read_dir, &FuseReadIn, &mut [u8]);
+    fuse_method!(read_dir, &FuseReadIn, &mut [IoSliceMut]);
     fuse_method!(release_dir, &FuseReleaseIn, ());
     fuse_method!(lookup, &[u8], FuseEntryOut);
     fuse_method!(forget, &FuseForgetIn, ());
