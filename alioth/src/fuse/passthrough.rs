@@ -229,7 +229,7 @@ impl Fuse for Passthrough {
         &mut self,
         hdr: &FuseInHeader,
         in_: &FuseReadIn,
-        mut buf: &mut [u8],
+        bufs: &mut [IoSliceMut],
     ) -> Result<usize> {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("read_dir: {:?}", node.path);
@@ -245,6 +245,9 @@ impl Fuse for Passthrough {
         }
 
         let mut total_len = 0;
+        let mut cur = 0usize;
+        let mut off = 0usize;
+        let mut scratch = [0u8; size_of::<FuseDirent>() + 264];
 
         while let Some((index, entry)) = read_dir.peek() {
             let e = entry.as_ref()?;
@@ -260,15 +263,25 @@ impl Fuse for Passthrough {
             };
             let aligned_namelen = align_up_ty!(namelen, FuseDirent);
             let len = size_of_val(&dir_entry) + aligned_namelen;
-            let Some((p1, p2)) = buf.split_at_mut_checked(len) else {
+            if len > scratch.len() {
                 break;
-            };
-            let (b_entry, b_name) = p1.split_at_mut(size_of_val(&dir_entry));
+            }
+            scratch[..size_of_val(&dir_entry)].copy_from_slice(dir_entry.as_bytes());
+            scratch[size_of_val(&dir_entry)..size_of_val(&dir_entry) + namelen]
+                .copy_from_slice(name.as_encoded_bytes());
+            for b in &mut scratch[size_of_val(&dir_entry) + namelen..len] {
+                *b = 0;
+            }
             log::trace!("read_dir: {dir_entry:?} {name:?}");
-            b_entry.copy_from_slice(dir_entry.as_bytes());
-            b_name[..namelen].copy_from_slice(name.as_encoded_bytes());
-
-            buf = p2;
+            while cur < bufs.len() && bufs[cur].len() - off < len {
+                cur += 1;
+                off = 0;
+            }
+            if cur >= bufs.len() {
+                break;
+            }
+            bufs[cur][off..off + len].copy_from_slice(&scratch[..len]);
+            off += len;
             total_len += len;
             read_dir.next();
         }
