@@ -21,7 +21,7 @@ use alioth::device::console::ConsoleSpec;
 use alioth::device::fw_cfg::FwCfgItemSpec;
 use alioth::loader::PayloadSpec;
 #[cfg(target_os = "linux")]
-use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec};
 use alioth::virtio::dev::balloon::BalloonSpec;
 use alioth::virtio::dev::blk::BlkFileSpec;
 use alioth::virtio::dev::entropy::EntropySpec;
@@ -119,4 +119,6 @@ pub struct VmSpec {
     pub vfio_group: Vec<VfioGroupSpec>,
     #[cfg(target_os = "linux")]
     pub vfio_container: Vec<VfioContainerSpec>,
+    #[cfg(target_os = "linux")]
+    pub vfio_user: Vec<VfioUserSpec>,
 }

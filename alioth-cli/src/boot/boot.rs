@@ -31,7 +31,7 @@ use alioth::hv::{CocoSpec, HvSpec, Hypervisor};
 use alioth::loader::{Executable, PayloadSpec};
 use alioth::mem::{MemBackend, MemSpec};
 #[cfg(target_os = "linux")]
-use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec};
+use alioth::vfio::{VfioCdevSpec, VfioContainerSpec, VfioGroupSpec, VfioIoasSpec, VfioUserSpec};
 #[cfg(target_os = "linux")]
 use alioth::virtio::DeviceId;
 use alioth::virtio::dev::balloon::BalloonSpec;
@@ -181,6 +181,10 @@ pub struct BootArgs {
     #[cfg(target_os = "linux")]
     #[arg(long, help(help_text::<VfioContainerSpec>("Add a new VFIO container.")))]
     vfio_container: Vec<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, help(help_text::<VfioUserSpec>("Assign a vfio-user device to the guest.")))]
+    vfio_user: Vec<String>,
 
     #[arg(long)]
     #[arg(long, help(help_text::<BalloonSpec>("Add a VirtIO balloon device.")))]
@@ -358,6 +362,11 @@ fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<VmSpec
         let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
         spec.vfio_group.push(param);
     }
+    #[cfg(target_os = "linux")]
+    for arg in args.vfio_user {
+        let param = serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
+        spec.vfio_user.push(param);
+    }
 
     Ok(spec)
 }
@@ -459,6 +468,10 @@ fn create<H: Hypervisor>(hypervisor: &H, spec: VmSpec) -> Result<Machine<H>, ali
     #[cfg(target_os = "linux")]
     for (index, cdev_spec) in spec.vfio_cdev.into_iter().enumerate() {
         vm.add_vfio_cdev(format!("vfio-{index}").into(), cdev_spec)?;
+    }
+    #[cfg(target_os = "linux")]
+    for (index, user_spec) in spec.vfio_user.into_iter().enumerate() {
+        vm.add_vfio_user_dev(format!("vfio-user-{index}").into(), user_spec)?;
     }
 
     #[cfg(target_os = "linux")]

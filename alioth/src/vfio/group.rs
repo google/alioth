@@ -14,17 +14,18 @@
 
 use std::ffi::CString;
 use std::fs::File;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 
 use snafu::ResultExt;
 
 use crate::sys::vfio::{
-    VfioIommu, vfio_group_get_device_fd, vfio_group_set_container, vfio_group_unset_container,
+    VfioDeviceInfo, VfioIommu, VfioIrqInfo, VfioRegionInfo, vfio_group_get_device_fd,
+    vfio_group_set_container, vfio_group_unset_container,
 };
 use crate::vfio::container::Container;
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, VfioIoDevice};
 use crate::vfio::{Result, error};
 
 #[derive(Debug)]
@@ -72,23 +73,66 @@ impl Drop for Group {
 
 #[derive(Debug)]
 pub struct DevFd {
-    fd: File,
-    _group: Arc<Group>,
+    pub(super) io_dev: VfioIoDevice,
+    pub(super) _group: Arc<Group>,
 }
 
 impl DevFd {
     pub fn new(group: Arc<Group>, id: &str) -> Result<Self> {
         let id_c = CString::new(id).unwrap();
         let fd = unsafe { vfio_group_get_device_fd(&group.fd, id_c.as_ptr()) }?;
+        let file = unsafe { File::from_raw_fd(fd) };
+        let io_dev = VfioIoDevice::new(file)?;
         Ok(DevFd {
-            fd: unsafe { File::from_raw_fd(fd) },
+            io_dev,
             _group: group,
         })
     }
 }
 
 impl Device for DevFd {
-    fn fd(&self) -> &File {
-        &self.fd
+    fn get_info(&self) -> Result<VfioDeviceInfo> {
+        self.io_dev.get_info()
+    }
+
+    fn get_region_info(&self, index: u32) -> Result<VfioRegionInfo> {
+        self.io_dev.get_region_info(index)
+    }
+
+    fn get_irq_info(&self, index: u32) -> Result<VfioIrqInfo> {
+        self.io_dev.get_irq_info(index)
+    }
+
+    fn reset(&self) -> Result<()> {
+        self.io_dev.reset()
+    }
+
+    fn set_irq_eventfd(
+        &self,
+        index: u32,
+        start: u32,
+        eventfds: &[Option<BorrowedFd<'_>>],
+    ) -> Result<()> {
+        self.io_dev.set_irq_eventfd(index, start, eventfds)
+    }
+
+    fn disable_irq(&self, index: u32) -> Result<()> {
+        self.io_dev.disable_irq(index)
+    }
+
+    fn read_region(&self, region: &VfioRegionInfo, offset: u64, buf: &mut [u8]) -> Result<()> {
+        self.io_dev.read_region(region, offset, buf)
+    }
+
+    fn write_region(&self, region: &VfioRegionInfo, offset: u64, buf: &[u8]) -> Result<()> {
+        self.io_dev.write_region(region, offset, buf)
+    }
+
+    fn get_region_mmap_fd(&self, index: u32) -> Result<Option<OwnedFd>> {
+        self.io_dev.get_region_mmap_fd(index)
+    }
+
+    fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd> {
+        self.io_dev.get_dma_buf_fd(index, offset, size)
     }
 }

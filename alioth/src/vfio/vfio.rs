@@ -18,6 +18,8 @@ pub mod device;
 pub mod group;
 pub mod iommu;
 pub mod pci;
+#[path = "user/user.rs"]
+pub mod user;
 
 use std::path::Path;
 
@@ -47,6 +49,8 @@ pub enum Error {
     NotSupportedHeader { ty: u8 },
     #[snafu(display("Setting container iommu to {new:?}, but it already has {current:?}"))]
     SetContainerIommu { current: VfioIommu, new: VfioIommu },
+    #[snafu(display("vfio-user protocol error: {msg}"))]
+    VfioUser { msg: String },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -85,3 +89,12 @@ pub struct VfioContainerSpec {
     /// Path to the vfio device. [default: /dev/vfio/vfio]
     pub dev_vfio: Option<Box<Path>>,
 }
+#[derive(Debug, PartialEq, Eq, Deserialize, Help)]
+pub struct VfioUserSpec {
+    /// Path to the vfio-user UNIX domain socket.
+    pub socket: Box<Path>,
+}
+
+#[cfg(test)]
+#[path = "vfio_test.rs"]
+mod tests;

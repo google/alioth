@@ -32,7 +32,7 @@ use crate::vfio::{Result, error};
 #[derive(Debug)]
 pub struct Container {
     fd: File,
-    iommu: Mutex<Option<VfioIommu>>,
+    pub(super) iommu: Mutex<Option<VfioIommu>>,
 }
 
 impl Container {

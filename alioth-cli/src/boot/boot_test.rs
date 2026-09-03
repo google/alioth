@@ -212,6 +212,8 @@ fn test_parse_args() {
             container: Some("gpu_container".into()),
             devices: vec!["0000:06:0d.0".into(), "0000:06:0d.1".into()],
         }],
+        #[cfg(target_os = "linux")]
+        vfio_user: vec![],
     };
     assert_eq!(spec, want);
 }
