@@ -85,3 +85,7 @@ pub struct VfioContainerSpec {
     /// Path to the vfio device. [default: /dev/vfio/vfio]
     pub dev_vfio: Option<Box<Path>>,
 }
+
+#[cfg(test)]
+#[path = "vfio_test.rs"]
+mod tests;
