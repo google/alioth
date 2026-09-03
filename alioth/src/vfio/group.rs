@@ -73,8 +73,8 @@ impl Drop for Group {
 
 #[derive(Debug)]
 pub struct DevFd {
-    io_dev: VfioIoDevice,
-    _group: Arc<Group>,
+    pub(super) io_dev: VfioIoDevice,
+    pub(super) _group: Arc<Group>,
 }
 
 impl DevFd {
