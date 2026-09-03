@@ -138,3 +138,7 @@ impl LayoutChanged for UpdateContainerMapping {
         self.ram_removed(gpa, pages)
     }
 }
+
+#[cfg(test)]
+#[path = "container_test.rs"]
+mod tests;

@@ -141,3 +141,7 @@ impl Drop for Cdev {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "cdev_test.rs"]
+mod tests;

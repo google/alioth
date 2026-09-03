@@ -205,3 +205,7 @@ impl Kdev {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 }
+
+#[cfg(test)]
+#[path = "device_test.rs"]
+pub(crate) mod tests;

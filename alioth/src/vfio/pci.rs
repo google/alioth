@@ -751,3 +751,7 @@ where
         Ok(Action::None)
     }
 }
+
+#[cfg(test)]
+#[path = "pci_test.rs"]
+mod tests;

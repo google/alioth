@@ -136,3 +136,7 @@ impl Device for DevFd {
         self.kdev.get_dma_buf_fd(index, offset, size)
     }
 }
+
+#[cfg(test)]
+#[path = "group_test.rs"]
+mod tests;
