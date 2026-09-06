@@ -52,31 +52,61 @@ fn round_up_range(range: Range<usize>) -> Range<usize> {
     (align_down!(range.start, 12))..(align_up!(range.end, 12))
 }
 
-fn create_mapped_bar_pages<D: Device>(
-    dev: &VfioDev<D>,
-    region: &VfioRegionInfo,
+fn create_mapped_bar_pages(
+    fd: OwnedFd,
+    region_flags: VfioRegionInfoFlag,
     offset: u64,
     size: usize,
+    dma_buf: Option<OwnedFd>,
 ) -> Result<(ArcMemPages, Option<OwnedFd>)> {
-    let dma_buf = match dev.dev.get_dma_buf_fd(region.index, offset, size) {
-        Ok(fd) => Some(fd),
-        Err(e) => {
-            log::warn!("{}: failed to get dma buf fd: {e:?}", dev.name);
-            None
-        }
-    };
-
     let mut prot = 0;
-    if region.flags.contains(VfioRegionInfoFlag::READ) {
+    if region_flags.contains(VfioRegionInfoFlag::READ) {
         prot |= PROT_READ;
     }
-    if region.flags.contains(VfioRegionInfoFlag::WRITE) {
+    if region_flags.contains(VfioRegionInfoFlag::WRITE) {
         prot |= PROT_WRITE;
     }
-    let dev_fd = dev.dev.fd().try_clone()?;
-    let dev_fd_offset = region.offset + offset;
-    let mapped_pages = ArcMemPages::from_file(dev_fd, dev_fd_offset as i64, size, prot)?;
+    let mapped_pages = ArcMemPages::from_file(fd.into(), offset as i64, size, prot)?;
     Ok((mapped_pages, dma_buf))
+}
+
+fn create_device_range<D>(
+    dev: Arc<VfioDev<D>>,
+    region_info: &VfioRegionInfo,
+    offset: usize,
+    size: usize,
+) -> Result<MemRange>
+where
+    D: Device,
+{
+    if region_info.flags.contains(VfioRegionInfoFlag::MMAP) {
+        let dma_buf = match dev
+            .dev
+            .get_dma_buf_fd(region_info.index, offset as u64, size)
+        {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                log::warn!("{}: failed to get dma buf fd: {e:?}", dev.name);
+                None
+            }
+        };
+        let (pages, dma_buf) = create_mapped_bar_pages(
+            dev.dev.fd().try_clone()?.into(),
+            region_info.flags,
+            region_info.offset + offset as u64,
+            size,
+            dma_buf,
+        )?;
+        Ok(MemRange::DevMem { pages, dma_buf })
+    } else {
+        log::warn!("{}: region {} is not mappable", dev.name, region_info.index);
+        let pth = PthBarRegion {
+            cdev: dev,
+            size,
+            offset: offset as u64,
+        };
+        Ok(MemRange::Emulated(Arc::new(pth)))
+    }
 }
 
 fn create_splitted_bar_region<I, M, D>(
@@ -117,8 +147,12 @@ where
         ranges: vec![],
     };
     if excluded_page1.start > 0 {
-        let (pages, dma_buf) = create_mapped_bar_pages(&dev, region_info, 0, excluded_page1.start)?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        region.ranges.push(create_device_range(
+            dev.clone(),
+            region_info,
+            0,
+            excluded_page1.start,
+        )?);
     }
     if excluded_page1.end - excluded_page1.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -134,13 +168,12 @@ where
         })));
     }
     if excluded_page2.start - excluded_page1.end > 0 {
-        let (pages, dma_buf) = create_mapped_bar_pages(
-            &dev,
+        region.ranges.push(create_device_range(
+            dev.clone(),
             region_info,
-            excluded_page1.end as u64,
+            excluded_page1.end,
             excluded_page2.start - excluded_page1.end,
-        )?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        )?);
     }
     if excluded_page2.end - excluded_page2.start > 0 {
         region.ranges.push(MemRange::Emulated(Arc::new(MsixBarMmio {
@@ -156,18 +189,17 @@ where
         })));
     }
     if excluded_page2.end < region_info.size as usize {
-        let (pages, dma_buf) = create_mapped_bar_pages(
-            &dev,
+        region.ranges.push(create_device_range(
+            dev.clone(),
             region_info,
-            excluded_page2.end as u64,
+            excluded_page2.end,
             region_info.size as usize - excluded_page2.end,
-        )?;
-        region.ranges.push(MemRange::DevMem { pages, dma_buf });
+        )?);
     }
     Ok(region)
 }
 
-fn create_mappable_bar_region<I, M, D>(
+fn create_bar_region<I, M, D>(
     cdev: Arc<VfioDev<D>>,
     index: u32,
     region_info: &VfioRegionInfo,
@@ -553,25 +585,14 @@ where
             if region_info.size == 0 {
                 continue;
             }
-            let region = if region_info.flags.contains(VfioRegionInfoFlag::MMAP) {
-                create_mappable_bar_region(
-                    cdev.clone(),
-                    index,
-                    &region_info,
-                    msix_cap.as_ref(),
-                    msix_table.clone(),
-                    msi_sender.clone(),
-                )?
-            } else {
-                MemRegion::with_emulated(
-                    Arc::new(PthBarRegion {
-                        cdev: cdev.clone(),
-                        size: region_info.size as usize,
-                        offset: region_info.offset,
-                    }),
-                    MemRegionType::Hidden,
-                )
-            };
+            let region = create_bar_region(
+                cdev.clone(),
+                index,
+                &region_info,
+                msix_cap.as_ref(),
+                msix_table.clone(),
+                msi_sender.clone(),
+            )?;
             let index = index as usize;
             let bar_val = bar_vals[index];
             if bar_val & BAR_IO == BAR_IO {
