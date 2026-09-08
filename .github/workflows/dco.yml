@@ -1,0 +1,68 @@
+name: DCO
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  check_dco:
+    name: Check Signed-off-by
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify Signed-off-by
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            git fetch origin "$BASE_REF" --depth=0 2>/dev/null || git fetch origin "$BASE_REF" || true
+          fi
+
+          if [ -n "$BASE_SHA" ] && git rev-parse --verify "$BASE_SHA" >/dev/null 2>&1; then
+            range="$BASE_SHA..$HEAD_SHA"
+          elif git rev-parse --verify "origin/$BASE_REF" >/dev/null 2>&1; then
+            range="origin/$BASE_REF..$HEAD_SHA"
+          else
+            range="HEAD~1..$HEAD_SHA"
+          fi
+
+          echo "Checking commits in range: $range"
+          commits=$(git rev-list --no-merges "$range")
+
+          if [ -z "$commits" ]; then
+            echo "No commits found to check."
+            exit 0
+          fi
+
+          failed=0
+          for commit in $commits; do
+            title=$(git log -1 --format='%s' "$commit")
+            body=$(git log -1 --format='%B' "$commit")
+            if echo "$body" | grep -q -i -E '^[sS]igned-off-by:[[:space:]]+.+'; then
+              echo "✓ $commit: $title"
+            else
+              echo "::error title=Missing Signed-off-by::Commit $commit ('$title') is missing a Signed-off-by line."
+              echo "✗ $commit: $title"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo ""
+            echo "Error: One or more commits are missing a 'Signed-off-by:' line."
+            echo "To sign off the latest commit: git commit --amend -s"
+            echo "To sign off multiple commits: git rebase --signoff <base-commit>"
+            exit 1
+          fi
+
+          echo ""
+          echo "All commits in this pull request have a valid Signed-off-by line."
