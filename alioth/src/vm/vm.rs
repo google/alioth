@@ -14,6 +14,7 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
+use std::io::ErrorKind;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Arc;
@@ -47,7 +48,7 @@ use crate::device::pl031::Pl031;
 #[cfg(target_arch = "x86_64")]
 use crate::device::serial::Serial;
 use crate::errors::{DebugTrace, trace_error};
-use crate::hv::{Hypervisor, IoeventFdRegistry, Vm};
+use crate::hv::{self, Hypervisor, Vm};
 use crate::loader::PayloadSpec;
 use crate::pci::pvpanic::PvPanic;
 use crate::pci::{Bdf, Pci};
@@ -133,10 +134,7 @@ where
     pub vfio_containers: Mutex<HashMap<Box<str>, Arc<Container>>>,
 }
 
-pub type VirtioPciDev<H> = VirtioPciDevice<
-    <<H as Hypervisor>::Vm as Vm>::MsiSender,
-    <<<H as Hypervisor>::Vm as Vm>::IoeventFdRegistry as IoeventFdRegistry>::IoeventFd,
->;
+pub type VirtioPciDev<H> = VirtioPciDevice<<<H as Hypervisor>::Vm as Vm>::MsiSender>;
 
 impl<H> Machine<H>
 where
@@ -295,7 +293,15 @@ where
         if let Some(callback) = dev.mem_change_callback() {
             self.ctx.board.memory.register_change_callback(callback)?;
         }
-        let registry = self.ctx.board.vm.create_ioeventfd_registry()?;
+        let registry = match self.ctx.board.vm.create_notifier_registry() {
+            Ok(registry) => Some(registry),
+            // The hypervisor does not support notifiers, fall back to VM exits.
+            Err(hv::Error::Notifier { error, .. }) if error.kind() == ErrorKind::Unsupported => {
+                log::debug!("{name}: notifiers are not supported");
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
         let virtio_dev = VirtioDevice::new(
             name.clone(),
             dev,

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::ErrorKind;
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -23,10 +22,7 @@ use flume::Receiver;
 use parking_lot::{Mutex, RwLock};
 use rstest::rstest;
 
-use crate::hv::IoeventFd;
-use crate::hv::tests::{
-    RegisteredAddr, TestIoeventFd, TestIoeventFdRegistry, TestIrqFd, TestMsiSender,
-};
+use crate::hv::tests::{RegisteredAddr, TestIrqFd, TestMsiSender, TestNotifierRegistry};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, MemRange, MemRegion, MemRegionEntry, MemRegionType};
 use crate::pci::cap::{
@@ -42,11 +38,10 @@ use crate::virtio::pci::{
     VirtioPciRegisterMmio,
 };
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
-use crate::virtio::tests::FakeIoeventFd;
 use crate::virtio::{DevStatus, DeviceId, IrqSender, VirtioFeature};
 
-type TestMmio = VirtioPciRegisterMmio<TestMsiSender, FakeIoeventFd>;
-type TestWakeReceiver = flume::Receiver<WakeEvent<PciIrqSender<TestMsiSender>, FakeIoeventFd>>;
+type TestMmio = VirtioPciRegisterMmio<TestMsiSender>;
+type TestWakeReceiver = flume::Receiver<WakeEvent<PciIrqSender<TestMsiSender>>>;
 
 fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver) {
     let (event_tx, event_rx) = flume::unbounded();
@@ -74,7 +69,7 @@ fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver) {
         },
         queues,
         irq_sender,
-        ioeventfds: None,
+        notifiers: None,
         event_tx,
         notifier,
     };
@@ -950,7 +945,7 @@ fn test_queue_notify(#[case] offset: usize, #[case] expect_wake: bool) {
 }
 
 #[test]
-fn test_notify_with_ioeventfds() {
+fn test_notify_with_notifiers() {
     let queues = Arc::new([QueueReg::default()]);
     let (event_tx, event_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
@@ -967,14 +962,14 @@ fn test_notify_with_ioeventfds() {
         msi_sender,
     });
     let mmio = VirtioPciRegisterMmio {
-        name: "test-virtio-pci-ioeventfd".into(),
+        name: "test-virtio-pci-notifier".into(),
         reg: Register {
             device_feature: [u32::MAX; 4],
             ..Default::default()
         },
         queues,
         irq_sender,
-        ioeventfds: Some(Arc::new([FakeIoeventFd])),
+        notifiers: Some(Arc::new([Notifier::new().unwrap()])),
         event_tx,
         notifier,
     };
@@ -1049,15 +1044,14 @@ impl Mmio for TestDevConfig {
     }
 }
 
-fn create_test_virtio_device<S, E>(
+fn create_test_virtio_device<S>(
     id: DeviceId,
     config_size: u64,
     shared_mem: Option<Arc<MemRegion>>,
     num_queues: usize,
-) -> (VirtioDevice<S, E>, Receiver<WakeEvent<S, E>>)
+) -> (VirtioDevice<S>, Receiver<WakeEvent<S>>)
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     let (event_tx, event_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
@@ -1283,12 +1277,11 @@ fn test_virtio_pci_device_classes(
     #[case] expected_subclass: u8,
     #[case] expected_dev_id: u16,
 ) {
-    let (dev, _rx) =
-        create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(id, 0, None, 2);
+    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(id, 0, None, 2);
     let pci_dev = VirtioPciDevice::new(
         dev,
         TestMsiSender::default(),
-        TestIoeventFdRegistry::default(),
+        Some(TestNotifierRegistry::default()),
     )
     .unwrap();
 
@@ -1337,7 +1330,7 @@ fn test_virtio_pci_device_with_config_and_shared_memory_prefetchable() {
         ],
         callbacks: Mutex::new(vec![]),
     });
-    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(
+    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
         DeviceId::FILE_SYSTEM,
         32,
         Some(shared_mem),
@@ -1346,7 +1339,7 @@ fn test_virtio_pci_device_with_config_and_shared_memory_prefetchable() {
     let pci_dev = VirtioPciDevice::new(
         dev,
         TestMsiSender::default(),
-        TestIoeventFdRegistry::default(),
+        Some(TestNotifierRegistry::default()),
     )
     .unwrap();
 
@@ -1389,7 +1382,7 @@ fn test_virtio_pci_device_shared_memory_non_prefetchable() {
         }],
         callbacks: Mutex::new(vec![]),
     });
-    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(
+    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
         DeviceId::FILE_SYSTEM,
         0,
         Some(shared_mem),
@@ -1398,7 +1391,7 @@ fn test_virtio_pci_device_shared_memory_non_prefetchable() {
     let pci_dev = VirtioPciDevice::new(
         dev,
         TestMsiSender::default(),
-        TestIoeventFdRegistry::default(),
+        Some(TestNotifierRegistry::default()),
     )
     .unwrap();
 
@@ -1407,17 +1400,13 @@ fn test_virtio_pci_device_shared_memory_non_prefetchable() {
 }
 
 #[test]
-fn test_virtio_pci_device_ioeventfd_callback() {
-    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(
-        DeviceId::NET,
-        0,
-        None,
-        2,
-    );
-    let registry = TestIoeventFdRegistry::default();
+fn test_virtio_pci_device_notifier_callback() {
+    let (dev, _rx) =
+        create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 2);
+    let registry = TestNotifierRegistry::default();
     let registered = registry.registered.clone();
     let deregistered = registry.deregistered.clone();
-    let pci_dev = VirtioPciDevice::new(dev, TestMsiSender::default(), registry).unwrap();
+    let pci_dev = VirtioPciDevice::new(dev, TestMsiSender::default(), Some(registry)).unwrap();
 
     let PciBar::Mem(bar0) = &pci_dev.config.header.bars[0] else {
         panic!("expected Mem BAR");
@@ -1455,37 +1444,34 @@ fn test_virtio_pci_device_ioeventfd_callback() {
     assert_eq!(*deregistered.lock(), 2);
 }
 
-#[rstest]
-#[case(Some(ErrorKind::Unsupported))]
-#[case(Some(ErrorKind::PermissionDenied))]
-fn test_virtio_pci_device_ioeventfd_fallback(#[case] fail_mode: Option<ErrorKind>) {
-    let (dev, _rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(
-        DeviceId::NET,
-        0,
-        None,
-        1,
-    );
-    let registry = TestIoeventFdRegistry {
-        fail_mode,
-        ..Default::default()
-    };
-    let pci_dev = VirtioPciDevice::new(dev, TestMsiSender::default(), registry).unwrap();
+#[test]
+fn test_virtio_pci_device_notifier_fallback() {
+    let (dev, _rx) =
+        create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 1);
+    let pci_dev = VirtioPciDevice::new(
+        dev,
+        TestMsiSender::default(),
+        Option::<TestNotifierRegistry>::None,
+    )
+    .unwrap();
 
-    assert!(pci_dev.registers.ioeventfds.is_none());
+    assert!(pci_dev.registers.notifiers.is_none());
+    let PciBar::Mem(bar0) = &pci_dev.config.header.bars[0] else {
+        panic!("expected Mem BAR");
+    };
+    // `EmulatedConfig::new_device()` always pushes a `BarCallback`, so the
+    // only callback left means no `NotifierCallback` was installed.
+    assert_eq!(bar0.callbacks.lock().len(), 1);
 }
 
 #[test]
 fn test_virtio_pci_device_pci_reset() {
-    let (dev, event_rx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>, TestIoeventFd>(
-        DeviceId::NET,
-        0,
-        None,
-        1,
-    );
+    let (dev, event_rx) =
+        create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 1);
     let pci_dev = VirtioPciDevice::new(
         dev,
         TestMsiSender::default(),
-        TestIoeventFdRegistry::default(),
+        Some(TestNotifierRegistry::default()),
     )
     .unwrap();
 

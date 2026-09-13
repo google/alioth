@@ -27,7 +27,6 @@ use serde::Deserialize;
 use serde_aco::Help;
 use snafu::ResultExt;
 
-use crate::hv::IoeventFd;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
@@ -92,15 +91,14 @@ impl Virtio for Entropy {
         &self.name
     }
 
-    fn spawn_worker<S, E>(
+    fn spawn_worker<S>(
         self,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
-        E: IoeventFd,
     {
         Mio::spawn_worker(self, event_rx, memory, queue_regs)
     }
@@ -119,28 +117,26 @@ impl Virtio for Entropy {
 }
 
 impl VirtioMio for Entropy {
-    fn activate<'m, Q, S, E>(
+    fn activate<'m, Q, S>(
         &mut self,
         _feature: u128,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         Ok(())
     }
 
-    fn handle_queue<'m, Q, S, E>(
+    fn handle_queue<'m, Q, S>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
@@ -149,15 +145,14 @@ impl VirtioMio for Entropy {
         queue.handle_desc(index, active_mio.irq_sender, copy_from_reader(&self.source))
     }
 
-    fn handle_event<'a, 'm, Q, S, E>(
+    fn handle_event<'a, 'm, Q, S>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         Ok(())
     }

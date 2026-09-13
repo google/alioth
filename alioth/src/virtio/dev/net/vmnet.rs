@@ -30,7 +30,6 @@ use serde_aco::Help;
 use zerocopy::IntoBytes;
 
 use crate::device::net::MacAddr;
-use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::block::{_NSConcreteStackBlock, BlockDescriptor, BlockFlag};
@@ -260,15 +259,14 @@ impl Virtio for Net {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
-    fn spawn_worker<S, E>(
+    fn spawn_worker<S>(
         self,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
-        E: IoeventFd,
     {
         Mio::spawn_worker(self, event_rx, memory, queue_regs)
     }
@@ -293,15 +291,14 @@ impl VirtioMio for Net {
         let _ = registry.deregister(&mut self.rx_notifier);
     }
 
-    fn activate<'m, Q, S, E>(
+    fn activate<'m, Q, S>(
         &mut self,
         _feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let registry = active_mio.poll.registry();
         registry.register(&mut self.rx_notifier, Token(0), Interest::READABLE)?;
@@ -351,15 +348,14 @@ impl VirtioMio for Net {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q, S, E>(
+    fn handle_event<'a, 'm, Q, S>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let token = event.token().0;
         let irq_sender = active_mio.irq_sender;
@@ -375,15 +371,14 @@ impl VirtioMio for Net {
         Ok(())
     }
 
-    fn handle_queue<'m, Q, S, E>(
+    fn handle_queue<'m, Q, S>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);

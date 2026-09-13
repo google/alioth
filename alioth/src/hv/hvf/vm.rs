@@ -27,9 +27,10 @@ use crate::arch::reg::MpidrEl1;
 use crate::hv::hvf::vcpu::{HvfVcpu, VcpuHandle};
 use crate::hv::hvf::{OsObject, check_ret};
 use crate::hv::{
-    GicV2, GicV2m, GicV3, IoeventFd, IoeventFdRegistry, IrqFd, IrqSender, Its, MemMapOption,
-    MsiSender, Result, Vm, error,
+    GicV2, GicV2m, GicV3, IrqFd, IrqSender, Its, MemMapOption, MsiSender, NotifierRegistry, Result,
+    Vm, error,
 };
+use crate::sync::notifier::Notifier;
 use crate::sys::hvf::{
     HvMemoryFlag, hv_gic_config_create, hv_gic_config_set_distributor_base,
     hv_gic_config_set_msi_interrupt_range, hv_gic_config_set_msi_region_base,
@@ -107,39 +108,25 @@ impl MsiSender for HvfMsiSender {
     }
 }
 
+/// Hypervisor.framework has no `KVM_IOEVENTFD` equivalent, so this registry is
+/// deliberately uninhabited: [`HvfVm::create_notifier_registry()`] always fails
+/// and no value of this type can ever be constructed.
 #[derive(Debug)]
-pub struct HvfIoeventFd {}
+pub enum HvfNotifierRegistry {}
 
-impl IoeventFd for HvfIoeventFd {}
-
-impl AsFd for HvfIoeventFd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        unreachable!()
-    }
-}
-
-#[derive(Debug)]
-pub struct HvfIoeventFdRegistry;
-
-impl IoeventFdRegistry for HvfIoeventFdRegistry {
-    type IoeventFd = HvfIoeventFd;
-
-    fn create(&self) -> Result<Self::IoeventFd> {
-        Err(ErrorKind::Unsupported.into()).context(error::IoeventFd)
-    }
-
-    fn deregister(&self, _fd: &Self::IoeventFd) -> Result<()> {
-        unreachable!()
+impl NotifierRegistry for HvfNotifierRegistry {
+    fn deregister(&self, _notifier: &Notifier) -> Result<()> {
+        match *self {}
     }
 
     fn register(
         &self,
-        _fd: &Self::IoeventFd,
+        _notifier: &Notifier,
         _gpa: u64,
         _len: u8,
         _data: Option<u64>,
     ) -> Result<()> {
-        unreachable!()
+        match *self {}
     }
 }
 
@@ -239,14 +226,15 @@ impl Vm for HvfVm {
     type GicV2 = HvfGicV2;
     type GicV2m = HvfGicV2m;
     type GicV3 = HvfGicV3;
-    type IoeventFdRegistry = HvfIoeventFdRegistry;
     type IrqSender = HvfIrqSender;
     type Its = HvfIts;
     type MsiSender = HvfMsiSender;
+    type NotifierRegistry = HvfNotifierRegistry;
     type Vcpu = HvfVcpu;
 
-    fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry> {
-        Ok(HvfIoeventFdRegistry)
+    fn create_notifier_registry(&self) -> Result<Self::NotifierRegistry> {
+        // Hypervisor.framework has no KVM_IOEVENTFD equivalent.
+        Err(ErrorKind::Unsupported.into()).context(error::Notifier)
     }
 
     fn create_msi_sender(&self, _devid: u32) -> Result<Self::MsiSender> {

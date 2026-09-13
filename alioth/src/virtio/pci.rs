@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::cmp::min;
-use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -26,7 +25,7 @@ use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::device::Pause;
-use crate::hv::{self, IoeventFd, IoeventFdRegistry, IrqFd, MsiSender};
+use crate::hv::{IrqFd, MsiSender, NotifierRegistry};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::pci::cap::{
@@ -185,26 +184,24 @@ pub struct VirtioPciRegister {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciRegisterMmio<M, E>
+pub struct VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
     name: Arc<str>,
     reg: Register,
     queues: Arc<[QueueReg]>,
     irq_sender: Arc<PciIrqSender<M>>,
-    ioeventfds: Option<Arc<[E]>>,
-    event_tx: Sender<WakeEvent<PciIrqSender<M>, E>>,
+    notifiers: Option<Arc<[Notifier]>>,
+    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
     notifier: Arc<Notifier>,
 }
 
-impl<M, E> VirtioPciRegisterMmio<M, E>
+impl<M> VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
-    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>, E>) {
+    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
         let is_start = matches!(event, WakeEvent::Start { .. });
         if let Err(e) = self.event_tx.send(event) {
             log::error!("{}: failed to send event: {e}", self.name);
@@ -252,10 +249,9 @@ where
     }
 }
 
-impl<M, E> Mmio for VirtioPciRegisterMmio<M, E>
+impl<M> Mmio for VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
     fn size(&self) -> u64 {
         // Reserve an extra 4-byte slot at the end of the notify capability to safely
@@ -450,7 +446,7 @@ where
                     let param = StartParam {
                         feature: reg.get_driver_feature(),
                         irq_sender: self.irq_sender.clone(),
-                        ioeventfds: self.ioeventfds.clone(),
+                        notifiers: self.notifiers.clone(),
                     };
                     self.wake_up_dev(WakeEvent::Start { param });
                 }
@@ -576,7 +572,7 @@ where
                             + size_of::<u32>() * self.queues.len() =>
             {
                 let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u16 / 4;
-                if self.ioeventfds.is_some() {
+                if self.notifiers.is_some() {
                     log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
                 }
                 let event = WakeEvent::Notify { q_index };
@@ -595,32 +591,32 @@ where
 }
 
 #[derive(Debug)]
-struct IoeventFdCallback<R>
+struct NotifierCallback<R>
 where
-    R: IoeventFdRegistry,
+    R: NotifierRegistry,
 {
     registry: R,
-    ioeventfds: Arc<[R::IoeventFd]>,
+    notifiers: Arc<[Notifier]>,
 }
 
-impl<R> MemRegionCallback for IoeventFdCallback<R>
+impl<R> MemRegionCallback for NotifierCallback<R>
 where
-    R: IoeventFdRegistry,
+    R: NotifierRegistry,
 {
     fn mapped(&self, addr: u64) -> mem::Result<()> {
-        for (q_index, fd) in self.ioeventfds.iter().enumerate() {
+        for (q_index, notifier) in self.notifiers.iter().enumerate() {
             let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
             let notify_addr = base_addr + (q_index * size_of::<u32>()) as u64;
-            self.registry.register(fd, notify_addr, 0, None)?;
-            log::info!("q-{q_index} ioeventfd registered at {notify_addr:x}",)
+            self.registry.register(notifier, notify_addr, 0, None)?;
+            log::info!("q-{q_index} notifier registered at {notify_addr:x}",)
         }
         Ok(())
     }
 
     fn unmapped(&self) -> mem::Result<()> {
-        for fd in self.ioeventfds.iter() {
-            self.registry.deregister(fd)?;
-            log::info!("ioeventfd {fd:?} de-registered")
+        for notifier in self.notifiers.iter() {
+            self.registry.deregister(notifier)?;
+            log::info!("notifier {notifier:?} de-registered")
         }
         Ok(())
     }
@@ -719,28 +715,26 @@ impl PciCap for VirtioPciNotifyCap {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciDevice<M, E>
+pub struct VirtioPciDevice<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
-    pub dev: VirtioDevice<PciIrqSender<M>, E>,
+    pub dev: VirtioDevice<PciIrqSender<M>>,
     pub config: EmulatedConfig,
-    pub registers: Arc<VirtioPciRegisterMmio<M, E>>,
+    pub registers: Arc<VirtioPciRegisterMmio<M>>,
 }
 
-impl<M, E> VirtioPciDevice<M, E>
+impl<M> VirtioPciDevice<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
     pub fn new<R>(
-        dev: VirtioDevice<PciIrqSender<M>, E>,
+        dev: VirtioDevice<PciIrqSender<M>>,
         msi_sender: M,
-        ioeventfd_reg: R,
+        notifier_reg: Option<R>,
     ) -> Result<Self>
     where
-        R: IoeventFdRegistry<IoeventFd = E>,
+        R: NotifierRegistry,
     {
         let (class, subclass) = get_class(dev.id);
         let mut header = DeviceHeader {
@@ -891,19 +885,21 @@ where
                 .collect(),
         };
 
-        let maybe_ioeventfds = (0..num_queues)
-            .map(|_| ioeventfd_reg.create())
-            .collect::<Result<Arc<_>, _>>();
-        let ioeventfds = match maybe_ioeventfds {
-            Ok(fds) => Some(fds),
-            Err(hv::Error::IoeventFd { error, .. }) if error.kind() == ErrorKind::Unsupported => {
-                None
+        // `Some` iff the hypervisor supports notifiers. Keeping the registry and
+        // the notifiers in one value makes it impossible to end up with
+        // notifiers that no registry ever registers, or vice versa.
+        let notifier_reg = match notifier_reg {
+            Some(registry) => {
+                let notifiers = (0..num_queues)
+                    .map(|_| Notifier::new())
+                    .collect::<Result<Arc<[Notifier]>, _>>()?;
+                Some((registry, notifiers))
             }
-            Err(e) => {
-                log::warn!("{}: failed to create ioeventfds: {e:?}", dev.name);
-                None
-            }
+            None => None,
         };
+        let notifiers = notifier_reg
+            .as_ref()
+            .map(|(_, notifiers)| notifiers.clone());
 
         let mut device_feature = [0u32; 4];
         for (i, v) in device_feature.iter_mut().enumerate() {
@@ -923,16 +919,16 @@ where
                 msix_table: msix_table.clone(),
                 msi_sender,
             }),
-            ioeventfds: ioeventfds.clone(),
+            notifiers: notifiers.clone(),
         });
         bar0.ranges.push(MemRange::Emulated(msix_table));
         bar0.ranges
             .push(MemRange::Span((12 << 10) - msix_table_size as u64));
         bar0.ranges.push(MemRange::Emulated(registers.clone()));
-        if let Some(ioeventfds) = ioeventfds {
-            bar0.callbacks.lock().push(Box::new(IoeventFdCallback {
-                registry: ioeventfd_reg,
-                ioeventfds,
+        if let Some((registry, notifiers)) = notifier_reg {
+            bar0.callbacks.lock().push(Box::new(NotifierCallback {
+                registry,
+                notifiers,
             }));
         }
         if device_config.size() > 0 {
@@ -968,17 +964,11 @@ where
     }
 }
 
-impl<M, E> Pause for VirtioPciDevice<M, E>
-where
-    M: MsiSender,
-    E: IoeventFd,
-{
-}
+impl<M> Pause for VirtioPciDevice<M> where M: MsiSender {}
 
-impl<M, E> Pci for VirtioPciDevice<M, E>
+impl<M> Pci for VirtioPciDevice<M>
 where
     M: MsiSender,
-    E: IoeventFd,
 {
     fn name(&self) -> &str {
         &self.dev.name

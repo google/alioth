@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 
 use flume::Sender;
 use rstest::rstest;
 
-use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
 use crate::virtio::{DevStatus, IrqSender, Result};
@@ -78,17 +77,6 @@ impl IrqSender for FakeIrqSender {
         unimplemented!()
     }
 }
-
-#[derive(Debug, Default)]
-pub struct FakeIoeventFd;
-
-impl AsFd for FakeIoeventFd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        unreachable!()
-    }
-}
-
-impl IoeventFd for FakeIoeventFd {}
 
 #[rstest]
 // Valid states in standard initialization sequence

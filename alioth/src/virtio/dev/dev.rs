@@ -31,7 +31,6 @@ use bitflags::Flags;
 use flume::{Receiver, Sender};
 use snafu::ResultExt;
 
-use crate::hv::IoeventFd;
 use crate::mem::emulated::Mmio;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
@@ -52,16 +51,16 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn num_queues(&self) -> u16;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u128;
-    fn spawn_worker<S: IrqSender, E: IoeventFd>(
+    fn spawn_worker<S: IrqSender>(
         self,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
     }
-    fn ioeventfd_offloaded(&self, _q_index: u16) -> Result<bool> {
+    fn notifier_offloaded(&self, _q_index: u16) -> Result<bool> {
         Ok(false)
     }
     fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
@@ -97,21 +96,19 @@ impl Register {
 const TOKEN_WARKER: u64 = 1 << 63;
 
 #[derive(Debug, Clone)]
-pub struct StartParam<S, E>
+pub struct StartParam<S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     pub(crate) feature: u128,
     pub(crate) irq_sender: Arc<S>,
-    pub(crate) ioeventfds: Option<Arc<[E]>>,
+    pub(crate) notifiers: Option<Arc<[Notifier]>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum WakeEvent<S, E>
+pub enum WakeEvent<S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     Notify {
         q_index: u16,
@@ -122,7 +119,7 @@ where
         channel: Arc<VuChannel>,
     },
     Start {
-        param: StartParam<S, E>,
+        param: StartParam<S>,
     },
     Reset,
 }
@@ -135,20 +132,18 @@ pub enum WorkerState {
 }
 
 #[derive(Debug)]
-pub struct Worker<D, S, E, B>
+pub struct Worker<D, S, B>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
-    context: Context<D, S, E>,
+    context: Context<D, S>,
     backend: B,
 }
 
 #[derive(Debug)]
-pub struct VirtioDevice<S, E>
+pub struct VirtioDevice<S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     pub name: Arc<str>,
     pub id: DeviceId,
@@ -157,14 +152,13 @@ where
     pub queue_regs: Arc<[QueueReg]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
     pub notifier: Arc<Notifier>,
-    pub event_tx: Sender<WakeEvent<S, E>>,
+    pub event_tx: Sender<WakeEvent<S>>,
     pub(crate) worker_handle: Option<JoinHandle<()>>,
 }
 
-impl<S, E> VirtioDevice<S, E>
+impl<S> VirtioDevice<S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(handle) = self.worker_handle.take() else {
@@ -226,10 +220,9 @@ where
     }
 }
 
-impl<S, E> Drop for VirtioDevice<S, E>
+impl<S> Drop for VirtioDevice<S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     fn drop(&mut self) {
         if let Err(e) = self.shutdown() {
@@ -241,17 +234,16 @@ where
 pub trait Backend<D: Virtio>: Send + 'static {
     fn register_notifier(&mut self, token: u64) -> Result<Arc<Notifier>>;
     fn reset(&self, dev: &mut D) -> Result<()>;
-    fn event_loop<'m, S, Q, E>(
+    fn event_loop<'m, S, Q>(
         &mut self,
         memory: &'m Ram,
-        context: &mut Context<D, S, E>,
+        context: &mut Context<D, S>,
         queues: &mut [Option<Queue<'_, 'm, Q>>],
-        param: &StartParam<S, E>,
+        param: &StartParam<S>,
     ) -> Result<()>
     where
         S: IrqSender,
-        Q: VirtQueue<'m>,
-        E: IoeventFd;
+        Q: VirtQueue<'m>;
 }
 
 pub trait BackendEvent {
@@ -265,23 +257,21 @@ pub trait ActiveBackend<D: Virtio> {
 }
 
 #[derive(Debug)]
-pub struct Context<D, S, E>
+pub struct Context<D, S>
 where
     S: IrqSender,
-    E: IoeventFd,
 {
     pub dev: D,
     memory: Arc<RamBus>,
-    event_rx: Receiver<WakeEvent<S, E>>,
+    event_rx: Receiver<WakeEvent<S>>,
     queue_regs: Arc<[QueueReg]>,
     pub state: WorkerState,
 }
 
-impl<D, S, E> Context<D, S, E>
+impl<D, S> Context<D, S>
 where
     D: Virtio,
     S: IrqSender,
-    E: IoeventFd,
 {
     fn handle_wake_events<B>(&mut self, backend: &mut B) -> Result<()>
     where
@@ -309,7 +299,7 @@ where
         Ok(())
     }
 
-    fn wait_start(&mut self) -> Option<StartParam<S, E>> {
+    fn wait_start(&mut self) -> Option<StartParam<S>> {
         for wake_event in self.event_rx.iter() {
             match wake_event {
                 WakeEvent::Reset => {}
@@ -344,17 +334,16 @@ where
     }
 }
 
-impl<D, S, E, B> Worker<D, S, E, B>
+impl<D, S, B> Worker<D, S, B>
 where
     D: Virtio,
     S: IrqSender,
     B: Backend<D>,
-    E: IoeventFd,
 {
     pub fn spawn(
         dev: D,
         mut backend: B,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)> {
@@ -381,11 +370,10 @@ where
         &mut self,
         queues: &mut [Option<Queue<'_, 'm, Q>>],
         ram: &'m Ram,
-        param: &StartParam<S, E>,
+        param: &StartParam<S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
-        E: IoeventFd,
     {
         log::debug!(
             "{}: activated with {:x?}, {:x?}",

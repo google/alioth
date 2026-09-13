@@ -19,7 +19,8 @@ use std::sync::Arc;
 use parking_lot::{Condvar, Mutex, RwLock};
 use snafu::ResultExt;
 
-use crate::hv::{IoeventFd, IrqFd, IrqSender, MsiSender, Result, error};
+use crate::hv::{IrqFd, IrqSender, MsiSender, Result, error};
+use crate::sync::notifier::Notifier;
 
 #[derive(Debug)]
 struct TestIrqFdInner {
@@ -141,17 +142,6 @@ impl MsiSender for TestMsiSender {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct TestIoeventFd;
-
-impl AsFd for TestIoeventFd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        unsafe { BorrowedFd::borrow_raw(0) }
-    }
-}
-
-impl IoeventFd for TestIoeventFd {}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct RegisteredAddr {
     pub gpa: u64,
@@ -160,30 +150,20 @@ pub struct RegisteredAddr {
 }
 
 #[derive(Debug, Default)]
-pub struct TestIoeventFdRegistry {
+pub struct TestNotifierRegistry {
     pub registered: Arc<Mutex<Vec<RegisteredAddr>>>,
     pub deregistered: Arc<Mutex<usize>>,
-    pub fail_mode: Option<ErrorKind>,
 }
 
-impl super::IoeventFdRegistry for TestIoeventFdRegistry {
-    type IoeventFd = TestIoeventFd;
-
-    fn create(&self) -> Result<Self::IoeventFd> {
-        if let Some(kind) = self.fail_mode {
-            return Err(io::Error::from(kind)).context(error::IoeventFd);
-        }
-        Ok(TestIoeventFd)
-    }
-
-    fn register(&self, _fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+impl super::NotifierRegistry for TestNotifierRegistry {
+    fn register(&self, _notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
         self.registered
             .lock()
             .push(RegisteredAddr { gpa, len, data });
         Ok(())
     }
 
-    fn deregister(&self, _fd: &Self::IoeventFd) -> Result<()> {
+    fn deregister(&self, _notifier: &Notifier) -> Result<()> {
         *self.deregistered.lock() += 1;
         Ok(())
     }

@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Result, Write};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use mio::event::Source;
@@ -48,6 +48,22 @@ impl Notifier {
         let _ = fd.read(&mut buf)?;
         let _ = fd.write(&1u64.to_ne_bytes())?;
         Ok(())
+    }
+}
+
+/// Wraps an eventfd created elsewhere, e.g. a vhost-user kick fd sent by a
+/// frontend.
+///
+/// The fd is forced into non-blocking mode, since [`Notifier::notify()`]
+/// relies on `EAGAIN` to detect a saturated eventfd counter. An external
+/// sender is under no obligation to have set `EFD_NONBLOCK` itself.
+impl TryFrom<OwnedFd> for Notifier {
+    type Error = std::io::Error;
+
+    fn try_from(fd: OwnedFd) -> Result<Self> {
+        let flags = ffi!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) })?;
+        ffi!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
+        Ok(Notifier { fd: File::from(fd) })
     }
 }
 

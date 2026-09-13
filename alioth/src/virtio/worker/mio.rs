@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use flume::Receiver;
 use mio::event::Event;
+#[cfg(target_os = "linux")]
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
 use snafu::ResultExt;
 
-use crate::hv::IoeventFd;
 use crate::mem::mapped::{Ram, RamBus};
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
@@ -33,35 +34,32 @@ use crate::virtio::queue::{Queue, QueueReg, VirtQueue};
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
-    fn activate<'m, Q, S, E>(
+    fn activate<'m, Q, S>(
         &mut self,
         feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
-        S: IrqSender,
-        E: IoeventFd;
+        S: IrqSender;
 
-    fn handle_queue<'m, Q, S, E>(
+    fn handle_queue<'m, Q, S>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
-        S: IrqSender,
-        E: IoeventFd;
+        S: IrqSender;
 
-    fn handle_event<'m, Q, S, E>(
+    fn handle_event<'m, Q, S>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
-        S: IrqSender,
-        E: IoeventFd;
+        S: IrqSender;
 
     fn reset(&mut self, registry: &Registry);
 }
@@ -79,16 +77,15 @@ pub struct Mio {
 }
 
 impl Mio {
-    pub fn spawn_worker<D, S, E>(
+    pub fn spawn_worker<D, S>(
         dev: D,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         D: VirtioMio,
         S: IrqSender,
-        E: IoeventFd,
     {
         let poll = Poll::new().context(error::CreatePoll)?;
         let m = Mio { poll };
@@ -112,36 +109,37 @@ where
         Ok(())
     }
 
-    fn event_loop<'m, S, Q, E>(
+    fn event_loop<'m, S, Q>(
         &mut self,
         memory: &'m Ram,
-        context: &mut Context<D, S, E>,
+        context: &mut Context<D, S>,
         queues: &mut [Option<Queue<'_, 'm, Q>>],
-        param: &StartParam<S, E>,
+        param: &StartParam<S>,
     ) -> Result<()>
     where
         S: IrqSender,
         Q: VirtQueue<'m>,
-        E: IoeventFd,
     {
         let mut events = Events::with_capacity(128);
         let mut active_mio = ActiveMio {
             queues,
             irq_sender: &*param.irq_sender,
-            ioeventfds: param.ioeventfds.as_deref().unwrap_or(&[]),
+            notifiers: param.notifiers.as_deref().unwrap_or(&[]),
             poll: &mut self.poll,
             mem: memory,
         };
         context.dev.activate(param.feature, &mut active_mio)?;
-        let registry = active_mio.poll.registry();
-        for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
-            if context.dev.ioeventfd_offloaded(index as u16)? {
+        // Only KVM offers ioeventfds, see [`crate::hv::NotifierRegistry`].
+        #[cfg(target_os = "linux")]
+        for (index, notifier) in active_mio.notifiers.iter().enumerate() {
+            if context.dev.notifier_offloaded(index as u16)? {
                 continue;
             }
             let token = index as u64 | TOKEN_QUEUE;
+            let registry = active_mio.poll.registry();
             registry
                 .register(
-                    &mut SourceFd(&fd.as_fd().as_raw_fd()),
+                    &mut SourceFd(&notifier.as_fd().as_raw_fd()),
                     Token(token as usize),
                     Interest::READABLE,
                 )
@@ -159,36 +157,36 @@ where
                 }
             }
         }
-        let registry = active_mio.poll.registry();
-        for (index, fd) in active_mio.ioeventfds.iter().enumerate() {
-            if context.dev.ioeventfd_offloaded(index as u16)? {
+        #[cfg(target_os = "linux")]
+        for (index, notifier) in active_mio.notifiers.iter().enumerate() {
+            if context.dev.notifier_offloaded(index as u16)? {
                 continue;
             }
+            let registry = active_mio.poll.registry();
             registry
-                .deregister(&mut SourceFd(&fd.as_fd().as_raw_fd()))
+                .deregister(&mut SourceFd(&notifier.as_fd().as_raw_fd()))
                 .context(error::EventSource)?;
         }
         Ok(())
     }
 }
 
-pub struct ActiveMio<'a, 'r, 'm, Q, S, E>
+pub struct ActiveMio<'a, 'r, 'm, Q, S>
 where
     Q: VirtQueue<'m>,
 {
     pub queues: &'a mut [Option<Queue<'r, 'm, Q>>],
     pub irq_sender: &'a S,
-    pub ioeventfds: &'a [E],
+    pub notifiers: &'a [Notifier],
     pub poll: &'a mut Poll,
     pub mem: &'m Ram,
 }
 
-impl<'m, D, Q, S, E> ActiveBackend<D> for ActiveMio<'_, '_, 'm, Q, S, E>
+impl<'m, D, Q, S> ActiveBackend<D> for ActiveMio<'_, '_, 'm, Q, S>
 where
     D: VirtioMio,
     Q: VirtQueue<'m>,
     S: IrqSender,
-    E: IoeventFd,
 {
     type Event = Event;
 

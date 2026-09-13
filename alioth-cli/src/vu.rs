@@ -24,7 +24,7 @@ use alioth::virtio::dev::fs::shared_dir::SharedDirSpec;
 use alioth::virtio::dev::net::tap::TapNetSpec;
 use alioth::virtio::dev::vsock::UdsVsockSpec;
 use alioth::virtio::dev::{DevSpec, Virtio, VirtioDevice};
-use alioth::virtio::vu::backend::{VuBackend, VuEventfd, VuIrqSender};
+use alioth::virtio::vu::backend::{VuBackend, VuIrqSender};
 use clap::{Args, Subcommand};
 use serde::Deserialize;
 use serde_aco::{Help, help_text};
@@ -108,7 +108,7 @@ fn create_dev<D, P>(
     name: String,
     args: &DevArgs<P>,
     memory: Arc<RamBus>,
-) -> Result<VirtioDevice<VuIrqSender, VuEventfd>, Error>
+) -> Result<VirtioDevice<VuIrqSender>, Error>
 where
     D: Virtio,
     P: DevSpec<Device = D> + Help + for<'a> Deserialize<'a> + Send + Sync + 'static,

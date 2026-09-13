@@ -16,7 +16,7 @@ use std::cmp::min;
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::iter::zip;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -26,8 +26,8 @@ use snafu::Snafu;
 use zerocopy::IntoBytes;
 
 use crate::errors::DebugTrace;
-use crate::hv::IoeventFd;
 use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::vu::Error as VuError;
 use crate::virtio::vu::bindings::{
@@ -59,8 +59,8 @@ pub enum Error {
     MissingSize { index: u16 },
     #[snafu(display("frontend did not set addresses for queue {index}"))]
     MissingAddr { index: u16 },
-    #[snafu(display("frontend did not set ioeventfd for queue {index}"))]
-    MissingIoeventfd { index: u16 },
+    #[snafu(display("frontend did not set kick fd for queue {index}"))]
+    MissingNotifier { index: u16 },
     #[snafu(display("cannot convert frontend HVA {hva:#x} to GPA"))]
     Convert { hva: u64 },
     #[snafu(display("invalid message {req:?} with payload size {size}"))]
@@ -119,25 +119,12 @@ impl IrqSender for VuIrqSender {
     }
 }
 
-#[derive(Debug)]
-pub struct VuEventfd {
-    fd: File,
-}
-
-impl AsFd for VuEventfd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
-    }
-}
-
-impl IoeventFd for VuEventfd {}
-
 #[derive(Debug, Default)]
 struct VuQueueInit {
     enable: bool,
     size: Option<u16>,
     addr: Option<VirtqAddr>,
-    ioeventfd: Option<File>,
+    notifier: Option<Notifier>,
     irqfd: Option<File>,
     errfd: Option<File>,
 }
@@ -154,14 +141,14 @@ pub struct VuBackend {
     channel: Option<Arc<VuChannel>>,
     status: DevStatus,
     memory: Arc<RamBus>,
-    dev: VirtioDevice<VuIrqSender, VuEventfd>,
+    dev: VirtioDevice<VuIrqSender>,
     init: VuInit,
 }
 
 impl VuBackend {
     pub fn new(
         conn: UnixStream,
-        dev: VirtioDevice<VuIrqSender, VuEventfd>,
+        dev: VirtioDevice<VuIrqSender>,
         memory: Arc<RamBus>,
     ) -> Result<Self> {
         conn.set_nonblocking(false)?;
@@ -184,7 +171,7 @@ impl VuBackend {
         self.dev.name.as_ref()
     }
 
-    fn wake_up_dev(&self, event: WakeEvent<VuIrqSender, VuEventfd>) {
+    fn wake_up_dev(&self, event: WakeEvent<VuIrqSender>) {
         let is_start = matches!(event, WakeEvent::Start { .. });
         if let Err(e) = self.dev.event_tx.send(event) {
             log::error!("{}: failed to send event: {e}", self.dev.name);
@@ -207,7 +194,7 @@ impl VuBackend {
         error::Convert { hva }.fail()
     }
 
-    fn parse_init(&mut self) -> Result<StartParam<VuIrqSender, VuEventfd>> {
+    fn parse_init(&mut self) -> Result<StartParam<VuIrqSender>> {
         for (index, (param, queue)) in zip(&self.init.queues, &*self.dev.queue_regs).enumerate() {
             let index = index as u16;
             queue.enabled.store(param.enable, Ordering::Release);
@@ -241,13 +228,13 @@ impl VuBackend {
             queues: queue_irqfds,
         };
 
-        let mut ioeventfds = vec![];
+        let mut notifiers = vec![];
         for (index, q) in queues.iter_mut().enumerate() {
-            match q.ioeventfd.take() {
-                Some(fd) => ioeventfds.push(VuEventfd { fd }),
+            match q.notifier.take() {
+                Some(notifier) => notifiers.push(notifier),
                 None => {
                     let index = index as u16;
-                    return error::MissingIoeventfd { index }.fail();
+                    return error::MissingNotifier { index }.fail();
                 }
             }
         }
@@ -255,7 +242,7 @@ impl VuBackend {
         Ok(StartParam {
             feature: self.init.drv_feat as u128,
             irq_sender: Arc::new(irq_sender),
-            ioeventfds: Some(ioeventfds.into()),
+            notifiers: Some(notifiers.into()),
         })
     }
 
@@ -348,7 +335,7 @@ impl VuBackend {
                     return error::InvalidQueue { index }.fail();
                 };
                 log::debug!("{name}: queue-{index}: set kick fd: {}", fd.as_raw_fd());
-                q.ioeventfd = Some(File::from(fd));
+                q.notifier = Some(Notifier::try_from(fd)?);
             }
             (VuFrontMsg::SET_VIRTQ_NUM, 8) => {
                 let virtq_num: VirtqState = self.session.recv_payload()?;

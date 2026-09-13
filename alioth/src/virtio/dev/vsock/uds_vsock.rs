@@ -33,7 +33,6 @@ use serde_aco::Help;
 use zerocopy::{FromBytes, IntoBytes};
 
 use crate::ffi;
-use crate::hv::IoeventFd;
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
@@ -473,14 +472,10 @@ impl UdsVsock {
         }
     }
 
-    fn handle_tx<'m, Q, S, E>(
-        &mut self,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
-    ) -> Result<()>
+    fn handle_tx<'m, Q, S>(&mut self, active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let [Some(rx_q), Some(tx_q), ..] = active_mio.queues else {
             let tx_index = VsockVirtq::TX.raw();
@@ -793,30 +788,28 @@ impl Virtio for UdsVsock {
         VsockFeature::STREAM.bits() | FEATURE_BUILT_IN
     }
 
-    fn spawn_worker<S, E>(
+    fn spawn_worker<S>(
         self,
-        event_rx: Receiver<WakeEvent<S, E>>,
+        event_rx: Receiver<WakeEvent<S>>,
         memory: Arc<RamBus>,
         queue_regs: Arc<[QueueReg]>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
-        E: IoeventFd,
     {
         Mio::spawn_worker(self, event_rx, memory, queue_regs)
     }
 }
 
 impl VirtioMio for UdsVsock {
-    fn activate<'m, Q, S, E>(
+    fn activate<'m, Q, S>(
         &mut self,
         _feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         active_mio.poll.registry().register(
             &mut SourceFd(&self.listener.as_raw_fd()),
@@ -826,15 +819,14 @@ impl VirtioMio for UdsVsock {
         Ok(())
     }
 
-    fn handle_event<'m, Q, S, E>(
+    fn handle_event<'m, Q, S>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let token = event.token();
         let registry = active_mio.poll.registry();
@@ -856,15 +848,14 @@ impl VirtioMio for UdsVsock {
         }
     }
 
-    fn handle_queue<'m, Q, S, E>(
+    fn handle_queue<'m, Q, S>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S, E>,
+        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
     ) -> Result<()>
     where
         Q: VirtQueue<'m>,
         S: IrqSender,
-        E: IoeventFd,
     {
         let index = VsockVirtq::from(index);
         let name = &self.name;

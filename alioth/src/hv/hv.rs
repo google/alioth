@@ -44,6 +44,7 @@ use crate::arch::sev::{SevPolicy, SevStatus, SnpPageType, SnpPolicy};
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::TdAttr;
 use crate::errors::{DebugTrace, trace_error};
+use crate::sync::notifier::Notifier;
 
 #[cfg(target_os = "macos")]
 pub use self::hvf::Hvf;
@@ -90,8 +91,8 @@ pub enum Error {
     MemEncrypt { error: std::io::Error },
     #[snafu(display("Failed to configure an IrqFd"))]
     IrqFd { error: std::io::Error },
-    #[snafu(display("Failed to configure an IoeventFd"))]
-    IoeventFd { error: std::io::Error },
+    #[snafu(display("Failed to configure a Notifier"))]
+    Notifier { error: std::io::Error },
     #[snafu(display("Failed to create an IrqSender for pin {pin}"))]
     CreateIrq { pin: u8, error: std::io::Error },
     #[snafu(display("Failed to send an interrupt"))]
@@ -243,13 +244,9 @@ pub trait MsiSender: Debug + Send + Sync + 'static {
     fn create_irqfd(&self) -> Result<Self::IrqFd>;
 }
 
-pub trait IoeventFd: Debug + Send + Sync + AsFd + 'static {}
-
-pub trait IoeventFdRegistry: Debug + Send + Sync + 'static {
-    type IoeventFd: IoeventFd;
-    fn create(&self) -> Result<Self::IoeventFd>;
-    fn register(&self, fd: &Self::IoeventFd, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
-    fn deregister(&self, fd: &Self::IoeventFd) -> Result<()>;
+pub trait NotifierRegistry: Debug + Send + Sync + 'static {
+    fn register(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
+    fn deregister(&self, notifier: &Notifier) -> Result<()>;
 }
 
 pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {
@@ -326,14 +323,14 @@ pub trait Vm: Debug + Send + Sync + 'static {
     type Vcpu: Vcpu;
     type IrqSender: IrqSender + Send + Sync;
     type MsiSender: MsiSender;
-    type IoeventFdRegistry: IoeventFdRegistry;
+    type NotifierRegistry: NotifierRegistry;
     fn create_vcpu(&self, index: u16, identity: u64) -> Result<Self::Vcpu, Error>;
     fn create_irq_sender(&self, pin: u8) -> Result<Self::IrqSender, Error>;
     fn create_msi_sender(
         &self,
         #[cfg(target_arch = "aarch64")] devid: u32,
     ) -> Result<Self::MsiSender>;
-    fn create_ioeventfd_registry(&self) -> Result<Self::IoeventFdRegistry>;
+    fn create_notifier_registry(&self) -> Result<Self::NotifierRegistry>;
     fn stop_vcpu<T>(&self, identity: u64, handle: &JoinHandle<T>) -> Result<(), Error>;
 
     fn map(&self, gpa: u64, size: u64, hva: usize, option: MemMapOption) -> Result<(), Error>;
