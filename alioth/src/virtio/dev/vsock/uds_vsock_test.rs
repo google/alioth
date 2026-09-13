@@ -877,3 +877,100 @@ fn vsock_conn_request_eof_test() {
     notifier.notify().unwrap();
     handle.join().unwrap();
 }
+
+#[test]
+fn vsock_conn_request_close_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.lock_layout();
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
+    let reg_tx = &regs[VsockVirtq::TX.raw() as usize];
+    let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
+    let mut rx_q = GuestQueue::new(
+        SplitQueue::new(reg_rx, &ram, false).unwrap().unwrap(),
+        reg_rx,
+    );
+    let mut tx_q = GuestQueue::new(
+        SplitQueue::new(reg_tx, &ram, false).unwrap().unwrap(),
+        reg_tx,
+    );
+
+    let temp_dir = TempDir::new().unwrap();
+    let sock_path = temp_dir.path().join("vsock.sock");
+
+    const GUEST_CID: u32 = 3;
+    let param = UdsVsockSpec {
+        cid: GUEST_CID,
+        path: sock_path.clone().into(),
+    };
+    let dev = param.build("vsock").unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
+    let start_param = StartParam {
+        feature: VirtioFeature::VERSION_1.bits(),
+        irq_sender,
+        notifiers: Option::<Arc<[Notifier]>>::None,
+    };
+    tx.send(WakeEvent::Start { param: start_param }).unwrap();
+
+    let rx_buf_addr = DATA_ADDR;
+    let tx_buf_addr = DATA_ADDR + 4096;
+
+    // A client that sends a complete request and hangs up before the guest
+    // accepts the connection.
+    let buf_id = rx_q.add_desc(&[], &[(rx_buf_addr, 4096)]);
+    const H2G_GUEST_PORT: u32 = 1025;
+    let mut h2g_stream = UnixStream::connect(&sock_path).unwrap();
+    h2g_stream
+        .write_all(format!("CONNECT {H2G_GUEST_PORT}\n").as_bytes())
+        .unwrap();
+    drop(h2g_stream);
+
+    assert_eq!(
+        irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        VsockVirtq::RX.raw()
+    );
+    let used = rx_q.get_used().unwrap();
+    assert_eq!(used.id, buf_id);
+    let mut hdr = VsockHeader::new_zeroed();
+    ram.read(rx_buf_addr, hdr.as_mut_bytes()).unwrap();
+    assert_eq!(hdr.op, VsockOp::REQUEST);
+    let h2g_host_port = hdr.src_port;
+
+    // The guest accepts, but the host side is already gone. The device must
+    // report a reset instead of failing.
+    let rst_buf_id = rx_q.add_desc(&[], &[(rx_buf_addr, 4096)]);
+    let resp_hdr = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: H2G_GUEST_PORT,
+        dst_port: h2g_host_port,
+        op: VsockOp::RESPONSE,
+        type_: VsockType::STREAM,
+        ..Default::default()
+    };
+    send_to_tx(
+        &resp_hdr,
+        &[],
+        &ram,
+        tx_buf_addr,
+        &mut tx_q,
+        &tx,
+        &notifier,
+        &irq_rx,
+        true,
+    );
+    let used = rx_q.get_used().unwrap();
+    assert_eq!(used.id, rst_buf_id);
+    assert_eq!(used.len as usize, size_of::<VsockHeader>());
+    ram.read(rx_buf_addr, hdr.as_mut_bytes()).unwrap();
+    assert_eq!(hdr.op, VsockOp::RST);
+    assert_eq!(hdr.src_port, h2g_host_port);
+    assert_eq!(hdr.dst_port, H2G_GUEST_PORT);
+
+    tx.send(WakeEvent::Shutdown).unwrap();
+    notifier.notify().unwrap();
+    handle.join().unwrap();
+}

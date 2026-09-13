@@ -316,8 +316,20 @@ impl UdsVsock {
             );
             return Ok(());
         };
-        writeln!(conn.writer, "OK {host_port}")?;
-        conn.writer.flush()?;
+        let acked = writeln!(conn.writer, "OK {host_port}").and_then(|_| conn.writer.flush());
+        match acked {
+            Ok(()) => {}
+            // The host hung up before the guest accepted the connection.
+            // `process_rx_data()` below turns this into an RST for the guest.
+            Err(e) if is_conn_lost(&e) => {
+                log::debug!(
+                    "{}: host:{host_port} -> vm:{guest_port}: host closed before accept",
+                    self.name
+                );
+                conn.eof = true;
+            }
+            Err(e) => return Err(e.into()),
+        }
         conn.state = ConnState::Established {
             fwd_cnt: Wrapping(0),
         };
@@ -517,7 +529,7 @@ impl UdsVsock {
             VsockOp::REQUEST => self.handle_tx_request(hdr, registry, irq_sender, rx_q),
             VsockOp::RESPONSE => self.handle_tx_response(hdr, registry, rx_q, irq_sender),
             VsockOp::RST => self.handle_tx_rst(hdr, registry),
-            VsockOp::RW => self.transfer_tx_data(hdr, body, readable),
+            VsockOp::RW => self.transfer_tx_data(hdr, body, readable, registry, rx_q, irq_sender),
             VsockOp::CREDIT_UPDATE => {
                 log::info!(
                     "{name}: CREDIT_UPDATE: fwd_cnt: {}, buf_alloc: {}",
@@ -616,7 +628,13 @@ impl UdsVsock {
             return Ok(());
         }
         let ConnState::Established { fwd_cnt } = conn.state else {
-            log::error!("{}: unexpected state {:?}", self.name, conn.state);
+            // Data can arrive before the guest accepts the connection. It
+            // stays buffered in the socket until then.
+            log::debug!(
+                "{}: host:{host_port} -> vm:{guest_port}: not ready, state {:?}",
+                self.name,
+                conn.state
+            );
             return Ok(());
         };
         let mut hdr = VsockHeader {
@@ -714,17 +732,24 @@ impl UdsVsock {
         Ok(())
     }
 
-    fn transfer_tx_data(
+    fn transfer_tx_data<'m, Q, S>(
         &mut self,
         hdr: &VsockHeader,
         body: &[u8],
         buffers: &[IoSlice],
-    ) -> Result<()> {
+        registry: &Registry,
+        rx_q: &mut Queue<'_, 'm, Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue<'m>,
+        S: IrqSender,
+    {
         fn copy_to_conn(
             buf: &[u8],
             conn: &mut BufWriter<UnixStream>,
             remain: &mut usize,
-        ) -> Result<()> {
+        ) -> io::Result<()> {
             if let Some(b) = buf.get(..*remain) {
                 conn.write_all(b)?;
                 *remain = 0;
@@ -733,6 +758,28 @@ impl UdsVsock {
                 *remain -= buf.len();
             }
             Ok(())
+        }
+
+        /// Writes up to `len` bytes of `body` and `buffers` to `conn`,
+        /// returning the number of bytes that were not covered by the input.
+        fn write_to_conn(
+            conn: &mut BufWriter<UnixStream>,
+            body: &[u8],
+            buffers: &[IoSlice],
+            len: usize,
+        ) -> io::Result<usize> {
+            let mut remain = len;
+            if !body.is_empty() {
+                copy_to_conn(body, conn, &mut remain)?;
+            }
+            for buf in buffers {
+                if remain == 0 {
+                    break;
+                }
+                copy_to_conn(buf, conn, &mut remain)?;
+            }
+            conn.flush()?;
+            Ok(remain)
         }
 
         let host_port = hdr.dst_port;
@@ -748,19 +795,23 @@ impl UdsVsock {
             log::warn!("{}: invalid connection state {:?}", self.name, conn.state);
             return Ok(());
         };
-        let mut remain = hdr.len as usize;
-        if !body.is_empty() {
-            copy_to_conn(body, &mut conn.writer, &mut remain)?;
-        }
-        for buf in buffers {
-            if remain == 0 {
-                break;
+        match write_to_conn(&mut conn.writer, body, buffers, hdr.len as usize) {
+            Ok(0) => {}
+            Ok(remain) => {
+                log::error!("{}: missing {remain} bytes", self.name);
+                return error::InvalidBuffer.fail();
             }
-            copy_to_conn(buf, &mut conn.writer, &mut remain)?;
-        }
-        if remain != 0 {
-            log::error!("{}: missing {remain} bytes", self.name);
-            return error::InvalidBuffer.fail();
+            // The host hung up. Reset this connection only, the rest of the
+            // device keeps running.
+            Err(e) if is_conn_lost(&e) => {
+                log::debug!(
+                    "{}: vm:{guest_port} -> host:{host_port}: host closed",
+                    self.name
+                );
+                conn.eof = true;
+                return self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender);
+            }
+            Err(e) => return Err(e.into()),
         }
         *fwd_cnt += hdr.len;
         log::trace!(
@@ -768,7 +819,6 @@ impl UdsVsock {
             self.name,
             hdr.len
         );
-        conn.writer.flush()?;
         Ok(())
     }
 }
