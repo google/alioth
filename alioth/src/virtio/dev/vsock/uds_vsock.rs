@@ -71,9 +71,18 @@ pub struct UdsVsock {
     listener: UnixListener,
     connections: HashMap<(u32, u32), Connection>,
     ports: HashMap<Token, (u32, u32)>,
-    sockets: HashMap<Token, UnixStream>,
+    sockets: HashMap<Token, PendingConn>,
     host_ports: HashMap<u32, u32>,
     next_port: u32,
+}
+
+/// An accepted socket whose `CONNECT` request line has not been fully
+/// received yet.
+#[derive(Debug)]
+struct PendingConn {
+    reader: BufReader<UnixStream>,
+    /// Bytes of the request line received so far.
+    msg: String,
 }
 
 fn get_buf_size(stream: &UnixStream) -> Result<usize> {
@@ -114,14 +123,24 @@ impl UdsVsock {
             token,
             Interest::READABLE,
         )?;
-        self.sockets.insert(token, stream);
+        let pending = PendingConn {
+            reader: BufReader::new(stream),
+            msg: String::new(),
+        };
+        self.sockets.insert(token, pending);
+        Ok(())
+    }
+
+    fn drop_socket(&self, socket: &UnixStream, registry: &Registry) -> Result<()> {
+        registry.deregister(&mut SourceFd(&socket.as_raw_fd()))?;
         Ok(())
     }
 
     fn handle_conn_request<'m, Q, S>(
         &mut self,
         token: Token,
-        socket: UnixStream,
+        mut pending: PendingConn,
+        registry: &Registry,
         rx_q: &mut Queue<'_, 'm, Q>,
         irq_sender: &S,
     ) -> Result<()>
@@ -129,19 +148,39 @@ impl UdsVsock {
         Q: VirtQueue<'m>,
         S: IrqSender,
     {
-        let mut msg = String::new();
-        let writer = socket.try_clone()?;
-        let mut reader = BufReader::new(socket);
+        // The socket is non-blocking, so a request line can arrive in pieces.
+        // Keep what has been received so far and wait for the next event
+        // instead of tearing down the connection.
+        match pending.reader.read_line(&mut pending.msg) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                self.sockets.insert(token, pending);
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
+        if !pending.msg.ends_with('\n') {
+            if pending.msg.is_empty() {
+                log::debug!("{}: socket closed before any request", self.name);
+            } else {
+                log::warn!(
+                    "{}: socket closed mid-request: {:?}",
+                    self.name,
+                    pending.msg
+                );
+            }
+            return self.drop_socket(pending.reader.get_ref(), registry);
+        }
+        let writer = pending.reader.get_ref().try_clone()?;
         let buf_size = get_buf_size(&writer)?;
-        reader.read_line(&mut msg)?;
-        let port_str = msg.trim_start_matches("CONNECT ").trim_end();
+        let port_str = pending.msg.trim_start_matches("CONNECT ").trim_end();
         let Ok(port) = port_str.parse::<u32>() else {
             log::error!("{}: failed to parse port {port_str}", self.name);
-            return Ok(());
+            return self.drop_socket(pending.reader.get_ref(), registry);
         };
         let Some(host_port) = self.allocate_port() else {
             log::error!("{}: failed to allocate port", self.name);
-            return Ok(());
+            return self.drop_socket(pending.reader.get_ref(), registry);
         };
         let hdr = VsockHeader {
             src_cid: VSOCK_CID_HOST,
@@ -157,7 +196,7 @@ impl UdsVsock {
         self.respond(&hdr, irq_sender, rx_q)?;
         let conn = Connection {
             state: ConnState::Requested,
-            reader,
+            reader: pending.reader,
             writer: BufWriter::new(writer),
             buf_alloc: buf_size as u32,
             eof: false,
@@ -837,8 +876,8 @@ impl VirtioMio for UdsVsock {
         };
         if token.0 == self.listener.as_raw_fd() as usize {
             self.create_socket(registry)
-        } else if let Some(socket) = self.sockets.remove(&token) {
-            self.handle_conn_request(token, socket, rx_q, irq_sender)
+        } else if let Some(pending) = self.sockets.remove(&token) {
+            self.handle_conn_request(token, pending, registry, rx_q, irq_sender)
         } else if let Some(port_pair) = self.ports.get(&token) {
             let (host_port, guest_port) = port_pair.to_owned();
             self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
@@ -887,7 +926,8 @@ impl VirtioMio for UdsVsock {
                 log::error!("{}: failed to deregister socket: {err}", self.name);
             }
         }
-        for (_, socket) in self.sockets.drain() {
+        for (_, pending) in self.sockets.drain() {
+            let socket = pending.reader.into_inner();
             if let Err(err) = registry.deregister(&mut SourceFd(&socket.as_raw_fd())) {
                 log::error!("{}: failed to deregister socket: {err}", self.name);
             }

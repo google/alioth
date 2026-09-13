@@ -644,3 +644,71 @@ fn vsock_host_close_no_desc_test() {
     notifier.notify().unwrap();
     handle.join().unwrap();
 }
+
+#[test]
+fn vsock_partial_conn_request_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.lock_layout();
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
+    let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
+    let mut rx_q = GuestQueue::new(
+        SplitQueue::new(reg_rx, &ram, false).unwrap().unwrap(),
+        reg_rx,
+    );
+
+    let temp_dir = TempDir::new().unwrap();
+    let sock_path = temp_dir.path().join("vsock.sock");
+
+    const GUEST_CID: u32 = 3;
+    let param = UdsVsockSpec {
+        cid: GUEST_CID,
+        path: sock_path.clone().into(),
+    };
+    let dev = param.build("vsock").unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
+    let start_param = StartParam {
+        feature: VirtioFeature::VERSION_1.bits(),
+        irq_sender,
+        notifiers: Option::<Arc<[Notifier]>>::None,
+    };
+    tx.send(WakeEvent::Start { param: start_param }).unwrap();
+
+    let rx_buf_addr = DATA_ADDR;
+
+    let mut h2g_stream = UnixStream::connect(&sock_path).unwrap();
+    let buf_id = rx_q.add_desc(&[], &[(rx_buf_addr, 4096)]);
+
+    // A connection request can be split over multiple writes, e.g. as done by
+    // `writeln!()`. The device must wait for the complete line instead of
+    // dropping the connection.
+    const H2G_GUEST_PORT: u32 = 1025;
+    h2g_stream.write_all(b"CONNECT ").unwrap();
+    thread::sleep(Duration::from_millis(50));
+    h2g_stream
+        .write_all(format!("{H2G_GUEST_PORT}\n").as_bytes())
+        .unwrap();
+
+    assert_eq!(
+        irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        VsockVirtq::RX.raw()
+    );
+    let used = rx_q.get_used().unwrap();
+    assert_eq!(used.id, buf_id);
+    assert_eq!(used.len as usize, size_of::<VsockHeader>());
+
+    let mut hdr = VsockHeader::new_zeroed();
+    ram.read(rx_buf_addr, hdr.as_mut_bytes()).unwrap();
+    assert_eq!(hdr.src_cid, VSOCK_CID_HOST);
+    assert_eq!(hdr.dst_cid, GUEST_CID);
+    assert_eq!(hdr.dst_port, H2G_GUEST_PORT);
+    assert_eq!(hdr.op, VsockOp::REQUEST);
+    assert_eq!(hdr.type_, VsockType::STREAM);
+
+    tx.send(WakeEvent::Shutdown).unwrap();
+    notifier.notify().unwrap();
+    handle.join().unwrap();
+}
