@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, ErrorKind, IoSlice, IoSliceMut, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::mem::size_of_val;
 use std::num::Wrapping;
 use std::os::fd::AsRawFd;
@@ -85,6 +85,15 @@ struct PendingConn {
     msg: String,
 }
 
+/// Returns true if `e` means the host side of a connection is gone, which is
+/// a normal event that must only affect that single connection.
+fn is_conn_lost(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+    )
+}
+
 fn get_buf_size(stream: &UnixStream) -> Result<usize> {
     let mut buf_size = 0i32;
     let mut arg_size = size_of_val(&buf_size) as libc::socklen_t;
@@ -115,19 +124,33 @@ impl UdsVsock {
     }
 
     fn create_socket(&mut self, registry: &Registry) -> Result<()> {
-        let (stream, _) = self.listener.accept()?;
-        stream.set_nonblocking(true)?;
-        let token = Token(stream.as_raw_fd() as usize);
-        registry.register(
-            &mut SourceFd(&stream.as_raw_fd()),
-            token,
-            Interest::READABLE,
-        )?;
-        let pending = PendingConn {
-            reader: BufReader::new(stream),
-            msg: String::new(),
-        };
-        self.sockets.insert(token, pending);
+        // The listener is registered edge-triggered, so drain the backlog.
+        // Otherwise a connection that arrives while another one is pending
+        // stalls until yet another client shows up.
+        loop {
+            let stream = match self.listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) if is_conn_lost(&e) => {
+                    log::debug!("{}: aborted connection: {e:?}", self.name);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            stream.set_nonblocking(true)?;
+            let token = Token(stream.as_raw_fd() as usize);
+            registry.register(
+                &mut SourceFd(&stream.as_raw_fd()),
+                token,
+                Interest::READABLE,
+            )?;
+            let pending = PendingConn {
+                reader: BufReader::new(stream),
+                msg: String::new(),
+            };
+            self.sockets.insert(token, pending);
+        }
         Ok(())
     }
 

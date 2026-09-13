@@ -712,3 +712,168 @@ fn vsock_partial_conn_request_test() {
     notifier.notify().unwrap();
     handle.join().unwrap();
 }
+
+#[test]
+fn vsock_simultaneous_conn_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.lock_layout();
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
+    let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
+    let mut rx_q = GuestQueue::new(
+        SplitQueue::new(reg_rx, &ram, false).unwrap().unwrap(),
+        reg_rx,
+    );
+
+    let temp_dir = TempDir::new().unwrap();
+    let sock_path = temp_dir.path().join("vsock.sock");
+
+    const GUEST_CID: u32 = 3;
+    let param = UdsVsockSpec {
+        cid: GUEST_CID,
+        path: sock_path.clone().into(),
+    };
+    let dev = param.build("vsock").unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
+    let start_param = StartParam {
+        feature: VirtioFeature::VERSION_1.bits(),
+        irq_sender,
+        notifiers: Option::<Arc<[Notifier]>>::None,
+    };
+    tx.send(WakeEvent::Start { param: start_param }).unwrap();
+
+    let buf_addrs = [DATA_ADDR, DATA_ADDR + 2048];
+    let buf_ids = buf_addrs.map(|addr| rx_q.add_desc(&[], &[(addr, 2048)]));
+
+    // Two clients connecting back to back pile up in the listener backlog,
+    // and both must be served.
+    const GUEST_PORTS: [u32; 2] = [1025, 1026];
+    let mut streams = Vec::new();
+    for port in GUEST_PORTS {
+        let mut stream = UnixStream::connect(&sock_path).unwrap();
+        stream
+            .write_all(format!("CONNECT {port}\n").as_bytes())
+            .unwrap();
+        streams.push(stream);
+    }
+
+    let mut requests = Vec::new();
+    for _ in GUEST_PORTS {
+        irq_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let used = rx_q.get_used().unwrap();
+        assert_eq!(used.len as usize, size_of::<VsockHeader>());
+        let index = buf_ids.iter().position(|id| *id == used.id).unwrap();
+        let mut hdr = VsockHeader::new_zeroed();
+        ram.read(buf_addrs[index], hdr.as_mut_bytes()).unwrap();
+        assert_eq!(hdr.op, VsockOp::REQUEST);
+        requests.push(hdr.dst_port);
+    }
+    requests.sort_unstable();
+    assert_eq!(requests, GUEST_PORTS);
+
+    tx.send(WakeEvent::Shutdown).unwrap();
+    notifier.notify().unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn vsock_conn_request_eof_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.lock_layout();
+    let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
+    let reg_tx = &regs[VsockVirtq::TX.raw() as usize];
+    let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
+    let mut rx_q = GuestQueue::new(
+        SplitQueue::new(reg_rx, &ram, false).unwrap().unwrap(),
+        reg_rx,
+    );
+    let mut tx_q = GuestQueue::new(
+        SplitQueue::new(reg_tx, &ram, false).unwrap().unwrap(),
+        reg_tx,
+    );
+
+    let temp_dir = TempDir::new().unwrap();
+    let sock_path = temp_dir.path().join("vsock.sock");
+
+    const GUEST_CID: u32 = 3;
+    let param = UdsVsockSpec {
+        cid: GUEST_CID,
+        path: sock_path.clone().into(),
+    };
+    let dev = param.build("vsock").unwrap();
+
+    let (tx, rx) = flume::unbounded();
+    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
+    let start_param = StartParam {
+        feature: VirtioFeature::VERSION_1.bits(),
+        irq_sender,
+        notifiers: Option::<Arc<[Notifier]>>::None,
+    };
+    tx.send(WakeEvent::Start { param: start_param }).unwrap();
+
+    let rx_buf_addr = DATA_ADDR;
+    let tx_buf_addr = DATA_ADDR + 4096;
+
+    // A client that connects and disconnects without saying anything.
+    drop(UnixStream::connect(&sock_path).unwrap());
+
+    // A client that disconnects in the middle of a connection request.
+    let mut partial = UnixStream::connect(&sock_path).unwrap();
+    partial.write_all(b"CONNECT ").unwrap();
+    thread::sleep(Duration::from_millis(50));
+    drop(partial);
+    thread::sleep(Duration::from_millis(50));
+
+    // Neither takes down the device: a well-behaved client still works.
+    let mut h2g_stream = UnixStream::connect(&sock_path).unwrap();
+    let buf_id = rx_q.add_desc(&[], &[(rx_buf_addr, 4096)]);
+    const H2G_GUEST_PORT: u32 = 1025;
+    writeln!(h2g_stream, "CONNECT {H2G_GUEST_PORT}").unwrap();
+    assert_eq!(
+        irq_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        VsockVirtq::RX.raw()
+    );
+    let used = rx_q.get_used().unwrap();
+    assert_eq!(used.id, buf_id);
+    assert_eq!(used.len as usize, size_of::<VsockHeader>());
+
+    let mut hdr = VsockHeader::new_zeroed();
+    ram.read(rx_buf_addr, hdr.as_mut_bytes()).unwrap();
+    assert_eq!(hdr.op, VsockOp::REQUEST);
+    assert_eq!(hdr.dst_port, H2G_GUEST_PORT);
+    let h2g_host_port = hdr.src_port;
+
+    let resp_hdr = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: H2G_GUEST_PORT,
+        dst_port: h2g_host_port,
+        op: VsockOp::RESPONSE,
+        type_: VsockType::STREAM,
+        ..Default::default()
+    };
+    send_to_tx(
+        &resp_hdr,
+        &[],
+        &ram,
+        tx_buf_addr,
+        &mut tx_q,
+        &tx,
+        &notifier,
+        &irq_rx,
+        false,
+    );
+    let mut reader = BufReader::new(&h2g_stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, format!("OK {h2g_host_port}\n"));
+
+    tx.send(WakeEvent::Shutdown).unwrap();
+    notifier.notify().unwrap();
+    handle.join().unwrap();
+}
