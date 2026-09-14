@@ -152,7 +152,7 @@ pub struct RegisteredAddr {
 #[derive(Debug, Default)]
 pub struct TestNotifierRegistry {
     pub registered: Arc<Mutex<Vec<RegisteredAddr>>>,
-    pub deregistered: Arc<Mutex<usize>>,
+    pub deregistered: Arc<Mutex<Vec<RegisteredAddr>>>,
 }
 
 impl super::NotifierRegistry for TestNotifierRegistry {
@@ -163,8 +163,10 @@ impl super::NotifierRegistry for TestNotifierRegistry {
         Ok(())
     }
 
-    fn deregister(&self, _notifier: &Notifier) -> Result<()> {
-        *self.deregistered.lock() += 1;
+    fn deregister(&self, _notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+        self.deregistered
+            .lock()
+            .push(RegisteredAddr { gpa, len, data });
         Ok(())
     }
 }

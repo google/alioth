@@ -160,8 +160,8 @@ pub struct MemRegionEntry {
 
 pub trait MemRegionCallback: Debug + Send + Sync + Any + 'static {
     fn mapped(&self, addr: u64) -> Result<()>;
-    fn unmapped(&self) -> Result<()> {
-        log::debug!("{} unmapped", type_name::<Self>());
+    fn unmapped(&self, addr: u64) -> Result<()> {
+        log::debug!("{} unmapped from {addr:#x}", type_name::<Self>());
         Ok(())
     }
 }
@@ -410,7 +410,7 @@ impl Memory {
         }
         let region_callbacks = region.callbacks.lock();
         for callback in region_callbacks.iter() {
-            callback.unmapped()?;
+            callback.unmapped(addr)?;
         }
         Ok(())
     }
@@ -496,7 +496,7 @@ impl Memory {
         }
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
-            callback.unmapped()?;
+            callback.unmapped(port as u64)?;
         }
         Ok(())
     }

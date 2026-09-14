@@ -625,24 +625,34 @@ where
     notifiers: Arc<[Notifier]>,
 }
 
+impl<R> NotifierCallback<R>
+where
+    R: NotifierRegistry,
+{
+    fn notify_addr(bar_addr: u64, q_index: usize) -> u64 {
+        let base_addr = bar_addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
+        base_addr + (q_index * size_of::<u32>()) as u64
+    }
+}
+
 impl<R> MemRegionCallback for NotifierCallback<R>
 where
     R: NotifierRegistry,
 {
     fn mapped(&self, addr: u64) -> mem::Result<()> {
         for (q_index, notifier) in self.notifiers.iter().enumerate() {
-            let base_addr = addr + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
-            let notify_addr = base_addr + (q_index * size_of::<u32>()) as u64;
+            let notify_addr = Self::notify_addr(addr, q_index);
             self.registry.register(notifier, notify_addr, 0, None)?;
             log::info!("q-{q_index} notifier registered at {notify_addr:x}",)
         }
         Ok(())
     }
 
-    fn unmapped(&self) -> mem::Result<()> {
-        for notifier in self.notifiers.iter() {
-            self.registry.deregister(notifier)?;
-            log::info!("notifier {notifier:?} de-registered")
+    fn unmapped(&self, addr: u64) -> mem::Result<()> {
+        for (q_index, notifier) in self.notifiers.iter().enumerate() {
+            let notify_addr = Self::notify_addr(addr, q_index);
+            self.registry.deregister(notifier, notify_addr, 0, None)?;
+            log::info!("q-{q_index} notifier de-registered from {notify_addr:x}")
         }
         Ok(())
     }

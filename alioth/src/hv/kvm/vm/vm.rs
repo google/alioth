@@ -73,7 +73,6 @@ pub struct VmInner {
     pub fd: OwnedFd,
     pub vcpu_mmap_size: usize,
     memfd: Option<OwnedFd>,
-    ioeventfds: Mutex<HashMap<i32, KvmIoEventFd>>,
     msi_table: RwLock<HashMap<u32, KvmMsiEntryData>>,
     next_msi_gsi: AtomicU32,
     pin_map: AtomicU32,
@@ -411,8 +410,8 @@ pub struct KvmIoeventFdRegistry {
     vm: Arc<VmInner>,
 }
 
-impl NotifierRegistry for KvmIoeventFdRegistry {
-    fn register(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+impl KvmIoeventFdRegistry {
+    fn request(notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> KvmIoEventFd {
         let mut request = KvmIoEventFd {
             addr: gpa,
             len: len as u32,
@@ -423,18 +422,21 @@ impl NotifierRegistry for KvmIoeventFdRegistry {
             request.datamatch = data;
             request.flags |= KvmIoEventFdFlag::DATA_MATCH;
         }
+        request
+    }
+}
+
+impl NotifierRegistry for KvmIoeventFdRegistry {
+    fn register(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+        let request = Self::request(notifier, gpa, len, data);
         unsafe { kvm_ioeventfd(&self.vm.fd, &request) }.context(error::Notifier)?;
-        let mut fds = self.vm.ioeventfds.lock();
-        fds.insert(request.fd, request);
         Ok(())
     }
 
-    fn deregister(&self, notifier: &Notifier) -> Result<()> {
-        let mut fds = self.vm.ioeventfds.lock();
-        if let Some(mut request) = fds.remove(&notifier.as_fd().as_raw_fd()) {
-            request.flags |= KvmIoEventFdFlag::DEASSIGN;
-            unsafe { kvm_ioeventfd(&self.vm.fd, &request) }.context(error::Notifier)?;
-        }
+    fn deregister(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()> {
+        let mut request = Self::request(notifier, gpa, len, data);
+        request.flags |= KvmIoEventFdFlag::DEASSIGN;
+        unsafe { kvm_ioeventfd(&self.vm.fd, &request) }.context(error::Notifier)?;
         Ok(())
     }
 }
@@ -465,7 +467,6 @@ impl KvmVm {
                 fd,
                 vcpu_mmap_size,
                 memfd,
-                ioeventfds: Mutex::new(HashMap::new()),
                 msi_table: RwLock::new(HashMap::new()),
                 next_msi_gsi: AtomicU32::new(0),
                 pin_map: AtomicU32::new(0),

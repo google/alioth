@@ -115,7 +115,13 @@ impl MsiSender for HvfMsiSender {
 pub enum HvfNotifierRegistry {}
 
 impl NotifierRegistry for HvfNotifierRegistry {
-    fn deregister(&self, _notifier: &Notifier) -> Result<()> {
+    fn deregister(
+        &self,
+        _notifier: &Notifier,
+        _gpa: u64,
+        _len: u8,
+        _data: Option<u64>,
+    ) -> Result<()> {
         match *self {}
     }
 
