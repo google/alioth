@@ -262,7 +262,10 @@ pub trait MsiSender: Debug + Send + Sync + 'static {
 
 pub trait NotifierRegistry: Debug + Send + Sync + 'static {
     fn register(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
-    fn deregister(&self, notifier: &Notifier) -> Result<()>;
+    /// Undoes a [`NotifierRegistry::register()`] call. The parameters must
+    /// match the ones the notifier was registered with, since the same
+    /// notifier can be registered at multiple addresses.
+    fn deregister(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
 }
 
 pub trait IrqFd: Debug + Send + Sync + AsFd + 'static {

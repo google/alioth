@@ -1487,8 +1487,8 @@ fn test_virtio_pci_device_notifier_callback() {
     );
 
     // Test unmapped callback
-    assert_matches!(callbacks[0].unmapped(), Ok(()));
-    assert_eq!(*deregistered.lock(), 2);
+    assert_matches!(callbacks[0].unmapped(base_addr), Ok(()));
+    assert_eq!(*deregistered.lock(), *registered);
 }
 
 #[test]
