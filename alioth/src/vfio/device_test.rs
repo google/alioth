@@ -21,17 +21,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use assert_matches::assert_matches;
 use parking_lot::{Mutex, RwLock};
 
+use crate::sync::notifier::Notifier;
 use crate::sys::vfio::{
     VfioDeviceInfo, VfioDeviceInfoFlag, VfioIrqInfo, VfioPciRegion, VfioRegionInfo,
     VfioRegionInfoFlag,
 };
 use crate::vfio::Result;
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, RegionNotifier};
 
 pub type RegionMap = RwLock<HashMap<u32, (VfioRegionInfo, Vec<u8>)>>;
 pub type IrqMap = RwLock<HashMap<u32, VfioIrqInfo>>;
 pub type MmapFdMap = RwLock<HashMap<u32, OwnedFd>>;
 pub type IrqEventFdList = Mutex<Vec<(u32, u32, Vec<Option<RawFd>>)>>;
+/// Sub-regions [`MockVfioDevice::get_region_notifiers()`] reports, as
+/// `(offset, size, datamatch)`.
+pub type NotifierMap = RwLock<HashMap<u32, Vec<(u64, u8, Option<u64>)>>>;
 
 #[derive(Debug)]
 pub struct MockVfioDevice {
@@ -42,6 +46,7 @@ pub struct MockVfioDevice {
     pub resets: AtomicUsize,
     pub irq_eventfds: IrqEventFdList,
     pub disabled_irqs: Mutex<Vec<u32>>,
+    pub notifiers: NotifierMap,
 }
 
 impl Default for MockVfioDevice {
@@ -64,6 +69,7 @@ impl MockVfioDevice {
             resets: AtomicUsize::new(0),
             irq_eventfds: Mutex::new(Vec::new()),
             disabled_irqs: Mutex::new(Vec::new()),
+            notifiers: RwLock::new(HashMap::new()),
         };
         for index in 0..=5 {
             dev.add_bar(index, 0, VfioRegionInfoFlag::empty(), 0);
@@ -99,6 +105,14 @@ impl MockVfioDevice {
         offset: u64,
     ) -> VfioRegionInfo {
         self.add_region(index, size, flags, offset, vec![0u8; size as usize])
+    }
+
+    pub fn add_notifier(&self, index: u32, offset: u64, size: u8, datamatch: Option<u64>) {
+        let mut notifiers = self.notifiers.write();
+        notifiers
+            .entry(index)
+            .or_default()
+            .push((offset, size, datamatch));
     }
 
     pub fn add_config(&self, config: Vec<u8>) -> VfioRegionInfo {
@@ -198,6 +212,24 @@ impl Device for MockVfioDevice {
     fn get_dma_buf_fd(&self, _index: u32, _offset: u64, _size: usize) -> Result<OwnedFd> {
         Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
     }
+
+    fn get_region_notifiers(&self, index: u32) -> Result<Vec<RegionNotifier>> {
+        let notifiers = self.notifiers.read();
+        let Some(specs) = notifiers.get(&index) else {
+            return Ok(vec![]);
+        };
+        specs
+            .iter()
+            .map(|&(offset, size, datamatch)| {
+                Ok(RegionNotifier {
+                    offset,
+                    size,
+                    datamatch,
+                    notifier: Arc::new(Notifier::new()?),
+                })
+            })
+            .collect()
+    }
 }
 
 impl Device for Arc<MockVfioDevice> {
@@ -244,6 +276,10 @@ impl Device for Arc<MockVfioDevice> {
 
     fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd> {
         (**self).get_dma_buf_fd(index, offset, size)
+    }
+
+    fn get_region_notifiers(&self, index: u32) -> Result<Vec<RegionNotifier>> {
+        (**self).get_region_notifiers(index)
     }
 }
 

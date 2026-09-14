@@ -23,6 +23,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::mem::LayoutChanged;
 use crate::mem::mapped::ArcMemPages;
+use crate::sync::notifier::Notifier;
 use crate::sys::vfio::{
     VfioDeviceInfoFlag, VfioIrqInfo, VfioIrqInfoFlag, VfioRegionInfo, VfioRegionInfoFlag,
 };
@@ -30,7 +31,8 @@ use crate::utils::uds::{recv_msg_with_fds, send_msg_with_fds};
 use crate::vfio::device::Device;
 use crate::vfio::user::bindings::{
     VfioUserCmd, VfioUserDeviceInfo, VfioUserDmaUnmap, VfioUserHeader, VfioUserHeaderFlag,
-    VfioUserMessageType, VfioUserRegionAccess, VfioUserVersion,
+    VfioUserIoFdType, VfioUserIoeventFdFlag, VfioUserMessageType, VfioUserRegionAccess,
+    VfioUserRegionIoFds, VfioUserSubRegionIoeventFd, VfioUserVersion,
 };
 use crate::vfio::user::conn::VfioUserSession;
 use crate::vfio::user::device::{UpdateVfioUserMapping, VfioUserDevice};
@@ -359,4 +361,109 @@ fn test_vfio_user_device_full_lifecycle() {
     drop(dev);
     drop(session);
     server_handle.join().unwrap();
+}
+
+#[test]
+fn test_vfio_user_device_region_notifiers() {
+    let (client, server) = UnixStream::pair().unwrap();
+    let eventfd_a = Notifier::new().unwrap();
+    let eventfd_b = Notifier::new().unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut req_header = VfioUserHeader::default();
+        let mut req = VfioUserRegionIoFds::default();
+        let mut req_slice = [
+            IoSliceMut::new(req_header.as_mut_bytes()),
+            IoSliceMut::new(req.as_mut_bytes()),
+        ];
+        recv_msg_with_fds(&server, &mut req_slice, &mut []).unwrap();
+
+        let plain = VfioUserSubRegionIoeventFd {
+            size: 4,
+            type_: VfioUserIoFdType::IOEVENTFD,
+            ..Default::default()
+        };
+        let entries = [
+            // Two sub-regions sharing one eventfd, the first with a datamatch.
+            VfioUserSubRegionIoeventFd {
+                offset: 0x100,
+                size: 2,
+                flags: VfioUserIoeventFdFlag::DATA_MATCH,
+                datamatch: 0x2,
+                ..plain
+            },
+            VfioUserSubRegionIoeventFd {
+                offset: 0x104,
+                ..plain
+            },
+            // Everything below is dropped.
+            VfioUserSubRegionIoeventFd {
+                offset: 0x200,
+                fd_index: 1,
+                type_: VfioUserIoFdType::IOREGIONFD,
+                ..plain
+            },
+            VfioUserSubRegionIoeventFd {
+                offset: 0x204,
+                fd_index: 1,
+                type_: VfioUserIoFdType::IOEVENTFD_SHADOW,
+                shadow_mem_fd_index: 1,
+                ..plain
+            },
+            VfioUserSubRegionIoeventFd {
+                offset: 0x208,
+                fd_index: 1,
+                flags: VfioUserIoeventFdFlag::PIO,
+                ..plain
+            },
+            VfioUserSubRegionIoeventFd {
+                offset: 0x20c,
+                fd_index: 7,
+                ..plain
+            },
+            // A second eventfd.
+            VfioUserSubRegionIoeventFd {
+                offset: 0x300,
+                fd_index: 1,
+                ..plain
+            },
+        ];
+        let reply = VfioUserRegionIoFds {
+            argsz: (size_of::<VfioUserRegionIoFds>() + size_of_val(&entries)) as u32,
+            flags: 0,
+            index: req.index,
+            count: entries.len() as u32,
+        };
+        let reply_hdr = VfioUserHeader {
+            msg_id: req_header.msg_id,
+            cmd: req_header.cmd,
+            msg_size: (size_of::<VfioUserHeader>() + reply.argsz as usize) as u32,
+            flags: VfioUserHeaderFlag::new(VfioUserMessageType::REPLY, false, false),
+            error_no: 0,
+        };
+        let slices = [
+            IoSlice::new(reply_hdr.as_bytes()),
+            IoSlice::new(reply.as_bytes()),
+            IoSlice::new(entries.as_bytes()),
+        ];
+        let fds = [eventfd_a.as_fd(), eventfd_b.as_fd()];
+        send_msg_with_fds(&server, &slices, &fds).unwrap();
+    });
+
+    let session = Arc::new(VfioUserSession::new(client));
+    let dev = VfioUserDevice::new(session).unwrap();
+    let notifiers = dev.get_region_notifiers(1).unwrap();
+    server_handle.join().unwrap();
+
+    assert_eq!(notifiers.len(), 3);
+    assert_eq!(notifiers[0].offset, 0x100);
+    assert_eq!(notifiers[0].size, 2);
+    assert_eq!(notifiers[0].datamatch, Some(0x2));
+    assert_eq!(notifiers[1].offset, 0x104);
+    assert_eq!(notifiers[1].size, 4);
+    assert_eq!(notifiers[1].datamatch, None);
+    assert_eq!(notifiers[2].offset, 0x300);
+    // Sub-regions sharing a file descriptor share one notifier.
+    assert!(Arc::ptr_eq(&notifiers[0].notifier, &notifiers[1].notifier));
+    assert!(!Arc::ptr_eq(&notifiers[0].notifier, &notifiers[2].notifier));
 }

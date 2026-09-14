@@ -128,3 +128,55 @@ pub struct VfioUserDmaUnmap {
     pub addr: u64,
     pub size: u64,
 }
+
+consts! {
+    pub struct VfioUserIoFdType(u32) {
+        IOEVENTFD = 0;
+        IOREGIONFD = 1;
+        IOEVENTFD_SHADOW = 2;
+    }
+}
+
+bitflags! {
+    /// Flags of an ioeventfd sub-region, passing through the values of the
+    /// `KVM_IOEVENTFD_FLAG_*` constants.
+    pub struct VfioUserIoeventFdFlag(u32) {
+        DATA_MATCH = 1 << 0;
+        PIO = 1 << 1;
+    }
+}
+
+/// Header of a `VFIO_USER_DEVICE_GET_REGION_IO_FDS` request and reply.
+///
+/// In a request, `argsz` is the maximum reply payload the client accepts and
+/// `flags` and `count` must be zero. In a reply, `argsz` is the payload size
+/// needed for all sub-regions and `count` is their number. The server only
+/// appends the sub-region array if the requested `argsz` can hold all of it.
+#[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, Default)]
+#[repr(C)]
+pub struct VfioUserRegionIoFds {
+    pub argsz: u32,
+    pub flags: u32,
+    pub index: u32,
+    pub count: u32,
+}
+
+/// One entry of the sub-region array of a `VFIO_USER_DEVICE_GET_REGION_IO_FDS`
+/// reply.
+///
+/// This follows libvfio-user, which sends this 48-byte layout for every
+/// [`VfioUserIoFdType`], zeroing the shadow fields of a plain ioeventfd. The
+/// vfio-user protocol documentation instead describes a 40-byte layout without
+/// them, which predates the addition of shadow ioeventfds.
+#[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, Default)]
+#[repr(C)]
+pub struct VfioUserSubRegionIoeventFd {
+    pub offset: u64,
+    pub size: u64,
+    pub fd_index: u32,
+    pub type_: VfioUserIoFdType,
+    pub flags: VfioUserIoeventFdFlag,
+    pub shadow_mem_fd_index: u32,
+    pub shadow_offset: u64,
+    pub datamatch: u64,
+}

@@ -17,9 +17,11 @@ use std::fs::File;
 use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
+use std::sync::Arc;
 
 use crate::errors::BoxTrace;
 use crate::mem;
+use crate::sync::notifier::Notifier;
 use crate::sys::vfio::{
     DeviceFeature, VfioDeviceFeature, VfioDeviceFeatureDmaBuf, VfioDeviceFeatureFlag,
     VfioDeviceInfo, VfioIrqInfo, VfioIrqSet, VfioIrqSetData, VfioIrqSetFlag, VfioRegionDmaRange,
@@ -27,6 +29,22 @@ use crate::sys::vfio::{
     vfio_device_get_irq_info, vfio_device_get_region_info, vfio_device_reset, vfio_device_set_irqs,
 };
 use crate::vfio::Result;
+
+/// A sub-region of a device region whose accesses the hypervisor can signal
+/// with a notifier, instead of exiting to the VMM and forwarding them to the
+/// device.
+#[derive(Debug)]
+pub struct RegionNotifier {
+    /// Offset of the sub-region within the region.
+    pub offset: u64,
+    /// Access size the notifier covers, 0 if any size matches.
+    pub size: u8,
+    /// Value the access must carry to signal the notifier, if any.
+    pub datamatch: Option<u64>,
+    /// The notifier, shared since a device may back several sub-regions with
+    /// the same file descriptor.
+    pub notifier: Arc<Notifier>,
+}
 
 pub trait Device: Debug + Send + Sync + 'static {
     fn get_info(&self) -> Result<VfioDeviceInfo>;
@@ -49,6 +67,16 @@ pub trait Device: Debug + Send + Sync + 'static {
     fn get_region_mmap_fd(&self, index: u32) -> Result<Option<OwnedFd>>;
 
     fn get_dma_buf_fd(&self, index: u32, offset: u64, size: usize) -> Result<OwnedFd>;
+
+    /// Returns the sub-regions of region `index` that the VMM should watch
+    /// with a notifier rather than emulate.
+    ///
+    /// Kernel VFIO devices have nothing to offer here: `VFIO_DEVICE_IOEVENTFD`
+    /// goes the other way round, it hands an eventfd to the kernel so that it
+    /// writes a fixed value to the device when the VMM signals it.
+    fn get_region_notifiers(&self, _index: u32) -> Result<Vec<RegionNotifier>> {
+        Ok(vec![])
+    }
 
     // Helper methods for single-value read/write
     fn read(&self, region: &VfioRegionInfo, offset: u64, size: u8) -> mem::Result<u64> {

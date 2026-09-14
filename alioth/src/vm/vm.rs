@@ -272,6 +272,22 @@ where
         Ok(fw_cfg)
     }
 
+    /// Creates a notifier registry, or returns `None` if the hypervisor has no
+    /// notifier support and every access must exit to the VMM.
+    fn create_notifier_registry(
+        &self,
+        name: &str,
+    ) -> Result<Option<<H::Vm as Vm>::NotifierRegistry>, Error> {
+        match self.ctx.board.vm.create_notifier_registry() {
+            Ok(registry) => Ok(Some(registry)),
+            Err(hv::Error::Notifier { error, .. }) if error.kind() == ErrorKind::Unsupported => {
+                log::debug!("{name}: notifiers are not supported");
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn add_virtio_dev<D, P>(
         &self,
         name: impl Into<Arc<str>>,
@@ -293,15 +309,7 @@ where
         if let Some(callback) = dev.mem_change_callback() {
             self.ctx.board.memory.register_change_callback(callback)?;
         }
-        let registry = match self.ctx.board.vm.create_notifier_registry() {
-            Ok(registry) => Some(registry),
-            // The hypervisor does not support notifiers, fall back to VM exits.
-            Err(hv::Error::Notifier { error, .. }) if error.kind() == ErrorKind::Unsupported => {
-                log::debug!("{name}: notifiers are not supported");
-                None
-            }
-            Err(e) => return Err(e.into()),
-        };
+        let registry = self.create_notifier_registry(&name)?;
         let virtio_dev = VirtioDevice::new(
             name.clone(),
             dev,
@@ -381,7 +389,8 @@ where
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
-        let dev = VfioPciDev::new(name.clone(), cdev, msi_sender)?;
+        let none = None::<<H::Vm as Vm>::NotifierRegistry>;
+        let dev = VfioPciDev::new(name.clone(), cdev, msi_sender, none)?;
         self.add_pci_dev(Some(bdf), Arc::new(dev))?;
         Ok(())
     }
@@ -402,7 +411,8 @@ where
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
-        let dev = VfioPciDev::new(name.clone(), dev, msi_sender)?;
+        let registry = self.create_notifier_registry(&name)?;
+        let dev = VfioPciDev::new(name.clone(), dev, msi_sender, registry)?;
         self.add_pci_dev(Some(bdf), Arc::new(dev))?;
 
         let update = Box::new(UpdateVfioUserMapping::new(session.clone()));
@@ -468,7 +478,8 @@ where
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
         )?;
-        let dev = VfioPciDev::new(name.clone(), devfd, msi_sender)?;
+        let none = None::<<H::Vm as Vm>::NotifierRegistry>;
+        let dev = VfioPciDev::new(name.clone(), devfd, msi_sender, none)?;
         self.add_pci_dev(Some(bdf), Arc::new(dev))
     }
 }

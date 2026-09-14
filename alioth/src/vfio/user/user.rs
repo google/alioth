@@ -41,6 +41,10 @@ pub enum Error {
     Version { major: u16, minor: u16 },
     #[snafu(display("Server error: cmd {cmd:?}, error code {code}"))]
     ServerErr { cmd: VfioUserCmd, code: u32 },
+    #[snafu(display(
+        "Region {index}: unexpected sub-region IO fd array, argsz {argsz}, count {count}"
+    ))]
+    IoFds { index: u32, argsz: u32, count: u32 },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

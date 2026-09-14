@@ -22,12 +22,20 @@ use parking_lot::Mutex;
 use zerocopy::IntoBytes;
 
 use crate::sys::vfio::{VfioIrqInfo, VfioRegionInfo};
-use crate::utils::uds::{recv_msg_with_fds, send_msg_with_fds};
+use crate::utils::uds::{UDS_MAX_FD, recv_msg_with_fds, send_msg_with_fds};
 use crate::vfio::user::bindings::{
     VfioUserCmd, VfioUserDeviceInfo, VfioUserDmaMap, VfioUserDmaUnmap, VfioUserHeader,
-    VfioUserHeaderFlag, VfioUserIrqSet, VfioUserMessageType, VfioUserRegionAccess, VfioUserVersion,
+    VfioUserHeaderFlag, VfioUserIrqSet, VfioUserMessageType, VfioUserRegionAccess,
+    VfioUserRegionIoFds, VfioUserSubRegionIoeventFd, VfioUserVersion,
 };
 use crate::vfio::user::{Result, error};
+
+/// Number of sub-regions [`VfioUserSession::get_region_io_fds()`] makes room
+/// for in its first request.
+const IO_FDS_BATCH: u32 = 32;
+/// Maximum payload size advertised in `max_data_xfer_size` during version
+/// negotiation, matching `VFIO_USER_DEFAULT_MAX_DATA_XFER_SIZE`.
+const MAX_DATA_XFER_SIZE: usize = 1 << 20;
 
 #[derive(Debug)]
 struct Session {
@@ -237,6 +245,76 @@ impl VfioUserSession {
         )?;
 
         Ok((resp, resp_fd))
+    }
+
+    /// Queries the sub-regions of region `index` that can be watched with a
+    /// file descriptor.
+    ///
+    /// The server replies with the sub-region array only if the `argsz` we ask
+    /// for can hold all of it, so request room for [`IO_FDS_BATCH`] entries
+    /// up front and retry with the size the server asks for if that was not
+    /// enough.
+    pub fn get_region_io_fds(
+        &self,
+        index: u32,
+    ) -> Result<(
+        Vec<VfioUserSubRegionIoeventFd>,
+        [Option<OwnedFd>; UDS_MAX_FD],
+    )> {
+        let entry_size = size_of::<VfioUserSubRegionIoeventFd>();
+        let mut capacity = IO_FDS_BATCH;
+        loop {
+            let req = VfioUserRegionIoFds {
+                argsz: (size_of::<VfioUserRegionIoFds>() + capacity as usize * entry_size) as u32,
+                index,
+                ..Default::default()
+            };
+            let mut resp = VfioUserRegionIoFds::default();
+            let mut entries = vec![VfioUserSubRegionIoeventFd::default(); capacity as usize];
+            let mut fds = [const { None }; UDS_MAX_FD];
+
+            let reply = self.transact(
+                VfioUserCmd::DEVICE_GET_REGION_IO_FDS,
+                (req.as_bytes(), &[]),
+                &[],
+                (resp.as_mut_bytes(), entries.as_mut_bytes()),
+                &mut fds,
+            )?;
+
+            let want = (resp.count as usize)
+                .checked_mul(entry_size)
+                .and_then(|n| n.checked_add(size_of::<VfioUserRegionIoFds>()));
+            if want != Some(resp.argsz as usize) || resp.argsz as usize > MAX_DATA_XFER_SIZE {
+                return error::IoFds {
+                    index,
+                    argsz: resp.argsz,
+                    count: resp.count,
+                }
+                .fail();
+            }
+            if resp.count > capacity {
+                if capacity != IO_FDS_BATCH {
+                    return error::IoFds {
+                        index,
+                        argsz: resp.argsz,
+                        count: resp.count,
+                    }
+                    .fail();
+                }
+                capacity = resp.count;
+                continue;
+            }
+            let want_msg_size = size_of::<VfioUserHeader>() + resp.argsz as usize;
+            if reply.msg_size as usize != want_msg_size {
+                return error::PartialRead {
+                    want: want_msg_size,
+                    done: reply.msg_size as usize,
+                }
+                .fail();
+            }
+            entries.truncate(resp.count as usize);
+            return Ok((entries, fds));
+        }
     }
 
     pub fn get_irq_info(&self, index: u32) -> Result<VfioIrqInfo> {

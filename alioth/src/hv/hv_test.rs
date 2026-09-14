@@ -149,7 +149,7 @@ pub struct RegisteredAddr {
     pub data: Option<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TestNotifierRegistry {
     pub registered: Arc<Mutex<Vec<RegisteredAddr>>>,
     pub deregistered: Arc<Mutex<Vec<RegisteredAddr>>>,
