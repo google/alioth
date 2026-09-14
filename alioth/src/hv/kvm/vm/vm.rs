@@ -405,7 +405,7 @@ impl MsiSender for KvmMsiSender {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KvmIoeventFdRegistry {
     vm: Arc<VmInner>,
 }

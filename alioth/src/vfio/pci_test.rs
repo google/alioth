@@ -19,7 +19,7 @@ use assert_matches::assert_matches;
 use rstest::rstest;
 use zerocopy::{FromBytes, IntoBytes};
 
-use crate::hv::tests::TestMsiSender;
+use crate::hv::tests::{RegisteredAddr, TestMsiSender, TestNotifierRegistry};
 use crate::mem::MemRange;
 use crate::mem::emulated::{Action, Mmio};
 use crate::pci::cap::{
@@ -33,6 +33,11 @@ use crate::sys::vfio::{VfioDeviceInfoFlag, VfioPciIrq, VfioPciRegion, VfioRegion
 use crate::vfio::Error;
 use crate::vfio::device::tests::MockVfioDevice;
 use crate::vfio::pci::{PthBarRegion, VfioDev, VfioPciDev};
+
+/// No hypervisor notifier support, i.e. everything is emulated.
+fn no_registry() -> Option<TestNotifierRegistry> {
+    None
+}
 
 fn create_mock_pci_config_space() -> Vec<u8> {
     let mut config = vec![0u8; 4096];
@@ -94,7 +99,13 @@ fn test_vfio_pci_dev_creation_and_config() {
     );
 
     let msi_sender = TestMsiSender::default();
-    let dev = VfioPciDev::new(Arc::from("test-vfio-pci"), mock.clone(), msi_sender).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-vfio-pci"),
+        mock.clone(),
+        msi_sender,
+        no_registry(),
+    )
+    .unwrap();
 
     // Verify name
     assert_eq!(dev.name(), "test-vfio-pci");
@@ -140,7 +151,12 @@ fn test_vfio_pci_dev_unsupported_header_type() {
 
     mock.add_config(config_bytes);
 
-    let res = VfioPciDev::new(Arc::from("test-vfio"), mock, TestMsiSender::default());
+    let res = VfioPciDev::new(
+        Arc::from("test-vfio"),
+        mock,
+        TestMsiSender::default(),
+        no_registry(),
+    );
     assert_matches!(res, Err(Error::NotSupportedHeader { ty: 1, .. }));
 }
 
@@ -157,7 +173,13 @@ fn test_vfio_pci_dev_msix_bar_and_irqfd() {
     );
 
     let msi_sender = TestMsiSender::default();
-    let dev = VfioPciDev::new(Arc::from("test-vfio"), mock.clone(), msi_sender).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-vfio"),
+        mock.clone(),
+        msi_sender,
+        no_registry(),
+    )
+    .unwrap();
 
     let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
         panic!("expected Mem BAR for BAR 0");
@@ -233,7 +255,13 @@ fn test_vfio_pci_dev_msi_only() {
     mock.add_config(config);
 
     let msi_sender = TestMsiSender::default();
-    let dev = VfioPciDev::new(Arc::from("test-msi"), mock.clone(), msi_sender).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-msi"),
+        mock.clone(),
+        msi_sender,
+        no_registry(),
+    )
+    .unwrap();
 
     // Verify MSI irq eventfds were registered
     let events = mock.irq_eventfds.lock().clone();
@@ -294,7 +322,13 @@ fn test_vfio_pci_dev_both_msi_and_msix() {
         0,
     );
 
-    let dev = VfioPciDev::new(Arc::from("test-both"), mock, TestMsiSender::default()).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-both"),
+        mock,
+        TestMsiSender::default(),
+        no_registry(),
+    )
+    .unwrap();
 
     let config = dev.config();
     // MSI at 0x40 was masked with NullCap (id reads 0, next reads 0x60)
@@ -329,7 +363,13 @@ fn test_vfio_pci_dev_bar_types_and_splitting() {
         0,
     );
 
-    let dev = VfioPciDev::new(Arc::from("test-bars"), mock, TestMsiSender::default()).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-bars"),
+        mock,
+        TestMsiSender::default(),
+        no_registry(),
+    )
+    .unwrap();
 
     // BAR 0 should be PciBar::Mem with 2 ranges (page 0 emulated table/PBA, and remaining range)
     let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
@@ -394,7 +434,13 @@ fn test_vfio_pci_dev_mmap_bar() {
         0,
     );
 
-    let dev = VfioPciDev::new(Arc::from("test-mmap"), mock, TestMsiSender::default()).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-mmap"),
+        mock,
+        TestMsiSender::default(),
+        no_registry(),
+    )
+    .unwrap();
     assert_eq!(dev.config.header.bars.len(), 6);
     let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
         panic!("expected Mem BAR");
@@ -420,7 +466,13 @@ fn test_vfio_pci_dev_bar_mem64() {
         0,
     );
 
-    let dev = VfioPciDev::new(Arc::from("test-bar64"), mock, TestMsiSender::default()).unwrap();
+    let dev = VfioPciDev::new(
+        Arc::from("test-bar64"),
+        mock,
+        TestMsiSender::default(),
+        no_registry(),
+    )
+    .unwrap();
     assert_matches!(dev.config.header.bars[0], PciBar::Mem(_));
     assert_matches!(dev.config.header.bars[1], PciBar::Empty);
 }
@@ -444,6 +496,7 @@ fn test_vfio_pci_cap_parsing_malformed(#[case] offset: u8) {
         Arc::from("test-malformed-cap"),
         mock,
         TestMsiSender::default(),
+        no_registry(),
     )
     .unwrap();
     assert_eq!(dev.name(), "test-malformed-cap");
@@ -478,6 +531,7 @@ fn test_vfio_pci_disjoint_and_reversed_msix_bar() {
         Arc::from("test-disjoint-bar"),
         mock.clone(),
         TestMsiSender::default(),
+        no_registry(),
     )
     .unwrap();
     let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
@@ -506,4 +560,86 @@ fn test_vfio_pci_disjoint_and_reversed_msix_bar() {
     // 3. Write again while already IrqFd (control = 0)
     table_mmio.write(0x2000c - 0x20000, 4, 0x0).unwrap();
     assert_eq!(mock.irq_eventfds.lock().len(), 1);
+}
+
+#[test]
+fn test_vfio_pci_bar_notifiers() {
+    let mock = Arc::new(MockVfioDevice::default());
+    mock.add_config(create_mock_pci_config_space());
+    mock.add_bar(
+        VfioPciRegion::BAR0.raw(),
+        0x1000,
+        VfioRegionInfoFlag::READ | VfioRegionInfoFlag::WRITE,
+        0,
+    );
+    mock.add_notifier(VfioPciRegion::BAR0.raw(), 0x10, 4, None);
+    mock.add_notifier(VfioPciRegion::BAR0.raw(), 0x20, 2, Some(0xbeef));
+    // Out of the BAR, the server is not trusted to stay within bounds.
+    mock.add_notifier(VfioPciRegion::BAR0.raw(), 0x1000, 4, None);
+    mock.add_notifier(VfioPciRegion::BAR0.raw(), u64::MAX, 4, None);
+
+    let registry = TestNotifierRegistry::default();
+    let dev = VfioPciDev::new(
+        Arc::from("test-notifiers"),
+        mock.clone(),
+        TestMsiSender::default(),
+        Some(registry.clone()),
+    )
+    .unwrap();
+
+    let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
+        panic!("expected Mem BAR");
+    };
+    let callbacks = bar0.callbacks.lock();
+    // One callback updates the BAR register, the other one the notifiers.
+    assert_eq!(callbacks.len(), 2);
+
+    let bar_addr = 0x8000_0000;
+    for callback in callbacks.iter() {
+        callback.mapped(bar_addr).unwrap();
+    }
+    let expected = vec![
+        RegisteredAddr {
+            gpa: bar_addr + 0x10,
+            len: 4,
+            data: None,
+        },
+        RegisteredAddr {
+            gpa: bar_addr + 0x20,
+            len: 2,
+            data: Some(0xbeef),
+        },
+    ];
+    assert_eq!(*registry.registered.lock(), expected);
+
+    for callback in callbacks.iter() {
+        callback.unmapped(bar_addr).unwrap();
+    }
+    assert_eq!(*registry.deregistered.lock(), expected);
+}
+
+#[test]
+fn test_vfio_pci_bar_notifiers_without_registry() {
+    let mock = Arc::new(MockVfioDevice::default());
+    mock.add_config(create_mock_pci_config_space());
+    mock.add_bar(
+        VfioPciRegion::BAR0.raw(),
+        0x1000,
+        VfioRegionInfoFlag::READ | VfioRegionInfoFlag::WRITE,
+        0,
+    );
+    mock.add_notifier(VfioPciRegion::BAR0.raw(), 0x10, 4, None);
+
+    let dev = VfioPciDev::new(
+        Arc::from("test-no-registry"),
+        mock.clone(),
+        TestMsiSender::default(),
+        no_registry(),
+    )
+    .unwrap();
+
+    let PciBar::Mem(bar0) = &dev.config.header.bars[0] else {
+        panic!("expected Mem BAR");
+    };
+    assert_eq!(bar0.callbacks.lock().len(), 1);
 }

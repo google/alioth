@@ -25,10 +25,10 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::device::Pause;
 use crate::errors::BoxTrace;
-use crate::hv::{IrqFd, MsiSender};
+use crate::hv::{IrqFd, MsiSender, NotifierRegistry};
 use crate::mem::emulated::{Action, Mmio, MmioBus};
 use crate::mem::mapped::ArcMemPages;
-use crate::mem::{IoRegion, MemRange, MemRegion, MemRegionEntry, MemRegionType};
+use crate::mem::{IoRegion, MemRange, MemRegion, MemRegionCallback, MemRegionEntry, MemRegionType};
 use crate::pci::cap::{
     MsiCapHdr, MsiCapMmio, MsixCap, MsixCapMmio, MsixTableEntry, MsixTableMmio, MsixTableMmioEntry,
     NullCap, PciCap, PciCapHdr, PciCapId,
@@ -41,7 +41,7 @@ use crate::pci::{self, Pci, PciBar};
 use crate::sys::vfio::{
     VfioDeviceInfoFlag, VfioPciIrq, VfioPciRegion, VfioRegionInfo, VfioRegionInfoFlag,
 };
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, RegionNotifier};
 use crate::vfio::{Result, error};
 use crate::{align_down, align_up, mem};
 
@@ -384,6 +384,49 @@ where
     }
 }
 
+/// Registers the notifiers of a device region while its BAR is mapped, so
+/// that accesses the device wants to watch never reach the emulation path.
+#[derive(Debug)]
+struct RegionNotifierCallback<R> {
+    name: Arc<str>,
+    index: u32,
+    registry: R,
+    notifiers: Vec<RegionNotifier>,
+}
+
+impl<R> MemRegionCallback for RegionNotifierCallback<R>
+where
+    R: NotifierRegistry,
+{
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
+        for n in &self.notifiers {
+            let gpa = addr + n.offset;
+            self.registry
+                .register(&n.notifier, gpa, n.size, n.datamatch)?;
+            log::info!(
+                "{}: BAR {}: notifier registered at {gpa:#x}",
+                self.name,
+                self.index
+            );
+        }
+        Ok(())
+    }
+
+    fn unmapped(&self, addr: u64) -> mem::Result<()> {
+        for n in &self.notifiers {
+            let gpa = addr + n.offset;
+            self.registry
+                .deregister(&n.notifier, gpa, n.size, n.datamatch)?;
+            log::info!(
+                "{}: BAR {}: notifier de-registered from {gpa:#x}",
+                self.name,
+                self.index
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct VfioPciDev<M, D>
 where
@@ -425,7 +468,15 @@ where
     M: MsiSender,
     D: Device,
 {
-    pub fn new(name: Arc<str>, dev: D, msi_sender: M) -> Result<VfioPciDev<M, D>> {
+    pub fn new<R>(
+        name: Arc<str>,
+        dev: D,
+        msi_sender: M,
+        notifier_reg: Option<R>,
+    ) -> Result<VfioPciDev<M, D>>
+    where
+        R: NotifierRegistry,
+    {
         let flags = dev.get_info()?.flags;
 
         let cdev = Arc::new(VfioDev { dev, name, flags });
@@ -589,7 +640,8 @@ where
             if region_info.size == 0 {
                 continue;
             }
-            let region = create_bar_region(
+            let region_size = region_info.size;
+            let mut region = create_bar_region(
                 cdev.clone(),
                 index,
                 region_info,
@@ -597,9 +649,52 @@ where
                 msix_table.clone(),
                 msi_sender.clone(),
             )?;
+            let mut notifiers = match &notifier_reg {
+                Some(_) => cdev.dev.get_region_notifiers(index)?,
+                None => vec![],
+            };
+            let bar_val = bar_vals[index as usize];
+            let is_io = bar_val & BAR_IO == BAR_IO;
+            if let Some(registry) = &notifier_reg
+                && !notifiers.is_empty()
+            {
+                if is_io {
+                    // A notifier of a port IO BAR would need
+                    // KVM_IOEVENTFD_FLAG_PIO, which crate::hv cannot express.
+                    log::warn!(
+                        "{}: BAR {index}: ignoring {} notifiers of a port IO BAR",
+                        cdev.name,
+                        notifiers.len()
+                    );
+                } else {
+                    // The device is not trusted to stay within its own region.
+                    notifiers.retain(|n| {
+                        let within = n
+                            .offset
+                            .checked_add(max(n.size, 1) as u64)
+                            .is_some_and(|end| end <= region_size);
+                        if !within {
+                            log::error!(
+                                "{}: BAR {index}: notifier at {:#x} exceeds the BAR size {region_size:#x}",
+                                cdev.name,
+                                n.offset,
+                            );
+                        }
+                        within
+                    });
+                    if !notifiers.is_empty() {
+                        let callbacks = region.callbacks.get_mut();
+                        callbacks.push(Box::new(RegionNotifierCallback {
+                            name: cdev.name.clone(),
+                            index,
+                            registry: registry.clone(),
+                            notifiers,
+                        }));
+                    }
+                }
+            }
             let index = index as usize;
-            let bar_val = bar_vals[index];
-            if bar_val & BAR_IO == BAR_IO {
+            if is_io {
                 let MemRange::Emulated(range) = &region.ranges[0] else {
                     unreachable!()
                 };

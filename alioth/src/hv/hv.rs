@@ -260,7 +260,7 @@ pub trait MsiSender: Debug + Send + Sync + 'static {
     fn create_irqfd(&self) -> Result<Self::IrqFd>;
 }
 
-pub trait NotifierRegistry: Debug + Send + Sync + 'static {
+pub trait NotifierRegistry: Debug + Send + Sync + Clone + 'static {
     fn register(&self, notifier: &Notifier, gpa: u64, len: u8, data: Option<u64>) -> Result<()>;
     /// Undoes a [`NotifierRegistry::register()`] call. The parameters must
     /// match the ones the notifier was registered with, since the same

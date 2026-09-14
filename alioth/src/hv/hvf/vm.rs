@@ -111,7 +111,7 @@ impl MsiSender for HvfMsiSender {
 /// Hypervisor.framework has no `KVM_IOEVENTFD` equivalent, so this registry is
 /// deliberately uninhabited: [`HvfVm::create_notifier_registry()`] always fails
 /// and no value of this type can ever be constructed.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum HvfNotifierRegistry {}
 
 impl NotifierRegistry for HvfNotifierRegistry {

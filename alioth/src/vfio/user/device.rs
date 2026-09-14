@@ -27,11 +27,13 @@ use crate::errors::BoxTrace;
 use crate::mem;
 use crate::mem::LayoutChanged;
 use crate::mem::mapped::ArcMemPages;
+use crate::sync::notifier::Notifier;
 use crate::sys::vfio::{VfioDeviceInfo, VfioIrqInfo, VfioIrqSetFlag, VfioRegionInfo};
 use crate::vfio::Result;
-use crate::vfio::device::Device;
+use crate::vfio::device::{Device, RegionNotifier};
 use crate::vfio::user::bindings::{
-    VfioUserDmaMap, VfioUserDmaMapFlag, VfioUserDmaUnmap, VfioUserIrqSet, VfioUserRegionAccess,
+    VfioUserDmaMap, VfioUserDmaMapFlag, VfioUserDmaUnmap, VfioUserIoFdType, VfioUserIoeventFdFlag,
+    VfioUserIrqSet, VfioUserRegionAccess,
 };
 use crate::vfio::user::conn::VfioUserSession;
 
@@ -160,6 +162,57 @@ impl Device for VfioUserDevice {
             "dma-buf is not supported in vfio-user",
         )
         .into())
+    }
+
+    fn get_region_notifiers(&self, index: u32) -> Result<Vec<RegionNotifier>> {
+        let (entries, mut fds) = self.session.get_region_io_fds(index)?;
+        let mut notifiers = Vec::new();
+        // The server may back several sub-regions with the same file
+        // descriptor, in which case they all share one notifier.
+        let mut shared: HashMap<u32, Arc<Notifier>> = HashMap::new();
+        for entry in entries {
+            if entry.type_ != VfioUserIoFdType::IOEVENTFD {
+                // An ioregionfd needs a KVM feature that is not upstream, and a
+                // shadow ioeventfd additionally needs the value of the write in
+                // a shared buffer, which upstream KVM cannot provide either.
+                log::warn!("region {index}: ignoring sub-region {entry:x?}: unsupported type");
+                continue;
+            }
+            if entry.flags.contains(VfioUserIoeventFdFlag::PIO) {
+                log::warn!("region {index}: ignoring sub-region {entry:x?}: port IO");
+                continue;
+            }
+            let Ok(size) = u8::try_from(entry.size) else {
+                log::warn!("region {index}: ignoring sub-region {entry:x?}: bad size");
+                continue;
+            };
+            let notifier = match shared.get(&entry.fd_index) {
+                Some(notifier) => notifier.clone(),
+                None => {
+                    let Some(Some(fd)) = fds.get_mut(entry.fd_index as usize).map(Option::take)
+                    else {
+                        log::warn!("region {index}: ignoring sub-region {entry:x?}: no fd");
+                        continue;
+                    };
+                    let notifier = Arc::new(Notifier::try_from(fd)?);
+                    shared.insert(entry.fd_index, notifier.clone());
+                    notifier
+                }
+            };
+            let datamatch = if entry.flags.contains(VfioUserIoeventFdFlag::DATA_MATCH) {
+                Some(entry.datamatch)
+            } else {
+                None
+            };
+            log::debug!("region {index}: sub-region {entry:x?} -> {notifier:?}");
+            notifiers.push(RegionNotifier {
+                offset: entry.offset,
+                size,
+                datamatch,
+                notifier,
+            });
+        }
+        Ok(notifiers)
     }
 }
 
