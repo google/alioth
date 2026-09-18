@@ -7,9 +7,9 @@
 [![Crates.io License](https://img.shields.io/crates/l/alioth)](LICENSE)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-google%2Falioth-blue.svg)](https://deepwiki.com/google/alioth)
 
-Alioth /AL-lee-oth/ is an experimental Type-2 hypervisor, written from scratch
-in Rust. It runs on top of an existing operating system and leverages
-[KVM](https.docs.kernel.org/virt/kvm/api.html) on Linux and Apple's
+Alioth /AL-lee-oth/ is an experimental virtual machine monitor (VMM), written
+from scratch in Rust. It runs on top of an existing operating system and
+leverages [KVM](https.docs.kernel.org/virt/kvm/api.html) on Linux and Apple's
 [Hypervisor](https://developer.apple.com/documentation/hypervisor) framework on
 macOS to create and manage virtual machines.
 
