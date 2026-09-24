@@ -299,7 +299,17 @@ pub struct KvmVm {
 
 #[derive(Debug)]
 pub struct KvmMemory {
-    fd: Arc<OwnedFd>,
+    fd: Option<Arc<OwnedFd>>,
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::KvmMemory;
+
+    #[allow(non_snake_case)]
+    pub fn FakeVmMemory() -> KvmMemory {
+        KvmMemory { fd: None }
+    }
 }
 
 impl KvmMemory {
@@ -324,6 +334,9 @@ impl KvmMemory {
         if option.log_dirty {
             flags |= KvmMemFlag::LOG_DIRTY_PAGES;
         }
+        let Some(fd) = &self.fd else {
+            return Ok(());
+        };
         let region = KvmUserspaceMemoryRegion {
             slot,
             guest_phys_addr: gpa as _,
@@ -331,11 +344,14 @@ impl KvmMemory {
             userspace_addr: hva as _,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.fd, &region) }?;
+        unsafe { kvm_set_user_memory_region(fd, &region) }?;
         Ok(())
     }
 
     pub fn unmap(&self, slot: u32, gpa: usize, _size: usize) -> Result<(), Error> {
+        let Some(fd) = &self.fd else {
+            return Ok(());
+        };
         let flags = KvmMemFlag::empty();
         let region = KvmUserspaceMemoryRegion {
             slot,
@@ -344,30 +360,39 @@ impl KvmMemory {
             userspace_addr: 0,
             flags,
         };
-        unsafe { kvm_set_user_memory_region(&self.fd, &region) }?;
+        unsafe { kvm_set_user_memory_region(fd, &region) }?;
         Ok(())
     }
 
     pub fn max_mem_slots(&self) -> Result<u32, Error> {
-        let ret = unsafe { kvm_check_extension(&self.fd, KVM_CAP_NR_MEMSLOTS) }?;
+        let Some(fd) = &self.fd else {
+            return Ok(32);
+        };
+        let ret = unsafe { kvm_check_extension(fd, KVM_CAP_NR_MEMSLOTS) }?;
         Ok(ret as u32)
     }
 
     pub fn register_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let Some(fd) = &self.fd else {
+            return Ok(());
+        };
         let region = KvmEncRegion {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_reg_region(&self.fd, &region) }?;
+        unsafe { kvm_memory_encrypt_reg_region(fd, &region) }?;
         Ok(())
     }
 
     pub fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()> {
+        let Some(fd) = &self.fd else {
+            return Ok(());
+        };
         let region = KvmEncRegion {
             addr: range.as_ptr() as u64,
             size: range.len() as u64,
         };
-        unsafe { kvm_memory_encrypt_unreg_region(&self.fd, &region) }?;
+        unsafe { kvm_memory_encrypt_unreg_region(fd, &region) }?;
         Ok(())
     }
 }
@@ -427,7 +452,7 @@ impl KvmVm {
             Err(Error::CreatingMultipleMemory)
         } else {
             let kvm_memory = KvmMemory {
-                fd: self.fd.clone(),
+                fd: Some(self.fd.clone()),
             };
             self.memory_created = true;
             Ok(kvm_memory)

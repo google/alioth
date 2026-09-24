@@ -551,7 +551,6 @@ impl RamBus {
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
     use std::io::{Read, Write};
     use std::mem::size_of;
     use std::ptr::null_mut;
@@ -563,6 +562,12 @@ mod test {
 
     use super::{ArcMemPages, RamBus};
 
+    macro_rules! assert_matches {
+        ($expression:expr, $pattern:pat $(if $guard:expr)? $(,)?) => {
+            assert!(matches!($expression, $pattern $(if $guard)?))
+        };
+    }
+
     #[derive(Debug, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
     #[repr(C)]
     struct MyStruct {
@@ -573,7 +578,7 @@ mod test {
 
     #[test]
     fn test_ram_bus_read() {
-        let bus = RamBus::new(FakeVmMemory);
+        let bus = RamBus::new(FakeVmMemory());
         let prot = PROT_READ | PROT_WRITE;
         let size = 3 * PAGE_SIZE;
         let addr = unsafe { mmap(null_mut(), size, prot, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) };

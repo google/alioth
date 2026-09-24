@@ -198,9 +198,13 @@ where
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
-
     use super::*;
+
+    macro_rules! assert_matches {
+        ($expression:expr, $pattern:pat $(if $guard:expr)? $(,)?) => {
+            assert!(matches!($expression, $pattern $(if $guard)?))
+        };
+    }
 
     #[derive(Debug, PartialEq)]
     struct Backend {

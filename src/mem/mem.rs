@@ -433,7 +433,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::hv::test::FakeVmMemory;
-    use crate::mem::emulated::Mmio;
+    use crate::mem::mmio::Mmio;
     use crate::mem::{AddrOpt, MMIO_32_START, MemRegion, MemRegionType, Memory, Result};
 
     #[test]
@@ -455,7 +455,7 @@ mod test {
             }
         }
 
-        let memory = Memory::new(FakeVmMemory);
+        let memory = Memory::new(FakeVmMemory());
         assert_eq!(
             memory
                 .add_region(
