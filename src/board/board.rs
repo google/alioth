@@ -79,11 +79,8 @@ pub struct BoardConfig {
 
 type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
 
-pub struct Board<V>
-where
-    V: Vm,
-{
-    pub vm: V,
+pub struct Board {
+    pub vm: Vm,
     pub memory: Memory,
     #[allow(clippy::type_complexity)]
     pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
@@ -97,10 +94,7 @@ where
     pub pci_devs: RwLock<Vec<PciDevice>>,
 }
 
-impl<V> Board<V>
-where
-    V: Vm,
-{
+impl Board {
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
         let ram = self.memory.ram_bus();
         let mut acpi_table = create_acpi(self.config.num_cpu);
@@ -178,7 +172,7 @@ where
         Ok(())
     }
 
-    fn vcpu_loop(&self, vcpu: &mut <V as Vm>::Vcpu, id: u32) -> Result<bool, Error> {
+    fn vcpu_loop(&self, vcpu: &mut Vcpu, id: u32) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
             let vm_exit = vcpu.run(vm_entry)?;
@@ -262,7 +256,7 @@ where
                     for (vcpu_id, (handle, _)) in vcpus.iter().enumerate() {
                         if id != vcpu_id as u32 {
                             log::info!("vcpu{id} to kill {vcpu_id}");
-                            V::stop_vcpu(vcpu_id as u32, handle)?;
+                            Vm::stop_vcpu(vcpu_id as u32, handle)?;
                         }
                     }
                 }

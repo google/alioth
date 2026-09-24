@@ -14,6 +14,11 @@
 
 use bitflags::bitflags;
 
+use crate::utils::ioctls::{ioctl_io, ioctl_ior};
+use crate::{
+    ioctl_none, ioctl_read, ioctl_write_buf, ioctl_write_ptr, ioctl_write_val, ioctl_writeread_buf,
+};
+
 pub const KVMIO: u8 = 0xAE;
 pub const KVM_API_VERSION: i32 = 12;
 pub const KVM_MAX_CPUID_ENTRIES: usize = 256;
@@ -177,6 +182,7 @@ pub struct KvmRun {
     pub kvm_dirty_regs: u64,
     pub s: KvmSyncRegsBlock,
 }
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union KvmExit {
@@ -251,22 +257,62 @@ bitflags! {
     }
 }
 
-/*
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Default)]
-pub struct KvmIoEventFd {
-    pub datamatch: u64,
-    pub addr: u64,
-    pub len: u32,
-    pub fd: i32,
-    pub flags: KvmIoEventFdFlag,
-    pub pad: [u32; 9],
-}
-*/
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct KvmEncRegion {
     pub addr: u64,
     pub size: u64,
 }
+
+ioctl_none!(kvm_get_api_version, KVMIO, 0x00, 0);
+ioctl_write_val!(kvm_create_vm, ioctl_io(KVMIO, 0x01));
+ioctl_write_val!(kvm_check_extension, ioctl_io(KVMIO, 0x03));
+ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04, 0);
+#[cfg(target_arch = "x86_64")]
+ioctl_writeread_buf!(kvm_get_supported_cpuid, KVMIO, 0x05, KvmCpuid2);
+
+ioctl_write_val!(kvm_create_vcpu, ioctl_io(KVMIO, 0x41), u32);
+ioctl_write_ptr!(
+    kvm_set_user_memory_region,
+    KVMIO,
+    0x46,
+    KvmUserspaceMemoryRegion
+);
+#[cfg(target_arch = "x86_64")]
+ioctl_write_val!(kvm_set_tss_addr, ioctl_io(KVMIO, 0x47));
+#[cfg(target_arch = "x86_64")]
+ioctl_write_ptr!(kvm_set_identity_map_addr, KVMIO, 0x48, u64);
+
+ioctl_none!(kvm_create_irqchip, KVMIO, 0x60, 0);
+
+ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
+
+ioctl_none!(kvm_run, KVMIO, 0x80, 0);
+ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
+ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
+#[cfg(target_arch = "x86_64")]
+ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
+#[cfg(target_arch = "x86_64")]
+ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
+
+#[cfg(target_arch = "x86_64")]
+ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
+
+ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
+
+ioctl_write_ptr!(
+    kvm_memory_encrypt_reg_region,
+    ioctl_ior::<KvmEncRegion>(KVMIO, 0xbb),
+    KvmEncRegion
+);
+
+ioctl_write_ptr!(
+    kvm_memory_encrypt_unreg_region,
+    ioctl_ior::<KvmEncRegion>(KVMIO, 0xbc),
+    KvmEncRegion
+);
+
+#[cfg(target_arch = "x86_64")]
+ioctl_read!(kvm_get_sregs2, KVMIO, 0xcc, KvmSregs2);
+#[cfg(target_arch = "x86_64")]
+ioctl_write_ptr!(kvm_set_sregs2, KVMIO, 0xcd, KvmSregs2);

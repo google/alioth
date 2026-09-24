@@ -1,10 +1,7 @@
-# Puff
+# WASM VMM
 
-Puff is a fork of v0.2.0 of Lencerf's
+WASM VMM is a fork of v0.2.0 of Lencerf's
 [Alioth](https://github.com/google/alioth), further simplified.
-
-The main use case is development/testing of Motor OS; making it
-production-ready is not a goal at the moment.
 
 ## Building
 

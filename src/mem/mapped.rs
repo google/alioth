@@ -198,7 +198,7 @@ impl SlotBackend for MappedSlot {
 #[derive(Debug)]
 pub struct RamBus {
     inner: RwLock<Addressable<MappedSlot>>,
-    vm_memory: Box<dyn VmMemory>,
+    vm_memory: VmMemory,
     pub(super) next_slot_id: AtomicU32,
     max_mem_slots: u32,
 }
@@ -394,7 +394,7 @@ impl RamBus {
         }
     }
 
-    pub fn new<M: VmMemory>(vm_memory: M) -> Self {
+    pub fn new(vm_memory: VmMemory) -> Self {
         let max_mem_slots = match vm_memory.max_mem_slots() {
             Ok(val) => val,
             Err(e) => {
@@ -410,7 +410,7 @@ impl RamBus {
         };
         Self {
             inner: RwLock::new(Addressable::default()),
-            vm_memory: Box::new(vm_memory),
+            vm_memory,
             next_slot_id: AtomicU32::new(0),
             max_mem_slots,
         }

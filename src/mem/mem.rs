@@ -214,7 +214,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(vm_memory: impl VmMemory) -> Self {
+    pub fn new(vm_memory: VmMemory) -> Self {
         Memory {
             ram_bus: Arc::new(RamBus::new(vm_memory)),
             mmio_bus: MmioBus::new(),

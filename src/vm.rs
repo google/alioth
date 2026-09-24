@@ -23,7 +23,7 @@ use thiserror::Error;
 
 use crate::board::serial::Serial;
 use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
-use crate::hv::{self, Hypervisor, Vm};
+use crate::hv::{self, Hypervisor, KvmMsiSender};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::pci::PciDevice;
@@ -64,20 +64,14 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub struct Machine<H>
-where
-    H: Hypervisor,
-{
-    board: Arc<Board<H::Vm>>,
+pub struct Machine {
+    board: Arc<Board>,
     event_rx: Receiver<u32>,
     event_tx: Sender<u32>,
 }
 
-impl<H> Machine<H>
-where
-    H: Hypervisor + 'static,
-{
-    pub fn new(hv: H, config: BoardConfig) -> Result<Self, Error> {
+impl Machine {
+    pub fn new(hv: Hypervisor, config: BoardConfig) -> Result<Self, Error> {
         let mut vm = hv.create_vm()?;
         let vm_memory = vm.create_vm_memory()?;
         let memory = Memory::new(vm_memory);
@@ -129,7 +123,7 @@ where
         &mut self,
         name: String,
         param: P,
-    ) -> Result<Arc<VirtioPciDevice<D, <<H as Hypervisor>::Vm as Vm>::MsiSender>>, Error>
+    ) -> Result<Arc<VirtioPciDevice<D, KvmMsiSender>>, Error>
     where
         P: DevParam<Device = D>,
         D: Virtio,

@@ -3,7 +3,7 @@ cmd_line = "console=ttyS0 root=/dev/vda3 rw"
 num_cpus = 4
 mem_size = "256M"
 blk = ["alpine.raw"]
-log_file = "/tmp/puff.log"
+log_file = "/tmp/wasm-vmm.log"
 log_level = "info"
 
 
