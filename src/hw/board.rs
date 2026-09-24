@@ -22,24 +22,27 @@ use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-use crate::firmware::acpi::bindings::AcpiTableRsdp;
-use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, ExecType, InitState, Payload, linux, xen};
 use crate::mem::mmio::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
-use crate::pci::bus::{CONFIG_ADDRESS, PciBus};
-use crate::pci::config::Command;
-use crate::pci::{self, PciBar, PciDevice};
 
+#[path = "firmware/firmware.rs"]
+pub mod firmware;
 #[cfg(target_arch = "x86_64")]
 pub mod hw_x86_64;
 #[cfg(target_arch = "x86_64")]
 pub use hw_x86_64::*;
-
+#[path = "pci/pci.rs"]
+pub mod pci;
 pub mod serial;
 
+use firmware::acpi::bindings::AcpiTableRsdp;
+use firmware::acpi::create_acpi;
 use layout::{EBDA_START, PCIE_CONFIG_START};
+use pci::bus::{CONFIG_ADDRESS, PciBus};
+use pci::config::Command;
+use pci::{PciBar, PciDevice};
 
 #[derive(Debug, Error)]
 pub enum Error {

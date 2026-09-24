@@ -26,14 +26,14 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 use crate::hv::MsiSender;
 use crate::mem::mmio::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry};
-use crate::pci::cap::{
+use crate::hw::pci::cap::{
     MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio, PciCap,
     PciCapHdr, PciCapId, PciCapList,
 };
-use crate::pci::config::{
+use crate::hw::pci::config::{
     BAR_MEM64, BAR_PREFETCHABLE, CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig,
 };
-use crate::pci::{self, Pci, PciBar};
+use crate::hw::pci::{self, Pci, PciBar};
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
 };

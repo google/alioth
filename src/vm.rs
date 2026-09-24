@@ -22,15 +22,15 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
 use crate::hv::{self, Hypervisor, KvmMsiSender};
+use crate::hw::pci::bus::PciBus;
+use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
 use crate::hw::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
-use crate::pci::PciDevice;
-use crate::pci::bus::PciBus;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
 use crate::virtio::pci::VirtioPciDevice;
-use crate::{mem, pci, virtio};
+use crate::{mem, virtio};
 
 #[derive(Debug, Error)]
 pub enum Error {

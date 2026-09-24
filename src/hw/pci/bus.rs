@@ -21,10 +21,10 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::mem;
 use crate::mem::mmio::Mmio;
-use crate::pci::config::PciConfig;
-use crate::pci::host_bridge::HostBridge;
-use crate::pci::segment::PciSegment;
-use crate::pci::{Bdf, Error, Pci, Result};
+use crate::hw::pci::config::PciConfig;
+use crate::hw::pci::host_bridge::HostBridge;
+use crate::hw::pci::segment::PciSegment;
+use crate::hw::pci::{Bdf, Error, Pci, Result};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;

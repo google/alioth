@@ -37,7 +37,7 @@ pub enum Error {
     Memory(#[from] mem::Error),
 
     #[error("PCI bus: {0}")]
-    PciBus(#[from] crate::pci::Error),
+    PciBus(#[from] crate::hw::pci::Error),
 
     #[error("Invalid descriptor id {0}")]
     InvalidDescriptor(u16),

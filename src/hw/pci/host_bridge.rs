@@ -14,10 +14,10 @@
 
 use std::sync::Arc;
 
-use crate::pci;
-use crate::pci::cap::PciCapList;
-use crate::pci::config::{CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig};
-use crate::pci::{Pci, PciBar};
+use crate::hw::pci;
+use crate::hw::pci::cap::PciCapList;
+use crate::hw::pci::config::{CommonHeader, DeviceHeader, EmulatedConfig, HeaderType, PciConfig};
+use crate::hw::pci::{Pci, PciBar};
 
 #[derive(Debug)]
 pub struct HostBridge {

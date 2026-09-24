@@ -22,8 +22,8 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::addressable::SlotBackend;
 use crate::mem::mmio::{Mmio, MmioBus};
-use crate::pci::Error;
-use crate::pci::config::DeviceHeader;
+use crate::hw::pci::Error;
+use crate::hw::pci::config::DeviceHeader;
 use crate::{align_up, impl_mmio_for_zerocopy, mem};
 
 #[repr(u8)]

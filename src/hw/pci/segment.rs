@@ -19,8 +19,8 @@ use parking_lot::RwLock;
 
 use crate::mem;
 use crate::mem::mmio::Mmio;
-use crate::pci::config::PciConfig;
-use crate::pci::{Bdf, Error, Result};
+use crate::hw::pci::config::PciConfig;
+use crate::hw::pci::{Bdf, Error, Result};
 
 #[derive(Debug)]
 pub struct PciSegment {

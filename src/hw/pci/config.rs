@@ -23,8 +23,8 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::mmio::Mmio;
 use crate::mem::{AddrOpt, ChangeLayout};
-use crate::pci::cap::PciCapList;
-use crate::pci::{Bdf, PciBar};
+use crate::hw::pci::cap::PciCapList;
+use crate::hw::pci::{Bdf, PciBar};
 use crate::{assign_bits, mask_bits, mem, unsafe_impl_zerocopy};
 
 bitflags! {

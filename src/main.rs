@@ -22,16 +22,12 @@ use crate::vm::Machine;
 #[path = "hw/board.rs"]
 pub mod hw;
 mod config;
-#[path = "firmware/firmware.rs"]
-pub mod firmware;
 #[path = "hv/hv.rs"]
 pub mod hv;
 #[path = "loader/loader.rs"]
 pub mod loader;
 #[path = "mem/mem.rs"]
 pub mod mem;
-#[path = "pci/pci.rs"]
-pub mod pci;
 #[path = "utils/utils.rs"]
 pub(crate) mod utils;
 #[path = "virtio/virtio.rs"]
