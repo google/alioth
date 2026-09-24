@@ -41,7 +41,7 @@ pub use vcpu::{KvmVcpu, KvmVcpu as Vcpu};
 
 #[cfg(target_arch = "x86_64")]
 pub mod arch {
-    use crate::arch::reg::SegAccess;
+    use crate::hw::reg::SegAccess;
 
     #[derive(Debug, Default, Clone)]
     pub struct Cpuid {

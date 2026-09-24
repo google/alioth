@@ -20,8 +20,8 @@ use std::sync::atomic::Ordering;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::arch::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 use crate::hv::{self, VmEntry, VmMemory};
+use crate::hw::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 
 pub mod addressable;
 pub mod mapped;

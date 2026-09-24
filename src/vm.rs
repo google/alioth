@@ -21,9 +21,9 @@ use std::thread;
 use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
-use crate::board::serial::Serial;
-use crate::board::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::hv::{self, Hypervisor, KvmMsiSender};
+use crate::hw::serial::Serial;
+use crate::hw::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::pci::PciDevice;
@@ -47,7 +47,7 @@ pub enum Error {
     Loader(#[from] loader::Error),
 
     #[error("board: {0}")]
-    Board(#[from] board::Error),
+    Board(#[from] hw::Error),
 
     #[error("PCI bus: {0}")]
     PciBus(#[from] pci::Error),

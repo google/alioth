@@ -13,16 +13,14 @@
 // limitations under the License.
 #![allow(clippy::missing_safety_doc)]
 
-use crate::board::BoardConfig;
 use crate::hv::Kvm;
+use crate::hw::BoardConfig;
 use crate::loader::{ExecType, Payload};
 use crate::virtio::dev::blk::BlockParam;
 use crate::vm::Machine;
 
-#[path = "arch/arch.rs"]
-pub mod arch;
-#[path = "board/board.rs"]
-pub mod board;
+#[path = "hw/board.rs"]
+pub mod hw;
 mod config;
 #[path = "firmware/firmware.rs"]
 pub mod firmware;

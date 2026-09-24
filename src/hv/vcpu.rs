@@ -19,7 +19,7 @@ use std::ptr::null_mut;
 
 use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
 
-use crate::arch::reg::SegAccess;
+use crate::hw::reg::SegAccess;
 use crate::ffi;
 use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::hv::bindings::{

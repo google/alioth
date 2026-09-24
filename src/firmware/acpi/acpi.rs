@@ -18,9 +18,7 @@ use std::mem::{offset_of, size_of, size_of_val};
 
 use zerocopy::{transmute, AsBytes, FromBytes, FromZeroes};
 
-use crate::arch::layout::PCIE_CONFIG_START;
-#[cfg(target_arch = "x86_64")]
-use crate::arch::layout::{APIC_START, IOAPIC_START};
+use crate::hw::layout::{APIC_START, IOAPIC_START, PCIE_CONFIG_START};
 use crate::unsafe_impl_zerocopy;
 
 use bindings::{

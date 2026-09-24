@@ -20,13 +20,13 @@ use std::path::Path;
 use bitflags::bitflags;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::arch::layout::{
+use crate::hw::layout::{
     BOOT_GDT_START, BOOT_PAGING_START, EBDA_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
     KERNEL_IMAGE_START, LINUX_BOOT_PARAMS_START,
 };
-use crate::arch::msr::Efer;
-use crate::arch::paging::Entry;
-use crate::arch::reg::{Cr0, Cr4, Rflags, SegAccess};
+use crate::hw::msr::Efer;
+use crate::hw::paging::Entry;
+use crate::hw::reg::{Cr0, Cr4, Rflags, SegAccess};
 use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::{Error, InitState, search_initramfs_address};
 use crate::mem::mapped::RamBus;

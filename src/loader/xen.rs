@@ -20,10 +20,10 @@ use std::path::Path;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::align_up;
-use crate::arch::layout::{
+use crate::hw::layout::{
     BOOT_GDT_START, EBDA_START, HVM_START_INFO_START, KERNEL_CMD_LINE_LIMIT, KERNEL_CMD_LINE_START,
 };
-use crate::arch::reg::{Cr0, Rflags, SegAccess};
+use crate::hw::reg::{Cr0, Rflags, SegAccess};
 use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::elf::{
     ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,

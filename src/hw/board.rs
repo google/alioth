@@ -22,7 +22,6 @@ use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-use crate::arch::layout::{EBDA_START, PCIE_CONFIG_START};
 use crate::firmware::acpi::bindings::AcpiTableRsdp;
 use crate::firmware::acpi::create_acpi;
 use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
@@ -33,10 +32,14 @@ use crate::pci::bus::{CONFIG_ADDRESS, PciBus};
 use crate::pci::config::Command;
 use crate::pci::{self, PciBar, PciDevice};
 
-mod x86_64;
+#[cfg(target_arch = "x86_64")]
+pub mod hw_x86_64;
+#[cfg(target_arch = "x86_64")]
+pub use hw_x86_64::*;
 
 pub mod serial;
-pub(crate) use x86_64::ArchBoard;
+
+use layout::{EBDA_START, PCIE_CONFIG_START};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -65,7 +68,7 @@ pub enum Error {
     MemoryTooSmall,
 }
 
-type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub const STATE_CREATED: u8 = 0;
 pub const STATE_RUNNING: u8 = 1;
