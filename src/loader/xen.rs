@@ -17,7 +17,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::mem::{offset_of, size_of, size_of_val};
 use std::path::Path;
 
-use zerocopy::{AsBytes, FromZeroes};
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::align_up;
 use crate::arch::layout::{
@@ -26,20 +26,56 @@ use crate::arch::layout::{
 use crate::arch::reg::{Cr0, Rflags, SegAccess};
 use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::elf::{
-    Elf64Header, Elf64Note, Elf64ProgramHeader, Elf64SectionHeader, ELF_HEADER_MAGIC,
-    ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, PT_NOTE, SHT_NOTE,
+    ELF_HEADER_MAGIC, ELF_IDENT_CLASS_64, ELF_IDENT_LITTLE_ENDIAN, Elf64Header, Elf64Note,
+    Elf64ProgramHeader, Elf64SectionHeader, PT_NOTE, SHT_NOTE,
 };
-use crate::loader::xen::start_info::{
-    XEN_HVM_MEMMAP_TYPE_ACPI, XEN_HVM_MEMMAP_TYPE_PMEM, XEN_HVM_MEMMAP_TYPE_RAM,
-    XEN_HVM_MEMMAP_TYPE_RESERVED, XEN_HVM_START_INFO_V1, XEN_HVM_START_MAGIC_VALUE,
-};
-use crate::loader::{search_initramfs_address, Error, InitState, Result};
+use crate::loader::{Error, InitState, Result, search_initramfs_address};
 use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
-pub mod start_info;
+pub const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
+pub const XEN_HVM_START_INFO_V1: u32 = 1;
 
-use start_info::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
+#[repr(C)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
+pub struct HvmStartInfo {
+    pub magic: u32,
+    pub version: u32,
+    pub flags: u32,
+    pub nr_modules: u32,
+    pub modlist_paddr: u64,
+    pub cmdline_paddr: u64,
+    pub rsdp_paddr: u64,
+    pub memmap_paddr: u64,
+    pub memmap_entries: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
+pub struct HvmModlistEntry {
+    pub paddr: u64,
+    pub size: u64,
+    pub cmdline_paddr: u64,
+    pub reserved: u64,
+}
+
+pub const XEN_HVM_MEMMAP_TYPE_RAM: u32 = 1;
+pub const XEN_HVM_MEMMAP_TYPE_RESERVED: u32 = 2;
+pub const XEN_HVM_MEMMAP_TYPE_ACPI: u32 = 3;
+pub const XEN_HVM_MEMMAP_TYPE_NVS: u32 = 4;
+pub const XEN_HVM_MEMMAP_TYPE_UNUSABLE: u32 = 5;
+pub const XEN_HVM_MEMMAP_TYPE_DISABLED: u32 = 6;
+pub const XEN_HVM_MEMMAP_TYPE_PMEM: u32 = 7;
+
+#[repr(C)]
+#[derive(Debug, Clone, Default, AsBytes, FromZeroes, FromBytes)]
+pub struct HvmMemmapTableEntry {
+    pub addr: u64,
+    pub size: u64,
+    pub type_: u32,
+    pub reserved: u32,
+}
 
 pub const XEN_ELFNOTE_PHYS32_ENTRY: u32 = 18;
 
@@ -291,4 +327,18 @@ pub fn load<P: AsRef<Path>>(
         dt_regs: vec![(DtReg::Gdtr, gdtr), (DtReg::Idtr, idtr)],
         initramfs: initramfs_range,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use std::mem::size_of;
+
+    use super::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
+
+    #[test]
+    fn test_size() {
+        assert_eq!(size_of::<HvmStartInfo>(), 0x38);
+        assert_eq!(size_of::<HvmModlistEntry>(), 0x20);
+        assert_eq!(size_of::<HvmMemmapTableEntry>(), 0x18);
+    }
 }
