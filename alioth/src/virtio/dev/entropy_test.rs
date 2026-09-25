@@ -46,7 +46,7 @@ fn entry_config_test() {
 #[test]
 fn entropy_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(1));
 
     let mut guest_q = GuestQueue::new(

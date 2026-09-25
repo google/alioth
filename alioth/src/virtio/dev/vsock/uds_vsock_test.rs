@@ -289,7 +289,7 @@ impl<'m> VsockTest<'m> {
 #[test]
 fn vsock_conn_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     // 0. Setup connection
@@ -380,7 +380,7 @@ fn vsock_conn_test() {
 #[test]
 fn vsock_host_close_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     // Establish a host-initiated connection
@@ -408,7 +408,7 @@ fn vsock_host_close_test() {
 #[test]
 fn vsock_host_close_no_desc_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     // Establish a host-initiated connection
@@ -451,7 +451,7 @@ fn vsock_host_close_no_desc_test() {
 #[test]
 fn vsock_partial_conn_request_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     let mut h2g_stream = t.connect();
@@ -480,7 +480,7 @@ fn vsock_partial_conn_request_test() {
 #[test]
 fn vsock_simultaneous_conn_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     let buf_addrs = [RX_ADDR, RX_ADDR + 2048];
@@ -516,7 +516,7 @@ fn vsock_simultaneous_conn_test() {
 #[test]
 fn vsock_conn_request_eof_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     // A client that connects and disconnects without saying anything.
@@ -540,7 +540,7 @@ fn vsock_conn_request_eof_test() {
 #[test]
 fn vsock_conn_request_close_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let mut t = VsockTest::new(&ram_bus, &ram);
 
     // A client that sends a complete request and hangs up before the guest

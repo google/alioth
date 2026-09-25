@@ -145,7 +145,7 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
 fn disabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.enabled.store(false, Ordering::Relaxed);
     let split_queue = PackedQueue::new(reg, &ram, false);
@@ -156,7 +156,7 @@ fn disabled_queue() {
 fn invalid_queue_size() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
 
     reg.size.store(0, Ordering::Relaxed);
@@ -168,7 +168,7 @@ fn invalid_queue_size() {
 fn enabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
     let mut guest_q = GuestQueue::new(PackedQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
@@ -229,7 +229,7 @@ fn enabled_queue() {
 fn enable_notification() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
 
@@ -263,7 +263,7 @@ fn is_interrupt_enabled(
 ) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, enable_event_idx)
         .unwrap()

@@ -153,7 +153,7 @@ fn io_uring_drain_test() {
 
     // The pipe is empty, so the read stays in flight.
     {
-        let ram = ram_bus.lock_layout();
+        let ram = ram_bus.load();
         let mut guest_q = GuestQueue::new(
             SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap(),
             &regs[0],
@@ -191,7 +191,7 @@ fn io_uring_drain_test() {
 #[test]
 fn io_uring_drain_cancels_pending_reads() {
     let ram_bus = fixture_ram_bus();
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let regs = fixture_queues(1);
     let mut guest_q = GuestQueue::new(
         SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap(),
