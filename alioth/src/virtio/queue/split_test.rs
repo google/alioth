@@ -59,7 +59,7 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
     }
 
     fn get_used(&mut self, index: u16, _: &HashMap<u16, Vec<u16>>) -> Option<UsedDesc> {
-        let used_idx = unsafe { &mut *self.avail_hdr }.idx;
+        let used_idx = unsafe { &*self.used_hdr }.idx;
         if !(index < used_idx || index - used_idx >= !(self.size - 1)) {
             return None;
         }
@@ -126,6 +126,7 @@ fn enabled_queue() {
     assert_eq!(&*chain.readable[0], str_0.as_bytes());
     assert_eq!(&*chain.readable[1], str_1.as_bytes());
     assert_eq!(chain.writable.len(), 0);
+    assert!(guest_q.get_used().is_none());
     q.set_used(0, chain.id, 0);
     assert!(!q.desc_avail(1));
     let used = guest_q.get_used().unwrap();
@@ -139,6 +140,7 @@ fn enabled_queue() {
     assert_eq!(chain.readable.len(), 0);
     let buffer = chain.writable[0].as_mut();
     buffer.copy_from_slice(str_2.as_bytes());
+    assert!(guest_q.get_used().is_none());
     q.set_used(1, chain.id, str_2.len() as u32);
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
@@ -147,6 +149,7 @@ fn enabled_queue() {
     assert_eq!(used.id, id);
     assert_eq!(used.delta, 1);
     assert_eq!(used.len, str_2.len() as u32);
+    assert!(guest_q.get_used().is_none());
 }
 
 #[test]
