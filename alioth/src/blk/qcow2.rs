@@ -50,6 +50,15 @@ pub struct Qcow2Hdr {
 /// Qcow2 Magic Number "QFI\xfb"
 pub const QCOW2_MAGIC: [u8; 4] = *b"QFI\xfb";
 
+/// Minimum cluster bits (512-byte clusters) required by the specification.
+pub const QCOW2_MIN_CLUSTER_BITS: u32 = 9;
+
+/// Maximum cluster bits (2 MiB clusters).
+///
+/// The specification sets no upper bound, but QEMU cannot open images with
+/// larger clusters, so this is the de facto limit.
+pub const QCOW2_MAX_CLUSTER_BITS: u32 = 21;
+
 bitflags! {
     pub struct Qcow2IncompatibleFeatures(u64) {
         DIRTY = 1 << 0;
@@ -120,6 +129,10 @@ pub const QCOW2_CMPR_SECTOR_SIZE: u64 = 512;
 pub struct Qcow2CmprDesc(pub u64);
 
 impl Qcow2CmprDesc {
+    /// Returns the host offset and size of the compressed data.
+    ///
+    /// `cluster_bits` must be within
+    /// [`QCOW2_MIN_CLUSTER_BITS`]..=[`QCOW2_MAX_CLUSTER_BITS`].
     pub fn offset_size(&self, cluster_bits: u32) -> (u64, u64) {
         let size_bits = cluster_bits - 8;
         let offset_bits = 62 - size_bits;

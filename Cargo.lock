@@ -58,6 +58,7 @@ dependencies = [
  "serde",
  "serde-aco",
  "snafu",
+ "tempfile",
  "zerocopy",
 ]
 

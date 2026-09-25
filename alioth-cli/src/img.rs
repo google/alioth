@@ -18,7 +18,8 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use alioth::blk::qcow2::{
-    QCOW2_MAGIC, Qcow2CmprDesc, Qcow2Hdr, Qcow2IncompatibleFeatures, Qcow2L1, Qcow2L2, Qcow2StdDesc,
+    QCOW2_MAGIC, QCOW2_MAX_CLUSTER_BITS, QCOW2_MIN_CLUSTER_BITS, Qcow2CmprDesc, Qcow2Hdr,
+    Qcow2IncompatibleFeatures, Qcow2L1, Qcow2L2, Qcow2StdDesc,
 };
 use alioth::errors::{DebugTrace, trace_error};
 use alioth::utils::endian::Bu64;
@@ -84,6 +85,10 @@ pub enum Error {
     MissingMagic { magic: [u8; 4], found: [u8; 4] },
     #[snafu(display("Unsupported qcow2 features: {features:?}"))]
     Features { features: Qcow2IncompatibleFeatures },
+    #[snafu(display(
+        "Cluster bits {bits} not in [{QCOW2_MIN_CLUSTER_BITS}, {QCOW2_MAX_CLUSTER_BITS}]"
+    ))]
+    InvalidClusterBits { bits: u32 },
     #[snafu(display("Decompression failed: {:?}", status))]
     DecompressionFailed { status: TINFLStatus },
 }
@@ -127,6 +132,9 @@ fn convert_qcow2_to_raw(input: &Path, output: &Path) -> Result<()> {
         return error::Features { features }.fail();
     }
     let cluster_bits = hdr.cluster_bits.to_ne();
+    if !(QCOW2_MIN_CLUSTER_BITS..=QCOW2_MAX_CLUSTER_BITS).contains(&cluster_bits) {
+        return error::InvalidClusterBits { bits: cluster_bits }.fail();
+    }
     let cluster_size = 1 << cluster_bits;
     let l2_size = cluster_size / std::mem::size_of::<Bu64>() as u64;
 
@@ -184,3 +192,7 @@ fn convert_qcow2_to_raw(input: &Path, output: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "img_test.rs"]
+mod tests;

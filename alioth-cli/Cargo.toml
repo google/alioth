@@ -27,3 +27,4 @@ assert_matches.workspace = true
 ctor.workspace = true
 pretty_assertions.workspace = true
 rstest.workspace = true
+tempfile.workspace = true
