@@ -57,7 +57,7 @@ where
     fn update_snp_desc(&self, desc: &SevMetadataDesc) -> Result<()> {
         let mut cpuid_table = SnpCpuidInfo::new_zeroed();
         let ram_bus = self.ctx.board.memory.ram_bus();
-        let ram = ram_bus.lock_layout();
+        let ram = ram_bus.load();
         let page_type = match desc.type_ {
             SevDescType::SNP_DESC_MEM => SnpPageType::UNMEASURED,
             SevDescType::SNP_SECRETS => SnpPageType::SECRETS,

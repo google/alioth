@@ -184,7 +184,7 @@ impl<'a> Read for Reader<'a> {
 fn test_copy_from_reader() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let mut host_q = Queue::new(
         SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
@@ -343,7 +343,7 @@ impl<'a> Write for Writer<'a> {
 fn test_copy_to_writer() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let mut host_q = Queue::new(
         SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
@@ -562,7 +562,7 @@ fn check_handle_deferred<'m, Q>(
 fn test_handle_deferred(#[case] packed: bool, #[case] event_idx: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     if packed {
         let host_q = Queue::new(
