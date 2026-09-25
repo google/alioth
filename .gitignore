@@ -12,3 +12,6 @@ target/
 **/*.log
 
 .vscode
+
+# Nix build output
+result*
