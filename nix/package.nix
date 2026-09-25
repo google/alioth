@@ -1,6 +1,10 @@
 {
   lib,
+  stdenv,
   rustPlatform,
+  apple-sdk_15,
+  darwin,
+  darwinMinVersionHook,
 }:
 
 let
@@ -23,10 +27,24 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  nativeBuildInputs = lib.optionals stdenv.hostPlatform.isDarwin [ darwin.sigtool ];
+
+  buildInputs = lib.optionals stdenv.hostPlatform.isDarwin [
+    # The GIC APIs of Hypervisor.framework (hv_gic_*) need macOS 15
+    apple-sdk_15
+    (darwinMinVersionHook "15.0")
+  ];
+
   # Checks use `debug_assert_eq!`
   checkType = "debug";
 
   separateDebugInfo = true;
+
+  # Hypervisor.framework and vmnet.framework require entitlements to run
+  # without root, see docs/macos-signing.md
+  postFixup = lib.optionalString stdenv.hostPlatform.isDarwin ''
+    codesign --entitlements alioth-cli/cli.entitlements --force --sign - $out/bin/alioth
+  '';
 
   meta = {
     homepage = "https://github.com/google/alioth";
