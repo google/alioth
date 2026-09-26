@@ -223,11 +223,14 @@ where
         }
         self.irq_sender.msix_table.reset();
         for q in self.queues.iter() {
+            // Disable the queue before clearing its ring addresses, so that
+            // a reader that checks `enabled` after loading the addresses
+            // never accepts a partially cleared queue.
+            q.enabled.store(false, Ordering::Release);
             q.size.store(QUEUE_SIZE_MAX, Ordering::Release);
             q.desc.store(0, Ordering::Release);
             q.driver.store(0, Ordering::Release);
             q.device.store(0, Ordering::Release);
-            q.enabled.store(false, Ordering::Release);
         }
     }
 

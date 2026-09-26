@@ -99,17 +99,24 @@ impl<'m> PackedQueue<'m> {
             return Ok(None);
         }
         let size = reg.size.load(Ordering::Acquire);
+        let desc = reg.desc.load(Ordering::Acquire);
+        let device = reg.device.load(Ordering::Acquire);
+        let driver = reg.driver.load(Ordering::Acquire);
+        // The registers may be cleared by a concurrent reset, which disables
+        // the queue first.
+        if !reg.enabled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         if size == 0 {
             return error::InvalidQueueSize { size }.fail();
         }
-        let desc = reg.desc.load(Ordering::Acquire);
-        let notification: *mut DescEvent = ram.get_ptr(reg.device.load(Ordering::Acquire))?;
+        let notification: *mut DescEvent = ram.get_ptr(device)?;
         Ok(Some(PackedQueue {
             size,
             desc: ram.get_ptr(desc)?,
             enable_event_idx: event_idx,
             notification,
-            interrupt: ram.get_ptr(reg.driver.load(Ordering::Acquire))?,
+            interrupt: ram.get_ptr(driver)?,
             _phantom: PhantomData,
         }))
     }

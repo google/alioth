@@ -125,13 +125,19 @@ impl<'m> SplitQueue<'m> {
             return Ok(None);
         }
         let size = reg.size.load(Ordering::Acquire) as u64;
+        let used = reg.device.load(Ordering::Acquire);
+        let avail = reg.driver.load(Ordering::Acquire);
+        let desc = reg.desc.load(Ordering::Acquire);
+        // The registers may be cleared by a concurrent reset, which disables
+        // the queue first.
+        if !reg.enabled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         if size == 0 || !size.is_power_of_two() {
             return error::InvalidQueueSize { size: size as u16 }.fail();
         }
         let mut avail_event = None;
         let mut used_event = None;
-        let used = reg.device.load(Ordering::Acquire);
-        let avail = reg.driver.load(Ordering::Acquire);
         if event_idx {
             let avail_event_gpa =
                 used + size_of::<UsedHeader>() as u64 + size * size_of::<UsedElem>() as u64;
@@ -143,7 +149,6 @@ impl<'m> SplitQueue<'m> {
         let used_hdr = ram.get_ptr::<UsedHeader>(used)?;
         let avail_ring_gpa = avail + size_of::<AvailHeader>() as u64;
         let used_ring_gpa = used + size_of::<UsedHeader>() as u64;
-        let desc = reg.desc.load(Ordering::Acquire);
         Ok(Some(SplitQueue {
             size: size as u16,
             avail_hdr: ram.get_ptr(avail)?,
