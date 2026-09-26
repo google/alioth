@@ -73,21 +73,18 @@ fn test_ram_bus_read() {
     }
 
     let guest_iov = [(0, 16), (PAGE_SIZE - 16, 32), (2 * PAGE_SIZE - 16, 16)];
-    let write_ret = bus.write_vectored(&guest_iov, |iov| {
-        assert_eq!(iov.len(), 4);
-        (&*data).read_vectored(iov)
-    });
-    assert_matches!(write_ret, Ok(Ok(64)));
-    let mut buf_read = Vec::new();
-    let read_ret = bus.read_vectored(&guest_iov, |iov| {
-        assert_eq!(iov.len(), 4);
-        buf_read.write_vectored(iov)
-    });
-    assert_matches!(read_ret, Ok(Ok(64)));
 
     let locked_bus = bus.lock_layout();
-    let bufs = locked_bus.translate_iov(&guest_iov).unwrap();
-    println!("{bufs:?}");
+    let mut iov = locked_bus.translate_iov_mut(&guest_iov).unwrap();
+    assert_eq!(iov.len(), 4);
+    assert_matches!((&*data).read_vectored(&mut iov), Ok(64));
+    drop(iov);
+    let iov = locked_bus.translate_iov(&guest_iov).unwrap();
+    assert_eq!(iov.len(), 4);
+    let mut buf_read = Vec::new();
+    assert_matches!(buf_read.write_vectored(&iov), Ok(64));
+    assert_eq!(buf_read, data);
+    drop(iov);
     drop(locked_bus);
     bus.remove(0x0).unwrap();
 }

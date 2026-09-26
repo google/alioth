@@ -465,34 +465,6 @@ impl RamBus {
         }
         Ok(())
     }
-
-    pub fn read_vectored<T, F>(&self, bufs: &[(u64, u64)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&[IoSlice<'_>]) -> T,
-    {
-        let ram = self.ram.read();
-        let mut iov = vec![];
-        for (gpa, len) in bufs {
-            for r in ram.slice_iter(*gpa, *len) {
-                iov.push(IoSlice::new(r?));
-            }
-        }
-        Ok(callback(&iov))
-    }
-
-    pub fn write_vectored<T, F>(&self, bufs: &[(u64, u64)], callback: F) -> Result<T, Error>
-    where
-        F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
-    {
-        let ram = self.ram.read();
-        let mut iov = vec![];
-        for (gpa, len) in bufs {
-            for r in ram.slice_iter_mut(*gpa, *len) {
-                iov.push(IoSliceMut::new(r?));
-            }
-        }
-        Ok(callback(&mut iov))
-    }
 }
 
 #[cfg(test)]
