@@ -212,6 +212,53 @@ fn test_queue_size_locked_when_enabled() {
     );
 }
 
+#[test]
+fn test_queue_addrs_locked_when_enabled() {
+    let queues = Arc::new([QueueReg::default()]);
+    let (mmio, _) = create_test_mmio(queues.clone());
+
+    let offsets = [
+        VirtioCommonCfg::OFFSET_QUEUE_DESC_LO,
+        VirtioCommonCfg::OFFSET_QUEUE_DESC_HI,
+        VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO,
+        VirtioCommonCfg::OFFSET_QUEUE_DRIVER_HI,
+        VirtioCommonCfg::OFFSET_QUEUE_DEVICE_LO,
+        VirtioCommonCfg::OFFSET_QUEUE_DEVICE_HI,
+    ];
+    let write_addrs = |val: u64| {
+        for offset in offsets {
+            assert_matches!(mmio.write(offset as u64, 4, val), Ok(Action::None));
+        }
+    };
+    let read_addrs = || {
+        let q = &queues[0];
+        [&q.desc, &q.driver, &q.device].map(|r| r.load(Ordering::Acquire))
+    };
+
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, 0),
+        Ok(Action::None)
+    );
+    write_addrs(0x1000);
+    assert_eq!(read_addrs(), [0x1000_0000_1000; 3]);
+
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_ENABLE as u64, 2, 1),
+        Ok(Action::None)
+    );
+    write_addrs(0x2000);
+    assert_eq!(read_addrs(), [0x1000_0000_1000; 3]);
+
+    // The driver cannot disable the queue to change it either.
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_ENABLE as u64, 2, 0),
+        Ok(Action::None)
+    );
+    assert!(queues[0].enabled.load(Ordering::Acquire));
+    write_addrs(0x2000);
+    assert_eq!(read_addrs(), [0x1000_0000_1000; 3]);
+}
+
 #[rstest]
 #[case(VirtioCommonCfg::OFFSET_QUEUE_SIZE, 2, 64)]
 #[case(VirtioCommonCfg::OFFSET_QUEUE_DESC_LO, 4, 0x1000)]

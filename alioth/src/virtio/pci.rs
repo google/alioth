@@ -234,6 +234,25 @@ where
         }
     }
 
+    /// Returns the queue `q_sel` if the driver may still change its ring
+    /// addresses.
+    ///
+    /// Per the virtio spec, the driver sets up a queue before enabling it,
+    /// and the device uses the addresses from then on until reset. Writes
+    /// to an enabled queue are ignored, so that the worker never sees ring
+    /// addresses change under it.
+    fn configurable_queue(&self, q_sel: u16) -> Option<&QueueReg> {
+        let q = self.queues.get(q_sel as usize)?;
+        if q.enabled.load(Ordering::Acquire) {
+            log::warn!(
+                "{}: queue {q_sel}: cannot change an enabled queue",
+                self.name
+            );
+            return None;
+        }
+        Some(q)
+    }
+
     fn msix_change_allowed(&self, old: u16) -> bool {
         let entries = self.irq_sender.msix_table.entries.read();
         let Some(entry) = entries.get(old as usize) else {
@@ -461,10 +480,8 @@ where
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SIZE => {
-                let q_sel = reg.queue_sel.load(Ordering::Relaxed) as usize;
-                if let Some(q) = self.queues.get(q_sel)
-                    && !q.enabled.load(Ordering::Acquire)
-                {
+                let q_sel = reg.queue_sel.load(Ordering::Relaxed);
+                if let Some(q) = self.configurable_queue(q_sel) {
                     if val.is_power_of_two()
                         || VirtioFeature(self.reg.get_driver_feature())
                             .contains(VirtioFeature::RING_PACKED)
@@ -497,12 +514,18 @@ where
             VirtioCommonCfg::LAYOUT_QUEUE_ENABLE => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    q.enabled.store(val != 0, Ordering::Release);
+                    // Without VIRTIO_F_RING_RESET, the driver must not
+                    // disable a queue. Queues are disabled by a device reset.
+                    if val == 0 {
+                        log::warn!("{}: queue {q_sel}: cannot disable a queue", self.name);
+                    } else {
+                        q.enabled.store(true, Ordering::Release);
+                    }
                 };
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DESC_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     if val.is_multiple_of(16) {
                         set_atomic_low32(&q.desc, val as u32)
                     } else {
@@ -515,13 +538,13 @@ where
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DESC_HI => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     set_atomic_high32(&q.desc, val as u32)
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     let feat = VirtioFeature::from_bits_retain(reg.get_driver_feature());
                     let align = if feat.contains(VirtioFeature::RING_PACKED) {
                         4
@@ -540,13 +563,13 @@ where
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_HI => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     set_atomic_high32(&q.driver, val as u32)
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     if val.is_multiple_of(4) {
                         set_atomic_low32(&q.device, val as u32)
                     } else {
@@ -559,7 +582,7 @@ where
             }
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_HI => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
-                if let Some(q) = self.queues.get(q_sel as usize) {
+                if let Some(q) = self.configurable_queue(q_sel) {
                     set_atomic_high32(&q.device, val as u32)
                 }
             }
