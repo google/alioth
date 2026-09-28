@@ -35,6 +35,15 @@ use crate::board::{CpuSpec, CpuTopology};
         ..Default::default()
     },
 }, false)]
+#[case(CpuSpec {
+    count: 0,
+    topology: CpuTopology {
+        smt: false,
+        cores: 0,
+        sockets: 1,
+        ..Default::default()
+    },
+}, false)]
 fn test_cpu_topology_validate(#[case] spec: CpuSpec, #[case] expected: bool) {
     assert_eq!(spec.validate(), expected);
 }
