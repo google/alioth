@@ -137,7 +137,7 @@ impl CpuSpec {
         let vcpus_per_core = 1 + self.topology.smt as u16;
         let vcpus_per_socket = self.topology.cores * vcpus_per_core;
         let count = self.topology.sockets as u16 * vcpus_per_socket;
-        count == self.count
+        self.count > 0 && count == self.count
     }
 }
 
