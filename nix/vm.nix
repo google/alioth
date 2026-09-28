@@ -17,7 +17,7 @@ writeShellApplication {
     exec ${lib.getExe alioth} boot \
       --kernel ${kernel}/${kernel.target} \
       --initramfs ${initramfs} \
-      --cmdline "console=${console} quiet" \
+      --cmdline "console=${console} quiet ''${ALIOTH_VM_CMDLINE:-}" \
       --cpu "count=''${ALIOTH_VM_CPUS:-2}" \
       --memory "size=''${ALIOTH_VM_MEMORY:-1G}" \
       "$@"

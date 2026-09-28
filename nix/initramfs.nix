@@ -18,6 +18,14 @@ let
     mount -t sysfs sysfs /sys
     mount -t tmpfs tmpfs /tmp
 
+    # Report and power off without a shell, e.g. in CI
+    case " $(cat /proc/cmdline) " in
+    *" alioth.smoke-test "*)
+      echo "alioth-smoke-test: $(nproc) CPUs, $(awk '/MemTotal/ { print $2 }' /proc/meminfo) kB"
+      poweroff -f
+      ;;
+    esac
+
     echo
     echo "Welcome to $(uname -sr) on Alioth. Exit the shell to power off."
     echo
