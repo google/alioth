@@ -14,7 +14,7 @@
 
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{AtomicU16, Ordering, fence};
 
 use alioth_macros::Layout;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -25,7 +25,7 @@ use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
 #[repr(C, align(16))]
-#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
+#[derive(Debug, Copy, Clone, Default, FromBytes, Immutable, IntoBytes)]
 pub struct Desc {
     pub addr: u64,
     pub len: u32,
@@ -60,7 +60,7 @@ pub struct UsedHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct UsedElem {
     id: u32,
     len: u32,
@@ -81,21 +81,24 @@ pub struct SplitQueue<'m> {
 
 impl SplitQueue<'_> {
     pub fn avail_index(&self) -> u16 {
-        unsafe { &*self.avail_hdr }.idx
+        unsafe { AtomicU16::from_ptr(&raw mut (*self.avail_hdr).idx).load(Ordering::Acquire) }
     }
 
     pub fn set_used_index(&self, val: u16) {
-        unsafe { &mut *self.used_hdr }.idx = val;
+        unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.used_hdr).idx).store(val, Ordering::Release);
+        }
     }
 
     pub fn used_event(&self) -> Option<u16> {
-        self.used_event.map(|event| unsafe { *event })
+        self.used_event
+            .map(|event| unsafe { AtomicU16::from_ptr(event).load(Ordering::Relaxed) })
     }
 
-    pub fn set_avail_event(&self, op: impl FnOnce(&mut u16)) -> bool {
+    pub fn set_avail_event(&self, op: impl FnOnce(&AtomicU16)) -> bool {
         match self.avail_event {
             Some(avail_event) => {
-                op(unsafe { &mut *avail_event });
+                op(unsafe { AtomicU16::from_ptr(avail_event) });
                 true
             }
             None => false,
@@ -103,16 +106,21 @@ impl SplitQueue<'_> {
     }
 
     pub fn set_flag_notification(&self, enabled: bool) {
-        unsafe { &mut *self.used_hdr }.flags = (!enabled) as _;
+        unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.used_hdr).flags)
+                .store((!enabled) as u16, Ordering::Relaxed);
+        }
     }
 
     pub fn flag_interrupt_enabled(&self) -> bool {
-        unsafe { &*self.avail_hdr }.flags == 0
+        unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.avail_hdr).flags).load(Ordering::Relaxed) == 0
+        }
     }
 
-    fn get_desc(&self, id: u16) -> Result<&Desc> {
+    fn get_desc(&self, id: u16) -> Result<Desc> {
         if id < self.size {
-            Ok(unsafe { &*self.desc.offset(id as isize) })
+            Ok(unsafe { self.desc.offset(id as isize).read_volatile() })
         } else {
             error::InvalidDescriptor { id }.fail()
         }
@@ -180,7 +188,11 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
         let mut readable = Vec::new();
         let mut writable = Vec::new();
         let wrapped_index = index & (self.size - 1);
-        let head_id = unsafe { *self.avail_ring.offset(wrapped_index as isize) };
+        let head_id = unsafe {
+            self.avail_ring
+                .offset(wrapped_index as isize)
+                .read_volatile()
+        };
         let mut id = head_id;
         loop {
             let desc = self.get_desc(id)?;
@@ -227,8 +239,11 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
     fn set_used(&self, index: Self::Index, id: u16, len: u32) {
         let used_elem = UsedElem { id: id as u32, len };
         let wrapped_index = index & (self.size - 1);
-        unsafe { *self.used_ring.offset(wrapped_index as isize) = used_elem };
-        fence(Ordering::SeqCst);
+        unsafe {
+            self.used_ring
+                .offset(wrapped_index as isize)
+                .write_volatile(used_elem);
+        }
         self.set_used_index(index.wrapping_add(1));
     }
 
@@ -237,7 +252,7 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
             let mut avail_index = self.avail_index();
             if enabled {
                 loop {
-                    *event = avail_index;
+                    event.store(avail_index, Ordering::Relaxed);
                     fence(Ordering::SeqCst);
                     let new_avail_index = self.avail_index();
                     if new_avail_index == avail_index {
@@ -247,7 +262,7 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
                     }
                 }
             } else {
-                *event = avail_index.wrapping_sub(1);
+                event.store(avail_index.wrapping_sub(1), Ordering::Relaxed);
             }
         }) {
             self.set_flag_notification(enabled);

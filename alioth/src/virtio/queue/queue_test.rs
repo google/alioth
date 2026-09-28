@@ -19,8 +19,10 @@ use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 use flume::TryRecvError;
+use rstest::rstest;
 
 use crate::virtio::Error;
+use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
     DescChain, Queue, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
@@ -44,6 +46,10 @@ pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
 
     fn get_used(&mut self, index: Self::Index, chains: &HashMap<u16, Vec<u16>>)
     -> Option<UsedDesc>;
+
+    fn notification_enabled(&self) -> bool;
+
+    fn enable_interrupt(&mut self, enabled: bool, index: Self::Index);
 }
 
 pub struct GuestQueue<'m, Q>
@@ -108,6 +114,14 @@ where
         }
         self.used = self.q.index_add(self.used, used.delta);
         Some(used)
+    }
+
+    pub fn notification_enabled(&self) -> bool {
+        self.q.notification_enabled()
+    }
+
+    pub fn enable_interrupt(&mut self, enabled: bool) {
+        self.q.enable_interrupt(enabled, self.used);
     }
 }
 
@@ -236,11 +250,13 @@ fn test_copy_from_reader() {
     host_q
         .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
+    assert!(!guest_q.notification_enabled());
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     host_q
         .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
         .unwrap();
+    assert!(guest_q.notification_enabled());
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     guest_q.add_desc(&[], &[(addr_3, 12)]);
@@ -250,6 +266,7 @@ fn test_copy_from_reader() {
         host_q.handle_desc(0, &irq_sender, copy_from_reader(&mut reader)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
+    assert!(guest_q.notification_enabled());
 
     host_q
         .handle_desc(0, &irq_sender, copy_from_reader(&mut reader))
@@ -396,11 +413,13 @@ fn test_copy_to_writer() {
     host_q
         .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
+    assert!(!guest_q.notification_enabled());
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
 
     host_q
         .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
         .unwrap();
+    assert!(guest_q.notification_enabled());
     assert_eq!(irq_rx.try_recv(), Ok(0));
 
     guest_q.add_desc(&[(addr_3, 12)], &[]);
@@ -410,6 +429,7 @@ fn test_copy_to_writer() {
         host_q.handle_desc(0, &irq_sender, copy_to_writer(&mut writer)),
         Err(Error::System { error, .. }) if error.kind() == ErrorKind::Interrupted
     );
+    assert!(guest_q.notification_enabled());
 
     host_q
         .handle_desc(0, &irq_sender, copy_to_writer(&mut writer))
@@ -454,18 +474,13 @@ fn test_written_bytes() {
     assert_eq!(buf.as_slice(), str_1.as_bytes());
 }
 
-#[test]
-fn test_handle_deferred() {
-    let ram_bus = fixture_ram_bus();
-    let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
-    let reg = &queues[0];
-    let mut host_q = Queue::new(
-        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
-        reg,
-        &ram,
-    );
-    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
+fn check_handle_deferred<'m, Q>(
+    mut host_q: Queue<'_, 'm, Q>,
+    mut guest_q: GuestQueue<'m, Q>,
+    ram: &'m crate::mem::mapped::Ram,
+) where
+    Q: VirtQueueGuest<'m>,
+{
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
 
@@ -479,6 +494,7 @@ fn test_handle_deferred() {
         ram.write(addr, s.as_bytes()).unwrap();
     }
 
+    guest_q.enable_interrupt(true);
     guest_q.add_desc(
         &[(addr_0, str_0.len() as u32), (addr_1, str_1.len() as u32)],
         &[],
@@ -489,10 +505,20 @@ fn test_handle_deferred() {
     host_q
         .handle_desc(0, &irq_sender, |chain| {
             ids.push(chain.id());
+            Ok(Status::Break)
+        })
+        .unwrap();
+    assert!(!guest_q.notification_enabled());
+    assert_eq!(ids, [0]);
+
+    ids.clear();
+    host_q
+        .handle_desc(0, &irq_sender, |chain| {
+            ids.push(chain.id());
             Ok(Status::Deferred)
         })
         .unwrap();
-
+    assert!(guest_q.notification_enabled());
     assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(ids, [0, 2]);
 
@@ -505,12 +531,16 @@ fn test_handle_deferred() {
             Ok(0)
         })
         .unwrap();
+    assert_eq!(irq_rx.try_recv(), Ok(0));
+    let used = guest_q.get_used().unwrap();
+    assert_eq!(used.id, 0);
 
     assert_matches!(
         host_q.handle_deferred(1, 0, &irq_sender, |_| Ok(0)),
         Err(Error::InvalidDescriptor { id: 1, .. })
     );
 
+    guest_q.enable_interrupt(false);
     host_q
         .handle_deferred(2, 0, &irq_sender, |chain| {
             assert_eq!(chain.id, 2);
@@ -519,4 +549,39 @@ fn test_handle_deferred() {
             Ok(0)
         })
         .unwrap();
+    assert_eq!(irq_rx.try_recv(), Err(TryRecvError::Empty));
+    let used = guest_q.get_used().unwrap();
+    assert_eq!(used.id, 2);
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+fn test_handle_deferred(#[case] packed: bool, #[case] event_idx: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    if packed {
+        let host_q = Queue::new(
+            PackedQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
+            reg,
+            &ram,
+        );
+        let guest_q = GuestQueue::new(
+            PackedQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
+            reg,
+        );
+        check_handle_deferred(host_q, guest_q, &ram);
+    } else {
+        let host_q = Queue::new(
+            SplitQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
+            reg,
+            &ram,
+        );
+        let guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, event_idx).unwrap().unwrap(), reg);
+        check_handle_deferred(host_q, guest_q, &ram);
+    }
 }

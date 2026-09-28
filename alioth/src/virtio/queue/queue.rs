@@ -130,6 +130,7 @@ where
         let len = op(&mut chain)?;
         let delta = chain.delta;
         self.push_used(chain, len);
+        fence(Ordering::SeqCst);
         if self.q.interrupt_enabled(self.used, delta) {
             irq_sender.queue_irq(q_index);
         }
@@ -160,7 +161,10 @@ where
                     Ok(Status::Break) => break 'out,
                     Ok(Status::Done { len }) => {
                         self.push_used(chain, len);
-                        send_irq = send_irq || self.q.interrupt_enabled(self.used, delta);
+                        if !send_irq {
+                            fence(Ordering::SeqCst);
+                            send_irq = self.q.interrupt_enabled(self.used, delta);
+                        }
                     }
                     Ok(Status::Deferred) => {
                         self.deferred.insert(chain.id, chain);
@@ -172,7 +176,6 @@ where
             fence(Ordering::SeqCst);
         }
         if send_irq {
-            fence(Ordering::SeqCst);
             irq_sender.queue_irq(q_index);
         }
         ret

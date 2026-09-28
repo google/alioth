@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -115,6 +115,29 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
             len: desc.len,
             delta: chains[&desc.id].len() as u16,
         })
+    }
+
+    fn notification_enabled(&self) -> bool {
+        let flag = EventFlag(unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.notification).flag.0).load(Ordering::Relaxed)
+        });
+        flag != EventFlag::DISABLE
+    }
+
+    fn enable_interrupt(&mut self, enabled: bool, index: Self::Index) {
+        let flag = if !enabled {
+            EventFlag::DISABLE
+        } else if self.enable_event_idx {
+            EventFlag::DESC
+        } else {
+            EventFlag::ENABLE
+        };
+        unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.interrupt).index.0)
+                .store(index.0, Ordering::Relaxed);
+            AtomicU16::from_ptr(&raw mut (*self.interrupt).flag.0)
+                .store(flag.raw(), Ordering::Release);
+        }
     }
 }
 

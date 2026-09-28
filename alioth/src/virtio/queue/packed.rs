@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use bitfield::bitfield;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -24,7 +24,7 @@ use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
 #[repr(C, align(16))]
-#[derive(Debug, Clone, Default, FromBytes, Immutable, IntoBytes)]
+#[derive(Debug, Copy, Clone, Default, FromBytes, Immutable, IntoBytes)]
 struct Desc {
     pub addr: u64,
     pub len: u32,
@@ -78,6 +78,7 @@ consts! {
     }
 }
 
+#[repr(C)]
 struct DescEvent {
     index: WrappedIndex,
     flag: EventFlag,
@@ -141,10 +142,11 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
     const INIT_INDEX: WrappedIndex = WrappedIndex::INIT;
 
     fn desc_avail(&self, index: WrappedIndex) -> bool {
-        self.flag_is_avail(
-            DescFlag::from_bits_retain(unsafe { &*self.desc.offset(index.offset() as isize) }.flag),
-            index.wrap_counter(),
-        )
+        let flag = unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.desc.offset(index.offset() as isize)).flag)
+                .load(Ordering::Acquire)
+        };
+        self.flag_is_avail(DescFlag::from_bits_retain(flag), index.wrap_counter())
     }
 
     fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>> {
@@ -156,7 +158,7 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
         let mut delta = 0;
         let mut offset = index.offset();
         let id = loop {
-            let desc = unsafe { &*self.desc.offset(offset as isize) };
+            let desc = unsafe { self.desc.offset(offset as isize).read_volatile() };
             let flag = DescFlag::from_bits_retain(desc.flag);
             if flag.contains(DescFlag::INDIRECT) {
                 for i in 0..(desc.len as usize / size_of::<Desc>()) {
@@ -189,37 +191,47 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
     }
 
     fn set_used(&self, index: Self::Index, id: u16, len: u32) {
-        let first = unsafe { &mut *self.desc.offset(index.offset() as isize) };
-        first.id = id;
-        first.len = len;
-        let mut flag = DescFlag::from_bits_retain(first.flag);
-        self.set_flag_used(&mut flag, index.wrap_counter());
-        first.flag = flag.bits();
+        unsafe {
+            let first = self.desc.offset(index.offset() as isize);
+            (&raw mut (*first).id).write_volatile(id);
+            (&raw mut (*first).len).write_volatile(len);
+            let flag_ptr = AtomicU16::from_ptr(&raw mut (*first).flag);
+            let mut flag = DescFlag::from_bits_retain(flag_ptr.load(Ordering::Relaxed));
+            self.set_flag_used(&mut flag, index.wrap_counter());
+            flag_ptr.store(flag.bits(), Ordering::Release);
+        }
     }
 
     fn enable_notification(&self, enabled: bool) {
+        let flag = if enabled {
+            EventFlag::ENABLE
+        } else {
+            EventFlag::DISABLE
+        };
         unsafe {
-            (&mut *self.notification).flag = if enabled {
-                EventFlag::ENABLE
-            } else {
-                EventFlag::DISABLE
-            };
+            AtomicU16::from_ptr(&raw mut (*self.notification).flag.0)
+                .store(flag.raw(), Ordering::Relaxed);
         }
     }
 
     fn interrupt_enabled(&self, index: Self::Index, delta: u16) -> bool {
-        let interrupt = unsafe { &*self.interrupt };
-        if self.enable_event_idx && interrupt.flag == EventFlag::DESC {
+        let flag = EventFlag(unsafe {
+            AtomicU16::from_ptr(&raw mut (*self.interrupt).flag.0).load(Ordering::Acquire)
+        });
+        if self.enable_event_idx && flag == EventFlag::DESC {
+            let event_index = WrappedIndex(unsafe {
+                AtomicU16::from_ptr(&raw mut (*self.interrupt).index.0).load(Ordering::Relaxed)
+            });
             let prev_used_index = index.wrapping_sub(delta, self.size);
             let base = prev_used_index.offset();
             let end = base + delta;
-            let mut offset = interrupt.index.offset();
-            if interrupt.index.wrap_counter() != prev_used_index.wrap_counter() {
+            let mut offset = event_index.offset();
+            if event_index.wrap_counter() != prev_used_index.wrap_counter() {
                 offset += self.size;
             }
             base <= offset && offset < end
         } else {
-            interrupt.flag == EventFlag::ENABLE
+            flag == EventFlag::ENABLE
         }
     }
 

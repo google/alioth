@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 use assert_matches::assert_matches;
 
@@ -67,6 +67,33 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
         let id = desc.id as u16;
         let len = desc.len;
         Some(UsedDesc { id, len, delta: 1 })
+    }
+
+    fn notification_enabled(&self) -> bool {
+        match self.avail_event {
+            Some(avail_event) => unsafe {
+                AtomicU16::from_ptr(avail_event).load(Ordering::Relaxed) == self.avail_index()
+            },
+            None => unsafe {
+                AtomicU16::from_ptr(&raw mut (*self.used_hdr).flags).load(Ordering::Relaxed) == 0
+            },
+        }
+    }
+
+    fn enable_interrupt(&mut self, enabled: bool, index: Self::Index) {
+        if let Some(used_event) = self.used_event {
+            let idx = if enabled {
+                index
+            } else {
+                index.wrapping_sub(1)
+            };
+            unsafe { AtomicU16::from_ptr(used_event).store(idx, Ordering::Relaxed) };
+        } else {
+            unsafe {
+                AtomicU16::from_ptr(&raw mut (*self.avail_hdr).flags)
+                    .store((!enabled) as u16, Ordering::Relaxed)
+            };
+        }
     }
 }
 
@@ -162,6 +189,6 @@ fn event_idx_enabled() {
     unsafe { *q.used_event.unwrap() = 1 };
     assert_eq!(q.used_event(), Some(1));
 
-    assert!(q.set_avail_event(|event| *event = 12));
+    assert!(q.set_avail_event(|event| event.store(12, Ordering::Relaxed)));
     assert_eq!(unsafe { *q.avail_event.unwrap() }, 12);
 }
