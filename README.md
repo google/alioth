@@ -53,6 +53,31 @@ alioth -l info --log-to-file \
 
 For instructions on booting a cloud image, see [Booting Cloud Images](docs/cloud-image.md).
 
+### Nix
+
+Alioth is also available as a [Nix flake](https://wiki.nixos.org/wiki/Flakes)
+for `x86_64` Linux and `aarch64` Linux and macOS. To run Alioth without
+installing it:
+
+```sh
+nix run github:google/alioth -- boot --kernel /path/to/vmlinuz ...
+```
+
+To boot a minimal VM with a [BusyBox](https://busybox.net/) shell, using a Linux
+kernel and BusyBox from the NixOS binary cache:
+
+```sh
+nix run github:google/alioth#vm
+```
+
+Exit the shell to power off the VM. The VM has 2 CPUs and 1 GiB of memory by
+default, which can be changed with the environment variables `ALIOTH_VM_CPUS`
+and `ALIOTH_VM_MEMORY`, e.g. `ALIOTH_VM_CPUS=4 ALIOTH_VM_MEMORY=4G`.
+`ALIOTH_VM_CMDLINE` appends arguments to the kernel command line.
+
+In a checkout, `nix build` builds Alioth and runs its tests, and places the
+result in `./result`.
+
 ## Features
 
 - **Cross-Platform:** Runs on `x86_64` (Linux) and `aarch64` (Linux & macOS).

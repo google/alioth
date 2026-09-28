@@ -1,0 +1,58 @@
+name: Nix
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths: &on_paths
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - alioth-cli/cli.entitlements
+      - "**/*.nix"
+      - flake.lock
+      - .github/workflows/nix.yml
+  pull_request:
+    branches: ["main"]
+    paths: *on_paths
+
+jobs:
+  build_test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Build and test
+        run: nix build --print-build-logs .#alioth .#vm
+      # GitHub-hosted runners only support nested virtualization on x86_64
+      # Linux
+      - name: Enable KVM
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Boot a VM
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        env:
+          ALIOTH_VM_CMDLINE: alioth.smoke-test
+        # Explicitly enables pipefail
+        shell: bash
+        run: |
+          # The console of Alioth requires a terminal
+          timeout 120 script --quiet --return --command "nix run .#vm" /dev/null | tee vm.log
+          grep -q '^alioth-smoke-test:' vm.log
