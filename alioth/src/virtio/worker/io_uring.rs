@@ -16,6 +16,7 @@ use std::iter;
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use flume::Receiver;
 use io_uring::cqueue::Entry as Cqe;
@@ -53,6 +54,10 @@ pub trait VirtioIoUring: Virtio {
 
 const TOKEN_QUEUE: u64 = 1 << 62;
 const TOKEN_DESCRIPTOR: u64 = (1 << 62) | (1 << 61);
+const TOKEN_CANCEL: u64 = 1 << 60;
+
+/// How long to wait for in-flight requests when leaving the event loop.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct IoUring {
     notifier: Arc<Notifier>,
@@ -147,19 +152,9 @@ where
             }
         }
 
-        'out: loop {
-            active_ring.ring.submit_and_wait(1)?;
-            loop {
-                let Some(entry) = active_ring.ring.completion().next() else {
-                    break;
-                };
-                context.handle_event(&entry, &mut active_ring)?;
-                if context.state != WorkerState::Running {
-                    break 'out;
-                }
-            }
-        }
-        Ok(())
+        let ret = active_ring.run(context);
+        let drained = active_ring.drain();
+        ret.and(drained)
     }
 }
 
@@ -191,6 +186,95 @@ where
     Q: VirtQueue<'m>,
     S: IrqSender,
 {
+    fn run<D>(&mut self, context: &mut Context<D, S>) -> Result<()>
+    where
+        D: VirtioIoUring,
+    {
+        loop {
+            self.ring.submit_and_wait(1)?;
+            loop {
+                let Some(entry) = self.ring.completion().next() else {
+                    break;
+                };
+                context.handle_event(&entry, self)?;
+                if context.state != WorkerState::Running {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Cancels in-flight descriptor requests and waits for all of them to
+    /// complete.
+    ///
+    /// Requests like reading from a tap device may never complete by
+    /// themselves, and closing the ring does not wait for the kernel to
+    /// finish them. Without draining, the kernel could still write into
+    /// guest memory after the worker releases the memory layout, i.e.
+    /// after the memory may be unmapped and reused.
+    ///
+    /// The results are discarded. The device is being reset or shut down,
+    /// so the guest does not expect the chains back.
+    ///
+    /// Some requests cannot be cancelled, e.g. block I/O on a hung NFS
+    /// mount. Waiting is bounded by [`DRAIN_TIMEOUT`] so that a reset or a
+    /// VM shutdown does not hang forever. If requests are still in flight
+    /// after that, or draining fails, guest memory is leaked instead: it
+    /// stays mapped even after it is removed from the guest.
+    fn drain(&mut self) -> Result<()> {
+        let ret = self.try_drain();
+        match &ret {
+            Ok(0) => {}
+            Ok(n) => log::error!(
+                "{n} io_uring requests still in flight after {DRAIN_TIMEOUT:?}, leaking guest memory"
+            ),
+            Err(e) => {
+                log::error!("failed to drain io_uring requests, leaking guest memory: {e:?}")
+            }
+        }
+        if !matches!(ret, Ok(0)) {
+            for (_, pages) in self.mem.iter() {
+                std::mem::forget(pages.clone());
+            }
+        }
+        self.submit_counts.fill(0);
+        ret.map(|_| ())
+    }
+
+    /// Returns the number of requests still in flight at the deadline.
+    fn try_drain(&mut self) -> Result<usize> {
+        let mut in_flight: usize = self.submit_counts.iter().map(|c| *c as usize).sum();
+        if in_flight == 0 {
+            return Ok(0);
+        }
+        // Cancel every request in the ring at once. This also ends the
+        // polls on the notifiers, which is fine since the loop is done.
+        let cancel = opcode::AsyncCancel2::new(types::CancelBuilder::any())
+            .build()
+            .user_data(TOKEN_CANCEL);
+        while unsafe { self.ring.submission().push(&cancel) }.is_err() {
+            self.ring.submit()?;
+        }
+        let deadline = Instant::now() + DRAIN_TIMEOUT;
+        while in_flight > 0 {
+            let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let timeout = types::Timespec::from(timeout);
+            let args = types::SubmitArgs::new().timespec(&timeout);
+            match self.ring.submitter().submit_with_args(1, &args) {
+                Ok(_) => {}
+                Err(e) if matches!(e.raw_os_error(), Some(libc::ETIME | libc::EINTR)) => {}
+                Err(e) => return Err(e.into()),
+            }
+            let done = (self.ring.completion())
+                .filter(|cqe| cqe.user_data() & TOKEN_DESCRIPTOR == TOKEN_DESCRIPTOR)
+                .count();
+            in_flight = in_flight.saturating_sub(done);
+        }
+        Ok(in_flight)
+    }
+
     fn submit_buffers<D>(&mut self, dev: &mut D, q_index: u16) -> Result<()>
     where
         D: VirtioIoUring,
@@ -240,15 +324,18 @@ where
             let buffer_key = token as u32;
             let q_index = buffer_key as u16;
             let chain_id = (buffer_key >> 16) as u16;
+            // Account for the completion first, so that drain() never waits
+            // for a request that has already completed.
+            if let Some(submit_count) = self.submit_counts.get_mut(q_index as usize) {
+                if *submit_count > QUEUE_RESERVE_SIZE {
+                    self.shared_count += 1;
+                }
+                *submit_count = submit_count.saturating_sub(1);
+            }
             let Some(Some(queue)) = self.queues.get_mut(q_index as usize) else {
                 log::error!("{}: invalid queue index {q_index}", dev.name());
                 return Ok(());
             };
-            let submit_count = self.submit_counts.get_mut(q_index as usize).unwrap();
-            if *submit_count > QUEUE_RESERVE_SIZE {
-                self.shared_count += 1;
-            }
-            *submit_count -= 1;
             queue.handle_deferred(chain_id, q_index, self.irq_sender, |chain| {
                 dev.complete_desc(q_index, chain, event)
             })?;
@@ -266,3 +353,7 @@ where
         self.submit_buffers(dev, index)
     }
 }
+
+#[cfg(test)]
+#[path = "io_uring_test.rs"]
+mod tests;
