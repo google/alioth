@@ -121,9 +121,12 @@ where
         Q: VirtQueue<'m>,
     {
         let submit_counts = iter::repeat_n(0, queues.len()).collect();
+        // One entry for the worker notifier, and a reserve for each queue
+        // that submit_buffers() may take even if no shared entry is left.
+        let num_queues = queues.iter().flatten().count() as u16;
         let mut active_ring = ActiveIoUring {
             ring: io_uring::IoUring::new(RING_SIZE as u32)?,
-            shared_count: RING_SIZE - 1,
+            shared_count: RING_SIZE - 1 - num_queues * QUEUE_RESERVE_SIZE,
             irq_sender: &*param.irq_sender,
             notifiers: param.notifiers.as_deref().unwrap_or(&[]),
             mem: memory,
@@ -140,7 +143,7 @@ where
                     continue;
                 }
                 submit_queue_notifier(index as u16, notifier, sq)?;
-                active_ring.shared_count -= QUEUE_RESERVE_SIZE + 1;
+                active_ring.shared_count -= 1;
             }
         }
 
