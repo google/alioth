@@ -60,8 +60,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      # Caches the Rust dependencies built by crane, which are not in
+      # cache.nixos.org
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'flake.lock', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          # PRs can restore caches saved on main, so only main saves them
+          save: ${{ github.ref == 'refs/heads/main' }}
+          # Keep only the GC roots below, everything else is substitutable
+          gc-max-store-size: 0
       - name: Build and test
-        run: nix build --print-build-logs .#alioth .#vm
+        # The dependency artifacts are built too, so that their out link
+        # protects them from garbage collection before saving
+        run: nix build --print-build-logs .#alioth .#vm .#alioth.cargoArtifacts
       # GitHub-hosted runners only support nested virtualization on x86_64
       # Linux
       - name: Enable KVM
