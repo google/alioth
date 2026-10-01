@@ -34,6 +34,6 @@ fn test_boxed_error_location() {
     let e1 = error::Source.build();
     let r: Result<(), _> = Err(e1).box_trace(error::Any);
     let e2 = r.unwrap_err();
-    let location = assert_matches! {e2, Error::Any {  _location, .. } => _location};
+    let location = assert_matches!(e2, Error::Any {  _location, .. } => _location);
     assert_eq!(location.file(), file!());
 }
