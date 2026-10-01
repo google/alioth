@@ -24,7 +24,7 @@ parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
 pretty_assertions = "1"
 proc-macro2 = "1"
 quote = { version = "1" }
-rstest = "0.26"
+rstest = "0.27"
 serde = { version = "1.0", features = ["derive"] }
 serde-aco = { path = "serde-aco", version = "0.12.0" }
 serde-aco-derive = { path = "serde-aco-derive", version = "0.12.0" }
