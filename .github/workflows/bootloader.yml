@@ -8,13 +8,40 @@ on:
   workflow_call:
   pull_request:
     branches: ["main"]
-    paths:
-      - bootloader/config*
-      - bootloader/build.sh
-      - .github/workflows/bootloader.yml
+  merge_group:
+    branches: ["main"]
 
 jobs:
+  # `on.<event>.paths` is not supported by `merge_group`, and a workflow
+  # skipped by path filters never reports its required checks, which blocks
+  # the merge queue. Detect relevant changes in a job instead so that the
+  # downstream jobs are skipped (and reported as successful) when nothing
+  # relevant changed. `workflow_dispatch` and `workflow_call` runs always
+  # build.
+  changes:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      bootloader: ${{ steps.filter.outputs.bootloader }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            bootloader:
+              - bootloader/config*
+              - bootloader/build.sh
+              - .github/workflows/bootloader.yml
+
   build_bootloader:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result == 'skipped' || needs.changes.outputs.bootloader == 'true') }}
     strategy:
       fail-fast: false
       matrix:
