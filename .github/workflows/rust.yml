@@ -6,20 +6,44 @@ permissions:
 on:
   push:
     branches: ["main"]
-    paths: &on_paths
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - Cargo.lock
-      - .github/workflows/rust.yml
   pull_request:
     branches: ["main"]
-    paths: *on_paths
+  merge_group:
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # `on.<event>.paths` is not supported by `merge_group`, and a workflow
+  # skipped by path filters never reports its required checks, which blocks
+  # the merge queue. Detect relevant changes in a job instead so that the
+  # downstream jobs are skipped (and reported as successful) when nothing
+  # relevant changed.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - "**/*.rs"
+              - "**/Cargo.toml"
+              - Cargo.lock
+              - .github/workflows/rust.yml
+
   build_test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       matrix:
         target:
