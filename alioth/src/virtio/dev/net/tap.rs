@@ -164,26 +164,36 @@ impl Net {
                     let Some(data) = desc.readable.get(1).and_then(to_set) else {
                         return error::InvalidBuffer.fail();
                     };
-                    let pairs = data.virtq_pairs as usize;
-                    self.tap_sockets.truncate(pairs);
-                    for index in self.tap_sockets.len()..pairs {
-                        let mut socket = new_socket(
-                            self.dev_tap.as_deref(),
-                            matches!(self.api, WorkerApi::IoUring),
-                        )?;
-                        setup_socket(&mut socket, self.if_name.as_deref(), true)?;
-                        enable_tap_offload(&mut socket, self.driver_feature)?;
-                        if let Some(r) = registry {
-                            r.register(
-                                &mut SourceFd(&socket.as_raw_fd()),
-                                Token(index),
-                                Interest::READABLE | Interest::WRITABLE,
+                    let pairs = data.virtq_pairs;
+                    if pairs == 0 || pairs > self.config.max_queue_pairs {
+                        log::error!(
+                            "{}: invalid number of queue pairs {pairs}, max {}",
+                            self.name,
+                            self.config.max_queue_pairs
+                        );
+                        CtrlAck::ERR
+                    } else {
+                        let pairs = pairs as usize;
+                        self.tap_sockets.truncate(pairs);
+                        for index in self.tap_sockets.len()..pairs {
+                            let mut socket = new_socket(
+                                self.dev_tap.as_deref(),
+                                matches!(self.api, WorkerApi::IoUring),
                             )?;
+                            setup_socket(&mut socket, self.if_name.as_deref(), true)?;
+                            enable_tap_offload(&mut socket, self.driver_feature)?;
+                            if let Some(r) = registry {
+                                r.register(
+                                    &mut SourceFd(&socket.as_raw_fd()),
+                                    Token(index),
+                                    Interest::READABLE | Interest::WRITABLE,
+                                )?;
+                            }
+                            self.tap_sockets.push(socket);
                         }
-                        self.tap_sockets.push(socket);
+                        log::info!("{}: using {pairs} pairs of queues", self.name);
+                        CtrlAck::OK
                     }
-                    log::info!("{}: using {pairs} pairs of queues", self.name);
-                    CtrlAck::OK
                 }
                 _ => CtrlAck::ERR,
             },
