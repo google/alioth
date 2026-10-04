@@ -24,7 +24,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -33,14 +32,13 @@ use serde_aco::Help;
 use zerocopy::{FromBytes, IntoBytes};
 
 use crate::ffi;
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::vsock::{
     ShutdownFlag, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp, VsockType,
     VsockVirtq,
 };
-use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
-use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
+use crate::virtio::dev::{DevSpec, Virtio, WorkerParam};
+use crate::virtio::queue::{DescChain, Queue, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, IrqSender, Result, error};
 
@@ -900,16 +898,11 @@ impl Virtio for UdsVsock {
         VsockFeature::STREAM.bits() | FEATURE_BUILT_IN
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 }
 

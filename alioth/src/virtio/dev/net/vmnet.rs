@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use flume::{Receiver, Sender};
+use flume::Sender;
 use libc::c_void;
 use mio::event::Event;
 use mio::{Interest, Registry, Token};
@@ -30,7 +30,6 @@ use serde_aco::Help;
 use zerocopy::IntoBytes;
 
 use crate::device::net::MacAddr;
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::block::{_NSConcreteStackBlock, BlockDescriptor, BlockFlag};
 use crate::sys::dispatch::{DispatchQueue, dispatch_queue_create, dispatch_release};
@@ -46,8 +45,8 @@ use crate::sys::xpc::{
     xpc_dictionary_get_uint64, xpc_uint64_create,
 };
 use crate::virtio::dev::net::{NetConfig, NetFeature, VirtioNetHdr};
-use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WakeEvent};
-use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
+use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WorkerParam};
+use crate::virtio::queue::{DescChain, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender};
 
@@ -259,16 +258,11 @@ impl Virtio for Net {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 }
 

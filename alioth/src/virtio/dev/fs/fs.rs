@@ -23,20 +23,19 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use mio::Registry;
 use mio::event::Event;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::fuse::bindings::{FuseInHeader, FuseOpcode, FuseOutHeader, FuseSetupmappingFlag};
 use crate::fuse::{self, DaxRegion, Fuse};
-use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::mapped::ArcMemPages;
 use crate::mem::{MemRegion, MemRegionType};
 use crate::sync::notifier::Notifier;
 #[cfg(target_os = "linux")]
 use crate::virtio::dev::fs::vu::VuDaxRegion;
-use crate::virtio::dev::{Result, Virtio, WakeEvent};
-use crate::virtio::queue::{DescChain, QueueReg, Status, VirtQueue};
+use crate::virtio::dev::{Result, Virtio, WorkerParam};
+use crate::virtio::queue::{DescChain, Status, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -411,16 +410,11 @@ where
         self.config.clone()
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
