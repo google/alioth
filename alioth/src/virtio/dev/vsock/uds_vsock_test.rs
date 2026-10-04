@@ -32,7 +32,7 @@ use crate::virtio::dev::vsock::{
     ShutdownFlag, UdsVsockSpec, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
     VsockType, VsockVirtq,
 };
-use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent, WorkerParam};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc};
@@ -128,7 +128,13 @@ impl<'m> VsockTest<'m> {
         let dev = param.build("vsock").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+        let (handle, notifier) = dev
+            .spawn_worker(WorkerParam {
+                event_rx: rx,
+                memory: ram_bus.clone(),
+                queue_regs: regs,
+            })
+            .unwrap();
         let (irq_tx, irq_rx) = flume::unbounded();
         let start_param = StartParam {
             feature: VirtioFeature::VERSION_1.bits(),

@@ -18,18 +18,17 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use flume::Receiver;
 use io_uring::cqueue::Entry as Cqe;
 use io_uring::squeue::Entry as Sqe;
 use io_uring::{SubmissionQueue, opcode, types};
 
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
-    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
+    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, Worker, WorkerParam,
     WorkerState,
 };
-use crate::virtio::queue::{DescChain, Queue, QueueReg, Status, VirtQueue};
+use crate::virtio::queue::{DescChain, Queue, Status, VirtQueue};
 use crate::virtio::{IrqSender, Result};
 
 pub enum BufferAction {
@@ -75,9 +74,7 @@ impl IoUring {
 
     pub fn spawn_worker<D, S>(
         dev: D,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
+        param: WorkerParam<S>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         D: VirtioIoUring,
@@ -88,7 +85,7 @@ impl IoUring {
             notifier: Arc::new(notifier),
             notifier_token: 0,
         };
-        Worker::spawn(dev, ring, event_rx, memory, queue_regs)
+        Worker::spawn(dev, ring, param)
     }
 }
 

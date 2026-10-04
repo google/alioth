@@ -27,7 +27,7 @@ use crate::ffi;
 use crate::mem::emulated::{Action, Mmio};
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropySpec};
-use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent};
+use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent, WorkerParam};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
@@ -76,7 +76,13 @@ fn entropy_test() {
     assert_eq!(dev.feature(), FEATURE_BUILT_IN);
 
     let (tx, rx) = flume::unbounded();
-    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs).unwrap();
+    let (handle, notifier) = dev
+        .spawn_worker(WorkerParam {
+            event_rx: rx,
+            memory: ram_bus.clone(),
+            queue_regs: regs,
+        })
+        .unwrap();
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
     let start_param = StartParam {

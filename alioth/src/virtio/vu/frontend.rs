@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -26,11 +25,11 @@ use zerocopy::IntoBytes;
 
 use crate::errors::BoxTrace;
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::mapped::ArcMemPages;
 use crate::mem::{LayoutChanged, MemRegion};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
-use crate::virtio::queue::{QueueReg, VirtQueue};
+use crate::virtio::dev::{DevSpec, Virtio, WorkerParam};
+use crate::virtio::queue::VirtQueue;
 use crate::virtio::vu::bindings::{
     DeviceConfig, MemoryRegion, MemorySingleRegion, VirtqAddr, VirtqState, VuFeature,
 };
@@ -269,16 +268,11 @@ impl Virtio for VuFrontend {
         self.device_feature as u128
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 
     fn notifier_offloaded(&self, q_index: u16) -> Result<bool> {

@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -28,12 +27,11 @@ use serde_aco::Help;
 
 use crate::ffi;
 use crate::mem::LayoutUpdated;
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::sys::vhost::{VHOST_FILE_UNBIND, VirtqAddr, VirtqFile, VirtqState};
 use crate::virtio::dev::vsock::{VsockConfig, VsockFeature};
-use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::{QueueReg, VirtQueue};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WorkerParam};
+use crate::virtio::queue::VirtQueue;
 use crate::virtio::vhost::{UpdateVsockMem, VhostDev, error};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{IrqSender, Result, VirtioFeature};
@@ -135,16 +133,11 @@ impl Virtio for VhostVsock {
         }))
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 }
 

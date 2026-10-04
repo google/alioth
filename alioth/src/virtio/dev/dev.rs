@@ -53,9 +53,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn feature(&self) -> u128;
     fn spawn_worker<S: IrqSender>(
         self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
+        param: WorkerParam<S>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
@@ -103,6 +101,26 @@ where
     pub(crate) feature: u128,
     pub(crate) irq_sender: Arc<S>,
     pub(crate) notifiers: Option<Arc<[Notifier]>>,
+}
+
+/// Parameters a transport hands to the worker thread of a virtio device.
+///
+/// A transport builds one in [`VirtioDevice::new`] and passes it to
+/// [`Virtio::spawn_worker`], which forwards it to the backend and finally
+/// to [`Worker::spawn`]. Device implementations never look inside, so new
+/// fields can be added without touching them.
+#[derive(Debug)]
+pub struct WorkerParam<S>
+where
+    S: IrqSender,
+{
+    /// Receiving end of the wake event channel. The sending end is
+    /// [`VirtioDevice::event_tx`].
+    pub(crate) event_rx: Receiver<WakeEvent<S>>,
+    /// Guest memory.
+    pub(crate) memory: Arc<RamBus>,
+    /// Queue registers, shared with the transport.
+    pub(crate) queue_regs: Arc<[QueueReg]>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +217,12 @@ where
 
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = flume::unbounded();
-        let (handle, notifier) = dev.spawn_worker(event_rx, memory, queue_regs.clone())?;
+        let param = WorkerParam {
+            event_rx,
+            memory,
+            queue_regs: queue_regs.clone(),
+        };
+        let (handle, notifier) = dev.spawn_worker(param)?;
         log::debug!(
             "{name}: created with {:x?}, {:x?}",
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
@@ -262,9 +285,7 @@ where
     S: IrqSender,
 {
     pub dev: D,
-    memory: Arc<RamBus>,
-    event_rx: Receiver<WakeEvent<S>>,
-    queue_regs: Arc<[QueueReg]>,
+    param: WorkerParam<S>,
     pub state: WorkerState,
 }
 
@@ -277,7 +298,7 @@ where
     where
         B: ActiveBackend<D>,
     {
-        while let Ok(event) = self.event_rx.try_recv() {
+        while let Ok(event) = self.param.event_rx.try_recv() {
             match event {
                 WakeEvent::Notify { q_index } => backend.handle_queue(&mut self.dev, q_index)?,
                 WakeEvent::Shutdown => {
@@ -300,7 +321,7 @@ where
     }
 
     fn wait_start(&mut self) -> Option<StartParam<S>> {
-        for wake_event in self.event_rx.iter() {
+        for wake_event in self.param.event_rx.iter() {
             match wake_event {
                 WakeEvent::Reset => {}
                 WakeEvent::Start { param } => {
@@ -343,17 +364,13 @@ where
     pub fn spawn(
         dev: D,
         mut backend: B,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
+        param: WorkerParam<S>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)> {
         let notifier = backend.register_notifier(TOKEN_WARKER)?;
         let worker = Worker {
             context: Context {
                 dev,
-                event_rx,
-                memory,
-                queue_regs,
+                param,
                 state: WorkerState::Pending,
             },
             backend,
@@ -389,10 +406,10 @@ where
         let Some(param) = self.context.wait_start() else {
             return Ok(());
         };
-        let memory = self.context.memory.clone();
+        let memory = self.context.param.memory.clone();
         let ram = memory.lock_layout();
         let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
-        let queue_regs = self.context.queue_regs.clone();
+        let queue_regs = self.context.param.queue_regs.clone();
         let feature = VirtioFeature::from_bits_retain(feature);
         let event_idx = feature.contains(VirtioFeature::EVENT_IDX);
         if feature.contains(VirtioFeature::RING_PACKED) {

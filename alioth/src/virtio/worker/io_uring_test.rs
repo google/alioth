@@ -20,16 +20,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use flume::{Receiver, Sender};
+use flume::Sender;
 use io_uring::cqueue::Entry as Cqe;
 use io_uring::opcode;
 use io_uring::types::Fd;
 
 use crate::ffi;
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
-use crate::virtio::dev::{StartParam, Virtio, WakeEvent};
+use crate::virtio::dev::{StartParam, Virtio, WakeEvent, WorkerParam};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
 use crate::virtio::queue::{DescChain, Queue, QueueReg, VirtQueue};
@@ -60,16 +59,11 @@ impl Virtio for PipeReader {
         "pipe-reader"
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        IoUring::spawn_worker(self, event_rx, memory, queue_regs)
+        IoUring::spawn_worker(self, param)
     }
 
     fn num_queues(&self) -> u16 {
@@ -141,7 +135,13 @@ fn io_uring_drain_test() {
     };
 
     let (tx, rx) = flume::unbounded();
-    let (handle, notifier) = dev.spawn_worker(rx, ram_bus.clone(), regs.clone()).unwrap();
+    let (handle, notifier) = dev
+        .spawn_worker(WorkerParam {
+            event_rx: rx,
+            memory: ram_bus.clone(),
+            queue_regs: regs.clone(),
+        })
+        .unwrap();
     let (irq_tx, irq_rx) = flume::unbounded();
     let start_param = StartParam {
         feature: VirtioFeature::VERSION_1.bits(),

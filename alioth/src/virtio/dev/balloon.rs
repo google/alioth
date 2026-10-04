@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use alioth_macros::Layout;
-use flume::Receiver;
 use libc::{_SC_PAGESIZE, sysconf};
 use mio::Registry;
 use mio::event::Event;
@@ -28,10 +27,10 @@ use serde_aco::Help;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::{QueueReg, Status, VirtQueue};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WorkerParam};
+use crate::virtio::queue::{Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result};
 use crate::{bitflags, consts, ffi, impl_mmio_for_zerocopy, mem};
@@ -196,16 +195,11 @@ impl Virtio for Balloon {
         &self.name
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 
     fn num_queues(&self) -> u16 {

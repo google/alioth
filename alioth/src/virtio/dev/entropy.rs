@@ -19,7 +19,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use libc::O_NONBLOCK;
 use mio::Registry;
 use mio::event::Event;
@@ -28,10 +27,9 @@ use serde_aco::Help;
 use snafu::ResultExt;
 
 use crate::mem::emulated::{Action, Mmio};
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WakeEvent};
-use crate::virtio::queue::{QueueReg, VirtQueue, copy_from_reader};
+use crate::virtio::dev::{DevSpec, DeviceId, Virtio, WorkerParam};
+use crate::virtio::queue::{VirtQueue, copy_from_reader};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, Result, error};
 use crate::{bitflags, mem};
@@ -91,16 +89,11 @@ impl Virtio for Entropy {
         &self.name
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
-        Mio::spawn_worker(self, event_rx, memory, queue_regs)
+        Mio::spawn_worker(self, param)
     }
 
     fn num_queues(&self) -> u16 {

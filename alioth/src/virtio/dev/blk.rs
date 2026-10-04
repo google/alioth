@@ -21,7 +21,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 #[cfg(target_os = "linux")]
 use io_uring::cqueue::Entry as Cqe;
 #[cfg(target_os = "linux")]
@@ -35,10 +34,9 @@ use serde_aco::Help;
 use snafu::ResultExt;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
-use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{DevSpec, Virtio, WakeEvent};
-use crate::virtio::queue::{DescChain, QueueReg, Status as QStatus, VirtQueue};
+use crate::virtio::dev::{DevSpec, Virtio, WorkerParam};
+use crate::virtio::queue::{DescChain, Status as QStatus, VirtQueue};
 use crate::virtio::worker::WorkerApi;
 #[cfg(target_os = "linux")]
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
@@ -301,19 +299,14 @@ impl Virtio for Block {
         self.feature.bits() | FEATURE_BUILT_IN
     }
 
-    fn spawn_worker<S>(
-        self,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
-    ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
+    fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         S: IrqSender,
     {
         match self.api {
             #[cfg(target_os = "linux")]
-            WorkerApi::IoUring => IoUring::spawn_worker(self, event_rx, memory, queue_regs),
-            WorkerApi::Mio => Mio::spawn_worker(self, event_rx, memory, queue_regs),
+            WorkerApi::IoUring => IoUring::spawn_worker(self, param),
+            WorkerApi::Mio => Mio::spawn_worker(self, param),
         }
     }
 }

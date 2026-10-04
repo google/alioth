@@ -17,20 +17,19 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use flume::Receiver;
 use mio::event::Event;
 #[cfg(target_os = "linux")]
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
 use snafu::ResultExt;
 
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
-    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, WakeEvent, Worker,
+    ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, Worker, WorkerParam,
     WorkerState,
 };
-use crate::virtio::queue::{Queue, QueueReg, VirtQueue};
+use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
@@ -79,9 +78,7 @@ pub struct Mio {
 impl Mio {
     pub fn spawn_worker<D, S>(
         dev: D,
-        event_rx: Receiver<WakeEvent<S>>,
-        memory: Arc<RamBus>,
-        queue_regs: Arc<[QueueReg]>,
+        param: WorkerParam<S>,
     ) -> Result<(JoinHandle<()>, Arc<Notifier>)>
     where
         D: VirtioMio,
@@ -89,7 +86,7 @@ impl Mio {
     {
         let poll = Poll::new().context(error::CreatePoll)?;
         let m = Mio { poll };
-        Worker::spawn(dev, m, event_rx, memory, queue_regs)
+        Worker::spawn(dev, m, param)
     }
 }
 
