@@ -30,7 +30,7 @@ const QUEUE_START: u64 = 1 << 20;
 pub fn fixture_ram_bus() -> RamBus {
     let host_pages = ArcMemPages::from_anonymous(MEM_SIZE, None, None).unwrap();
     let ram_bus = RamBus::new();
-    ram_bus.add(0, host_pages).unwrap();
+    ram_bus.update(|ram| ram.add(0, host_pages)).unwrap();
     ram_bus
 }
 

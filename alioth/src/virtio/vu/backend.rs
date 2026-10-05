@@ -404,7 +404,7 @@ impl VuBackend {
                     region.size as usize,
                     libc::PROT_READ | libc::PROT_WRITE,
                 )?;
-                self.memory.add(region.gpa, user_mem)?;
+                self.memory.update(|ram| ram.add(region.gpa, user_mem))?;
                 self.init.regions.push(single.region);
             }
             (VuFrontMsg::REM_MEM_REG, 40) => {
@@ -417,7 +417,7 @@ impl VuBackend {
                     if r.gpa == region.gpa && r.hva == region.hva && r.size == region.size {
                         log::info!("{name}: remove mem: {r:x?}");
                         self.init.regions.remove(index);
-                        let _ = self.memory.remove(region.gpa);
+                        let _ = self.memory.update(|ram| ram.remove(region.gpa));
                         break;
                     }
                 }

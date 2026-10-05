@@ -266,6 +266,19 @@ struct LayoutCallbacks {
     updated: Vec<Box<dyn LayoutUpdated>>,
 }
 
+/// Iterates over the RAM-backed ranges of `region` placed at `addr`.
+fn ram_ranges(addr: u64, region: &MemRegion) -> impl Iterator<Item = (u64, &ArcMemPages)> {
+    let ranges = region.ranges.iter().scan(addr, |gpa, range| {
+        let start = *gpa;
+        *gpa += range.size();
+        Some((start, range))
+    });
+    ranges.filter_map(|(gpa, range)| match range {
+        MemRange::Ram(pages) | MemRange::DevMem { pages, .. } => Some((gpa, pages)),
+        MemRange::Emulated(_) | MemRange::Span(_) => None,
+    })
+}
+
 // lock order: region -> callbacks -> bus
 #[derive(Debug, Default)]
 pub struct Memory {
@@ -308,7 +321,7 @@ impl Memory {
     pub fn register_update_callback(&self, callback: Box<dyn LayoutUpdated>) -> Result<()> {
         let _regions = self.regions.lock();
         let mut callbacks = self.callbacks.lock();
-        let ram = self.ram_bus.lock_layout();
+        let ram = self.ram_bus.load();
         callback.ram_updated(&ram)?;
         callbacks.updated.push(callback);
         Ok(())
@@ -332,15 +345,20 @@ impl Memory {
         region.validate()?;
         let mut regions = self.regions.lock();
         regions.add(addr, region.clone())?;
-        let mut offset = 0;
         let callbacks = self.callbacks.lock();
-        let mut ram_updated = false;
+        let ram_ranges: Vec<_> = ram_ranges(addr, &region).collect();
+        let ram_updated = !ram_ranges.is_empty();
+        if ram_updated {
+            self.ram_bus.update(|ram| {
+                for (gpa, pages) in ram_ranges {
+                    ram.add(gpa, pages.clone())?;
+                }
+                Ok(())
+            })?;
+        }
+        let mut offset = 0;
         for range in &region.ranges {
             let gpa = addr + offset;
-            if let MemRange::Ram(pages) | MemRange::DevMem { pages, .. } = range {
-                self.ram_bus.add(gpa, pages.clone())?;
-                ram_updated = true;
-            }
             match range {
                 MemRange::Emulated(r) => {
                     let mut mmio_bus = self.mmio_bus.write();
@@ -361,7 +379,7 @@ impl Memory {
             offset += range.size();
         }
         if ram_updated {
-            let ram = self.ram_bus.lock_layout();
+            let ram = self.ram_bus.load();
             for update_callback in &callbacks.updated {
                 update_callback.ram_updated(&ram)?;
             }
@@ -374,15 +392,20 @@ impl Memory {
     }
 
     fn unmap_region(&self, addr: u64, region: &MemRegion) -> Result<()> {
-        let mut offset = 0;
         let callbacks = self.callbacks.lock();
-        let mut ram_updated = false;
+        let ram_ranges: Vec<_> = ram_ranges(addr, region).collect();
+        let ram_updated = !ram_ranges.is_empty();
+        if ram_updated {
+            self.ram_bus.update(|ram| {
+                for (gpa, _) in ram_ranges {
+                    ram.remove(gpa)?;
+                }
+                Ok(())
+            })?;
+        }
+        let mut offset = 0;
         for range in &region.ranges {
             let gpa = addr + offset;
-            if let MemRange::Ram(_) | MemRange::DevMem { .. } = range {
-                self.ram_bus.remove(gpa)?;
-                ram_updated = true;
-            }
             match range {
                 MemRange::Emulated(_) => {
                     let mut mmio_bus = self.mmio_bus.write();
@@ -403,7 +426,7 @@ impl Memory {
             offset += range.size();
         }
         if ram_updated {
-            let ram = self.ram_bus.lock_layout();
+            let ram = self.ram_bus.load();
             for callback in &callbacks.updated {
                 callback.ram_updated(&ram)?;
             }

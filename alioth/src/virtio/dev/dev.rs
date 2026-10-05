@@ -390,7 +390,7 @@ where
             return Ok(());
         };
         let memory = self.context.memory.clone();
-        let ram = memory.lock_layout();
+        let ram = memory.load();
         let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
         let queue_regs = self.context.queue_regs.clone();
         let feature = VirtioFeature::from_bits_retain(feature);
