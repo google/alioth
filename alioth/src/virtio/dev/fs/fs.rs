@@ -198,22 +198,13 @@ where
                 log::trace!("{name}: {opcode:?}\n{in_s:?}\n{ret:x?}");
                 Ok(size)
             }};
-            ($func:ident, &[u8], &mut[u8]) => {{
-                let ([in_], [out]) = (in_, out) else {
+            ($func:ident, &[u8], &mut[IoSliceMut]) => {{
+                let [in_] = in_ else {
                     return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
                 };
                 let size = self.fuse.$func(hdr, in_, out)?;
                 let in_s = String::from_utf8_lossy(in_);
                 log::trace!("{name}: {opcode:?}\n{in_s:?}\nsize = {size:?}",);
-                Ok(size)
-            }};
-            ($func:ident, &_, &mut[u8]) => {{
-                let [out] = out else {
-                    return Err(io::Error::from_raw_os_error(libc::EINVAL))?;
-                };
-                let (in_, _) = parse_in(in_)?;
-                let size = self.fuse.$func(hdr, in_, out)?;
-                log::trace!("{name}: {opcode:?}\n{in_:x?}\nsize = {size}");
                 Ok(size)
             }};
             ($func:ident, &_, &mut[IoSliceMut]) => {{
@@ -249,7 +240,7 @@ where
             FuseOpcode::GETATTR => opcode_branch!(get_attr, &_, _),
             FuseOpcode::OPEN => opcode_branch!(open, &_, _),
             FuseOpcode::OPENDIR => opcode_branch!(open_dir, &_, _),
-            FuseOpcode::READDIR => opcode_branch!(read_dir, &_, &mut [u8]),
+            FuseOpcode::READDIR => opcode_branch!(read_dir, &_, &mut [IoSliceMut]),
             FuseOpcode::RELEASEDIR => opcode_branch!(release_dir, &_, _),
             FuseOpcode::LOOKUP => opcode_branch!(lookup, &[u8], _),
             FuseOpcode::FORGET => opcode_branch!(forget, &_, _),
@@ -259,7 +250,7 @@ where
             FuseOpcode::RELEASE => opcode_branch!(release, &_, _),
             FuseOpcode::SYNCFS => opcode_branch!(syncfs, &_, _),
             FuseOpcode::IOCTL => opcode_branch!(ioctl, &_, _),
-            FuseOpcode::GETXATTR => opcode_branch!(get_xattr, &[u8], &mut [u8]),
+            FuseOpcode::GETXATTR => opcode_branch!(get_xattr, &[u8], &mut [IoSliceMut]),
             FuseOpcode::SETXATTR => opcode_branch!(set_xattr, &[u8], _),
             FuseOpcode::CREATE => opcode_branch!(create, &_, &[u8], _),
             FuseOpcode::UNLINK => opcode_branch!(unlink, &[u8], _),
