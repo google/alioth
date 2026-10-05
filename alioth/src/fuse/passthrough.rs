@@ -229,7 +229,7 @@ impl Fuse for Passthrough {
         &mut self,
         hdr: &FuseInHeader,
         in_: &FuseReadIn,
-        mut buf: &mut [u8],
+        bufs: &mut [IoSliceMut],
     ) -> Result<usize> {
         let node = self.get_node_mut(hdr.nodeid)?;
         log::trace!("read_dir: {:?}", node.path);
@@ -245,6 +245,9 @@ impl Fuse for Passthrough {
         }
 
         let mut total_len = 0;
+        let mut rem: usize = bufs.iter().map(|b| b.len()).sum();
+        let mut cur = 0;
+        let mut off = 0;
 
         while let Some((index, entry)) = read_dir.peek() {
             let e = entry.as_ref()?;
@@ -260,15 +263,29 @@ impl Fuse for Passthrough {
             };
             let aligned_namelen = align_up_ty!(namelen, FuseDirent);
             let len = size_of_val(&dir_entry) + aligned_namelen;
-            let Some((p1, p2)) = buf.split_at_mut_checked(len) else {
+            if len > rem {
                 break;
-            };
-            let (b_entry, b_name) = p1.split_at_mut(size_of_val(&dir_entry));
+            }
             log::trace!("read_dir: {dir_entry:?} {name:?}");
-            b_entry.copy_from_slice(dir_entry.as_bytes());
-            b_name[..namelen].copy_from_slice(name.as_encoded_bytes());
-
-            buf = p2;
+            let padding = [0u8; align_of::<FuseDirent>()];
+            for mut src in [
+                dir_entry.as_bytes(),
+                name.as_encoded_bytes(),
+                &padding[..aligned_namelen - namelen],
+            ] {
+                while !src.is_empty() {
+                    let dst = &mut bufs[cur][off..];
+                    let n = dst.len().min(src.len());
+                    dst[..n].copy_from_slice(&src[..n]);
+                    src = &src[n..];
+                    off += n;
+                    if off == bufs[cur].len() {
+                        cur += 1;
+                        off = 0;
+                    }
+                }
+            }
+            rem -= len;
             total_len += len;
             read_dir.next();
         }
