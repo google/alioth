@@ -17,9 +17,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::hv::arch::Reg;
+use crate::kvm::arch::Reg;
 #[cfg(target_arch = "x86_64")]
-use crate::hv::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::kvm::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;

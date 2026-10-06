@@ -31,7 +31,7 @@ use parking_lot::{RwLock, RwLockReadGuard};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::ffi;
-use crate::hv::{MemMapOption, VmMemory};
+use crate::kvm::{MemMapOption, VmMemory};
 
 use super::addressable::{Addressable, SlotBackend};
 use super::{Error, Result};
@@ -558,7 +558,7 @@ mod test {
     use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap, munmap};
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-    use crate::hv::test::FakeVmMemory;
+    use crate::kvm::test::FakeVmMemory;
 
     use super::{ArcMemPages, RamBus};
 

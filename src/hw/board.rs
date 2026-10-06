@@ -22,7 +22,7 @@ use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard};
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-use crate::hv::{self, Vcpu, Vm, VmEntry, VmExit};
+use crate::kvm::{self, Vcpu, Vm, VmEntry, VmExit};
 use crate::loader::{self, ExecType, InitState, Payload, linux, xen};
 use crate::mem::mmio::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
@@ -47,7 +47,7 @@ use pci::{PciBar, PciDevice};
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("hypervisor: {0}")]
-    Hv(#[from] hv::Error),
+    Hv(#[from] kvm::Error),
 
     #[error("memory: {0}")]
     Memory(#[from] mem::Error),

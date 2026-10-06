@@ -23,7 +23,7 @@ use mio::Waker;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::hv::MsiSender;
+use crate::kvm::MsiSender;
 use crate::mem::mmio::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry};
 use crate::hw::pci::cap::{

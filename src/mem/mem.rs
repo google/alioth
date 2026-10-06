@@ -20,8 +20,8 @@ use std::sync::atomic::Ordering;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::hv::{self, VmEntry, VmMemory};
 use crate::hw::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
+use crate::kvm::{self, VmEntry, VmMemory};
 
 pub mod addressable;
 pub mod mapped;
@@ -70,7 +70,7 @@ pub enum Error {
     #[error("cannot register MMIO notifier: {0}")]
     Notifier(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("{0}")]
-    Hv(#[from] hv::Error),
+    Hv(#[from] kvm::Error),
     #[error("cannot handle action: {0:x?}")]
     Action(Action),
     #[error("not aligned")]
@@ -432,7 +432,7 @@ impl Memory {
 mod test {
     use std::sync::Arc;
 
-    use crate::hv::test::FakeVmMemory;
+    use crate::kvm::test::FakeVmMemory;
     use crate::mem::mmio::Mmio;
     use crate::mem::{AddrOpt, MMIO_32_START, MemRegion, MemRegionType, Memory, Result};
 

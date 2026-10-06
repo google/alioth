@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::hv::arch::Cpuid;
-use crate::hv::{Hypervisor, Vcpu};
 use crate::hw::{Board, Result};
+use crate::kvm::arch::Cpuid;
+use crate::kvm::{Hypervisor, Vcpu};
 use crate::loader::InitState;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};

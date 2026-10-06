@@ -13,8 +13,8 @@
 // limitations under the License.
 #![allow(clippy::missing_safety_doc)]
 
-use crate::hv::Kvm;
 use crate::hw::BoardConfig;
+use crate::kvm::Kvm;
 use crate::loader::{ExecType, Payload};
 use crate::virtio::dev::blk::BlockParam;
 use crate::vm::Machine;
@@ -22,8 +22,8 @@ use crate::vm::Machine;
 #[path = "hw/board.rs"]
 pub mod hw;
 mod config;
-#[path = "hv/hv.rs"]
-pub mod hv;
+#[path = "kvm/kvm.rs"]
+pub mod kvm;
 #[path = "loader/loader.rs"]
 pub mod loader;
 #[path = "mem/mem.rs"]

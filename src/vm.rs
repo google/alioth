@@ -21,11 +21,11 @@ use std::thread;
 use parking_lot::{Condvar, Mutex, RwLock};
 use thiserror::Error;
 
-use crate::hv::{self, Hypervisor, KvmMsiSender};
 use crate::hw::pci::bus::PciBus;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
 use crate::hw::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::kvm::{self, Hypervisor, KvmMsiSender};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
@@ -35,7 +35,7 @@ use crate::{mem, virtio};
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("hypervisor: {0}")]
-    Hv(#[from] hv::Error),
+    Hv(#[from] kvm::Error),
 
     #[error("memory: {0}")]
     Memory(#[from] mem::Error),

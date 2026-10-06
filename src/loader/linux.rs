@@ -27,7 +27,7 @@ use crate::hw::layout::{
 use crate::hw::msr::Efer;
 use crate::hw::paging::Entry;
 use crate::hw::reg::{Cr0, Cr4, Rflags, SegAccess};
-use crate::hv::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::kvm::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::{Error, InitState, search_initramfs_address};
 use crate::mem::mapped::RamBus;
 use crate::mem::{MemRegionEntry, MemRegionType};

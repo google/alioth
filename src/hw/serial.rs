@@ -28,7 +28,7 @@ use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 use parking_lot::Mutex;
 
-use crate::hv::IntxSender;
+use crate::kvm::IntxSender;
 use crate::mem::mmio::Mmio;
 use crate::{ffi, mem};
 

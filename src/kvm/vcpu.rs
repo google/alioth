@@ -21,14 +21,14 @@ use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
 
 use crate::hw::reg::SegAccess;
 use crate::ffi;
-use crate::hv::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
-use crate::hv::bindings::{
+use crate::kvm::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use crate::kvm::bindings::{
     KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN,
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs, KvmRun,
     kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_run, kvm_set_cpuid2, kvm_set_regs,
     kvm_set_sregs, kvm_set_sregs2,
 };
-use crate::hv::{Error, Result, VmEntry, VmExit};
+use crate::kvm::{Error, Result, VmEntry, VmExit};
 
 pub(super) struct KvmRunBlock {
     addr: usize,
