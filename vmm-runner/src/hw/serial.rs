@@ -19,7 +19,6 @@ use std::thread::JoinHandle;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
-use mio::{Events, Poll, Token, Waker};
 use parking_lot::Mutex;
 
 use crate::host::{IntxSender, SerialConsole};
@@ -189,7 +188,6 @@ pub struct Serial {
     console: Arc<dyn SerialConsole>,
     reg: Arc<Mutex<SerialReg>>,
     worker_thread: Option<JoinHandle<()>>,
-    exit_waker: Waker,
 }
 
 impl Mmio for Serial {
@@ -302,7 +300,6 @@ struct SeiralWorker {
     pub irq_sender: Arc<dyn IntxSender>,
     pub console: Arc<dyn SerialConsole>,
     pub reg: Arc<Mutex<SerialReg>>,
-    pub poll: Poll,
 }
 
 impl SeiralWorker {
@@ -313,28 +310,23 @@ impl SeiralWorker {
     }
 
     fn do_work_inner(&mut self) -> io::Result<()> {
-        self.console.setup(self.poll.registry(), TOKEN_STDIN)?;
-        let mut events = Events::with_capacity(16);
-        loop {
-            self.poll.poll(&mut events, None)?;
-            for event in events.iter() {
-                if event.token() == TOKEN_SHUTDOWN {
-                    return Ok(());
-                }
-                let mut reg = self.reg.lock();
-                if self.console.read_input(&mut reg.data)? == 0 {
-                    continue;
-                }
-                if reg
-                    .interrupt_enable
-                    .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
-                {
-                    reg.interrupt_identification.set_rx_data_available();
-                    self.send_irq()
-                }
-                reg.line_status |= LineStatus::DATA_READY;
+        let mut rx_buf = VecDeque::new();
+        while let Some(len) = self.console.read_input(&mut rx_buf)? {
+            if len == 0 {
+                continue;
             }
+            let mut reg = self.reg.lock();
+            reg.data.append(&mut rx_buf);
+            if reg
+                .interrupt_enable
+                .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
+            {
+                reg.interrupt_identification.set_rx_data_available();
+                self.send_irq()
+            }
+            reg.line_status |= LineStatus::DATA_READY;
         }
+        Ok(())
     }
 
     fn do_work(&mut self) {
@@ -347,9 +339,6 @@ impl SeiralWorker {
     }
 }
 
-const TOKEN_SHUTDOWN: Token = Token(1);
-const TOKEN_STDIN: Token = Token(0);
-
 impl Serial {
     pub fn new(
         base_port: u16,
@@ -359,12 +348,9 @@ impl Serial {
         let irq_sender: Arc<dyn IntxSender> = Arc::from(intx_sender);
         let console: Arc<dyn SerialConsole> = Arc::from(console);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
-        let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
         let mut worker = SeiralWorker {
             base_port,
             reg: reg.clone(),
-            poll,
             irq_sender: irq_sender.clone(),
             console: console.clone(),
         };
@@ -377,7 +363,6 @@ impl Serial {
             irq_sender,
             console,
             worker_thread: Some(worker_thread),
-            exit_waker: waker,
         };
         Ok(serial)
     }
@@ -391,7 +376,7 @@ impl Serial {
 
 impl Drop for Serial {
     fn drop(&mut self) {
-        if let Err(e) = self.exit_waker.wake() {
+        if let Err(e) = self.console.shutdown() {
             log::error!("Serial {:#x}: {:?}", self.base_port, e);
             return;
         }

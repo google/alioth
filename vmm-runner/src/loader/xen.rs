@@ -128,7 +128,7 @@ fn search_pvh_note<F: Read + Seek>(
 // https://xenbits.xen.org/docs/4.18-testing/misc/pvh.html
 pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
-    mem_regions: &[(usize, MemRegionEntry)],
+    mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
     cmd_line: Option<&str>,
     initramfs: Option<P>,
@@ -162,11 +162,11 @@ pub fn load<P: AsRef<Path>>(
             )?;
         }
         if program_header.file_sz > 0 {
-            let addr = program_header.paddr as usize;
+            let addr = program_header.paddr;
             let size = program_header.file_sz as usize;
             kernel_file.seek(SeekFrom::Start(program_header.offset))?;
             memory.write_range(addr, size, &mut kernel_file)?;
-            log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size);
+            log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size as u64);
         }
     }
 
@@ -211,7 +211,11 @@ pub fn load<P: AsRef<Path>>(
         if cmd_line.len() > KERNEL_CMD_LINE_LIMIT {
             return Err(Error::CmdLineTooLong(cmd_line.len(), KERNEL_CMD_LINE_LIMIT));
         }
-        memory.write_range(KERNEL_CMD_LINE_START, cmd_line.len(), cmd_line.as_bytes())?;
+        memory.write_range(
+            KERNEL_CMD_LINE_START as u64,
+            cmd_line.len(),
+            cmd_line.as_bytes(),
+        )?;
         start_info_page.start_info.cmdline_paddr = KERNEL_CMD_LINE_START as u64;
     }
 
@@ -220,13 +224,13 @@ pub fn load<P: AsRef<Path>>(
     if let Some(initramfs) = initramfs {
         let initramfs = File::open(initramfs)?;
         let initramfs_size = initramfs.metadata()?.len() as usize;
-        let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size, 2 << 30)?;
-        let initramfs_end = initramfs_gpa + initramfs_size;
+        let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size as u64, 2 << 30)?;
+        let initramfs_end = initramfs_gpa + initramfs_size as u64;
         memory.write_range(initramfs_gpa, initramfs_size, initramfs)?;
         start_info_page.start_info.nr_modules = 1;
         start_info_page.start_info.modlist_paddr =
             (HVM_START_INFO_START + offset_of!(StartInfoPage, initramfs)) as u64;
-        start_info_page.initramfs.paddr = initramfs_gpa as u64;
+        start_info_page.initramfs.paddr = initramfs_gpa;
         start_info_page.initramfs.size = initramfs_size as u64;
         log::info!(
             "initramfs loaded at {:#x} - {:#x}, ",
@@ -249,7 +253,7 @@ pub fn load<P: AsRef<Path>>(
             MemRegionType::Hidden => continue,
         };
         start_info_page.memory_map[index] = HvmMemmapTableEntry {
-            addr: *addr as u64,
+            addr: *addr,
             size: region.size as u64,
             type_,
             reserved: 0,
@@ -260,7 +264,7 @@ pub fn load<P: AsRef<Path>>(
     start_info_page.start_info.memmap_paddr =
         (HVM_START_INFO_START + offset_of!(StartInfoPage, memory_map)) as u64;
 
-    memory.write(HVM_START_INFO_START, &start_info_page)?;
+    memory.write(HVM_START_INFO_START as u64, &start_info_page)?;
 
     // set up gdt
     let boot_cs = SegRegVal {
@@ -299,7 +303,7 @@ pub fn load<P: AsRef<Path>>(
         base: BOOT_GDT_START as u64,
         limit: size_of_val(&gdt) as u16 - 1,
     };
-    memory.write(BOOT_GDT_START, &gdt)?;
+    memory.write(BOOT_GDT_START as u64, &gdt)?;
 
     let idtr = DtRegVal { base: 0, limit: 0 };
 

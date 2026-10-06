@@ -17,9 +17,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::host::arch::Reg;
-#[cfg(target_arch = "x86_64")]
-use crate::host::arch::{DtReg, DtRegVal, SReg, SegReg, SegRegVal};
+use crate::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
@@ -43,13 +41,10 @@ pub enum ExecType {
 #[derive(Debug, Clone, Default)]
 pub struct InitState {
     pub regs: Vec<(Reg, u64)>,
-    #[cfg(target_arch = "x86_64")]
     pub sregs: Vec<(SReg, u64)>,
-    #[cfg(target_arch = "x86_64")]
     pub dt_regs: Vec<(DtReg, DtRegVal)>,
-    #[cfg(target_arch = "x86_64")]
     pub seg_regs: Vec<(SegReg, SegRegVal)>,
-    pub initramfs: Option<Range<usize>>,
+    pub initramfs: Option<Range<u64>>,
 }
 
 #[derive(Debug, Error)]
@@ -77,9 +72,9 @@ pub enum Error {
 
     #[error("cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}")]
     InitramfsAddrLimit {
-        addr: usize,
-        max: usize,
-        addr_max: usize,
+        addr: u64,
+        max: u64,
+        addr_max: u64,
     },
 
     #[error("cannot find a memory region to load initramfs")]
@@ -96,12 +91,12 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn search_initramfs_address(
-    entries: &[(usize, MemRegionEntry)],
-    size: usize,
-    addr_max: usize,
-) -> Result<usize, Error> {
+    entries: &[(u64, MemRegionEntry)],
+    size: u64,
+    addr_max: u64,
+) -> Result<u64, Error> {
     for (start, entry) in entries.iter().rev() {
-        let region_max = entry.size - 1 + start;
+        let region_max = entry.size as u64 - 1 + start;
         let limit = std::cmp::min(region_max, addr_max);
         if limit < size - 1 {
             continue;

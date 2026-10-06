@@ -29,9 +29,7 @@ use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
 
 #[path = "firmware/firmware.rs"]
 pub mod firmware;
-#[cfg(target_arch = "x86_64")]
 pub mod hw_x86_64;
-#[cfg(target_arch = "x86_64")]
 pub use hw_x86_64::*;
 #[path = "pci/pci.rs"]
 pub mod pci;
@@ -106,12 +104,12 @@ impl Board {
         let mut acpi_table = create_acpi(self.config.num_cpu);
         acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
         ram.write_range(
-            EBDA_START,
+            EBDA_START as u64,
             size_of::<AcpiTableRsdp>(),
             acpi_table.rsdp().as_bytes(),
         )?;
         ram.write_range(
-            EBDA_START + size_of::<AcpiTableRsdp>(),
+            (EBDA_START + size_of::<AcpiTableRsdp>()) as u64,
             acpi_table.tables().len(),
             acpi_table.tables(),
         )?;
@@ -147,7 +145,7 @@ impl Board {
         self.memory
             .add_io_dev(Some(CONFIG_ADDRESS), self.pci_bus.io_bus.clone())?;
         self.memory.add_region(
-            AddrOpt::Fixed(PCIE_CONFIG_START),
+            AddrOpt::Fixed(PCIE_CONFIG_START as u64),
             Arc::new(MemRegion::with_emulated(
                 self.pci_bus.segment.clone(),
                 MemRegionType::Reserved,

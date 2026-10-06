@@ -382,7 +382,6 @@ dependencies = [
  "bitflags",
  "derive-layout",
  "log",
- "mio",
  "parking_lot",
  "serde",
  "simplelog",

@@ -22,11 +22,14 @@ use libc::{
     tcgetattr, tcsetattr, termios,
 };
 use mio::unix::SourceFd;
-use mio::{Interest, Registry, Token};
+use mio::{Events, Interest, Poll, Token, Waker};
 use parking_lot::Mutex;
 use vmm_runner::host::SerialConsole;
 
 use crate::ffi;
+
+const TOKEN_SHUTDOWN: Token = Token(0);
+const TOKEN_STDIN: Token = Token(1);
 
 struct StdinBackup {
     termios: Option<termios>,
@@ -69,6 +72,9 @@ impl Drop for StdinBackup {
 }
 
 pub struct HostSerialConsole {
+    poll: Mutex<Poll>,
+    waker: Waker,
+    events: Mutex<Events>,
     backup: Mutex<Option<StdinBackup>>,
 }
 
@@ -79,10 +85,15 @@ impl Debug for HostSerialConsole {
 }
 
 impl HostSerialConsole {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> io::Result<Self> {
+        let poll = Poll::new()?;
+        let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
+        Ok(Self {
+            poll: Mutex::new(poll),
+            waker,
+            events: Mutex::new(Events::with_capacity(16)),
             backup: Mutex::new(None),
-        }
+        })
     }
 }
 
@@ -92,36 +103,55 @@ impl SerialConsole for HostSerialConsole {
         Ok(())
     }
 
-    fn setup(&self, registry: &Registry, token: Token) -> io::Result<()> {
-        *self.backup.lock() = Some(StdinBackup::new());
+    fn read_input(&self, data: &mut VecDeque<u8>) -> io::Result<Option<usize>> {
+        let mut poll = self.poll.lock();
+        {
+            let mut backup = self.backup.lock();
+            if backup.is_none() {
+                *backup = Some(StdinBackup::new());
 
-        let mut raw_termios = MaybeUninit::uninit();
-        ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
-        unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
-        unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
-        ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) })?;
+                let mut raw_termios = MaybeUninit::uninit();
+                ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
+                unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
+                unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
+                ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) })?;
 
-        let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
-        ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) })?;
-        registry.register(&mut SourceFd(&STDIN_FILENO), token, Interest::READABLE)?;
-
-        Ok(())
-    }
-
-    fn read_input(&self, data: &mut VecDeque<u8>) -> io::Result<usize> {
-        let mut total_size = 0;
-        let mut buf = [0u8; 16];
-        loop {
-            match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) }) {
-                Ok(0) => break,
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Ok(len) => {
-                    data.extend(&buf[0..len as usize]);
-                    total_size += len as usize;
-                }
-                Err(e) => Err(e)?,
+                let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
+                ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) })?;
+                poll.registry().register(
+                    &mut SourceFd(&STDIN_FILENO),
+                    TOKEN_STDIN,
+                    Interest::READABLE,
+                )?;
             }
         }
-        Ok(total_size)
+        let mut events = self.events.lock();
+        poll.poll(&mut events, None)?;
+        let mut total_size = 0;
+        for event in events.iter() {
+            match event.token() {
+                TOKEN_SHUTDOWN => return Ok(None),
+                TOKEN_STDIN => {
+                    let mut buf = [0u8; 16];
+                    loop {
+                        match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) }) {
+                            Ok(0) => break,
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                            Ok(len) => {
+                                data.extend(&buf[0..len as usize]);
+                                total_size += len as usize;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        Ok(Some(total_size))
+    }
+
+    fn shutdown(&self) -> io::Result<()> {
+        self.waker.wake()
     }
 }

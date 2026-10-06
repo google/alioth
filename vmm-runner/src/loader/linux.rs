@@ -166,7 +166,7 @@ const MINIMAL_VERSION: u16 = 0x020c;
 
 pub fn load<P: AsRef<Path>>(
     memory: &RamBus,
-    mem_regions: &[(usize, MemRegionEntry)],
+    mem_regions: &[(u64, MemRegionEntry)],
     kernel: P,
     cmd_line: Option<&str>,
     initramfs: Option<P>,
@@ -220,16 +220,20 @@ pub fn load<P: AsRef<Path>>(
         if cmd_line.len() > cmd_line_limit {
             return Err(Error::CmdLineTooLong(cmd_line.len(), cmd_line_limit));
         }
-        memory.write_range(KERNEL_CMD_LINE_START, cmd_line.len(), cmd_line.as_bytes())?;
+        memory.write_range(
+            KERNEL_CMD_LINE_START as u64,
+            cmd_line.len(),
+            cmd_line.as_bytes(),
+        )?;
         boot_params.hdr.cmd_line_ptr = KERNEL_CMD_LINE_START as u32;
-        boot_params.ext_cmd_line_ptr = (KERNEL_CMD_LINE_START >> 32) as u32;
+        boot_params.ext_cmd_line_ptr = (KERNEL_CMD_LINE_START as u64 >> 32) as u32;
     }
 
     // load kernel image
     let kernel_offset = (boot_params.hdr.setup_sects as u64 + 1) * 512;
     kernel.seek(SeekFrom::Start(kernel_offset))?;
     let kernel_size = (kernel_meta.len() - kernel_offset) as usize;
-    memory.write_range(KERNEL_IMAGE_START, kernel_size, kernel)?;
+    memory.write_range(KERNEL_IMAGE_START as u64, kernel_size, kernel)?;
 
     // load initramfs
     let initramfs_range;
@@ -238,15 +242,15 @@ pub fn load<P: AsRef<Path>>(
         let initramfs_size = initramfs.metadata()?.len() as usize;
         let initramfs_gpa = search_initramfs_address(
             mem_regions,
-            initramfs_size,
-            boot_params.hdr.initrd_addr_max as usize,
+            initramfs_size as u64,
+            boot_params.hdr.initrd_addr_max as u64,
         )?;
-        let initramfs_end = initramfs_gpa + initramfs_size;
+        let initramfs_end = initramfs_gpa + initramfs_size as u64;
         memory.write_range(initramfs_gpa, initramfs_size, initramfs)?;
         boot_params.hdr.ramdisk_image = initramfs_gpa as u32;
         boot_params.ext_ramdisk_image = (initramfs_gpa >> 32) as u32;
         boot_params.hdr.ramdisk_size = initramfs_size as u32;
-        boot_params.ext_ramdisk_size = (initramfs_size >> 32) as u32;
+        boot_params.ext_ramdisk_size = (initramfs_size as u64 >> 32) as u32;
         log::info!(
             "initramfs loaded at {:#x} - {:#x}, ",
             initramfs_gpa,
@@ -268,7 +272,7 @@ pub fn load<P: AsRef<Path>>(
             MemRegionType::Hidden => continue,
         };
         boot_params.e820_table[region_index] = BootE820Entry {
-            addr: *addr as u64,
+            addr: *addr,
             size: region.size as u64,
             type_,
         };
@@ -278,12 +282,12 @@ pub fn load<P: AsRef<Path>>(
 
     boot_params.acpi_rsdp_addr = EBDA_START as u64;
 
-    memory.write(LINUX_BOOT_PARAMS_START, &boot_params)?;
+    memory.write(LINUX_BOOT_PARAMS_START as u64, &boot_params)?;
 
     // set up identity paging
-    let pml4_start = BOOT_PAGING_START;
+    let pml4_start = BOOT_PAGING_START as u64;
     let pdpt_start = pml4_start + 0x1000;
-    let pml4e = (Entry::P | Entry::RW).bits() as u64 | pdpt_start as u64;
+    let pml4e = (Entry::P | Entry::RW).bits() as u64 | pdpt_start;
     memory.write(pml4_start, &pml4e)?;
     let alignment = boot_params.hdr.kernel_alignment as usize;
     let runtime_start = (KERNEL_IMAGE_START + alignment - 1) & !(alignment - 1);
@@ -297,7 +301,7 @@ pub fn load<P: AsRef<Path>>(
     let num_page = (max_addr as u64 + (1 << 30) - 1) >> 30;
     for i in 0..num_page {
         let pdpte = (i << 30) | (Entry::P | Entry::RW | Entry::PS).bits() as u64;
-        memory.write(pdpt_start + i as usize * size_of::<u64>(), &pdpte)?;
+        memory.write(pdpt_start + i * size_of::<u64>() as u64, &pdpte)?;
     }
 
     // set up gdt
@@ -338,7 +342,7 @@ pub fn load<P: AsRef<Path>>(
         limit: size_of_val(&gdt) as u16 - 1,
     };
     let idtr = DtRegVal { base: 0, limit: 0 };
-    memory.write(BOOT_GDT_START, &gdt)?;
+    memory.write(BOOT_GDT_START as u64, &gdt)?;
 
     Ok(InitState {
         regs: vec![
@@ -349,7 +353,7 @@ pub fn load<P: AsRef<Path>>(
         sregs: vec![
             (SReg::Efer, (Efer::LMA | Efer::LME).bits() as u64),
             (SReg::Cr0, (Cr0::NE | Cr0::PE | Cr0::PG).bits() as u64),
-            (SReg::Cr3, pml4_start as u64),
+            (SReg::Cr3, pml4_start),
             (SReg::Cr4, Cr4::PAE.bits() as u64),
         ],
         seg_regs: vec![

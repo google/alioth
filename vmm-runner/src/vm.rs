@@ -100,7 +100,6 @@ impl Machine {
         Ok(machine)
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn add_com1(&self) -> Result<(), Error> {
         let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
         let com1_console = self.board.vm.create_serial_console()?;
@@ -131,7 +130,9 @@ impl Machine {
     {
         let name = Arc::new(name);
         let dev = param.build(name.clone(), self.board.vm.as_ref())?;
-        let virtio_dev = VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus().clone())?;
+        let poll = self.board.vm.create_poll()?;
+        let virtio_dev =
+            VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus().clone(), poll)?;
         let msi_sender = self.board.vm.create_msi_sender()?;
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender)?;
         let dev = Arc::new(dev);

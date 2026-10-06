@@ -142,9 +142,9 @@ impl ChangeLayout for UpdateCommandCallback {
                     if !self.changed.contains(Command::MEM) {
                         continue;
                     }
-                    let mut addr = (bar & !BAR_MEM_MASK) as usize;
+                    let mut addr = (bar & !BAR_MEM_MASK) as u64;
                     if matches!(pci_bar, PciBar::Mem64(_)) {
-                        addr |= (self.bars[i + 1] as usize) << 32;
+                        addr |= (self.bars[i + 1] as u64) << 32;
                     }
                     if self.current.contains(Command::MEM) {
                         memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
@@ -192,8 +192,8 @@ impl ChangeLayout for MoveBarCallback {
         } else {
             let src_addr = self.src & !(BAR_MEM_MASK as u64);
             let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
-            let region = memory.remove_region(src_addr as usize)?;
-            memory.add_region(AddrOpt::Fixed(dst_addr as usize), region)?;
+            let region = memory.remove_region(src_addr)?;
+            memory.add_region(AddrOpt::Fixed(dst_addr), region)?;
         }
         Ok(())
     }

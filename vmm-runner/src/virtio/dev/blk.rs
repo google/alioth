@@ -13,16 +13,14 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, ErrorKind};
-use std::os::unix::fs::FileExt;
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use mio::Registry;
-use mio::event::Event;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::host::{Poll, PollEvent};
 use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
@@ -141,7 +139,7 @@ impl Block {
     }
 
     fn handle_req_queue(&self, desc: &mut Descriptor) -> io::Result<usize> {
-        let disk = &self.disk;
+        let mut disk = &self.disk;
         let Some(buf0) = desc.readable.first() else {
             return Err(ErrorKind::InvalidData.into());
         };
@@ -163,7 +161,7 @@ impl Block {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let l = buf1.len();
-                let status = match disk.read_exact_at(buf1, offset) {
+                let status = match disk.seek(SeekFrom::Start(offset)).and_then(|_| disk.read_exact(buf1)) {
                     Ok(()) => VIRTIO_BLK_S_OK,
                     Err(e) => {
                         log::error!("{}: read {l} bytes from offset {offset:#x}: {e}", self.name);
@@ -184,7 +182,7 @@ impl Block {
                     return Err(ErrorKind::InvalidData.into());
                 };
                 let l = buf1.len();
-                let status = match disk.write_all_at(buf1, offset) {
+                let status = match disk.seek(SeekFrom::Start(offset)).and_then(|_| disk.write_all(buf1)) {
                     Ok(()) => VIRTIO_BLK_S_OK,
                     Err(e) => {
                         log::error!("{}: write {l} bytes to offset {offset:#x}: {e}", self.name);
@@ -245,7 +243,7 @@ impl Block {
 impl Virtio for Block {
     type Config = BlockConfig;
 
-    fn reset(&mut self, _registry: &Registry) {}
+    fn reset(&mut self, _poll: &dyn Poll) {}
 
     fn device_id() -> DeviceId {
         DeviceId::Block
@@ -263,16 +261,16 @@ impl Virtio for Block {
         self.feature.bits()
     }
 
-    fn activate(&mut self, _registry: &Registry, _feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(&mut self, _poll: &dyn Poll, _feature: u64, _memory: &RamBus) -> Result<()> {
         Ok(())
     }
 
     fn handle_event(
         &mut self,
-        _event: &Event,
+        _event: &PollEvent,
         _queues: &[impl VirtQueue],
         _irq_sender: &impl IrqSender,
-        _registry: &Registry,
+        _poll: &dyn Poll,
     ) -> Result<()> {
         Ok(())
     }
@@ -282,7 +280,7 @@ impl Virtio for Block {
         index: u16,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        _registry: &Registry,
+        _poll: &dyn Poll,
     ) -> Result<()> {
         let Some(queue) = queues.get(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);

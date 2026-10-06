@@ -72,7 +72,7 @@ impl ArcMemPages {
         let end = offset.wrapping_add(len).wrapping_sub(1);
         if offset >= self.size || end < offset {
             return Err(Error::OutOfRange {
-                addr: offset,
+                addr: offset as u64,
                 size: len,
             });
         }
@@ -87,7 +87,7 @@ impl ArcMemPages {
         let s = self.get_partial_slice(offset, size_of::<T>())?;
         match FromBytes::read_from(s) {
             None => Err(Error::OutOfRange {
-                addr: offset,
+                addr: offset as u64,
                 size: size_of::<T>(),
             }),
             Some(v) => Ok(v),
@@ -101,7 +101,7 @@ impl ArcMemPages {
         let s = self.get_partial_slice_mut(offset, size_of::<T>())?;
         match AsBytes::write_to(val, s) {
             None => Err(Error::OutOfRange {
-                addr: offset,
+                addr: offset as u64,
                 size: size_of::<T>(),
             }),
             Some(()) => Ok(()),
@@ -164,7 +164,7 @@ impl Deref for RamLayoutGuard<'_> {
 
 struct Iter<'a> {
     inner: &'a Addressable<MappedSlot>,
-    gpa: usize,
+    gpa: u64,
     remain: usize,
 }
 
@@ -176,7 +176,7 @@ impl<'a> Iterator for Iter<'a> {
         }
         let r = self.inner.get_partial_slice(self.gpa, self.remain);
         if let Ok(s) = r {
-            self.gpa += s.len();
+            self.gpa += s.len() as u64;
             self.remain -= s.len();
         }
         Some(r)
@@ -185,7 +185,7 @@ impl<'a> Iterator for Iter<'a> {
 
 struct IterMut<'a> {
     inner: &'a Addressable<MappedSlot>,
-    gpa: usize,
+    gpa: u64,
     remain: usize,
 }
 
@@ -197,7 +197,7 @@ impl<'a> Iterator for IterMut<'a> {
         }
         let r = self.inner.get_partial_slice_mut(self.gpa, self.remain);
         if let Ok(ref s) = r {
-            self.gpa += s.len();
+            self.gpa += s.len() as u64;
             self.remain -= s.len();
         }
         Some(r)
@@ -205,7 +205,7 @@ impl<'a> Iterator for IterMut<'a> {
 }
 
 impl Addressable<MappedSlot> {
-    fn slice_iter(&self, gpa: usize, len: usize) -> Iter<'_> {
+    fn slice_iter(&self, gpa: u64, len: usize) -> Iter<'_> {
         Iter {
             inner: self,
             gpa,
@@ -213,7 +213,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    fn slice_iter_mut(&self, gpa: usize, len: usize) -> IterMut<'_> {
+    fn slice_iter_mut(&self, gpa: u64, len: usize) -> IterMut<'_> {
         IterMut {
             inner: self,
             gpa,
@@ -221,21 +221,23 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    fn get_partial_slice(&self, gpa: usize, len: usize) -> Result<&[u8]> {
+    fn get_partial_slice(&self, gpa: u64, len: usize) -> Result<&[u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.get_partial_slice(gpa - start, len)
+        user_mem.pages.get_partial_slice((gpa - start) as usize, len)
     }
 
-    fn get_partial_slice_mut(&self, gpa: usize, len: usize) -> Result<&mut [u8]> {
+    fn get_partial_slice_mut(&self, gpa: u64, len: usize) -> Result<&mut [u8]> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.get_partial_slice_mut(gpa - start, len)
+        user_mem
+            .pages
+            .get_partial_slice_mut((gpa - start) as usize, len)
     }
 
-    pub fn get_slice<T>(&self, gpa: usize, len: usize) -> Result<&[UnsafeCell<T>], Error> {
+    pub fn get_slice<T>(&self, gpa: u64, len: usize) -> Result<&[UnsafeCell<T>], Error> {
         let total_len = len * size_of::<T>();
         let host_ref = self.get_partial_slice(gpa, total_len)?;
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
@@ -249,7 +251,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    pub fn get_ref<T>(&self, gpa: usize) -> Result<&UnsafeCell<T>, Error> {
+    pub fn get_ref<T>(&self, gpa: u64) -> Result<&UnsafeCell<T>, Error> {
         let host_ref = self.get_partial_slice(gpa, size_of::<T>())?;
         let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
         if host_ref.len() != size_of::<T>() {
@@ -262,7 +264,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    pub fn read<T>(&self, gpa: usize) -> Result<T, Error>
+    pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
     where
         T: FromBytes + AsBytes,
     {
@@ -284,7 +286,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    pub fn write<T>(&self, gpa: usize, val: &T) -> Result<(), Error>
+    pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
         T: AsBytes,
     {
@@ -305,7 +307,7 @@ impl Addressable<MappedSlot> {
         }
     }
 
-    pub fn translate_iov<'a>(&'a self, iov: &[(usize, usize)]) -> Result<Vec<IoSlice<'a>>> {
+    pub fn translate_iov<'a>(&'a self, iov: &[(u64, usize)]) -> Result<Vec<IoSlice<'a>>> {
         let mut slices = vec![];
         for (gpa, len) in iov {
             for r in self.slice_iter(*gpa, *len) {
@@ -315,7 +317,7 @@ impl Addressable<MappedSlot> {
         Ok(slices)
     }
 
-    pub fn translate_iov_mut<'a>(&'a self, iov: &[(usize, usize)]) -> Result<Vec<IoSliceMut<'a>>> {
+    pub fn translate_iov_mut<'a>(&'a self, iov: &[(u64, usize)]) -> Result<Vec<IoSliceMut<'a>>> {
         let mut slices = vec![];
         for (gpa, len) in iov {
             for r in self.slice_iter_mut(*gpa, *len) {
@@ -368,7 +370,7 @@ impl RamBus {
         Ok(ArcMemPages::new(pages))
     }
 
-    fn map_to_vm(&self, user_mem: &MappedSlot, addr: usize) -> Result<(), Error> {
+    fn map_to_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
         let mem_options = MemMapOption {
             read: true,
             write: true,
@@ -391,7 +393,7 @@ impl RamBus {
         Ok(())
     }
 
-    fn unmap_from_vm(&self, user_mem: &MappedSlot, addr: usize) -> Result<(), Error> {
+    fn unmap_from_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
         self.vm_memory
             .unmap(user_mem.slot_id, addr, user_mem.size())?;
         log::trace!(
@@ -403,7 +405,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub(crate) fn add(&self, gpa: usize, user_mem: ArcMemPages) -> Result<(), Error> {
+    pub(crate) fn add(&self, gpa: u64, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
         let slot = MappedSlot {
             slot_id: self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots,
@@ -422,14 +424,14 @@ impl RamBus {
         Ok(())
     }
 
-    pub(super) fn remove(&self, gpa: usize) -> Result<ArcMemPages, Error> {
+    pub(super) fn remove(&self, gpa: u64) -> Result<ArcMemPages, Error> {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
         Ok(mem.pages)
     }
 
-    pub fn read<T>(&self, gpa: usize) -> Result<T, Error>
+    pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
     where
         T: FromBytes + AsBytes,
     {
@@ -437,7 +439,7 @@ impl RamBus {
         inner.read(gpa)
     }
 
-    pub fn write<T>(&self, gpa: usize, val: &T) -> Result<(), Error>
+    pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
         T: AsBytes,
     {
@@ -445,7 +447,7 @@ impl RamBus {
         inner.write(gpa, val)
     }
 
-    pub fn read_range(&self, gpa: usize, len: usize, dst: &mut impl Write) -> Result<()> {
+    pub fn read_range(&self, gpa: u64, len: usize, dst: &mut impl Write) -> Result<()> {
         let inner = self.inner.read();
         for r in inner.slice_iter(gpa, len) {
             dst.write_all(r?)?;
@@ -453,7 +455,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub fn write_range(&self, gpa: usize, len: usize, mut src: impl Read) -> Result<()> {
+    pub fn write_range(&self, gpa: u64, len: usize, mut src: impl Read) -> Result<()> {
         let inner = self.inner.read();
         for r in inner.slice_iter_mut(gpa, len) {
             src.read_exact(r?)?;
@@ -461,7 +463,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub fn read_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
+    pub fn read_vectored<T, F>(&self, bufs: &[(u64, usize)], callback: F) -> Result<T, Error>
     where
         F: FnOnce(&[IoSlice<'_>]) -> T,
     {
@@ -475,7 +477,7 @@ impl RamBus {
         Ok(callback(&iov))
     }
 
-    pub fn write_vectored<T, F>(&self, bufs: &[(usize, usize)], callback: F) -> Result<T, Error>
+    pub fn write_vectored<T, F>(&self, bufs: &[(u64, usize)], callback: F) -> Result<T, Error>
     where
         F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
     {
@@ -527,6 +529,7 @@ mod test {
     }
 
     const PAGE_SIZE: usize = 1 << 12;
+    const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
 
     #[test]
     fn test_ram_bus_read() {
@@ -539,18 +542,18 @@ mod test {
         }));
 
         bus.add(0x0, mem1).unwrap();
-        bus.add(PAGE_SIZE, mem2).unwrap();
+        bus.add(PAGE_SIZE_U64, mem2).unwrap();
 
         let data = MyStruct {
             data: [1, 2, 3, 4, 5, 6, 7, 8],
         };
-        let data_size = size_of::<MyStruct>();
-        for gpa in (PAGE_SIZE - data_size)..=PAGE_SIZE {
+        let data_size = size_of::<MyStruct>() as u64;
+        for gpa in (PAGE_SIZE_U64 - data_size)..=PAGE_SIZE_U64 {
             bus.write(gpa, &data).unwrap();
             let r: MyStruct = bus.read(gpa).unwrap();
             assert_eq!(r, data)
         }
-        let memory_end = PAGE_SIZE * 2;
+        let memory_end = PAGE_SIZE_U64 * 2;
         for gpa in (memory_end - data_size - 10)..=(memory_end - data_size) {
             bus.write(gpa, &data).unwrap();
             let r: MyStruct = bus.read(gpa).unwrap();
@@ -562,14 +565,18 @@ mod test {
         }
 
         let data: Vec<u8> = (0..64).collect();
-        for gpa in (PAGE_SIZE - 64)..=PAGE_SIZE {
+        for gpa in (PAGE_SIZE_U64 - 64)..=PAGE_SIZE_U64 {
             bus.write_range(gpa, 64, &*data).unwrap();
             let mut buf = Vec::new();
             bus.read_range(gpa, 64, &mut buf).unwrap();
             assert_eq!(data, buf)
         }
 
-        let guest_iov = [(0, 16), (PAGE_SIZE - 16, 32), (2 * PAGE_SIZE - 16, 16)];
+        let guest_iov = [
+            (0, 16),
+            (PAGE_SIZE_U64 - 16, 32),
+            (2 * PAGE_SIZE_U64 - 16, 16),
+        ];
         let write_ret = bus.write_vectored(&guest_iov, |iov| {
             assert_eq!(iov.len(), 4);
             (&*data).read_vectored(iov)
@@ -587,7 +594,7 @@ mod test {
         println!("{:?}", bufs);
         drop(locked_bus);
         bus.remove(0x0).unwrap();
-        bus.remove(PAGE_SIZE).unwrap();
+        bus.remove(PAGE_SIZE_U64).unwrap();
         drop(backing);
     }
 }

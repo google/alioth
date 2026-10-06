@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::sync::Arc;
 
-use mio::{Interest, Registry, Token};
+use bitflags::bitflags;
 use thiserror::Error;
 
 use crate::virtio::dev::net::NetFeature;
 
-#[cfg(target_arch = "x86_64")]
 pub mod arch {
     use crate::hw::reg::SegAccess;
 
@@ -112,8 +112,49 @@ pub mod arch {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 pub use arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+
+bitflags! {
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Interest: u8 {
+        const READABLE = 1 << 0;
+        const WRITABLE = 1 << 1;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Token(pub u64);
+
+#[derive(Debug, Clone, Copy)]
+pub struct PollEvent {
+    pub token: Token,
+    pub is_readable: bool,
+    pub is_writable: bool,
+}
+
+impl PollEvent {
+    pub fn token(&self) -> Token {
+        self.token
+    }
+
+    pub fn is_readable(&self) -> bool {
+        self.is_readable
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.is_writable
+    }
+}
+
+pub trait Waker: Debug + Send + Sync + 'static {
+    fn wake(&self) -> std::io::Result<()>;
+}
+
+pub trait Poll: Debug + Send + Sync + 'static {
+    fn create_waker(&self, token: Token) -> std::io::Result<Box<dyn Waker>>;
+    fn poll(&mut self, events: &mut Vec<PollEvent>) -> std::io::Result<()>;
+    fn as_any(&self) -> &dyn Any;
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -164,7 +205,7 @@ pub enum VmExit {
         size: u8,
     },
     Mmio {
-        addr: usize,
+        addr: u64,
         write: Option<u64>,
         size: u8,
     },
@@ -193,13 +234,13 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
     fn mem_map(
         &self,
         slot: u32,
-        gpa: usize,
+        gpa: u64,
         size: usize,
         hva: usize,
         option: MemMapOption,
     ) -> Result<(), Error>;
 
-    fn unmap(&self, slot: u32, gpa: usize, size: usize) -> Result<(), Error>;
+    fn unmap(&self, slot: u32, gpa: u64, size: usize) -> Result<(), Error>;
 
     fn max_mem_slots(&self) -> Result<u32, Error>;
 
@@ -244,8 +285,8 @@ impl<T: MsiSender + ?Sized> MsiSender for Box<T> {
 
 pub trait SerialConsole: Debug + Send + Sync + 'static {
     fn write_byte(&self, byte: u8) -> std::io::Result<()>;
-    fn setup(&self, registry: &Registry, token: Token) -> std::io::Result<()>;
-    fn read_input(&self, data: &mut VecDeque<u8>) -> std::io::Result<usize>;
+    fn read_input(&self, data: &mut VecDeque<u8>) -> std::io::Result<Option<usize>>;
+    fn shutdown(&self) -> std::io::Result<()>;
 }
 
 pub trait Tap: Debug + Send + Sync + 'static {
@@ -253,11 +294,11 @@ pub trait Tap: Debug + Send + Sync + 'static {
     fn enable_offload(&mut self, feature: NetFeature) -> std::io::Result<()>;
     fn register(
         &self,
-        registry: &Registry,
+        poll: &dyn Poll,
         token: Token,
         interests: Interest,
     ) -> std::io::Result<()>;
-    fn deregister(&self, registry: &Registry);
+    fn deregister(&self, poll: &dyn Poll);
     fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize>;
     fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize>;
 }
@@ -289,29 +330,17 @@ impl Write for &dyn Tap {
 pub trait Vcpu {
     fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
     fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn get_sreg(&self, reg: SReg) -> Result<u64, Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn set_sregs(
         &mut self,
         sregs: &[(SReg, u64)],
         seg_regs: &[(SegReg, SegRegVal)],
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error>;
-
     fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
-
     fn dump(&self) -> Result<(), Error>;
 }
 
@@ -323,12 +352,11 @@ pub trait Vm: Debug + Send + Sync + 'static {
     fn create_msi_sender(&self) -> Result<Box<dyn MsiSender>, Error>;
     fn create_serial_console(&self) -> std::io::Result<Box<dyn SerialConsole>>;
     fn create_tap(&self, if_name: Option<&str>) -> std::io::Result<Box<dyn Tap>>;
+    fn create_poll(&self) -> std::io::Result<Box<dyn Poll>>;
 }
 
 pub trait Hypervisor: Debug + Send + Sync + 'static {
     fn create_vm(&self) -> Result<Box<dyn Vm>, Error>;
-
-    #[cfg(target_arch = "x86_64")]
     fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error>;
 }
 
@@ -397,7 +425,7 @@ pub mod test {
         fn mem_map(
             &self,
             _slot: u32,
-            _gpa: usize,
+            _gpa: u64,
             _size: usize,
             _hva: usize,
             option: MemMapOption,
@@ -411,7 +439,7 @@ pub mod test {
             Ok(())
         }
 
-        fn unmap(&self, _slot: u32, _gpa: usize, _size: usize) -> Result<(), Error> {
+        fn unmap(&self, _slot: u32, _gpa: u64, _size: usize) -> Result<(), Error> {
             Ok(())
         }
 

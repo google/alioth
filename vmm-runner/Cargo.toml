@@ -10,7 +10,6 @@ derive-layout.workspace = true
 bitfield.workspace = true
 bitflags.workspace = true
 log.workspace = true
-mio.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 simplelog.workspace = true

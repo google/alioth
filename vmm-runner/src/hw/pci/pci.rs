@@ -93,7 +93,7 @@ struct BarCallback {
 }
 
 impl MemRegionCallback for BarCallback {
-    fn mapped(&self, addr: usize) -> mem::Result<()> {
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
         self.header
             .write()
             .set_bar(self.index as usize, addr as u32);

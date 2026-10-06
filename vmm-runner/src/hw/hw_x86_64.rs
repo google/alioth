@@ -59,7 +59,7 @@ pub mod layout {
     pub const IOAPIC_START: usize = 0xfec0_0000;
     pub const APIC_START: usize = 0xfee0_0000;
 
-    pub const MEM_64_START: usize = 0x1_0000_0000; // 4GiB
+    pub const MEM_64_START: u64 = 0x1_0000_0000; // 4GiB
 
     pub const PAGE_SIZE: usize = 0x1000; // 4KiB
 }

@@ -145,7 +145,6 @@ fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
 }
 
 // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
-#[cfg(target_arch = "x86_64")]
 fn create_madt(num_cpu: u32) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
     let total_length = size_of::<AcpiTableMadt>()
         + size_of::<AcpiMadtIoApic>()
@@ -206,7 +205,7 @@ fn create_mcfg() -> AcpiTableMcfg<1> {
         },
         reserved: [0; 8],
         allocations: [AcpiMcfgAllocation {
-            address: transmute!(PCIE_CONFIG_START),
+            address: transmute!(PCIE_CONFIG_START as u64),
             pci_segment: 0,
             start_bus_number: 0,
             end_bus_number: 0,

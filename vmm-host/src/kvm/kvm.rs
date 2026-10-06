@@ -29,13 +29,13 @@ use libc::{
 };
 use parking_lot::Mutex;
 use vmm_runner::host::{
-    Cpuid, Error, Hypervisor, IntxSender, MemMapOption, MemPages, MsiSender, Result, SerialConsole,
-    Tap, Vcpu, Vm, VmMemory,
+    Cpuid, Error, Hypervisor, IntxSender, MemMapOption, MemPages, MsiSender, Poll, Result,
+    SerialConsole, Tap, Vcpu, Vm, VmMemory,
 };
 
 use crate::ffi;
 use crate::serial::HostSerialConsole;
-use crate::tap::HostTap;
+use crate::tap::{HostPoll, HostTap};
 use bindings::{
     KVM_API_VERSION, KVM_CAP_IRQFD, KVM_CAP_NR_MEMSLOTS, KVM_CAP_SIGNAL_MSI, KVM_MAX_CPUID_ENTRIES,
     KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmEncRegion, KvmIrqfd, KvmMemFlag, KvmMsi,
@@ -166,12 +166,18 @@ impl MemPages for KvmMemPages {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Pthread(libc::pthread_t);
+
+unsafe impl Send for Pthread {}
+unsafe impl Sync for Pthread {}
+
 #[derive(Debug)]
 pub struct KvmVm {
     fd: Arc<OwnedFd>,
     vcpu_mmap_size: usize,
     memory_created: bool,
-    vcpu_threads: Mutex<BTreeMap<u32, libc::pthread_t>>,
+    vcpu_threads: Mutex<BTreeMap<u32, Pthread>>,
 }
 
 #[derive(Debug)]
@@ -183,7 +189,7 @@ impl VmMemory for KvmMemory {
     fn mem_map(
         &self,
         slot: u32,
-        gpa: usize,
+        gpa: u64,
         size: usize,
         hva: usize,
         option: MemMapOption,
@@ -203,7 +209,7 @@ impl VmMemory for KvmMemory {
         }
         let region = KvmUserspaceMemoryRegion {
             slot,
-            guest_phys_addr: gpa as _,
+            guest_phys_addr: gpa,
             memory_size: size as _,
             userspace_addr: hva as _,
             flags,
@@ -212,11 +218,11 @@ impl VmMemory for KvmMemory {
         Ok(())
     }
 
-    fn unmap(&self, slot: u32, gpa: usize, _size: usize) -> Result<(), Error> {
+    fn unmap(&self, slot: u32, gpa: u64, _size: usize) -> Result<(), Error> {
         let flags = KvmMemFlag::empty();
         let region = KvmUserspaceMemoryRegion {
             slot,
-            guest_phys_addr: gpa as _,
+            guest_phys_addr: gpa,
             memory_size: 0,
             userspace_addr: 0,
             flags,
@@ -296,7 +302,7 @@ impl Vm for KvmVm {
         let kvm_run = unsafe { KvmRunBlock::new(vcpu_fd, self.vcpu_mmap_size) }?;
         self.vcpu_threads
             .lock()
-            .insert(id, unsafe { libc::pthread_self() });
+            .insert(id, Pthread(unsafe { libc::pthread_self() }));
         Ok(Box::new(KvmVcpu {
             fd: unsafe { OwnedFd::from_raw_fd(vcpu_fd) },
             kvm_run,
@@ -304,7 +310,7 @@ impl Vm for KvmVm {
     }
 
     fn stop_vcpu(&self, id: u32) -> Result<(), Error> {
-        if let Some(&pthread) = self.vcpu_threads.lock().get(&id) {
+        if let Some(&Pthread(pthread)) = self.vcpu_threads.lock().get(&id) {
             ffi!(unsafe { libc::pthread_kill(pthread, SIGRTMIN()) })?;
         }
         Ok(())
@@ -352,10 +358,14 @@ impl Vm for KvmVm {
     }
 
     fn create_serial_console(&self) -> std::io::Result<Box<dyn SerialConsole>> {
-        Ok(Box::new(HostSerialConsole::new()))
+        Ok(Box::new(HostSerialConsole::new()?))
     }
 
     fn create_tap(&self, if_name: Option<&str>) -> std::io::Result<Box<dyn Tap>> {
         Ok(Box::new(HostTap::new(if_name)?))
+    }
+
+    fn create_poll(&self) -> std::io::Result<Box<dyn Poll>> {
+        Ok(Box::new(HostPoll::new()?))
     }
 }

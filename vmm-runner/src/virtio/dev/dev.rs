@@ -19,10 +19,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use bitfield::bitfield;
-use mio::event::Event;
-use mio::{Events, Poll, Registry, Token, Waker};
 
-use crate::host::Vm;
+use crate::host::{Poll, PollEvent, Token, Vm, Waker};
 use crate::mem::MemRegion;
 use crate::mem::mapped::RamBus;
 use crate::mem::mmio::Mmio;
@@ -37,24 +35,24 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     type Config: Mmio;
 
     fn num_queues(&self) -> u16;
-    fn reset(&mut self, registry: &Registry);
+    fn reset(&mut self, poll: &dyn Poll);
     fn device_id() -> DeviceId;
     fn config(&self) -> Arc<Self::Config>;
     fn feature(&self) -> u64;
-    fn activate(&mut self, registry: &Registry, feature: u64, memory: &RamBus) -> Result<()>;
+    fn activate(&mut self, poll: &dyn Poll, feature: u64, memory: &RamBus) -> Result<()>;
     fn handle_queue(
         &mut self,
         index: u16,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        registry: &Registry,
+        poll: &dyn Poll,
     ) -> Result<()>;
     fn handle_event(
         &mut self,
-        event: &Event,
+        event: &PollEvent,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        registry: &Registry,
+        poll: &dyn Poll,
     ) -> Result<()>;
     fn shared_mem_regions(&self) -> Option<Arc<MemRegion>> {
         None
@@ -105,7 +103,7 @@ where
 {
     name: Arc<String>,
     dev: D,
-    poll: Poll,
+    poll: Box<dyn Poll>,
     memory: Arc<RamBus>,
     event_rx: Receiver<WakeEvent<S>>,
     queue_regs: Arc<Vec<Queue>>,
@@ -123,7 +121,7 @@ where
     pub reg: Arc<Register>,
     pub queue_regs: Arc<Vec<Queue>>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
-    pub waker: Arc<Waker>,
+    pub waker: Arc<dyn Waker>,
     pub event_tx: Sender<WakeEvent<S>>,
     worker_handle: Option<JoinHandle<()>>,
 }
@@ -145,8 +143,12 @@ where
         Ok(())
     }
 
-    pub fn new(name: Arc<String>, dev: D, memory: Arc<RamBus>) -> Result<Self> {
-        let poll = Poll::new()?;
+    pub fn new(
+        name: Arc<String>,
+        dev: D,
+        memory: Arc<RamBus>,
+        poll: Box<dyn Poll>,
+    ) -> Result<Self> {
         let device_config = dev.config();
         let reg = Arc::new(Register {
             device_feature: dev.feature() | VirtioFeature::SUPPORTED.bits(),
@@ -159,7 +161,7 @@ where
         });
         let queue_regs = Arc::new(queue_regs.collect::<Vec<_>>());
         let token = TOKEN_IS_QUEUE | TOKEN_WORKER_EVENT;
-        let waker = Waker::new(poll.registry(), Token(token as usize))?;
+        let waker: Arc<dyn Waker> = Arc::from(poll.create_waker(Token(token))?);
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = mpsc::channel();
         let mut device_worker = DeviceWorker {
@@ -187,7 +189,7 @@ where
             queue_regs,
             worker_handle: Some(handle),
             event_tx,
-            waker: Arc::new(waker),
+            waker,
             device_config,
             shared_mem_regions,
         };
@@ -220,9 +222,9 @@ where
     S: IrqSender,
 {
     fn notify_queue(&mut self, q_index: u16, irq_sender: &S) -> Result<()> {
-        let registry = self.poll.registry();
+        let poll = self.poll.as_ref();
         match &self.queues {
-            Queues::Split(qs) => self.dev.handle_queue(q_index, qs, irq_sender, registry),
+            Queues::Split(qs) => self.dev.handle_queue(q_index, qs, irq_sender, poll),
         }
     }
 
@@ -244,9 +246,9 @@ where
     }
 
     fn wait_start(&mut self) -> Result<WakeEvent<S>> {
-        let mut events = Events::with_capacity(1);
+        let mut events = Vec::with_capacity(1);
         loop {
-            self.poll.poll(&mut events, None)?;
+            self.poll.poll(&mut events)?;
             while let Ok(wake_event) = self.event_rx.try_recv() {
                 match &wake_event {
                     WakeEvent::Start { .. } | WakeEvent::Shutdown | WakeEvent::Reset => {
@@ -263,8 +265,8 @@ where
         }
     }
 
-    fn handle_event(&mut self, event: &Event, irq_sender: &S) -> Result<DevAction> {
-        let token = VirtioToken(event.token().0 as u64);
+    fn handle_event(&mut self, event: &PollEvent, irq_sender: &S) -> Result<DevAction> {
+        let token = VirtioToken(event.token().0);
         if token.is_queue() {
             if token.data() == TOKEN_WORKER_EVENT {
                 self.handle_wake_events(irq_sender)
@@ -273,9 +275,9 @@ where
                 Ok(DevAction::Continue)
             }
         } else {
-            let registry = self.poll.registry();
+            let poll = self.poll.as_ref();
             match &self.queues {
-                Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, registry)?,
+                Queues::Split(qs) => self.dev.handle_event(event, qs, irq_sender, poll)?,
             };
             Ok(DevAction::Continue)
         }
@@ -290,7 +292,7 @@ where
             return Ok(DevAction::Shutdown);
         };
         let memory = &self.memory;
-        self.dev.activate(self.poll.registry(), feature, memory)?;
+        self.dev.activate(self.poll.as_ref(), feature, memory)?;
         self.queues =
             if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
                 todo!()
@@ -301,9 +303,9 @@ where
             };
         log::debug!("{}: started with feature bit {feature:#b}", self.name);
         self.handle_wake_events(&irq_sender)?;
-        let mut events = Events::with_capacity(128);
+        let mut events = Vec::with_capacity(128);
         loop {
-            self.poll.poll(&mut events, None)?;
+            self.poll.poll(&mut events)?;
             for event in events.iter() {
                 let ret = self.handle_event(event, &irq_sender)?;
                 if ret != DevAction::Continue {
@@ -318,7 +320,7 @@ where
             if self.loop_until_reset()? == DevAction::Shutdown {
                 break;
             }
-            self.dev.reset(self.poll.registry());
+            self.dev.reset(self.poll.as_ref());
             log::info!("{}: reset done", self.name)
         }
         Ok(())

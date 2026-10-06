@@ -118,29 +118,29 @@ where
         self.inner.read().is_empty()
     }
 
-    pub fn add(&self, addr: usize, range: R) -> Result<()> {
+    pub fn add(&self, addr: u64, range: R) -> Result<()> {
         let mut inner = self.inner.write();
         inner.add(addr, range)?;
         Ok(())
     }
 
-    pub(super) fn remove(&self, addr: usize) -> Result<R> {
+    pub(super) fn remove(&self, addr: u64) -> Result<R> {
         let mut inner = self.inner.write();
         inner.remove(addr)
     }
 
-    pub fn read(&self, addr: usize, size: u8) -> Result<u64> {
+    pub fn read(&self, addr: u64, size: u8) -> Result<u64> {
         let inner = self.inner.read();
         match inner.search(addr) {
-            Some((start, dev)) => dev.read(addr - start, size),
+            Some((start, dev)) => dev.read((addr - start) as usize, size),
             None => Ok(0),
         }
     }
 
-    pub fn write(&self, addr: usize, size: u8, val: u64) -> Result<()> {
+    pub fn write(&self, addr: u64, size: u8, val: u64) -> Result<()> {
         let inner = self.inner.read();
         match inner.search(addr) {
-            Some((start, dev)) => dev.write(addr - start, size, val),
+            Some((start, dev)) => dev.write((addr - start) as usize, size, val),
             None => Ok(()),
         }
     }

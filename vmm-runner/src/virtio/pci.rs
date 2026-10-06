@@ -19,11 +19,10 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 
 use derive_layout::Layout;
-use mio::Waker;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::host::MsiSender;
+use crate::host::{MsiSender, Waker};
 use crate::mem::mmio::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry};
 use crate::hw::pci::cap::{
@@ -152,7 +151,7 @@ where
     queues: Arc<Vec<Queue>>,
     irq_sender: Arc<PciIrqSender<M>>,
     event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
-    waker: Arc<Waker>,
+    waker: Arc<dyn Waker>,
 }
 
 impl<M> VirtioPciRegisterMmio<M>
@@ -666,8 +665,8 @@ where
                         length: entry.size as u32,
                         ..Default::default()
                     },
-                    length_hi: (entry.size >> 32) as u32,
-                    offset_hi: (offset >> 32) as u32,
+                    length_hi: (entry.size as u64 >> 32) as u32,
+                    offset_hi: (offset as u64 >> 32) as u32,
                 };
                 caps.push(Box::new(share_mem_cap));
                 offset += entry.size;

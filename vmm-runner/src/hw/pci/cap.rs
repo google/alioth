@@ -172,11 +172,11 @@ impl PciCapList {
 
 impl Mmio for PciCapList {
     fn read(&self, offset: usize, size: u8) -> Result<u64, mem::Error> {
-        self.inner.read(offset, size)
+        self.inner.read(offset as u64, size)
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
-        self.inner.write(offset, size, val)
+        self.inner.write(offset as u64, size, val)
     }
 
     fn size(&self) -> usize {
@@ -197,7 +197,7 @@ impl TryFrom<Vec<Box<dyn PciCap>>> for PciCapList {
                 align_up!(ptr + Mmio::size(&cap), 4)
             };
             cap.set_next(next as u8);
-            bus.add(ptr, cap)?;
+            bus.add(ptr as u64, cap)?;
             ptr = next;
         }
         Ok(Self { inner: bus })
