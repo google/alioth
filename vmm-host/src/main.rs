@@ -61,6 +61,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_usage_and_exit();
     };
 
+    if wasm_path.is_none() {
+        if let Ok(exe_path) = std::env::current_exe()
+            && let Some(exe_dir) = exe_path.parent()
+        {
+            let candidate = exe_dir.join("vmm-runner.wasm");
+            if candidate.is_file() {
+                wasm_path = candidate.to_str().map(|s| s.to_owned());
+            }
+        }
+        if wasm_path.is_none() && std::path::Path::new("vmm-runner.wasm").is_file() {
+            wasm_path = Some("vmm-runner.wasm".to_owned());
+        }
+    }
+
     if let Some(wasm_path) = wasm_path {
         let wasm_bytes = std::fs::read(wasm_path)?;
         wasm_host::run_wasm_vmm(&wasm_bytes, &config_filename)

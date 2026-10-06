@@ -90,28 +90,40 @@ enabled (`/dev/kvm`).
 | **`create-tap.sh`** | `local_test/create-tap.sh` | Optional | Host script to create the `puff-tap` TAP interface (`192.168.8.1/24`) and `nftables` NAT rules on the target host (required if `[net.dev0]` is present in `vm.toml`). |
 | **`ssh-into-alpine.sh`** | `local_test/ssh-into-alpine.sh` | Optional | Convenience script to SSH into the guest at `root@192.168.8.2`. |
 
-### How to Copy Artifacts to Another Host
+### How to Stage & Copy Artifacts to Another Host (`./publish.sh`)
+
+You can use [`./publish.sh`](publish.sh) to build `vmm-host` (static `musl`
+release binary) and `vmm-runner.wasm` (`wasm32-wasip2` release component), copy
+both into a target directory `$DIR`, and generate a `$DIR/run-vm.sh` launcher
+script:
+
+```sh
+./publish.sh /path/to/stage-dir
+```
+
+`run-vm.sh` in `$DIR` looks for `vm.toml` in its own directory by default, or
+accepts a config file path as an input parameter (`./run-vm.sh <path/to/vm.toml>`).
+If `vm.toml` is not found, it prompts you to create one or pass it as an
+argument.
 
 Relative paths inside `vm.toml` (such as `kernel = "bzImage"` and
-`blk = ["alpine.raw"]`) are resolved relative to the working directory from
-which `vmm-host` is executed. Place `vm.toml`, `bzImage`, and `alpine.raw` in
-the same working directory on the destination host (or update `vm.toml` with
-their paths on the destination host).
+`blk = ["alpine.raw"]`) are resolved relative to the directory containing
+`vm.toml`. Place `vm.toml`, `bzImage`, and `alpine.raw` in the same directory on
+the destination host (or update `vm.toml` with their paths on the destination
+host).
 
-1. **Build the release artifacts on the build machine**:
+1. **Stage the VMM binaries and launcher script**:
    ```sh
-   cargo build --release --target=x86_64-unknown-linux-musl
-   cargo build -p vmm-runner --target=wasm32-wasip2 --release
+   ./publish.sh /tmp/wasm-vmm-dist
    ```
 
-2. **Copy the artifacts to a directory on the target host** (using `rsync -S` to
-   handle the sparse `alpine.raw` disk image efficiently):
+2. **Copy the staged binaries and VM guest files to the target host** (using
+   `rsync -S` to handle the sparse `alpine.raw` disk image efficiently):
    ```sh
    ssh user@target-host "mkdir -m 750 -p ~/wasm-vmm-run"
 
    rsync -avS --progress \
-       target/x86_64-unknown-linux-musl/release/vmm-host \
-       target/wasm32-wasip2/release/vmm-runner.wasm \
+       /tmp/wasm-vmm-dist/ \
        local_test/vm.toml \
        local_test/bzImage \
        local_test/alpine.raw \
@@ -125,6 +137,7 @@ their paths on the destination host).
    ~/wasm-vmm-run/
    ├── vmm-host
    ├── vmm-runner.wasm
+   ├── run-vm.sh
    ├── vm.toml
    ├── bzImage
    ├── alpine.raw
@@ -142,11 +155,11 @@ their paths on the destination host).
    # Set up the TAP device once per host boot (if [net.dev0] is used in vm.toml):
    ./create-tap.sh
 
-   # Run using the embedded vmm-runner.wasm component:
-   ./vmm-host -c vm.toml
+   # Run using vm.toml in ~/wasm-vmm-run:
+   ./run-vm.sh
 
-   # Or run using the external vmm-runner.wasm file:
-   ./vmm-host -c vm.toml -w vmm-runner.wasm
+   # Or pass a custom config file path:
+   ./run-vm.sh /path/to/custom-vm.toml
    ```
 
 ## Running a Linux VM from the Repository
