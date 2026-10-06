@@ -1,21 +1,26 @@
-[package]
-name = "wasm-vmm"
+[workspace]
+resolver = "2"
+members = [
+    "derive-layout",
+    "vmm-host",
+    "vmm-runner",
+]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 license = "Apache-2.0"
 
-[dependencies]
-# Internal dependencies.
+[workspace.dependencies]
 derive-layout = { path = "derive-layout" }
+vmm-runner = { path = "vmm-runner" }
 
-# External dependencies.
 bitfield = "0.15.0"
 bitflags = "2.4.0"
 libc = "0.2.150"
 log = "0.4"
 mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 parking_lot = { version = "0.12" }
-rand = "0.8.5"
 serde = { version = "1.0.*", features = ["derive"] }
 simplelog = "0.12.2"
 thiserror = "1"

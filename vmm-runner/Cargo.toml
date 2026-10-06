@@ -1,0 +1,19 @@
+[package]
+name = "vmm-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+derive-layout.workspace = true
+
+bitfield.workspace = true
+bitflags.workspace = true
+log.workspace = true
+mio.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+simplelog.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+zerocopy.workspace = true
