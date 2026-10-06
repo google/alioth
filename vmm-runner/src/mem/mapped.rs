@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::mem::{align_of, size_of};
+use std::mem::size_of;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -33,7 +32,7 @@ use super::{Error, Result};
 // it avoids a memory load when a caller tries to read/write the pages.
 #[derive(Debug, Clone)]
 pub struct ArcMemPages {
-    addr: usize,
+    addr: u64,
     size: usize,
     inner: Arc<dyn MemPages>,
 }
@@ -53,7 +52,7 @@ impl ArcMemPages {
         }
     }
 
-    pub fn addr(&self) -> usize {
+    pub fn addr(&self) -> u64 {
         self.addr
     }
 
@@ -66,9 +65,7 @@ impl ArcMemPages {
         Ok(())
     }
 
-    /// Given offset and len, return the host virtual address and len;
-    /// len might be truncated.
-    fn get_valid_range(&self, offset: usize, len: usize) -> Result<(usize, usize)> {
+    fn get_valid_len(&self, offset: usize, len: usize) -> Result<usize> {
         let end = offset.wrapping_add(len).wrapping_sub(1);
         if offset >= self.size || end < offset {
             return Err(Error::OutOfRange {
@@ -76,57 +73,55 @@ impl ArcMemPages {
                 size: len,
             });
         }
-        let valid_len = std::cmp::min(self.size - offset, len);
-        Ok((self.addr + offset, valid_len))
+        Ok(std::cmp::min(self.size - offset, len))
+    }
+
+    pub fn read_bytes(&self, offset: usize, dst: &mut [u8]) -> Result<usize, Error> {
+        if dst.is_empty() {
+            return Ok(0);
+        }
+        let valid_len = self.get_valid_len(offset, dst.len())?;
+        self.inner.read(offset, &mut dst[..valid_len])?;
+        Ok(valid_len)
+    }
+
+    pub fn write_bytes(&self, offset: usize, src: &[u8]) -> Result<usize, Error> {
+        if src.is_empty() {
+            return Ok(0);
+        }
+        let valid_len = self.get_valid_len(offset, src.len())?;
+        self.inner.write(offset, &src[..valid_len])?;
+        Ok(valid_len)
     }
 
     pub fn read<T>(&self, offset: usize) -> Result<T, Error>
     where
-        T: FromBytes,
+        T: FromBytes + AsBytes,
     {
-        let s = self.get_partial_slice(offset, size_of::<T>())?;
-        match FromBytes::read_from(s) {
-            None => Err(Error::OutOfRange {
+        let mut val = T::new_zeroed();
+        let len = self.read_bytes(offset, val.as_bytes_mut())?;
+        if len != size_of::<T>() {
+            return Err(Error::OutOfRange {
                 addr: offset as u64,
                 size: size_of::<T>(),
-            }),
-            Some(v) => Ok(v),
+            });
         }
+        Ok(val)
     }
 
     pub fn write<T>(&self, offset: usize, val: &T) -> Result<(), Error>
     where
         T: AsBytes,
     {
-        let s = self.get_partial_slice_mut(offset, size_of::<T>())?;
-        match AsBytes::write_to(val, s) {
-            None => Err(Error::OutOfRange {
+        let bytes = val.as_bytes();
+        if offset.checked_add(bytes.len()).map_or(true, |end| end > self.size) {
+            return Err(Error::OutOfRange {
                 addr: offset as u64,
                 size: size_of::<T>(),
-            }),
-            Some(()) => Ok(()),
+            });
         }
-    }
-
-    pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.addr as *mut u8, self.size) }
-    }
-
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.size) }
-    }
-
-    /// Given offset and len, return a slice, len might be truncated.
-    fn get_partial_slice(&self, offset: usize, len: usize) -> Result<&[u8], Error> {
-        let (addr, len) = self.get_valid_range(offset, len)?;
-        Ok(unsafe { std::slice::from_raw_parts(addr as *const u8, len) })
-    }
-
-    /// Given offset and len, return a mutable slice, len might be truncated.
-    #[allow(clippy::mut_from_ref)]
-    fn get_partial_slice_mut(&self, offset: usize, len: usize) -> Result<&mut [u8], Error> {
-        let (addr, len) = self.get_valid_range(offset, len)?;
-        Ok(unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, len) })
+        self.write_bytes(offset, bytes)?;
+        Ok(())
     }
 }
 
@@ -162,106 +157,57 @@ impl Deref for RamLayoutGuard<'_> {
     }
 }
 
-struct Iter<'a> {
-    inner: &'a Addressable<MappedSlot>,
-    gpa: u64,
-    remain: usize,
-}
-
-impl<'a> Iterator for Iter<'a> {
-    type Item = Result<&'a [u8]>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remain == 0 {
-            return None;
-        }
-        let r = self.inner.get_partial_slice(self.gpa, self.remain);
-        if let Ok(s) = r {
-            self.gpa += s.len() as u64;
-            self.remain -= s.len();
-        }
-        Some(r)
-    }
-}
-
-struct IterMut<'a> {
-    inner: &'a Addressable<MappedSlot>,
-    gpa: u64,
-    remain: usize,
-}
-
-impl<'a> Iterator for IterMut<'a> {
-    type Item = Result<&'a mut [u8]>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remain == 0 {
-            return None;
-        }
-        let r = self.inner.get_partial_slice_mut(self.gpa, self.remain);
-        if let Ok(ref s) = r {
-            self.gpa += s.len() as u64;
-            self.remain -= s.len();
-        }
-        Some(r)
-    }
-}
-
 impl Addressable<MappedSlot> {
-    fn slice_iter(&self, gpa: u64, len: usize) -> Iter<'_> {
-        Iter {
-            inner: self,
-            gpa,
-            remain: len,
-        }
-    }
-
-    fn slice_iter_mut(&self, gpa: u64, len: usize) -> IterMut<'_> {
-        IterMut {
-            inner: self,
-            gpa,
-            remain: len,
-        }
-    }
-
-    fn get_partial_slice(&self, gpa: u64, len: usize) -> Result<&[u8]> {
+    pub fn get_chunk_len(&self, gpa: u64, len: usize) -> Result<usize> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.get_partial_slice((gpa - start) as usize, len)
+        user_mem.pages.get_valid_len((gpa - start) as usize, len)
     }
 
-    fn get_partial_slice_mut(&self, gpa: u64, len: usize) -> Result<&mut [u8]> {
+    pub fn read_partial(&self, gpa: u64, dst: &mut [u8]) -> Result<usize> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem
-            .pages
-            .get_partial_slice_mut((gpa - start) as usize, len)
+        user_mem.pages.read_bytes((gpa - start) as usize, dst)
     }
 
-    pub fn get_slice<T>(&self, gpa: u64, len: usize) -> Result<&[UnsafeCell<T>], Error> {
-        let total_len = len * size_of::<T>();
-        let host_ref = self.get_partial_slice(gpa, total_len)?;
-        let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
-        if host_ref.len() != total_len {
-            Err(Error::NotContinuous)
-        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
-            // TODO: use is_aligned
-            Err(Error::NotAligned)
-        } else {
-            Ok(unsafe { &*core::ptr::slice_from_raw_parts(ptr, len) })
-        }
+    pub fn write_partial(&self, gpa: u64, src: &[u8]) -> Result<usize> {
+        let Some((start, user_mem)) = self.search(gpa) else {
+            return Err(Error::NotMapped(gpa));
+        };
+        user_mem.pages.write_bytes((gpa - start) as usize, src)
     }
 
-    pub fn get_ref<T>(&self, gpa: u64) -> Result<&UnsafeCell<T>, Error> {
-        let host_ref = self.get_partial_slice(gpa, size_of::<T>())?;
-        let ptr = host_ref.as_ptr() as *const UnsafeCell<T>;
-        if host_ref.len() != size_of::<T>() {
-            Err(Error::NotContinuous)
-        } else if ptr as usize & (align_of::<T>() - 1) != 0 {
-            // TODO: use is_aligned
-            Err(Error::NotAligned)
-        } else {
-            Ok(unsafe { &*ptr })
+    pub fn validate_range(&self, mut gpa: u64, mut remain: usize) -> Result<Vec<(u64, usize)>> {
+        let mut chunks = Vec::new();
+        while remain > 0 {
+            let chunk_len = self.get_chunk_len(gpa, remain)?;
+            chunks.push((gpa, chunk_len));
+            gpa += chunk_len as u64;
+            remain -= chunk_len;
         }
+        Ok(chunks)
+    }
+
+    pub fn read_exact_bytes(&self, mut gpa: u64, mut dst: &mut [u8]) -> Result<()> {
+        self.validate_range(gpa, dst.len())?;
+        while !dst.is_empty() {
+            let n = self.read_partial(gpa, dst)?;
+            gpa += n as u64;
+            dst = &mut dst[n..];
+        }
+        Ok(())
+    }
+
+    pub fn write_exact_bytes(&self, mut gpa: u64, mut src: &[u8]) -> Result<()> {
+        self.validate_range(gpa, src.len())?;
+        while !src.is_empty() {
+            let n = self.write_partial(gpa, src)?;
+            gpa += n as u64;
+            src = &src[n..];
+        }
+        Ok(())
     }
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
@@ -269,62 +215,27 @@ impl Addressable<MappedSlot> {
         T: FromBytes + AsBytes,
     {
         let mut val = T::new_zeroed();
-        let buf = val.as_bytes_mut();
-        let host_ref = self.get_partial_slice(gpa, size_of::<T>())?;
-        if host_ref.len() == buf.len() {
-            buf.copy_from_slice(host_ref);
-            Ok(val)
-        } else {
-            let mut cur = 0;
-            for r in self.slice_iter(gpa, size_of::<T>()) {
-                let s = r?;
-                let s_len = s.len();
-                buf[cur..(cur + s_len)].copy_from_slice(s);
-                cur += s_len;
-            }
-            Ok(val)
-        }
+        self.read_exact_bytes(gpa, val.as_bytes_mut())?;
+        Ok(val)
     }
 
     pub fn write<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
         T: AsBytes,
     {
-        let buf = val.as_bytes();
-        let host_ref = self.get_partial_slice_mut(gpa, size_of::<T>())?;
-        if host_ref.len() == buf.len() {
-            host_ref.copy_from_slice(buf);
-            Ok(())
-        } else {
-            let mut cur = 0;
-            for r in self.slice_iter_mut(gpa, size_of::<T>()) {
-                let s = r?;
-                let s_len = s.len();
-                s.copy_from_slice(&buf[cur..(cur + s_len)]);
-                cur += s_len;
-            }
-            Ok(())
-        }
+        self.write_exact_bytes(gpa, val.as_bytes())
     }
 
-    pub fn translate_iov<'a>(&'a self, iov: &[(u64, usize)]) -> Result<Vec<IoSlice<'a>>> {
-        let mut slices = vec![];
+    pub fn translate_iov(&self, iov: &[(u64, usize)]) -> Result<Vec<Vec<u8>>> {
+        let mut bufs = vec![];
         for (gpa, len) in iov {
-            for r in self.slice_iter(*gpa, *len) {
-                slices.push(IoSlice::new(r?));
+            for (chunk_gpa, chunk_len) in self.validate_range(*gpa, *len)? {
+                let mut buf = vec![0u8; chunk_len];
+                self.read_exact_bytes(chunk_gpa, &mut buf)?;
+                bufs.push(buf);
             }
         }
-        Ok(slices)
-    }
-
-    pub fn translate_iov_mut<'a>(&'a self, iov: &[(u64, usize)]) -> Result<Vec<IoSliceMut<'a>>> {
-        let mut slices = vec![];
-        for (gpa, len) in iov {
-            for r in self.slice_iter_mut(*gpa, *len) {
-                slices.push(IoSliceMut::new(r?));
-            }
-        }
-        Ok(slices)
+        Ok(bufs)
     }
 }
 
@@ -449,16 +360,20 @@ impl RamBus {
 
     pub fn read_range(&self, gpa: u64, len: usize, dst: &mut impl Write) -> Result<()> {
         let inner = self.inner.read();
-        for r in inner.slice_iter(gpa, len) {
-            dst.write_all(r?)?;
+        for (chunk_gpa, chunk_len) in inner.validate_range(gpa, len)? {
+            let mut buf = vec![0u8; chunk_len];
+            inner.read_exact_bytes(chunk_gpa, &mut buf)?;
+            dst.write_all(&buf)?;
         }
         Ok(())
     }
 
     pub fn write_range(&self, gpa: u64, len: usize, mut src: impl Read) -> Result<()> {
         let inner = self.inner.read();
-        for r in inner.slice_iter_mut(gpa, len) {
-            src.read_exact(r?)?;
+        for (chunk_gpa, chunk_len) in inner.validate_range(gpa, len)? {
+            let mut buf = vec![0u8; chunk_len];
+            src.read_exact(&mut buf)?;
+            inner.write_exact_bytes(chunk_gpa, &buf)?;
         }
         Ok(())
     }
@@ -468,12 +383,8 @@ impl RamBus {
         F: FnOnce(&[IoSlice<'_>]) -> T,
     {
         let inner = self.inner.read();
-        let mut iov = vec![];
-        for (gpa, len) in bufs {
-            for r in inner.slice_iter(*gpa, *len) {
-                iov.push(IoSlice::new(r?));
-            }
-        }
+        let vecs = inner.translate_iov(bufs)?;
+        let iov: Vec<IoSlice<'_>> = vecs.iter().map(|v| IoSlice::new(v)).collect();
         Ok(callback(&iov))
     }
 
@@ -482,23 +393,31 @@ impl RamBus {
         F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
     {
         let inner = self.inner.read();
-        let mut iov = vec![];
+        let mut chunks = Vec::new();
         for (gpa, len) in bufs {
-            for r in inner.slice_iter_mut(*gpa, *len) {
-                iov.push(IoSliceMut::new(r?));
+            for (chunk_gpa, chunk_len) in inner.validate_range(*gpa, *len)? {
+                chunks.push((chunk_gpa, vec![0u8; chunk_len]));
             }
         }
-        Ok(callback(&mut iov))
+        let mut iov: Vec<IoSliceMut<'_>> =
+            chunks.iter_mut().map(|(_, v)| IoSliceMut::new(v)).collect();
+        let res = callback(&mut iov);
+        drop(iov);
+        for (chunk_gpa, buf) in chunks {
+            inner.write_exact_bytes(chunk_gpa, &buf)?;
+        }
+        Ok(res)
     }
 
     pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
-        self.vm_memory.register_encrypted_range(pages.as_slice())?;
+        self.vm_memory
+            .register_encrypted_range(pages.addr(), pages.size())?;
         Ok(())
     }
 
     pub fn deregister_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
         self.vm_memory
-            .deregister_encrypted_range(pages.as_slice())?;
+            .deregister_encrypted_range(pages.addr(), pages.size())?;
         Ok(())
     }
 }
@@ -538,7 +457,7 @@ mod test {
         let addr = backing.addr();
         let mem1 = ArcMemPages::new(Arc::new(unsafe { FakeMemPages::from_raw(addr, PAGE_SIZE) }));
         let mem2 = ArcMemPages::new(Arc::new(unsafe {
-            FakeMemPages::from_raw(addr + 2 * PAGE_SIZE, PAGE_SIZE)
+            FakeMemPages::from_raw(addr + 2 * PAGE_SIZE_U64, PAGE_SIZE)
         }));
 
         bus.add(0x0, mem1).unwrap();

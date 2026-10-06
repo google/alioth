@@ -7,8 +7,11 @@ license.workspace = true
 [dependencies]
 vmm-runner.workspace = true
 
+anyhow.workspace = true
 bitflags.workspace = true
 libc.workspace = true
 log.workspace = true
 mio.workspace = true
 parking_lot.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true

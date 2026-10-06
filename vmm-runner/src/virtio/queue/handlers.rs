@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::sync::atomic::{fence, Ordering};
 
 use crate::virtio::queue::{Descriptor, LockedQueue, QueueGuard, VirtQueue};
@@ -64,7 +64,9 @@ pub fn reader_to_queue(
     irq_sender: &impl IrqSender,
 ) -> Result<()> {
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
-        let len = reader.read_vectored(&mut desc.writable)?;
+        let mut iov: Vec<IoSliceMut<'_>> =
+            desc.writable.iter_mut().map(|b| IoSliceMut::new(b)).collect();
+        let len = reader.read_vectored(&mut iov)?;
         if len == 0 {
             Err(ErrorKind::UnexpectedEof.into())
         } else {
@@ -81,7 +83,8 @@ pub fn queue_to_writer(
     irq_sender: &impl IrqSender,
 ) -> Result<()> {
     handle_desc(dev_name, q_index, queue, irq_sender, |desc| {
-        if writer.write_vectored(&desc.readable)? == 0 {
+        let iov: Vec<IoSlice<'_>> = desc.readable.iter().map(|b| IoSlice::new(b)).collect();
+        if writer.write_vectored(&iov)? == 0 {
             Err(ErrorKind::WriteZero.into())
         } else {
             Ok(0)

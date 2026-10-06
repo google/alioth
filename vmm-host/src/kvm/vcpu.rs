@@ -227,7 +227,59 @@ impl Vcpu for KvmVcpu {
         self.kvm_set_sregs(sregs, seg_regs, dt_regs)
     }
 
-    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
+    #[cfg(target_arch = "x86_64")]
+    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
+        self.kvm_set_cpuids(cpuids)
+    }
+
+    fn dump(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub struct SharedKvmVcpu(pub(super) std::sync::Arc<parking_lot::Mutex<KvmVcpu>>);
+
+impl Vcpu for SharedKvmVcpu {
+    fn get_reg(&self, reg: Reg) -> Result<u64, Error> {
+        self.0.lock().get_reg(reg)
+    }
+
+    fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error> {
+        self.0.lock().set_regs(vals)
+    }
+
+    fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error> {
+        self.0.lock().get_seg_reg(reg)
+    }
+
+    fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error> {
+        self.0.lock().get_dt_reg(reg)
+    }
+
+    fn get_sreg(&self, reg: SReg) -> Result<u64, Error> {
+        self.0.lock().get_sreg(reg)
+    }
+
+    fn set_sregs(
+        &mut self,
+        sregs: &[(SReg, u64)],
+        seg_regs: &[(SegReg, SegRegVal)],
+        dt_regs: &[(DtReg, DtRegVal)],
+    ) -> Result<(), Error> {
+        self.0.lock().set_sregs(sregs, seg_regs, dt_regs)
+    }
+
+    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
+        self.0.lock().set_cpuids(cpuids)
+    }
+
+    fn dump(&self) -> Result<(), Error> {
+        self.0.lock().dump()
+    }
+}
+
+impl KvmVcpu {
+    pub fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
         match entry {
             VmEntry::None => {}
             VmEntry::Io { data } => self.entry_io(data),
@@ -246,7 +298,10 @@ impl Vcpu for KvmVcpu {
                     self.set_immediate_exit(false);
                     Ok(VmExit::Reboot)
                 }
-                (ErrorKind::Interrupted, _) => Ok(VmExit::Interrupted),
+                (ErrorKind::Interrupted, _) => {
+                    self.set_immediate_exit(false);
+                    Ok(VmExit::Interrupted)
+                }
                 _ => Err(e.into()),
             },
             Ok(_) => match self.kvm_run.exit_reason {
@@ -258,17 +313,9 @@ impl Vcpu for KvmVcpu {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
-        self.kvm_set_cpuids(cpuids)
+    pub(super) fn immediate_exit_ptr(&mut self) -> *mut std::sync::atomic::AtomicU8 {
+        (&mut self.kvm_run.immediate_exit as *mut u8).cast()
     }
-
-    fn dump(&self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl KvmVcpu {
 
     #[cfg(target_endian = "little")]
     pub(super) fn entry_mmio(&mut self, data: u64) {

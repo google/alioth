@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::UnsafeCell;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, fence};
@@ -51,7 +50,7 @@ bitflags! {
 }
 
 #[repr(C, align(2))]
-#[derive(Debug, Clone, Layout)]
+#[derive(Debug, Clone, Default, Layout, FromBytes, FromZeroes, AsBytes)]
 pub struct AvailHeader {
     flags: u16,
     idx: u16,
@@ -65,14 +64,14 @@ bitflags! {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Layout)]
+#[derive(Debug, Clone, Default, Layout, FromBytes, FromZeroes, AsBytes)]
 pub struct UsedHeader {
     flags: u16,
     idx: u16,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, FromBytes, FromZeroes, AsBytes)]
 pub struct UsedElem {
     id: u32,
     len: u32,
@@ -100,60 +99,74 @@ struct SplitQueueGuard<'m, 'q> {
 
 struct SplitLayout<'g, 'm> {
     guard: &'g RamLayoutGuard<'m>,
+    queue_size: u16,
 
-    avail: &'g UnsafeCell<AvailHeader>,
-    avail_ring: &'g [UnsafeCell<u16>],
-    used_event: Option<&'g UnsafeCell<u16>>,
+    avail_gpa: u64,
+    avail_ring_gpa: u64,
+    used_event_gpa: Option<u64>,
 
-    used: &'g UnsafeCell<UsedHeader>,
-    used_ring: &'g [UnsafeCell<UsedElem>],
-    avail_event: Option<&'g UnsafeCell<u16>>,
+    used_gpa: u64,
+    used_ring_gpa: u64,
+    avail_event_gpa: Option<u64>,
     used_index: u16,
 
-    desc: &'g [UnsafeCell<Desc>],
+    desc_gpa: u64,
 }
 
 impl<'g, 'm> SplitLayout<'g, 'm> {
     pub fn avail_index(&self) -> u16 {
-        unsafe { &*self.avail.get() }.idx
+        self.guard
+            .read::<AvailHeader>(self.avail_gpa)
+            .expect("read AvailHeader")
+            .idx
     }
 
     pub fn set_used_index(&self) {
-        unsafe { &mut *self.used.get() }.idx = self.used_index
+        self.guard
+            .write(
+                self.used_gpa + UsedHeader::OFFSET_IDX as u64,
+                &self.used_index,
+            )
+            .expect("write UsedHeader.idx");
     }
 
     pub fn used_event(&self) -> Option<u16> {
-        self.used_event.map(|event| unsafe { *event.get() })
+        self.used_event_gpa
+            .map(|gpa| self.guard.read::<u16>(gpa).expect("read used_event"))
     }
 
     pub fn set_avail_event(&self, index: u16) -> Option<()> {
-        match self.avail_event {
-            Some(avail_event) => {
-                *unsafe { &mut *avail_event.get() } = index;
-                Some(())
-            }
-            None => None,
-        }
+        self.avail_event_gpa
+            .map(|gpa| self.guard.write(gpa, &index).expect("write avail_event"))
     }
 
     pub fn set_flag_notification(&self, enabled: bool) {
-        unsafe { &mut *self.used.get() }.flags = (!enabled) as _;
+        let flags: u16 = (!enabled) as u16;
+        self.guard
+            .write(self.used_gpa + UsedHeader::OFFSET_FLAGS as u64, &flags)
+            .expect("write UsedHeader.flags");
     }
 
     pub fn flag_interrupt_enabled(&self) -> bool {
-        unsafe { &*self.avail.get() }.flags == 0
+        self.guard
+            .read::<AvailHeader>(self.avail_gpa)
+            .expect("read AvailHeader")
+            .flags
+            == 0
     }
 
     pub fn read_avail(&self, index: u16) -> u16 {
-        let wrapped_index = index as usize & (self.avail_ring.len() - 1);
-        unsafe { *self.avail_ring.get_unchecked(wrapped_index).get() }
+        let wrapped_index = (index & (self.queue_size - 1)) as usize;
+        let gpa = self.avail_ring_gpa + (wrapped_index * size_of::<u16>()) as u64;
+        self.guard.read::<u16>(gpa).expect("read avail_ring")
     }
 
-    pub fn get_desc(&self, id: u16) -> Result<&Desc> {
-        match self.desc.get(id as usize) {
-            Some(desc) => Ok(unsafe { &*desc.get() }),
-            None => Err(Error::InvalidDescriptor(id)),
+    pub fn get_desc(&self, id: u16) -> Result<Desc> {
+        if id >= self.queue_size {
+            return Err(Error::InvalidDescriptor(id));
         }
+        let gpa = self.desc_gpa + (id as usize * size_of::<Desc>()) as u64;
+        Ok(self.guard.read::<Desc>(gpa)?)
     }
 
     fn get_indirect(
@@ -204,24 +217,34 @@ impl<'g, 'm> SplitLayout<'g, 'm> {
         Ok((readable, writeable))
     }
 
-    fn get_next_desc(&self) -> Result<Option<Descriptor<'g>>> {
+    fn get_next_desc(&self) -> Result<Option<Descriptor>> {
         if self.used_index == self.avail_index() {
             return Ok(None);
         }
         let desc_id = self.read_avail(self.used_index);
-        let (readable, writable) = self.get_desc_iov(desc_id)?;
-        let readable = self.guard.translate_iov(&readable)?;
-        let writable = self.guard.translate_iov_mut(&writable)?;
+        let (readable_gpas, writable_gpas) = self.get_desc_iov(desc_id)?;
+        let mut readable = Vec::with_capacity(readable_gpas.len());
+        for (gpa, len) in readable_gpas {
+            let mut buf = vec![0u8; len];
+            self.guard.read_exact_bytes(gpa, &mut buf)?;
+            readable.push(buf);
+        }
+        let mut writable = Vec::with_capacity(writable_gpas.len());
+        for &(gpa, len) in &writable_gpas {
+            self.guard.validate_range(gpa, len)?;
+            writable.push(vec![0u8; len]);
+        }
         Ok(Some(Descriptor {
             id: desc_id,
             readable,
             writable,
+            writable_gpas,
         }))
     }
 }
 
 impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
-    fn next_desc(&self) -> Option<Result<Descriptor<'g>>> {
+    fn next_desc(&self) -> Option<Result<Descriptor>> {
         self.get_next_desc().transpose()
     }
 
@@ -230,13 +253,32 @@ impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
     }
 
     fn push_used(&mut self, desc: Descriptor, len: usize) -> u16 {
+        if desc.writable.len() == 1 {
+            let (gpa, _) = desc.writable_gpas[0];
+            let buf = &desc.writable[0];
+            let write_len = std::cmp::min(len, buf.len());
+            if write_len > 0 {
+                self.guard
+                    .write_exact_bytes(gpa, &buf[..write_len])
+                    .expect("write used descriptor buffer");
+            }
+        } else {
+            for ((gpa, _), buf) in desc.writable_gpas.iter().zip(desc.writable.iter()) {
+                self.guard
+                    .write_exact_bytes(*gpa, buf)
+                    .expect("write used descriptor buffer");
+            }
+        }
         let used_index = self.used_index;
         let used_elem = UsedElem {
             id: desc.id as u32,
             len: len as u32,
         };
-        let wrapped_index = used_index as usize & (self.used_ring.len() - 1);
-        *unsafe { &mut *self.used_ring.get_unchecked(wrapped_index).get() } = used_elem;
+        let wrapped_index = (used_index & (self.queue_size - 1)) as usize;
+        let elem_gpa = self.used_ring_gpa + (wrapped_index * size_of::<UsedElem>()) as u64;
+        self.guard
+            .write(elem_gpa, &used_elem)
+            .expect("write UsedElem");
         fence(Ordering::SeqCst);
         self.used_index = used_index.wrapping_add(1);
         self.set_used_index();
@@ -244,7 +286,7 @@ impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
     }
 
     fn enable_notification(&self, enabled: bool) {
-        if self.avail_event.is_some() {
+        if self.avail_event_gpa.is_some() {
             let mut avail_index = self.avail_index();
             if enabled {
                 loop {
@@ -275,31 +317,42 @@ impl<'g, 'm> LockedQueue<'g> for SplitLayout<'g, 'm> {
 
 impl<'m, 'q> QueueGuard for SplitQueueGuard<'m, 'q> {
     fn queue(&self) -> Result<impl LockedQueue<'_>> {
-        let mut avail_event = None;
-        let mut used_event = None;
+        let mut avail_event_gpa = None;
+        let mut used_event_gpa = None;
         let queue_size = self.register.size as usize;
         if self.register.feature.contains(VirtioFeature::EVENT_IDX) {
-            let avail_event_gpa = self.register.used
+            let avail_ev_gpa = self.register.used
                 + (size_of::<UsedHeader>() + queue_size * size_of::<UsedElem>()) as u64;
-            avail_event = Some(self.guard.get_ref(avail_event_gpa)?);
-            let used_event_gpa = self.register.avail
+            self.guard.validate_range(avail_ev_gpa, size_of::<u16>())?;
+            avail_event_gpa = Some(avail_ev_gpa);
+            let used_ev_gpa = self.register.avail
                 + (size_of::<AvailHeader>() + queue_size * size_of::<u16>()) as u64;
-            used_event = Some(self.guard.get_ref(used_event_gpa)?);
+            self.guard.validate_range(used_ev_gpa, size_of::<u16>())?;
+            used_event_gpa = Some(used_ev_gpa);
         }
-        let used = self.guard.get_ref::<UsedHeader>(self.register.used)?;
-        let used_index = unsafe { &*used.get() }.idx;
+        let used_hdr = self.guard.read::<UsedHeader>(self.register.used)?;
+        let used_index = used_hdr.idx;
         let avail_ring_gpa = self.register.avail + size_of::<AvailHeader>() as u64;
         let used_ring_gpa = self.register.used + size_of::<UsedHeader>() as u64;
+        self.guard
+            .validate_range(self.register.avail, size_of::<AvailHeader>())?;
+        self.guard
+            .validate_range(avail_ring_gpa, queue_size * size_of::<u16>())?;
+        self.guard
+            .validate_range(used_ring_gpa, queue_size * size_of::<UsedElem>())?;
+        self.guard
+            .validate_range(self.register.desc, queue_size * size_of::<Desc>())?;
         Ok(SplitLayout {
             guard: &self.guard,
-            avail: self.guard.get_ref(self.register.avail)?,
-            avail_ring: self.guard.get_slice(avail_ring_gpa, queue_size)?,
-            used_event,
-            used,
+            queue_size: self.register.size,
+            avail_gpa: self.register.avail,
+            avail_ring_gpa,
+            used_event_gpa,
+            used_gpa: self.register.used,
             used_index,
-            used_ring: self.guard.get_slice(used_ring_gpa, queue_size)?,
-            avail_event,
-            desc: self.guard.get_slice(self.register.desc, queue_size)?,
+            used_ring_gpa,
+            avail_event_gpa,
+            desc_gpa: self.register.desc,
         })
     }
 }

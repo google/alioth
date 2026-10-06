@@ -16,3 +16,6 @@ simplelog.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+wit-bindgen.workspace = true

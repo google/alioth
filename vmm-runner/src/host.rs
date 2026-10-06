@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
@@ -146,16 +145,6 @@ impl PollEvent {
     }
 }
 
-pub trait Waker: Debug + Send + Sync + 'static {
-    fn wake(&self) -> std::io::Result<()>;
-}
-
-pub trait Poll: Debug + Send + Sync + 'static {
-    fn create_waker(&self, token: Token) -> std::io::Result<Box<dyn Waker>>;
-    fn poll(&mut self, events: &mut Vec<PollEvent>) -> std::io::Result<()>;
-    fn as_any(&self) -> &dyn Any;
-}
-
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("invalid memory map option for {hypervisor}: {option:?}")]
@@ -224,10 +213,19 @@ pub enum VmEntry {
     Mmio { data: u64 },
 }
 
+#[derive(Debug, Clone)]
+pub enum VmEvent {
+    VcpuExit { id: u32, exit: VmExit },
+    SerialInput,
+    Poll(PollEvent),
+}
+
 pub trait MemPages: Debug + Send + Sync + 'static {
-    fn addr(&self) -> usize;
+    fn addr(&self) -> u64;
     fn size(&self) -> usize;
     fn sync(&self) -> std::io::Result<()>;
+    fn read(&self, offset: usize, dst: &mut [u8]) -> std::io::Result<()>;
+    fn write(&self, offset: usize, src: &[u8]) -> std::io::Result<()>;
 }
 
 pub trait VmMemory: Debug + Send + Sync + 'static {
@@ -236,7 +234,7 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
         slot: u32,
         gpa: u64,
         size: usize,
-        hva: usize,
+        hva: u64,
         option: MemMapOption,
     ) -> Result<(), Error>;
 
@@ -244,9 +242,9 @@ pub trait VmMemory: Debug + Send + Sync + 'static {
 
     fn max_mem_slots(&self) -> Result<u32, Error>;
 
-    fn register_encrypted_range(&self, range: &[u8]) -> Result<()>;
+    fn register_encrypted_range(&self, addr: u64, size: usize) -> Result<()>;
 
-    fn deregister_encrypted_range(&self, range: &[u8]) -> Result<()>;
+    fn deregister_encrypted_range(&self, addr: u64, size: usize) -> Result<()>;
 
     fn alloc_anon_mem(&self, size: usize) -> std::io::Result<Arc<dyn MemPages>>;
 }
@@ -292,13 +290,8 @@ pub trait SerialConsole: Debug + Send + Sync + 'static {
 pub trait Tap: Debug + Send + Sync + 'static {
     fn detected_offload(&self) -> NetFeature;
     fn enable_offload(&mut self, feature: NetFeature) -> std::io::Result<()>;
-    fn register(
-        &self,
-        poll: &dyn Poll,
-        token: Token,
-        interests: Interest,
-    ) -> std::io::Result<()>;
-    fn deregister(&self, poll: &dyn Poll);
+    fn register(&self, token: Token, interests: Interest) -> std::io::Result<()>;
+    fn deregister(&self);
     fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize>;
     fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize>;
 }
@@ -327,7 +320,7 @@ impl Write for &dyn Tap {
     }
 }
 
-pub trait Vcpu {
+pub trait Vcpu: Send + Sync + 'static {
     fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
     fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
     fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error>;
@@ -339,7 +332,6 @@ pub trait Vcpu {
         seg_regs: &[(SegReg, SegRegVal)],
         dt_regs: &[(DtReg, DtRegVal)],
     ) -> Result<(), Error>;
-    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
     fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
     fn dump(&self) -> Result<(), Error>;
 }
@@ -347,12 +339,13 @@ pub trait Vcpu {
 pub trait Vm: Debug + Send + Sync + 'static {
     fn create_vcpu(&self, id: u32) -> Result<Box<dyn Vcpu>, Error>;
     fn stop_vcpu(&self, id: u32) -> Result<(), Error>;
+    fn resume_vcpu(&self, id: u32, entry: VmEntry) -> Result<(), Error>;
+    fn next_event(&self) -> Result<VmEvent, Error>;
     fn create_vm_memory(&mut self) -> Result<Box<dyn VmMemory>, Error>;
     fn create_intx_sender(&self, pin: u8) -> Result<Box<dyn IntxSender>, Error>;
     fn create_msi_sender(&self) -> Result<Box<dyn MsiSender>, Error>;
     fn create_serial_console(&self) -> std::io::Result<Box<dyn SerialConsole>>;
     fn create_tap(&self, if_name: Option<&str>) -> std::io::Result<Box<dyn Tap>>;
-    fn create_poll(&self) -> std::io::Result<Box<dyn Poll>>;
 }
 
 pub trait Hypervisor: Debug + Send + Sync + 'static {
@@ -387,9 +380,9 @@ pub mod test {
             }
         }
 
-        pub unsafe fn from_raw(addr: usize, size: usize) -> Self {
+        pub unsafe fn from_raw(addr: u64, size: usize) -> Self {
             Self {
-                addr,
+                addr: addr as usize,
                 size,
                 layout: None,
             }
@@ -405,8 +398,8 @@ pub mod test {
     }
 
     impl MemPages for FakeMemPages {
-        fn addr(&self) -> usize {
-            self.addr
+        fn addr(&self) -> u64 {
+            self.addr as u64
         }
 
         fn size(&self) -> usize {
@@ -414,6 +407,18 @@ pub mod test {
         }
 
         fn sync(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn read(&self, offset: usize, dst: &mut [u8]) -> std::io::Result<()> {
+            let src = unsafe { std::slice::from_raw_parts((self.addr + offset) as *const u8, dst.len()) };
+            dst.copy_from_slice(src);
+            Ok(())
+        }
+
+        fn write(&self, offset: usize, src: &[u8]) -> std::io::Result<()> {
+            let dst = unsafe { std::slice::from_raw_parts_mut((self.addr + offset) as *mut u8, src.len()) };
+            dst.copy_from_slice(src);
             Ok(())
         }
     }
@@ -427,7 +432,7 @@ pub mod test {
             _slot: u32,
             _gpa: u64,
             _size: usize,
-            _hva: usize,
+            _hva: u64,
             option: MemMapOption,
         ) -> Result<(), Error> {
             if !option.read || !option.exec {
@@ -447,11 +452,11 @@ pub mod test {
             Ok(32)
         }
 
-        fn register_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        fn register_encrypted_range(&self, _addr: u64, _size: usize) -> Result<()> {
             Ok(())
         }
 
-        fn deregister_encrypted_range(&self, _range: &[u8]) -> Result<()> {
+        fn deregister_encrypted_range(&self, _addr: u64, _size: usize) -> Result<()> {
             Ok(())
         }
 

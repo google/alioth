@@ -16,13 +16,12 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::mpsc::Sender;
 
 use derive_layout::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::host::{MsiSender, Waker};
+use crate::host::MsiSender;
 use crate::mem::mmio::Mmio;
 use crate::mem::{MemRange, MemRegion, MemRegionEntry};
 use crate::hw::pci::cap::{
@@ -142,29 +141,26 @@ pub struct VirtioPciRegister {
 }
 
 #[derive(Debug)]
-pub struct VirtioPciRegisterMmio<M>
+pub struct VirtioPciRegisterMmio<D, M>
 where
+    D: Virtio,
     M: MsiSender,
 {
     name: Arc<String>,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
     irq_sender: Arc<PciIrqSender<M>>,
-    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
-    waker: Arc<dyn Waker>,
+    dev: Arc<VirtioDevice<D, PciIrqSender<M>>>,
 }
 
-impl<M> VirtioPciRegisterMmio<M>
+impl<D, M> VirtioPciRegisterMmio<D, M>
 where
+    D: Virtio,
     M: MsiSender,
 {
     fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
-        if let Err(e) = self.event_tx.send(event) {
-            log::error!("{}: failed to send event: {e}", self.name);
-            return;
-        }
-        if let Err(e) = self.waker.wake() {
-            log::error!("{}: failed to wake up device: {e}", self.name);
+        if let Err(e) = self.dev.handle_wake_event(event) {
+            log::error!("{}: failed to handle event: {e}", self.name);
         }
     }
 
@@ -180,8 +176,9 @@ where
     }
 }
 
-impl<M> Mmio for VirtioPciRegisterMmio<M>
+impl<D, M> Mmio for VirtioPciRegisterMmio<D, M>
 where
+    D: Virtio,
     M: MsiSender,
 {
     fn size(&self) -> usize {
@@ -518,9 +515,9 @@ where
     D: Virtio,
     M: MsiSender,
 {
-    pub dev: VirtioDevice<D, PciIrqSender<M>>,
+    pub dev: Arc<VirtioDevice<D, PciIrqSender<M>>>,
     pub config: Arc<EmulatedConfig>,
-    pub registers: Arc<VirtioPciRegisterMmio<M>>,
+    pub registers: Arc<VirtioPciRegisterMmio<D, M>>,
 }
 
 impl<D, M> VirtioPciDevice<D, M>
@@ -529,6 +526,7 @@ where
     D: Virtio,
 {
     pub fn new(dev: VirtioDevice<D, PciIrqSender<M>>, msi_sender: M) -> Result<Self> {
+        let dev = Arc::new(dev);
         let (class, subclass) = get_class(D::device_id());
         let mut header = DeviceHeader {
             common: CommonHeader {
@@ -685,14 +683,13 @@ where
         let registers = Arc::new(VirtioPciRegisterMmio {
             name: dev.name.clone(),
             reg: dev.reg.clone(),
-            event_tx: dev.event_tx.clone(),
-            waker: dev.waker.clone(),
             queues: dev.queue_regs.clone(),
             irq_sender: Arc::new(PciIrqSender {
                 msix_vector,
                 msix_entries: msix_entries.clone(),
                 msi_sender,
             }),
+            dev: dev.clone(),
         });
         bar0.ranges.push(MemRange::Emulated(Arc::new(MsixTableMmio {
             entries: msix_entries,

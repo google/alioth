@@ -19,7 +19,7 @@ use bitflags::bitflags;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::config::{MacAddr, NetParam};
-use crate::host::{Interest, Poll, PollEvent, Tap, Token, Vm};
+use crate::host::{Interest, PollEvent, Tap, Token, Vm};
 use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, DeviceId, Result, Virtio};
@@ -144,8 +144,8 @@ impl Virtio for Net {
         self.config.clone()
     }
 
-    fn reset(&mut self, poll: &dyn Poll) {
-        self.tap.deregister(poll);
+    fn reset(&mut self) {
+        self.tap.deregister();
     }
 
     fn device_id() -> DeviceId {
@@ -156,13 +156,12 @@ impl Virtio for Net {
         self.feature.bits() | VirtioFeature::EVENT_IDX.bits()
     }
 
-    fn activate(&mut self, poll: &dyn Poll, feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(&mut self, token: Token, feature: u64, _memory: &RamBus) -> Result<()> {
         let feature = NetFeature::from_bits_retain(feature);
         log::debug!("{}: driver feature: {:?}", self.name, feature);
         self.tap.enable_offload(feature)?;
         self.tap.register(
-            poll,
-            TOKEN_TAP,
+            token,
             Interest::READABLE | Interest::WRITABLE,
         )?;
         Ok(())
@@ -173,7 +172,6 @@ impl Virtio for Net {
         event: &PollEvent,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        _poll: &dyn Poll,
     ) -> Result<()> {
         if event.is_readable() {
             let Some(queue) = queues.get(QUEUE_RX as usize) else {
@@ -197,7 +195,6 @@ impl Virtio for Net {
         index: u16,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        _poll: &dyn Poll,
     ) -> Result<()> {
         let Some(queue) = queues.get(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);
@@ -212,5 +209,3 @@ impl Virtio for Net {
         }
     }
 }
-
-pub const TOKEN_TAP: Token = Token(0);

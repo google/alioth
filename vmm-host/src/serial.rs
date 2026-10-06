@@ -16,20 +16,18 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::io::{self, ErrorKind};
 use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use libc::{
     F_GETFL, F_SETFL, O_NONBLOCK, OPOST, STDIN_FILENO, STDOUT_FILENO, TCSANOW, cfmakeraw, fcntl,
     tcgetattr, tcsetattr, termios,
 };
 use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token, Waker};
+use mio::{Interest, Registry, Token};
 use parking_lot::Mutex;
 use vmm_runner::host::SerialConsole;
 
 use crate::ffi;
-
-const TOKEN_SHUTDOWN: Token = Token(0);
-const TOKEN_STDIN: Token = Token(1);
 
 struct StdinBackup {
     termios: Option<termios>,
@@ -40,9 +38,8 @@ impl StdinBackup {
     fn new() -> StdinBackup {
         let mut termios_backup = None;
         let mut t = MaybeUninit::uninit();
-        match ffi!(unsafe { tcgetattr(STDIN_FILENO, t.as_mut_ptr()) }) {
-            Ok(_) => termios_backup = Some(unsafe { t.assume_init() }),
-            Err(e) => log::error!("tcgetattr() failed: {e}"),
+        if unsafe { tcgetattr(STDIN_FILENO, t.as_mut_ptr()) } == 0 {
+            termios_backup = Some(unsafe { t.assume_init() });
         }
         let mut flag_backup = None;
         match ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) }) {
@@ -72,9 +69,8 @@ impl Drop for StdinBackup {
 }
 
 pub struct HostSerialConsole {
-    poll: Mutex<Poll>,
-    waker: Waker,
-    events: Mutex<Events>,
+    registry: Registry,
+    registered: AtomicBool,
     backup: Mutex<Option<StdinBackup>>,
 }
 
@@ -85,15 +81,33 @@ impl Debug for HostSerialConsole {
 }
 
 impl HostSerialConsole {
-    pub fn new() -> io::Result<Self> {
-        let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), TOKEN_SHUTDOWN)?;
+    pub fn new(registry: Registry, token: Token) -> io::Result<Self> {
+        let backup = StdinBackup::new();
+        if backup.termios.is_some() {
+            let mut raw_termios = MaybeUninit::uninit();
+            if unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) } == 0 {
+                unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
+                unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
+                let _ = unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) };
+            }
+        }
+        if let Ok(flag) = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) }) {
+            let _ = ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) });
+        }
+        let registered = registry
+            .register(&mut SourceFd(&STDIN_FILENO), token, Interest::READABLE)
+            .is_ok();
         Ok(Self {
-            poll: Mutex::new(poll),
-            waker,
-            events: Mutex::new(Events::with_capacity(16)),
-            backup: Mutex::new(None),
+            registry,
+            registered: AtomicBool::new(registered),
+            backup: Mutex::new(Some(backup)),
         })
+    }
+
+    fn deregister_stdin(&self) {
+        if self.registered.swap(false, Ordering::AcqRel) {
+            let _ = self.registry.deregister(&mut SourceFd(&STDIN_FILENO));
+        }
     }
 }
 
@@ -104,54 +118,34 @@ impl SerialConsole for HostSerialConsole {
     }
 
     fn read_input(&self, data: &mut VecDeque<u8>) -> io::Result<Option<usize>> {
-        let mut poll = self.poll.lock();
-        {
-            let mut backup = self.backup.lock();
-            if backup.is_none() {
-                *backup = Some(StdinBackup::new());
-
-                let mut raw_termios = MaybeUninit::uninit();
-                ffi!(unsafe { tcgetattr(STDIN_FILENO, raw_termios.as_mut_ptr()) })?;
-                unsafe { cfmakeraw(raw_termios.as_mut_ptr()) };
-                unsafe { raw_termios.assume_init_mut().c_oflag |= OPOST };
-                ffi!(unsafe { tcsetattr(STDIN_FILENO, TCSANOW, raw_termios.as_ptr()) })?;
-
-                let flag = ffi!(unsafe { fcntl(STDIN_FILENO, F_GETFL) })?;
-                ffi!(unsafe { fcntl(STDIN_FILENO, F_SETFL, flag | O_NONBLOCK) })?;
-                poll.registry().register(
-                    &mut SourceFd(&STDIN_FILENO),
-                    TOKEN_STDIN,
-                    Interest::READABLE,
-                )?;
-            }
-        }
-        let mut events = self.events.lock();
-        poll.poll(&mut events, None)?;
         let mut total_size = 0;
-        for event in events.iter() {
-            match event.token() {
-                TOKEN_SHUTDOWN => return Ok(None),
-                TOKEN_STDIN => {
-                    let mut buf = [0u8; 16];
-                    loop {
-                        match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, 16) }) {
-                            Ok(0) => break,
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                            Ok(len) => {
-                                data.extend(&buf[0..len as usize]);
-                                total_size += len as usize;
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
+        let mut buf = [0u8; 64];
+        loop {
+            match ffi!(unsafe { libc::read(STDIN_FILENO, buf.as_mut_ptr() as _, buf.len()) }) {
+                Ok(0) => {
+                    self.deregister_stdin();
+                    break;
                 }
-                _ => unreachable!(),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Ok(len) => {
+                    data.extend(&buf[0..len as usize]);
+                    total_size += len as usize;
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(Some(total_size))
     }
 
     fn shutdown(&self) -> io::Result<()> {
-        self.waker.wake()
+        self.deregister_stdin();
+        let _ = self.backup.lock().take();
+        Ok(())
+    }
+}
+
+impl Drop for HostSerialConsole {
+    fn drop(&mut self) {
+        self.deregister_stdin();
     }
 }

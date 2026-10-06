@@ -20,7 +20,7 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::host::{Poll, PollEvent};
+use crate::host::PollEvent;
 use crate::impl_mmio_for_zerocopy;
 use crate::mem::mapped::RamBus;
 use crate::virtio::dev::{DevParam, Virtio};
@@ -243,7 +243,7 @@ impl Block {
 impl Virtio for Block {
     type Config = BlockConfig;
 
-    fn reset(&mut self, _poll: &dyn Poll) {}
+    fn reset(&mut self) {}
 
     fn device_id() -> DeviceId {
         DeviceId::Block
@@ -261,7 +261,7 @@ impl Virtio for Block {
         self.feature.bits()
     }
 
-    fn activate(&mut self, _poll: &dyn Poll, _feature: u64, _memory: &RamBus) -> Result<()> {
+    fn activate(&mut self, _token: crate::host::Token, _feature: u64, _memory: &RamBus) -> Result<()> {
         Ok(())
     }
 
@@ -270,7 +270,6 @@ impl Virtio for Block {
         _event: &PollEvent,
         _queues: &[impl VirtQueue],
         _irq_sender: &impl IrqSender,
-        _poll: &dyn Poll,
     ) -> Result<()> {
         Ok(())
     }
@@ -280,7 +279,6 @@ impl Virtio for Block {
         index: u16,
         queues: &[impl VirtQueue],
         irq_sender: &impl IrqSender,
-        _poll: &dyn Poll,
     ) -> Result<()> {
         let Some(queue) = queues.get(index as usize) else {
             log::error!("{}: invalid queue index {index}", self.name);

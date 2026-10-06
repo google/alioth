@@ -13,17 +13,18 @@
 // limitations under the License.
 #![allow(clippy::missing_safety_doc)]
 
-use crate::kvm::Kvm;
-
 pub mod ioctls;
 #[path = "kvm/kvm.rs"]
 pub mod kvm;
 pub mod serial;
 pub mod tap;
+pub mod wasm_host;
+
+static VMM_RUNNER_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vmm-runner.wasm"));
 
 fn print_usage_and_exit() -> ! {
     eprintln!(
-        "Usage: `{} -c $CONFIG_FILENAME_TOML`.",
+        "Usage: `{} -c $CONFIG_FILENAME_TOML [-w $WASM_COMPONENT_PATH]`.",
         env!("CARGO_PKG_NAME")
     );
     std::process::exit(1)
@@ -31,10 +32,39 @@ fn print_usage_and_exit() -> ! {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 || args[1].as_str() != "-c" {
-        print_usage_and_exit();
+    let mut config_filename: Option<String> = None;
+    let mut wasm_path: Option<String> = std::env::var("VMM_RUNNER_WASM").ok();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" => {
+                i += 1;
+                if i >= args.len() {
+                    print_usage_and_exit();
+                }
+                config_filename = Some(args[i].clone());
+            }
+            "-w" | "--wasm" => {
+                i += 1;
+                if i >= args.len() {
+                    print_usage_and_exit();
+                }
+                wasm_path = Some(args[i].clone());
+            }
+            _ => print_usage_and_exit(),
+        }
+        i += 1;
     }
 
-    let kvm = Kvm::new()?;
-    vmm_runner::run(args[2].as_str(), Box::new(kvm))
+    let Some(config_filename) = config_filename else {
+        print_usage_and_exit();
+    };
+
+    if let Some(wasm_path) = wasm_path {
+        let wasm_bytes = std::fs::read(wasm_path)?;
+        wasm_host::run_wasm_vmm(&wasm_bytes, &config_filename)
+    } else {
+        wasm_host::run_wasm_vmm(VMM_RUNNER_WASM, &config_filename)
+    }
 }

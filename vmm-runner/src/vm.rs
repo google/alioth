@@ -14,18 +14,16 @@
 
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
+use std::sync::atomic::AtomicU8;
 
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::RwLock;
 use thiserror::Error;
 
-use crate::host::{self, Hypervisor, MsiSender};
+use crate::host::{self, Hypervisor, MsiSender, Token};
 use crate::hw::pci::bus::PciBus;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
-use crate::hw::{self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING};
+use crate::hw::{self, ArchBoard, Board, BoardConfig, STATE_CREATED};
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
 use crate::virtio::dev::{DevParam, Virtio, VirtioDevice};
@@ -66,8 +64,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct Machine {
     board: Arc<Board>,
-    event_rx: Receiver<u32>,
-    event_tx: Sender<u32>,
+    next_token: u64,
 }
 
 impl Machine {
@@ -84,18 +81,17 @@ impl Machine {
             config,
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
-            vcpus: Arc::new(RwLock::new(Vec::new())),
-            mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
+            vcpus: RwLock::new(Vec::new()),
             io_devs: RwLock::new(Vec::new()),
+            com1: RwLock::new(None),
+            virtio_devs: RwLock::new(Vec::new()),
             pci_bus: PciBus::new(),
             pci_devs: RwLock::new(Vec::new()),
         };
 
-        let (event_tx, event_rx) = mpsc::channel();
         let machine = Machine {
             board: Arc::new(board),
-            event_rx,
-            event_tx,
+            next_token: 0,
         };
         Ok(machine)
     }
@@ -103,8 +99,9 @@ impl Machine {
     pub fn add_com1(&self) -> Result<(), Error> {
         let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
         let com1_console = self.board.vm.create_serial_console()?;
-        let com1 = Serial::new(0x3f8, com1_intx_sender, com1_console)?;
-        self.board.io_devs.write().push((0x3f8, Arc::new(com1)));
+        let com1 = Arc::new(Serial::new(0x3f8, com1_intx_sender, com1_console)?);
+        *self.board.com1.write() = Some(com1.clone());
+        self.board.io_devs.write().push((0x3f8, com1));
         Ok(())
     }
 
@@ -129,12 +126,14 @@ impl Machine {
         D: Virtio,
     {
         let name = Arc::new(name);
+        let token = Token(self.next_token);
+        self.next_token += 1;
         let dev = param.build(name.clone(), self.board.vm.as_ref())?;
-        let poll = self.board.vm.create_poll()?;
         let virtio_dev =
-            VirtioDevice::new(name.clone(), dev, self.board.memory.ram_bus().clone(), poll)?;
+            VirtioDevice::new(name.clone(), token, dev, self.board.memory.ram_bus().clone())?;
         let msi_sender = self.board.vm.create_msi_sender()?;
         let dev = VirtioPciDevice::new(virtio_dev, msi_sender)?;
+        self.board.virtio_devs.write().push(dev.dev.clone());
         let dev = Arc::new(dev);
         let pci_dev = PciDevice::new(name.clone(), dev.clone());
         self.add_pci_dev(pci_dev)?;
@@ -146,42 +145,11 @@ impl Machine {
     }
 
     pub fn boot(&mut self) -> Result<(), Error> {
-        let mut vcpus = self.board.vcpus.write();
-        for vcpu_id in 0..self.board.config.num_cpu {
-            let (boot_tx, boot_rx) = mpsc::channel();
-            let event_tx = self.event_tx.clone();
-            let board = self.board.clone();
-            let handle = thread::Builder::new()
-                .name(format!("vcpu_{vcpu_id}"))
-                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
-            self.event_rx.recv().unwrap();
-            vcpus.push((handle, boot_tx));
-        }
-        self.board.state.store(STATE_RUNNING, Ordering::Release);
-        for (_, boot_tx) in vcpus.iter() {
-            boot_tx.send(()).unwrap();
-        }
+        self.board.boot()?;
         Ok(())
     }
 
     pub fn wait(&mut self) -> Vec<Result<()>> {
-        self.event_rx.recv().unwrap();
-        let vcpus = self.board.vcpus.read();
-        for _ in 1..vcpus.len() {
-            self.event_rx.recv().unwrap();
-        }
-        drop(vcpus);
-        let mut vcpus = self.board.vcpus.write();
-        vcpus
-            .drain(..)
-            .enumerate()
-            .map(|(id, (handle, _))| match handle.join() {
-                Err(e) => {
-                    log::error!("cannot join vcpu {id}: {e:?}");
-                    Ok(())
-                }
-                Ok(r) => r.map_err(Error::Board),
-            })
-            .collect()
+        vec![self.board.run_event_loop().map_err(Error::Board)]
     }
 }

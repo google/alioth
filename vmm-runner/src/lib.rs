@@ -31,6 +31,8 @@ pub(crate) mod utils;
 #[path = "virtio/virtio.rs"]
 pub mod virtio;
 pub mod vm;
+#[cfg(target_os = "wasi")]
+pub mod wasm;
 
 pub fn run(
     config_filename: &str,
@@ -39,7 +41,7 @@ pub fn run(
     let config = config::parse_config(config_filename)?;
 
     let log_file = std::fs::File::create(config.log_file.as_path())
-        .unwrap_or_else(|_| panic!("Error creating log file {:?}", config.log_file));
+        .unwrap_or_else(|e| panic!("Error creating log file {:?}: {e}", config.log_file));
     simplelog::WriteLogger::init(config.log_level, simplelog::Config::default(), log_file).unwrap();
 
     let payload = if let Some(kernel) = config.kernel {

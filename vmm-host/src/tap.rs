@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::Any;
 use std::fs::{self, File};
 use std::io::{self, IoSlice, IoSliceMut, Read, Write};
 use std::iter::zip;
@@ -22,60 +21,13 @@ use std::os::unix::prelude::OpenOptionsExt;
 
 use bitflags::bitflags;
 use libc::{IFF_NO_PI, IFF_TAP, IFF_VNET_HDR, O_NONBLOCK, c_int, c_uint, c_ulong, ifreq};
+use mio::Registry;
 use mio::unix::SourceFd;
-use vmm_runner::host::{Interest, Poll, PollEvent, Tap, Token, Waker};
+use vmm_runner::host::{Interest, Tap, Token};
 use vmm_runner::virtio::dev::net::NetFeature;
 
 use crate::ioctls::{ioctl_ior, ioctl_iow};
 use crate::{ioctl_read, ioctl_write_ptr, ioctl_write_val};
-
-#[derive(Debug)]
-pub struct HostWaker(pub mio::Waker);
-
-impl Waker for HostWaker {
-    fn wake(&self) -> io::Result<()> {
-        self.0.wake()
-    }
-}
-
-#[derive(Debug)]
-pub struct HostPoll {
-    pub poll: mio::Poll,
-    pub events: mio::Events,
-}
-
-impl HostPoll {
-    pub fn new() -> io::Result<Self> {
-        Ok(Self {
-            poll: mio::Poll::new()?,
-            events: mio::Events::with_capacity(128),
-        })
-    }
-}
-
-impl Poll for HostPoll {
-    fn create_waker(&self, token: Token) -> io::Result<Box<dyn Waker>> {
-        let waker = mio::Waker::new(self.poll.registry(), mio::Token(token.0 as usize))?;
-        Ok(Box::new(HostWaker(waker)))
-    }
-
-    fn poll(&mut self, events: &mut Vec<PollEvent>) -> io::Result<()> {
-        events.clear();
-        self.poll.poll(&mut self.events, None)?;
-        for event in self.events.iter() {
-            events.push(PollEvent {
-                token: Token(event.token().0 as u64),
-                is_readable: event.is_readable(),
-                is_writable: event.is_writable(),
-            });
-        }
-        Ok(())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 ioctl_write_ptr!(tun_set_iff, ioctl_iow::<c_int>(b'T', 202), ifreq);
 
@@ -106,10 +58,11 @@ const VNET_HEADER_SIZE: i32 = 12;
 pub struct HostTap {
     file: File,
     detected_offload: NetFeature,
+    registry: Registry,
 }
 
 impl HostTap {
-    pub fn new(if_name: Option<&str>) -> io::Result<Self> {
+    pub fn new(if_name: Option<&str>, registry: Registry) -> io::Result<Self> {
         let mut file = fs::OpenOptions::new()
             .custom_flags(O_NONBLOCK)
             .read(true)
@@ -122,6 +75,7 @@ impl HostTap {
         Ok(HostTap {
             file,
             detected_offload,
+            registry,
         })
     }
 }
@@ -136,11 +90,7 @@ impl Tap for HostTap {
         Ok(())
     }
 
-    fn register(&self, poll: &dyn Poll, token: Token, interests: Interest) -> io::Result<()> {
-        let host_poll = poll
-            .as_any()
-            .downcast_ref::<HostPoll>()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Poll type"))?;
+    fn register(&self, token: Token, interests: Interest) -> io::Result<()> {
         let mut mio_interest = None;
         if interests.contains(Interest::READABLE) {
             mio_interest = Some(mio::Interest::READABLE);
@@ -154,20 +104,17 @@ impl Tap for HostTap {
         let Some(mio_interest) = mio_interest else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty Interest"));
         };
-        host_poll.poll.registry().register(
+        self.registry.register(
             &mut SourceFd(&self.file.as_raw_fd()),
             mio::Token(token.0 as usize),
             mio_interest,
         )
     }
 
-    fn deregister(&self, poll: &dyn Poll) {
-        if let Some(host_poll) = poll.as_any().downcast_ref::<HostPoll>() {
-            let _ = host_poll
-                .poll
-                .registry()
-                .deregister(&mut SourceFd(&self.file.as_raw_fd()));
-        }
+    fn deregister(&self) {
+        let _ = self
+            .registry
+            .deregister(&mut SourceFd(&self.file.as_raw_fd()));
     }
 
     fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {

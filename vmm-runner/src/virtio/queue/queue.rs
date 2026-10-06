@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{IoSlice, IoSliceMut};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 
 use crate::virtio::Result;
@@ -32,14 +31,15 @@ pub struct Queue {
 }
 
 #[derive(Debug)]
-pub struct Descriptor<'m> {
+pub struct Descriptor {
     pub id: u16,
-    pub readable: Vec<IoSlice<'m>>,
-    pub writable: Vec<IoSliceMut<'m>>,
+    pub readable: Vec<Vec<u8>>,
+    pub writable: Vec<Vec<u8>>,
+    pub writable_gpas: Vec<(u64, usize)>,
 }
 
 pub trait LockedQueue<'g> {
-    fn next_desc(&self) -> Option<Result<Descriptor<'g>>>;
+    fn next_desc(&self) -> Option<Result<Descriptor>>;
     fn has_next_desc(&self) -> bool;
     fn push_used(&mut self, desc: Descriptor, len: usize) -> u16;
     fn enable_notification(&self, enabled: bool);

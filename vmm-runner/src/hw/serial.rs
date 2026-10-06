@@ -15,7 +15,6 @@
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
@@ -187,7 +186,6 @@ pub struct Serial {
     irq_sender: Arc<dyn IntxSender>,
     console: Arc<dyn SerialConsole>,
     reg: Arc<Mutex<SerialReg>>,
-    worker_thread: Option<JoinHandle<()>>,
 }
 
 impl Mmio for Serial {
@@ -295,50 +293,6 @@ impl Mmio for Serial {
     }
 }
 
-struct SeiralWorker {
-    pub base_port: u16,
-    pub irq_sender: Arc<dyn IntxSender>,
-    pub console: Arc<dyn SerialConsole>,
-    pub reg: Arc<Mutex<SerialReg>>,
-}
-
-impl SeiralWorker {
-    fn send_irq(&self) {
-        if let Err(e) = self.irq_sender.send() {
-            log::error!("Serial {:#x}: sending interrupt: {:?}", self.base_port, e);
-        }
-    }
-
-    fn do_work_inner(&mut self) -> io::Result<()> {
-        let mut rx_buf = VecDeque::new();
-        while let Some(len) = self.console.read_input(&mut rx_buf)? {
-            if len == 0 {
-                continue;
-            }
-            let mut reg = self.reg.lock();
-            reg.data.append(&mut rx_buf);
-            if reg
-                .interrupt_enable
-                .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
-            {
-                reg.interrupt_identification.set_rx_data_available();
-                self.send_irq()
-            }
-            reg.line_status |= LineStatus::DATA_READY;
-        }
-        Ok(())
-    }
-
-    fn do_work(&mut self) {
-        log::trace!("Serial {:#x}: start", self.base_port);
-        if let Err(e) = self.do_work_inner() {
-            log::error!("Serial {:#x}: {:?}", self.base_port, e)
-        } else {
-            log::trace!("Serial {:#x}: done", self.base_port)
-        }
-    }
-}
-
 impl Serial {
     pub fn new(
         base_port: u16,
@@ -348,23 +302,32 @@ impl Serial {
         let irq_sender: Arc<dyn IntxSender> = Arc::from(intx_sender);
         let console: Arc<dyn SerialConsole> = Arc::from(console);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
-        let mut worker = SeiralWorker {
-            base_port,
-            reg: reg.clone(),
-            irq_sender: irq_sender.clone(),
-            console: console.clone(),
-        };
-        let worker_thread = std::thread::Builder::new()
-            .name(format!("serial_{base_port:#x}"))
-            .spawn(move || worker.do_work())?;
         let serial = Serial {
             reg,
             base_port,
             irq_sender,
             console,
-            worker_thread: Some(worker_thread),
         };
         Ok(serial)
+    }
+
+    pub fn handle_input(&self) -> io::Result<()> {
+        let mut rx_buf = VecDeque::new();
+        if let Some(len) = self.console.read_input(&mut rx_buf)? {
+            if len > 0 {
+                let mut reg = self.reg.lock();
+                reg.data.append(&mut rx_buf);
+                if reg
+                    .interrupt_enable
+                    .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
+                {
+                    reg.interrupt_identification.set_rx_data_available();
+                    self.send_irq();
+                }
+                reg.line_status |= LineStatus::DATA_READY;
+            }
+        }
+        Ok(())
     }
 
     fn send_irq(&self) {
@@ -377,13 +340,6 @@ impl Serial {
 impl Drop for Serial {
     fn drop(&mut self) {
         if let Err(e) = self.console.shutdown() {
-            log::error!("Serial {:#x}: {:?}", self.base_port, e);
-            return;
-        }
-        let Some(thread) = self.worker_thread.take() else {
-            return;
-        };
-        if let Err(e) = thread.join() {
             log::error!("Serial {:#x}: {:?}", self.base_port, e);
         }
     }
