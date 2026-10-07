@@ -714,15 +714,61 @@ impl api::Host for HostState {
     }
 }
 
+fn add_wasi_without_sockets_to_linker(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
+    use wasmtime_wasi::cli::{WasiCli, WasiCliView as _};
+    use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView as _};
+    use wasmtime_wasi::filesystem::{WasiFilesystem, WasiFilesystemView as _};
+    use wasmtime_wasi::p2::bindings::{cli, clocks, filesystem, random, sync};
+    use wasmtime_wasi::random::{WasiRandom, WasiRandomView as _};
+
+    struct HasIo;
+    impl wasmtime::component::HasData for HasIo {
+        type Data<'a> = &'a mut ResourceTable;
+    }
+
+    clocks::wall_clock::add_to_linker::<HostState, WasiClocks>(linker, HostState::clocks)?;
+    clocks::monotonic_clock::add_to_linker::<HostState, WasiClocks>(linker, HostState::clocks)?;
+    filesystem::preopens::add_to_linker::<HostState, WasiFilesystem>(
+        linker,
+        HostState::filesystem,
+    )?;
+    sync::filesystem::types::add_to_linker::<HostState, WasiFilesystem>(
+        linker,
+        HostState::filesystem,
+    )?;
+    random::random::add_to_linker::<HostState, WasiRandom>(linker, HostState::random)?;
+    random::insecure::add_to_linker::<HostState, WasiRandom>(linker, HostState::random)?;
+    random::insecure_seed::add_to_linker::<HostState, WasiRandom>(linker, HostState::random)?;
+    cli::exit::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::environment::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::stdin::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::stdout::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::stderr::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::terminal_input::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::terminal_output::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::terminal_stdin::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::terminal_stdout::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    cli::terminal_stderr::add_to_linker::<HostState, WasiCli>(linker, HostState::cli)?;
+    wasmtime_wasi_io::bindings::wasi::io::error::add_to_linker::<HostState, HasIo>(linker, |t| {
+        t.ctx().table
+    })?;
+    sync::io::poll::add_to_linker::<HostState, HasIo>(linker, |t| t.ctx().table)?;
+    sync::io::streams::add_to_linker::<HostState, HasIo>(linker, |t| t.ctx().table)?;
+    Ok(())
+}
+
 pub fn run_wasm_vmm(
-    wasm_bytes: &[u8],
+    component_path: &Path,
     config_filename: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let engine = Engine::default();
-    let component = Component::new(&engine, wasm_bytes)?;
+    #[cfg(feature = "compiler")]
+    let component = Component::from_file(&engine, component_path)?;
+    #[cfg(not(feature = "compiler"))]
+    let component = unsafe { Component::deserialize_file(&engine, component_path)? };
 
     let mut linker = Linker::<HostState>::new(&engine);
-    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+    add_wasi_without_sockets_to_linker(&mut linker)?;
     VmmWorld::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
 
     let mut wasi_builder = WasiCtxBuilder::new();
@@ -734,12 +780,28 @@ pub fn run_wasm_vmm(
         .preopened_dir("/", "/", FsPerms::ReadWrite)?
         .preopened_dir("/tmp", "/tmp", FsPerms::ReadWrite)?;
 
+    let cwd = std::env::current_dir().ok();
+
     if let Some(parent) = Path::new(config_filename)
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
+        && cwd.as_deref() != Some(parent)
+        && let Some(parent_str) = parent.to_str()
     {
-        if let Some(parent_str) = parent.to_str() {
-            let _ = wasi_builder.preopened_dir(parent, parent_str, FsPerms::ReadWrite);
+        let _ = wasi_builder.preopened_dir(parent, parent_str, FsPerms::ReadWrite);
+    }
+
+    if let Ok(config_contents) = std::fs::read_to_string(config_filename) {
+        for token in config_contents.split('"') {
+            if token.starts_with('/')
+                && let Some(parent) = Path::new(token).parent()
+                && parent != Path::new("/")
+                && cwd.as_deref() != Some(parent)
+                && parent.is_dir()
+                && let Some(parent_str) = parent.to_str()
+            {
+                let _ = wasi_builder.preopened_dir(parent, parent_str, FsPerms::ReadWrite);
+            }
         }
     }
 

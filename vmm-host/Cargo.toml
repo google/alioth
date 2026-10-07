@@ -3,6 +3,14 @@ name = "vmm-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "vmm-host-cwasm"
+
+[features]
+compiler = ["wasmtime/cranelift"]
+
+[[bin]]
+name = "vmm-host-cwasm"
+path = "src/main.rs"
 
 [dependencies]
 vmm-runner.workspace = true
@@ -15,3 +23,7 @@ mio.workspace = true
 parking_lot.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
+wasmtime-wasi-io.workspace = true
+
+[build-dependencies]
+wasmtime = { workspace = true, features = ["cranelift"] }

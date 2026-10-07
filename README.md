@@ -12,12 +12,21 @@ The workspace consists of three crates and a WIT component interface:
 - **`vmm-runner`** (`vmm-runner/`): The core VMM logic (x86_64 board, memory
   management, ACPI tables, Linux `bzImage`/ELF/PVH loader, 16450 serial console,
   PCI bus, `virtio-blk`, and `virtio-net`). It compiles to the
-  `wasm32-wasip2` target as a WASI Preview 2 component.
-- **`vmm-host`** (`vmm-host/`): A thin native Linux host binary using
+  `wasm32-wasip2` target as a WASI Preview 2 component (`vmm-runner.wasm`,
+  ~655 KB) and is also AOT-precompiled into a native Wasmtime artifact
+  (`vmm-runner.cwasm`, ~1.8 MB).
+- **`vmm-host`** (`vmm-host/`): A thin native Linux host crate using
   `wasmtime` and `wasmtime-wasi` to load and execute the `vmm-runner` WASI
   Preview 2 component. It implements all host-side OS and KVM interactions
   (`/dev/kvm` ioctls, vCPU worker threads, anonymous `mmap` guest RAM, raw
-  terminal serial I/O, `/dev/net/tun` TAP device, and `mio` event polling).
+  terminal serial I/O, `/dev/net/tun` TAP device, and `mio` event polling). It
+  builds two host binaries:
+  - **`vmm-host-cwasm`** ("small" host, ~2.9 MB static `musl`): Built without
+    Wasmtime's Cranelift compiler; loads the AOT-precompiled
+    `vmm-runner.cwasm`.
+  - **`vmm-host-wasm`** ("safe" host, ~12.4 MB static `musl`): Built with
+    Wasmtime's Cranelift compiler; validates and JIT-compiles `vmm-runner.wasm`
+    at startup.
 - **`wit/vmm.wit`**: The WebAssembly Interface Type (WIT) definition for the
   `vmm:host/api` interface and `vmm-world` component world connecting
   `vmm-runner` and `vmm-host`.
@@ -37,64 +46,70 @@ rustup target add x86_64-unknown-linux-musl
 
 ### Option A: Build & Stage with `./publish.sh` (Recommended)
 
-Use [`./publish.sh`](publish.sh) to build both `vmm-host` (static `musl` release
-binary) and `vmm-runner.wasm` (`wasm32-wasip2` release component), copy both to
-a destination directory `$DIR`, and generate a `$DIR/run-vm.sh` launcher script:
+Use [`./publish.sh`](publish.sh) to build all four artifacts (`vmm-host-cwasm`,
+`vmm-host-wasm`, `vmm-runner.cwasm`, and `vmm-runner.wasm`) as static `musl` /
+`wasm32-wasip2` release binaries, copy them to a destination directory `$DIR`,
+and generate a `$DIR/run-vm.sh` launcher script:
 
 ```sh
 ./publish.sh /path/to/stage-dir
 ```
 
-### Option B: Build Individual Crates with `cargo`
+### Option B: Build with `cargo`
 
-1. **Build `vmm-runner` (`wasm32-wasip2` component)**:
-   ```sh
-   cargo build -p vmm-runner --bin vmm-runner --target=wasm32-wasip2 --release
-   ```
-   Output: `target/wasm32-wasip2/release/vmm-runner.wasm`
+Running `cargo build` or `cargo build --release` (or with
+`--target=x86_64-unknown-linux-musl`) automatically builds **all four
+artifacts** via [`vmm-host/build.rs`](vmm-host/build.rs):
 
-2. **Build `vmm-host` (static `x86_64-unknown-linux-musl` release binary)**:
-   Building `vmm-host` also runs `vmm-host/build.rs`, which compiles
-   `vmm-runner` for `wasm32-wasip2` and embeds a default copy of
-   `vmm-runner.wasm` into `vmm-host`:
-   ```sh
-   cargo build -p vmm-host --release --target=x86_64-unknown-linux-musl
-   ```
-   Output: `target/x86_64-unknown-linux-musl/release/vmm-host`
+```sh
+cargo build --release --target=x86_64-unknown-linux-musl
+```
+(Or for the default host target: `cargo build --release` or `cargo build`.)
 
-   (Or build for the default host target with `cargo build --release`.)
+Outputs placed in `target/x86_64-unknown-linux-musl/release/` (or
+`target/release/` / `target/debug/`):
+- `vmm-host-cwasm` (~2.9 MB): Small host without Cranelift (loads `vmm-runner.cwasm`)
+- `vmm-host-wasm` (~12.4 MB): Host with built-in Cranelift compiler (loads `vmm-runner.wasm`)
+- `vmm-runner.cwasm` (~1.8 MB): AOT-precompiled WASI Preview 2 component
+- `vmm-runner.wasm` (~655 KB): Portable WASI Preview 2 component
 
-3. **Run workspace unit tests**:
-   ```sh
-   cargo test --workspace
-   ```
+To run workspace unit tests:
+```sh
+cargo test --workspace
+```
 
 ## Required Artifacts & Deploying to Another Host
 
-Because `vmm-host` is statically linked when built with
-`--target=x86_64-unknown-linux-musl`, it has no dynamic library (`glibc`, etc.)
-dependencies and can be copied directly to any `x86_64` Linux machine with KVM
-enabled (`/dev/kvm`).
+Because `vmm-host-cwasm` and `vmm-host-wasm` are statically linked when built
+with `--target=x86_64-unknown-linux-musl`, they have no dynamic library
+(`glibc`, etc.) dependencies and can be copied directly to any `x86_64` Linux
+machine with KVM enabled (`/dev/kvm`).
 
-### List of Required Artifacts
+You can deploy either the **"small" pair** (`vmm-host-cwasm` +
+`vmm-runner.cwasm`), the **"safe" pair** (`vmm-host-wasm` + `vmm-runner.wasm`),
+or both (as staged by `./publish.sh`).
 
-| Artifact | Source | Required? | Purpose |
+### List of Artifacts
+
+| Artifact | Pair | Source | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`vmm-host`** | Built by `./publish.sh` or `target/x86_64-unknown-linux-musl/release/vmm-host` | **Yes** | Statically linked Wasmtime + KVM host binary. |
-| **`vmm-runner.wasm`** | Built by `./publish.sh` or `target/wasm32-wasip2/release/vmm-runner.wasm` | **Yes** | WASI Preview 2 component implementing the VMM runner logic. |
-| **`run-vm.sh`** | Generated by `./publish.sh <DIR>` | Optional | Helper script that locates `vm.toml` and runs `vmm-host -c <config> -w vmm-runner.wasm`. |
-| **`vm.toml`** | Example at [`vm.toml`](vm.toml) | **Yes** | VM configuration file (CPU count, RAM size, kernel/disk paths, TAP network config, log path). |
-| **Kernel image** (e.g. `bzImage`) | User-provided Linux kernel (`bzImage` or PVH ELF) | **Yes** | Guest Linux kernel image referenced by `kernel` (or `pvh`) in `vm.toml` (plus `initramfs` if configured). |
-| **Disk image** (e.g. `alpine.raw`) | User-provided raw disk image | Optional | Raw root filesystem / block device image(s) referenced by `blk` in `vm.toml`. |
+| **`vmm-host-cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-host-cwasm` | Small statically linked Wasmtime + KVM host (~2.9 MB, no compiler). |
+| **`vmm-runner.cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-runner.cwasm` | AOT-precompiled WASI Preview 2 VMM runner component (~1.8 MB). |
+| **`vmm-host-wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-host-wasm` | Statically linked Wasmtime + KVM host with built-in Cranelift compiler (~12.4 MB). |
+| **`vmm-runner.wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-runner.wasm` | Portable WASI Preview 2 VMM runner component (~655 KB). |
+| **`run-vm.sh`** | Both | Generated by `./publish.sh <DIR>` | Helper script requiring `--wasm` or `--cwasm` that locates `vm.toml` and launches the chosen pair. |
+| **`vm.toml`** | Both | Example at [`vm.toml`](vm.toml) | VM configuration file (CPU count, RAM size, kernel/disk paths, TAP network config, log path). |
+| **Kernel image** (e.g. `bzImage`) | Both | User-provided Linux kernel (`bzImage` or PVH ELF) | Guest Linux kernel image referenced by `kernel` (or `pvh`) in `vm.toml` (plus `initramfs` if configured). |
+| **Disk image** (e.g. `alpine.raw`) | Both | User-provided raw disk image | Raw root filesystem / block device image(s) referenced by `blk` in `vm.toml`. |
 
 ### Staging and Copying to Another Host
 
 Relative paths inside `vm.toml` (such as `kernel = "bzImage"` and
 `blk = ["alpine.raw"]`) are resolved relative to the directory containing
 `vm.toml` (when launched via `run-vm.sh`) or the current working directory from
-which `vmm-host` is executed. Place `vm.toml`, your kernel image, and your disk
-image in the same directory on the destination host (or use absolute paths in
-`vm.toml`).
+which `vmm-host-*` is executed. Place `vm.toml`, your kernel image, and your
+disk image in the same directory on the destination host (or use absolute paths
+in `vm.toml`).
 
 1. **Stage the VMM binaries and launcher script on the build machine**:
    ```sh
@@ -117,7 +132,9 @@ image in the same directory on the destination host (or use absolute paths in
    The resulting directory on `target-host` will look like:
    ```text
    ~/wasm-vmm-run/
-   ├── vmm-host
+   ├── vmm-host-cwasm
+   ├── vmm-host-wasm
+   ├── vmm-runner.cwasm
    ├── vmm-runner.wasm
    ├── run-vm.sh
    ├── vm.toml
@@ -173,28 +190,37 @@ sudo nft add rule ip nat postrouting ip saddr 192.168.8.0/24 masquerade
 Ensure your user has read/write access to `/dev/kvm` (and `/dev/net/tun` if
 using TAP networking).
 
-Using the `run-vm.sh` script generated by `./publish.sh`:
+Using the `run-vm.sh` script generated by `./publish.sh` (requires `--cwasm` or
+`--wasm`):
 
 ```sh
 cd ~/wasm-vmm-run
 
-# Looks for ./vm.toml by default:
-./run-vm.sh
+# Run the "small" pair (vmm-host-cwasm + vmm-runner.cwasm), using ./vm.toml by default:
+./run-vm.sh --cwasm
+
+# Run the "safe" pair (vmm-host-wasm + vmm-runner.wasm), using ./vm.toml by default:
+./run-vm.sh --wasm
 
 # Or pass a path to a configuration file:
-./run-vm.sh /path/to/vm.toml
+./run-vm.sh --cwasm /path/to/vm.toml
+./run-vm.sh --wasm /path/to/vm.toml
 ```
 
-Or invoke `vmm-host` directly:
+Or invoke either host binary directly:
 
 ```sh
-./vmm-host -c vm.toml -w vmm-runner.wasm
+# Small pair (precompiled .cwasm):
+./vmm-host-cwasm -c vm.toml -w vmm-runner.cwasm
+
+# Safe pair (JIT-compiled .wasm):
+./vmm-host-wasm -c vm.toml -w vmm-runner.wasm
 ```
 
-If `-w` / `--wasm` (or `VMM_RUNNER_WASM`) is omitted, `vmm-host` automatically
-looks for `vmm-runner.wasm` in the same directory as the `vmm-host` executable
-(or the current working directory), falling back to the component embedded at
-compile time.
+If `-w` / `--wasm` / `--cwasm` (or `VMM_RUNNER_WASM`) is omitted,
+`vmm-host-cwasm` automatically looks for `vmm-runner.cwasm` and `vmm-host-wasm`
+automatically looks for `vmm-runner.wasm` in the same directory as the host
+executable (or the current working directory).
 
 ### 4. Interacting with and Exiting the VM
 

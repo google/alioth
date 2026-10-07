@@ -26,8 +26,9 @@ serde = { version = "1.0.*", features = ["derive"] }
 simplelog = "0.12.2"
 thiserror = "1"
 toml = "0.9"
-wasmtime = "48.0.2"
-wasmtime-wasi = "48.0.2"
+wasmtime = { version = "48.0.2", default-features = false, features = ["runtime", "component-model", "std"] }
+wasmtime-wasi = { version = "48.0.2", default-features = false, features = ["p2"] }
+wasmtime-wasi-io = { version = "48.0.2", default-features = false, features = ["std"] }
 wit-bindgen = "0.57.1"
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 
