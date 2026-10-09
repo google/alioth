@@ -20,7 +20,6 @@ mod aarch64;
 mod x86_64;
 
 use std::ffi::CStr;
-#[cfg(target_arch = "x86_64")]
 use std::mem::size_of;
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;
@@ -32,7 +31,6 @@ use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_aco::Help;
 use snafu::Snafu;
-#[cfg(target_arch = "x86_64")]
 use zerocopy::{IntoBytes, transmute};
 
 #[cfg(target_arch = "x86_64")]
@@ -48,7 +46,6 @@ use crate::device::MmioDev;
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::FwCfg;
 use crate::errors::{DebugTrace, trace_error};
-#[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::bindings::{
     AcpiMcfgAllocation, AcpiSignature, AcpiTableHeader, AcpiTableMcfg1, AcpiTableRsdp,
     MCFG_REVISION, RSDP_REVISION, SIG_RSDP,
@@ -58,7 +55,6 @@ use crate::loader::PayloadSpec;
 use crate::mem::mapped::ArcMemPages;
 use crate::mem::{self, LayoutChanged, MemBackend, MemRegion, MemRegionType, MemSpec, Memory};
 use crate::pci::bus::PciBus;
-#[cfg(target_arch = "x86_64")]
 use crate::utils::wrapping_sum;
 
 #[cfg(target_arch = "aarch64")]
@@ -66,10 +62,8 @@ use self::aarch64::ArchBoard;
 #[cfg(target_arch = "x86_64")]
 use self::x86_64::ArchBoard;
 
-#[cfg(target_arch = "x86_64")]
 const OEM_ID: [u8; 6] = *b"ALIOTH";
 
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn default_acpi_header() -> AcpiTableHeader {
     AcpiTableHeader {
         checksum: 0,
@@ -170,11 +164,21 @@ impl CpuSpec {
 
 pub const PCIE_MMIO_64_SIZE: u64 = 1 << 40;
 
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Help)]
+pub struct PlatformSpec {
+    /// Enable ACPI for the guest.
+    #[cfg(target_arch = "aarch64")]
+    #[serde(default)]
+    pub acpi: bool,
+}
+
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct BoardSpec {
     pub mem: MemSpec,
     pub cpu: CpuSpec,
     pub coco: Option<CocoSpec>,
+    #[serde(default)]
+    pub platform: PlatformSpec,
 }
 
 impl BoardSpec {
@@ -347,7 +351,6 @@ where
     }
 
     // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#root-system-description-pointer-rsdp-structure
-    #[cfg(target_arch = "x86_64")]
     fn create_rsdp(&self, xsdt_addr: u64) -> AcpiTableRsdp {
         AcpiTableRsdp {
             signature: SIG_RSDP,
@@ -359,7 +362,6 @@ where
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn create_mcfg(&self) -> AcpiTableMcfg1 {
         let mut mcfg = AcpiTableMcfg1 {
             header: AcpiTableHeader {

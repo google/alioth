@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use alioth::board::{BoardSpec, CpuSpec, CpuTopology};
+use alioth::board::{BoardSpec, CpuSpec, CpuTopology, PlatformSpec};
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::{FwCfgContentSpec, FwCfgItemSpec};
 use alioth::device::net::MacAddr;
@@ -119,6 +119,7 @@ fn test_parse_args() {
                 transparent_hugepage: false,
             },
             coco: None,
+            platform: PlatformSpec::default(),
         },
         payload: PayloadSpec {
             executable: Some(Executable::Linux(Path::new("vmlinuz").into())),
