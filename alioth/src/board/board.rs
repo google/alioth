@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #[cfg(target_arch = "aarch64")]
-#[path = "board_arm64.rs"]
+#[path = "board_arm64/board_arm64.rs"]
 mod aarch64;
 #[cfg(target_arch = "x86_64")]
 #[path = "board_amd64/board_amd64.rs"]
