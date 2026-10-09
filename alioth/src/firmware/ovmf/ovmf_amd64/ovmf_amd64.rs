@@ -17,7 +17,7 @@ pub mod tdx;
 
 use zerocopy::FromBytes;
 
-pub const GUID_SIZE: usize = 16;
+use crate::firmware::uefi::GUID_SIZE;
 
 pub const OFFSET_R_LENGTH_GUID_TABLE: usize = 50;
 pub const GUID_TABLE_FOOTER: [u8; GUID_SIZE] = [
