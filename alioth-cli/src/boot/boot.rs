@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::mem;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_arch = "aarch64")]
+use alioth::board::PlatformSpec;
 use alioth::board::{BoardSpec, CpuSpec};
 use alioth::device::console::ConsoleSpec;
 #[cfg(target_arch = "x86_64")]
@@ -121,6 +123,12 @@ pub struct BootArgs {
     /// Add a pvpanic device.
     #[arg(long)]
     pvpanic: bool,
+
+    #[cfg(target_arch = "aarch64")]
+    #[arg(long, help(
+        help_text::<PlatformSpec>("Configure the platform of the guest.")
+    ))]
+    platform: Option<Box<str>>,
 
     #[cfg(target_arch = "x86_64")]
     #[arg(long, help(
@@ -294,6 +302,11 @@ fn parse_args(mut args: BootArgs, objects: HashMap<&str, &str>) -> Result<VmSpec
     };
     board_spec.mem = parse_mem_arg(args.memory, args.mem_size, &objects)?;
     board_spec.cpu = parse_cpu_arg(args.cpu, args.num_cpu, &objects)?;
+    #[cfg(target_arch = "aarch64")]
+    if let Some(arg) = args.platform {
+        board_spec.platform =
+            serde_aco::from_args(&arg, &objects).context(error::ParseArg { arg })?;
+    }
 
     let mut spec = VmSpec {
         board: board_spec,
