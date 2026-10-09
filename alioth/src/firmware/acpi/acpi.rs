@@ -19,21 +19,27 @@ use std::mem::{offset_of, size_of};
 
 use zerocopy::{FromBytes, IntoBytes, transmute};
 
+use crate::arch::layout::PCIE_CONFIG_START;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::layout::{
     APIC_START, IOAPIC_START, PORT_ACPI_RESET, PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_SLEEP_STATUS,
+    PORT_ACPI_TIMER,
 };
-use crate::arch::layout::{PCIE_CONFIG_START, PORT_ACPI_TIMER};
+#[cfg(target_arch = "x86_64")]
 use crate::firmware::acpi::bindings::AcpiFadtFlag;
 use crate::utils::wrapping_sum;
 
+#[cfg(target_arch = "x86_64")]
 use self::bindings::{
-    AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
-    AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg1,
-    AcpiTableRsdp, AcpiTableXsdt3, FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC,
-    MADT_LOCAL_X2APIC, MADT_REVISION, MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG,
-    SIG_RSDP, SIG_XSDT, XSDT_REVISION,
+    AcpiAccessWidth, AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMadtType,
+    AcpiSpaceId, AcpiSubtableHeader, AcpiTableFadt, AcpiTableMadt, FADT_MAJOR_VERSION,
+    FADT_MINOR_VERSION, MADT_REVISION,
 };
+use self::bindings::{
+    AcpiMcfgAllocation, AcpiSignature, AcpiTableHeader, AcpiTableMcfg1, AcpiTableRsdp,
+    AcpiTableXsdt3, MCFG_REVISION, RSDP_REVISION, SIG_RSDP, XSDT_REVISION,
+};
+#[cfg(target_arch = "x86_64")]
 use self::reg::FADT_RESET_VAL;
 
 const OEM_ID: [u8; 6] = *b"ALIOTH";
@@ -68,7 +74,7 @@ pub fn create_xsdt(entries: [u64; 3]) -> AcpiTableXsdt3 {
     let entries = entries.map(|e| transmute!(e));
     AcpiTableXsdt3 {
         header: AcpiTableHeader {
-            signature: SIG_XSDT,
+            signature: AcpiSignature::XSDT,
             length: total_length as u32,
             revision: XSDT_REVISION,
             ..default_header()
@@ -78,41 +84,42 @@ pub fn create_xsdt(entries: [u64; 3]) -> AcpiTableXsdt3 {
 }
 
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fadt-format
+#[cfg(target_arch = "x86_64")]
 pub fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
     AcpiTableFadt {
         header: AcpiTableHeader {
-            signature: SIG_FADT,
+            signature: AcpiSignature::FADT,
             revision: FADT_MAJOR_VERSION,
             length: size_of::<AcpiTableFadt>() as u32,
             ..default_header()
         },
         reset_register: AcpiGenericAddress {
-            space_id: 1,
+            space_id: AcpiSpaceId::SYSTEM_IO,
             bit_width: 8,
             bit_offset: 0,
-            access_width: 1,
+            access_width: AcpiAccessWidth::BYTE,
             address: transmute!(PORT_ACPI_RESET as u64),
         },
         reset_value: FADT_RESET_VAL,
         xpm_timer_block: AcpiGenericAddress {
-            space_id: 1,
+            space_id: AcpiSpaceId::SYSTEM_IO,
             bit_width: 32,
             bit_offset: 0,
-            access_width: 3,
+            access_width: AcpiAccessWidth::DWORD,
             address: transmute!(PORT_ACPI_TIMER as u64),
         },
         sleep_control: AcpiGenericAddress {
-            space_id: 1,
+            space_id: AcpiSpaceId::SYSTEM_IO,
             bit_width: 8,
             bit_offset: 0,
-            access_width: 1,
+            access_width: AcpiAccessWidth::BYTE,
             address: transmute!(PORT_ACPI_SLEEP_CONTROL as u64),
         },
         sleep_status: AcpiGenericAddress {
-            space_id: 1,
+            space_id: AcpiSpaceId::SYSTEM_IO,
             bit_width: 8,
             bit_offset: 0,
-            access_width: 1,
+            access_width: AcpiAccessWidth::BYTE,
             address: transmute!(PORT_ACPI_SLEEP_STATUS as u64),
         },
         flags: AcpiFadtFlag::HW_REDUCED_ACPI
@@ -135,7 +142,7 @@ pub fn create_madt(apic_ids: &[u32]) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<Acpi
 
     let mut madt = AcpiTableMadt {
         header: AcpiTableHeader {
-            signature: SIG_MADT,
+            signature: AcpiSignature::MADT,
             length: total_length as u32,
             revision: MADT_REVISION,
             ..default_header()
@@ -147,7 +154,7 @@ pub fn create_madt(apic_ids: &[u32]) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<Acpi
 
     let io_apic = AcpiMadtIoApic {
         header: AcpiSubtableHeader {
-            type_: MADT_IO_APIC,
+            r#type: AcpiMadtType::IO_APIC,
             length: size_of::<AcpiMadtIoApic>() as u8,
         },
         id: 0,
@@ -161,7 +168,7 @@ pub fn create_madt(apic_ids: &[u32]) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<Acpi
     for (index, apic_id) in apic_ids.iter().enumerate() {
         let x2apic = AcpiMadtLocalX2apic {
             header: AcpiSubtableHeader {
-                type_: MADT_LOCAL_X2APIC,
+                r#type: AcpiMadtType::LOCAL_X2APIC,
                 length: size_of::<AcpiMadtLocalX2apic>() as u8,
             },
             local_apic_id: *apic_id,
@@ -180,7 +187,7 @@ pub fn create_madt(apic_ids: &[u32]) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<Acpi
 pub fn create_mcfg() -> AcpiTableMcfg1 {
     let mut mcfg = AcpiTableMcfg1 {
         header: AcpiTableHeader {
-            signature: SIG_MCFG,
+            signature: AcpiSignature::MCFG,
             length: size_of::<AcpiTableMcfg1>() as u32,
             revision: MCFG_REVISION,
             ..default_header()

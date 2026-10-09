@@ -18,9 +18,9 @@ use std::io::Write;
 use snafu::ResultExt;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::firmware::ovmf::x86_64::{GUID_SIZE, parse_data};
+use crate::firmware::ovmf::x86_64::parse_data;
 use crate::firmware::uefi::{
-    HOB_HANDOFF_TABLE_VERSION, HobGenericHeader, HobHandoffInfoTable, HobResourceDesc,
+    GUID_SIZE, HOB_HANDOFF_TABLE_VERSION, HobGenericHeader, HobHandoffInfoTable, HobResourceDesc,
     HobResourceType, HobType, ResourceAttr,
 };
 use crate::firmware::{Result, error};
