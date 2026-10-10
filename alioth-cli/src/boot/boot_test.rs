@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use alioth::board::{BoardSpec, CpuSpec, CpuTopology};
+use alioth::board::{BoardSpec, CpuSpec, CpuTopology, PlatformSpec};
 #[cfg(target_arch = "x86_64")]
 use alioth::device::fw_cfg::{FwCfgContentSpec, FwCfgItemSpec};
 use alioth::device::net::MacAddr;
@@ -55,6 +55,8 @@ fn test_parse_args() {
         cpu: Some("count=16,topology=id_topo".into()),
         memory: Some("size=128G,backend=anon,shared=true".into()),
         pvpanic: true,
+        #[cfg(target_arch = "aarch64")]
+        platform: Some("acpi=true".into()),
         #[cfg(target_arch = "x86_64")]
         fw_cfg: vec![
             "name=item1,file=file1".into(),
@@ -119,6 +121,10 @@ fn test_parse_args() {
                 transparent_hugepage: false,
             },
             coco: None,
+            platform: PlatformSpec {
+                #[cfg(target_arch = "aarch64")]
+                acpi: true,
+            },
         },
         payload: PayloadSpec {
             executable: Some(Executable::Linux(Path::new("vmlinuz").into())),

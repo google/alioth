@@ -32,7 +32,13 @@ pub const PCIE_CONFIG_START: u64 = 0x3000_0000; // 768 MiB
 pub const RAM_32_START: u64 = 0x4000_0000; // 1 GiB
 
 pub const DEVICE_TREE_START: u64 = 0x4000_0000; // 1 GiB
-pub const DEVICE_TREE_LIMIT: u64 = 0x20_0000; // 2 MiB
+pub const DEVICE_TREE_LIMIT: u64 = 0x10_0000; // 1 MiB
+
+pub const ACPI_START: u64 = 0x4010_0000; // 1 GiB + 1 MiB
+pub const ACPI_LIMIT: u64 = 0x8_0000; // 512 KiB
+
+pub const UEFI_START: u64 = 0x4018_0000; // 1 GiB + 1.5 MiB
+pub const UEFI_LIMIT: u64 = 0x8_0000; // 512 KiB
 
 pub const KERNEL_IMAGE_START: u64 = 0x4020_0000; // 1 GiB + 2 MiB
 

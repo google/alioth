@@ -15,7 +15,8 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::consts;
-use crate::firmware::ovmf::x86_64::{GUID_SIZE, parse_data};
+use crate::firmware::ovmf::x86_64::parse_data;
+use crate::firmware::uefi::GUID_SIZE;
 use crate::firmware::{Result, error};
 
 pub const GUID_SEV_ES_RESET_BLOCK: [u8; GUID_SIZE] = [
