@@ -23,22 +23,25 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use parking_lot::Mutex;
 use snafu::ResultExt;
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::{FromZeros, IntoBytes, transmute};
 
 use crate::arch::cpuid::{Cpuid1Ecx, CpuidIn};
 use crate::arch::layout::{
-    BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
-    PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_TIMER, RAM_32_SIZE,
+    APIC_START, BIOS_DATA_END, EBDA_END, EBDA_START, IOAPIC_START, MEM_64_START, PORT_ACPI_RESET,
+    PORT_ACPI_SLEEP_CONTROL, PORT_ACPI_SLEEP_STATUS, PORT_ACPI_TIMER, RAM_32_SIZE,
 };
-use crate::board::{Board, BoardSpec, CpuTopology, PCIE_MMIO_64_SIZE, Result, error};
+use crate::board::{
+    Board, BoardSpec, CpuTopology, PCIE_MMIO_64_SIZE, Result, default_acpi_header, error,
+};
 use crate::device::ioapic::IoApic;
+use crate::firmware::acpi::AcpiTable;
 use crate::firmware::acpi::bindings::{
-    AcpiTableFadt, AcpiTableHeader, AcpiTableRsdp, AcpiTableXsdt3,
+    AcpiAccessWidth, AcpiFadtFlag, AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic,
+    AcpiMadtType, AcpiSignature, AcpiSpaceId, AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader,
+    AcpiTableMadt, AcpiTableRsdp, AcpiTableXsdt3, FADT_MAJOR_VERSION, FADT_MINOR_VERSION,
+    MADT_REVISION, XSDT_REVISION,
 };
-use crate::firmware::acpi::reg::{AcpiPmTimer, FadtReset, FadtSleepControl};
-use crate::firmware::acpi::{
-    AcpiTable, create_fadt, create_madt, create_mcfg, create_rsdp, create_xsdt,
-};
+use crate::firmware::acpi::reg::{AcpiPmTimer, FADT_RESET_VAL, FadtReset, FadtSleepControl};
 use crate::hv::{CocoSpec, Hypervisor, Vm};
 use crate::loader::{Executable, InitState, PayloadSpec};
 use crate::mem::{MemRange, MemRegion, MemRegionEntry, MemRegionType};
@@ -260,6 +263,120 @@ where
         *checksum = checksum.wrapping_sub(sum);
     }
 
+    // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#extended-system-description-table-fields-xsdt
+    fn create_xsdt(&self, entries: [u64; 3]) -> AcpiTableXsdt3 {
+        let total_length = size_of::<AcpiTableHeader>() + size_of::<u64>() * 3;
+        let entries = entries.map(|e| transmute!(e));
+        AcpiTableXsdt3 {
+            header: AcpiTableHeader {
+                signature: AcpiSignature::XSDT,
+                length: total_length as u32,
+                revision: XSDT_REVISION,
+                ..default_acpi_header()
+            },
+            entries,
+        }
+    }
+
+    // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fadt-format
+    fn create_fadt(&self, dsdt_addr: u64) -> AcpiTableFadt {
+        AcpiTableFadt {
+            header: AcpiTableHeader {
+                signature: AcpiSignature::FADT,
+                revision: FADT_MAJOR_VERSION,
+                length: size_of::<AcpiTableFadt>() as u32,
+                ..default_acpi_header()
+            },
+            reset_register: AcpiGenericAddress {
+                space_id: AcpiSpaceId::SYSTEM_IO,
+                bit_width: 8,
+                bit_offset: 0,
+                access_width: AcpiAccessWidth::BYTE,
+                address: transmute!(PORT_ACPI_RESET as u64),
+            },
+            reset_value: FADT_RESET_VAL,
+            xpm_timer_block: AcpiGenericAddress {
+                space_id: AcpiSpaceId::SYSTEM_IO,
+                bit_width: 32,
+                bit_offset: 0,
+                access_width: AcpiAccessWidth::DWORD,
+                address: transmute!(PORT_ACPI_TIMER as u64),
+            },
+            sleep_control: AcpiGenericAddress {
+                space_id: AcpiSpaceId::SYSTEM_IO,
+                bit_width: 8,
+                bit_offset: 0,
+                access_width: AcpiAccessWidth::BYTE,
+                address: transmute!(PORT_ACPI_SLEEP_CONTROL as u64),
+            },
+            sleep_status: AcpiGenericAddress {
+                space_id: AcpiSpaceId::SYSTEM_IO,
+                bit_width: 8,
+                bit_offset: 0,
+                access_width: AcpiAccessWidth::BYTE,
+                address: transmute!(PORT_ACPI_SLEEP_STATUS as u64),
+            },
+            flags: AcpiFadtFlag::HW_REDUCED_ACPI
+                | AcpiFadtFlag::RESET_REG_SUP
+                | AcpiFadtFlag::TMR_VAL_EXT,
+            minor_revision: FADT_MINOR_VERSION,
+            hypervisor_id: *b"ALIOTH  ",
+            xdsdt: transmute!(dsdt_addr),
+            ..Default::default()
+        }
+    }
+
+    // https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
+    fn create_madt(&self) -> (AcpiTableMadt, AcpiMadtIoApic, Vec<AcpiMadtLocalX2apic>) {
+        let total_length = size_of::<AcpiTableMadt>()
+            + size_of::<AcpiMadtIoApic>()
+            + self.spec.cpu.count as usize * size_of::<AcpiMadtLocalX2apic>();
+        let mut checksum = 0u8;
+
+        let mut madt = AcpiTableMadt {
+            header: AcpiTableHeader {
+                signature: AcpiSignature::MADT,
+                length: total_length as u32,
+                revision: MADT_REVISION,
+                ..default_acpi_header()
+            },
+            address: APIC_START as u32,
+            flags: 0,
+        };
+        checksum = checksum.wrapping_sub(wrapping_sum(madt.as_bytes()));
+
+        let io_apic = AcpiMadtIoApic {
+            header: AcpiSubtableHeader {
+                r#type: AcpiMadtType::IO_APIC,
+                length: size_of::<AcpiMadtIoApic>() as u8,
+            },
+            id: 0,
+            address: IOAPIC_START as u32,
+            global_irq_base: 0,
+            ..Default::default()
+        };
+        checksum = checksum.wrapping_sub(wrapping_sum(io_apic.as_bytes()));
+
+        let mut x2apics = vec![];
+        for index in 0..self.spec.cpu.count {
+            let x2apic = AcpiMadtLocalX2apic {
+                header: AcpiSubtableHeader {
+                    r#type: AcpiMadtType::LOCAL_X2APIC,
+                    length: size_of::<AcpiMadtLocalX2apic>() as u8,
+                },
+                local_apic_id: self.encode_cpu_identity(index) as u32,
+                uid: index as u32,
+                lapic_flags: 1,
+                ..Default::default()
+            };
+            checksum = checksum.wrapping_sub(wrapping_sum(x2apic.as_bytes()));
+            x2apics.push(x2apic);
+        }
+        madt.header.checksum = checksum;
+
+        (madt, io_apic, x2apics)
+    }
+
     fn create_acpi(&self) -> AcpiTable {
         let mut table_bytes = Vec::new();
         let mut pointers = vec![];
@@ -276,7 +393,7 @@ where
 
         let offset_fadt = offset_dsdt + size_of_val(&DSDT_TEMPLATE);
         debug_assert_eq!(offset_fadt % 4, 0);
-        let fadt = create_fadt(offset_dsdt as u64);
+        let fadt = self.create_fadt(offset_dsdt as u64);
         let pointer_fadt_to_dsdt = offset_fadt + offset_of!(AcpiTableFadt, xdsdt);
         table_bytes.extend(fadt.as_bytes());
         pointers.push(pointer_fadt_to_dsdt);
@@ -284,10 +401,7 @@ where
 
         let offset_madt = offset_fadt + size_of_val(&fadt);
         debug_assert_eq!(offset_madt % 4, 0);
-        let apic_ids: Vec<u32> = (0..self.spec.cpu.count)
-            .map(|index| self.encode_cpu_identity(index) as u32)
-            .collect();
-        let (madt, madt_ioapic, madt_apics) = create_madt(&apic_ids);
+        let (madt, madt_ioapic, madt_apics) = self.create_madt();
         table_bytes.extend(madt.as_bytes());
         table_bytes.extend(madt_ioapic.as_bytes());
         for apic in madt_apics {
@@ -296,19 +410,19 @@ where
 
         let offset_mcfg = offset_madt + madt.header.length as usize;
         debug_assert_eq!(offset_mcfg % 4, 0);
-        let mcfg = create_mcfg();
+        let mcfg = self.create_mcfg();
         table_bytes.extend(mcfg.as_bytes());
 
         debug_assert_eq!(offset_xsdt % 4, 0);
         let xsdt_entries = [offset_fadt as u64, offset_madt as u64, offset_mcfg as u64];
-        xsdt = create_xsdt(xsdt_entries);
+        xsdt = self.create_xsdt(xsdt_entries);
         xsdt.write_to_prefix(&mut table_bytes).unwrap();
         for index in 0..xsdt_entries.len() {
             pointers.push(offset_xsdt + offset_of!(AcpiTableXsdt3, entries) + index * 8);
         }
         checksums.push((offset_xsdt, size_of_val(&xsdt)));
 
-        let rsdp = create_rsdp(offset_xsdt as u64);
+        let rsdp = self.create_rsdp(offset_xsdt as u64);
 
         AcpiTable {
             rsdp,
