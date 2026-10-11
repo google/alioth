@@ -40,10 +40,10 @@ bitflags! {
 }
 
 #[repr(C, align(2))]
-#[derive(Debug, Clone, Layout, Immutable, FromBytes, IntoBytes)]
+#[derive(Debug, Layout)]
 pub struct AvailHeader {
-    flags: u16,
-    idx: u16,
+    flags: AtomicU16,
+    idx: AtomicU16,
 }
 
 bitflags! {
@@ -53,10 +53,10 @@ bitflags! {
 }
 
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Layout)]
+#[derive(Debug, Layout)]
 pub struct UsedHeader {
-    flags: u16,
-    idx: u16,
+    flags: AtomicU16,
+    idx: AtomicU16,
 }
 
 #[repr(C)]
@@ -71,34 +71,32 @@ pub struct SplitQueue<'m> {
     size: u16,
     avail_hdr: *mut AvailHeader,
     avail_ring: *mut u16,
-    used_event: Option<*mut u16>,
+    used_event: Option<*mut AtomicU16>,
     used_hdr: *mut UsedHeader,
     used_ring: *mut UsedElem,
-    avail_event: Option<*mut u16>,
+    avail_event: Option<*mut AtomicU16>,
     desc: *mut Desc,
     _phantom: PhantomData<&'m ()>,
 }
 
 impl SplitQueue<'_> {
     pub fn avail_index(&self) -> u16 {
-        unsafe { AtomicU16::from_ptr(&raw mut (*self.avail_hdr).idx).load(Ordering::Acquire) }
+        unsafe { &*self.avail_hdr }.idx.load(Ordering::Acquire)
     }
 
     pub fn set_used_index(&self, val: u16) {
-        unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.used_hdr).idx).store(val, Ordering::Release);
-        }
+        unsafe { &*self.used_hdr }.idx.store(val, Ordering::Release)
     }
 
     pub fn used_event(&self) -> Option<u16> {
         self.used_event
-            .map(|event| unsafe { AtomicU16::from_ptr(event).load(Ordering::Relaxed) })
+            .map(|event| unsafe { &*event }.load(Ordering::Relaxed))
     }
 
     pub fn set_avail_event(&self, op: impl FnOnce(&AtomicU16)) -> bool {
         match self.avail_event {
             Some(avail_event) => {
-                op(unsafe { AtomicU16::from_ptr(avail_event) });
+                op(unsafe { &*avail_event });
                 true
             }
             None => false,
@@ -106,16 +104,13 @@ impl SplitQueue<'_> {
     }
 
     pub fn set_flag_notification(&self, enabled: bool) {
-        unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.used_hdr).flags)
-                .store((!enabled) as u16, Ordering::Relaxed);
-        }
+        unsafe { &*self.used_hdr }
+            .flags
+            .store(!enabled as u16, Ordering::Relaxed);
     }
 
     pub fn flag_interrupt_enabled(&self) -> bool {
-        unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.avail_hdr).flags).load(Ordering::Relaxed) == 0
-        }
+        unsafe { &*self.avail_hdr }.flags.load(Ordering::Relaxed) == 0
     }
 
     fn get_desc(&self, id: u16) -> Result<Desc> {

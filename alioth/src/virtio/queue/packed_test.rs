@@ -95,7 +95,7 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
             desc.addr = *addr;
             desc.len = *len;
             desc.id = id;
-            desc.flag = flag.bits();
+            desc.flag.store(flag.bits(), Ordering::Release);
         }
         ids.len() as u16
     }
@@ -105,8 +105,8 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
         index: Self::Index,
         chains: &HashMap<u16, Vec<u16>>,
     ) -> Option<UsedDesc> {
-        let desc = unsafe { &mut *self.desc.offset(index.offset() as isize) };
-        let flag = DescFlag::from_bits_retain(desc.flag);
+        let desc = unsafe { &*self.desc.offset(index.offset() as isize) };
+        let flag = DescFlag::from_bits_retain(desc.flag.load(Ordering::Acquire));
         if !self.flag_is_used(flag, index.wrap_counter()) {
             return None;
         }
@@ -118,9 +118,7 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
     }
 
     fn notification_enabled(&self) -> bool {
-        let flag = EventFlag(unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.notification).flag.0).load(Ordering::Relaxed)
-        });
+        let flag = EventFlag(unsafe { &*self.notification }.flag.load(Ordering::Relaxed));
         flag != EventFlag::DISABLE
     }
 
@@ -132,12 +130,9 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
         } else {
             EventFlag::ENABLE
         };
-        unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.interrupt).index.0)
-                .store(index.0, Ordering::Relaxed);
-            AtomicU16::from_ptr(&raw mut (*self.interrupt).flag.0)
-                .store(flag.raw(), Ordering::Release);
-        }
+        let interrupt = unsafe { &*self.interrupt };
+        interrupt.index.store(index.0, Ordering::Relaxed);
+        interrupt.flag.store(flag.raw(), Ordering::Release);
     }
 }
 
@@ -234,9 +229,15 @@ fn enable_notification() {
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
 
     q.enable_notification(false);
-    assert_eq!(unsafe { &*q.notification }.flag, EventFlag::DISABLE);
+    assert_eq!(
+        unsafe { &*q.notification }.flag.load(Ordering::Acquire),
+        EventFlag::DISABLE.raw()
+    );
     q.enable_notification(true);
-    assert_eq!(unsafe { &*q.notification }.flag, EventFlag::ENABLE);
+    assert_eq!(
+        unsafe { &*q.notification }.flag.load(Ordering::Acquire),
+        EventFlag::ENABLE.raw()
+    );
 }
 
 #[rstest]
@@ -270,8 +271,8 @@ fn is_interrupt_enabled(
         .unwrap();
 
     *unsafe { &mut *q.interrupt } = DescEvent {
-        index: WrappedIndex(event_index),
-        flag: event_flag,
+        index: AtomicU16::new(event_index),
+        flag: AtomicU16::new(event_flag.raw()),
     };
 
     assert_eq!(

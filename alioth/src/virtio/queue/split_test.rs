@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 
@@ -54,12 +54,14 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
         let avail_idx = self.avail_index();
         assert_eq!(index, avail_idx);
         *unsafe { &mut *self.avail_ring.offset((avail_idx % self.size) as isize) } = last_id;
-        unsafe { &mut *self.avail_hdr }.idx = avail_idx.wrapping_add(1);
+        unsafe { &*self.avail_hdr }
+            .idx
+            .store(avail_idx.wrapping_add(1), Ordering::Release);
         1
     }
 
     fn get_used(&mut self, index: u16, _: &HashMap<u16, Vec<u16>>) -> Option<UsedDesc> {
-        let used_idx = unsafe { &*self.used_hdr }.idx;
+        let used_idx = unsafe { &*self.used_hdr }.idx.load(Ordering::Acquire);
         if !(index < used_idx || index - used_idx >= !(self.size - 1)) {
             return None;
         }
@@ -71,12 +73,10 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
 
     fn notification_enabled(&self) -> bool {
         match self.avail_event {
-            Some(avail_event) => unsafe {
-                AtomicU16::from_ptr(avail_event).load(Ordering::Relaxed) == self.avail_index()
-            },
-            None => unsafe {
-                AtomicU16::from_ptr(&raw mut (*self.used_hdr).flags).load(Ordering::Relaxed) == 0
-            },
+            Some(avail_event) => {
+                unsafe { &*avail_event }.load(Ordering::Relaxed) == self.avail_index()
+            }
+            None => unsafe { &*self.used_hdr }.flags.load(Ordering::Relaxed) == 0,
         }
     }
 
@@ -87,12 +87,11 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
             } else {
                 index.wrapping_sub(1)
             };
-            unsafe { AtomicU16::from_ptr(used_event).store(idx, Ordering::Relaxed) };
+            unsafe { &*used_event }.store(idx, Ordering::Relaxed);
         } else {
-            unsafe {
-                AtomicU16::from_ptr(&raw mut (*self.avail_hdr).flags)
-                    .store((!enabled) as u16, Ordering::Relaxed)
-            };
+            unsafe { &*self.avail_hdr }
+                .flags
+                .store(!enabled as u16, Ordering::Relaxed)
         }
     }
 }
@@ -186,9 +185,12 @@ fn event_idx_enabled() {
     let ram = ram_bus.lock_layout();
     let reg = &queues[0];
     let q = SplitQueue::new(reg, &ram, true).unwrap().unwrap();
-    unsafe { *q.used_event.unwrap() = 1 };
+    unsafe { &*q.used_event.unwrap() }.store(1, Ordering::Release);
     assert_eq!(q.used_event(), Some(1));
 
     assert!(q.set_avail_event(|event| event.store(12, Ordering::Relaxed)));
-    assert_eq!(unsafe { *q.avail_event.unwrap() }, 12);
+    assert_eq!(
+        unsafe { &*q.avail_event.unwrap() }.load(Ordering::Acquire),
+        12
+    );
 }
