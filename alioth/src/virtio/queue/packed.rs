@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use bitfield::bitfield;
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::consts;
 use crate::mem::mapped::Ram;
@@ -24,12 +24,12 @@ use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
 #[repr(C, align(16))]
-#[derive(Debug, Copy, Clone, Default, FromBytes, Immutable, IntoBytes)]
+#[derive(Debug, Default, FromBytes, IntoBytes)]
 struct Desc {
     pub addr: u64,
     pub len: u32,
     pub id: u16,
-    pub flag: u16,
+    pub flag: AtomicU16,
 }
 
 bitfield! {
@@ -80,8 +80,8 @@ consts! {
 
 #[repr(C)]
 struct DescEvent {
-    index: WrappedIndex,
-    flag: EventFlag,
+    index: AtomicU16,
+    flag: AtomicU16,
 }
 
 #[derive(Debug)]
@@ -142,10 +142,8 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
     const INIT_INDEX: WrappedIndex = WrappedIndex::INIT;
 
     fn desc_avail(&self, index: WrappedIndex) -> bool {
-        let flag = unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.desc.offset(index.offset() as isize)).flag)
-                .load(Ordering::Acquire)
-        };
+        let flag =
+            unsafe { &(*self.desc.offset(index.offset() as isize)).flag }.load(Ordering::Acquire);
         self.flag_is_avail(DescFlag::from_bits_retain(flag), index.wrap_counter())
     }
 
@@ -159,12 +157,12 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
         let mut offset = index.offset();
         let id = loop {
             let desc = unsafe { self.desc.offset(offset as isize).read_volatile() };
-            let flag = DescFlag::from_bits_retain(desc.flag);
+            let flag = DescFlag::from_bits_retain(desc.flag.into_inner());
             if flag.contains(DescFlag::INDIRECT) {
                 for i in 0..(desc.len as usize / size_of::<Desc>()) {
                     let addr = desc.addr + (i * size_of::<Desc>()) as u64;
                     let desc: Desc = ram.read_t(addr)?;
-                    let flag = DescFlag::from_bits_retain(desc.flag);
+                    let flag = DescFlag::from_bits_retain(desc.flag.into_inner());
                     if flag.contains(DescFlag::WRITE) {
                         writeable.push((desc.addr, desc.len as u64));
                     } else {
@@ -195,10 +193,10 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
             let first = self.desc.offset(index.offset() as isize);
             (&raw mut (*first).id).write_volatile(id);
             (&raw mut (*first).len).write_volatile(len);
-            let flag_ptr = AtomicU16::from_ptr(&raw mut (*first).flag);
-            let mut flag = DescFlag::from_bits_retain(flag_ptr.load(Ordering::Relaxed));
+            let flag_ref = &(*first).flag;
+            let mut flag = DescFlag::from_bits_retain(flag_ref.load(Ordering::Relaxed));
             self.set_flag_used(&mut flag, index.wrap_counter());
-            flag_ptr.store(flag.bits(), Ordering::Release);
+            flag_ref.store(flag.bits(), Ordering::Release);
         }
     }
 
@@ -208,20 +206,16 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
         } else {
             EventFlag::DISABLE
         };
-        unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.notification).flag.0)
-                .store(flag.raw(), Ordering::Relaxed);
-        }
+        unsafe { &*self.notification }
+            .flag
+            .store(flag.raw(), Ordering::Relaxed)
     }
 
     fn interrupt_enabled(&self, index: Self::Index, delta: u16) -> bool {
-        let flag = EventFlag(unsafe {
-            AtomicU16::from_ptr(&raw mut (*self.interrupt).flag.0).load(Ordering::Acquire)
-        });
+        let flag = EventFlag(unsafe { &*self.interrupt }.flag.load(Ordering::Acquire));
         if self.enable_event_idx && flag == EventFlag::DESC {
-            let event_index = WrappedIndex(unsafe {
-                AtomicU16::from_ptr(&raw mut (*self.interrupt).index.0).load(Ordering::Relaxed)
-            });
+            let event_index =
+                WrappedIndex(unsafe { &*self.interrupt }.index.load(Ordering::Relaxed));
             let prev_used_index = index.wrapping_sub(delta, self.size);
             let base = prev_used_index.offset();
             let end = base + delta;
