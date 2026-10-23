@@ -35,8 +35,7 @@ jobs:
         with:
           filters: |
             bootloader:
-              - bootloader/config*
-              - bootloader/build.sh
+              - bootloader/**
               - .github/workflows/bootloader.yml
 
   build_bootloader:
