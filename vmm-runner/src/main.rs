@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "wasi")]
-use vmm_runner::wasm::WasmGuest;
-
-#[cfg(target_os = "wasi")]
-vmm_runner::wasm::export!(WasmGuest with_types_in vmm_runner::wasm);
-
 fn main() {
     #[cfg(target_os = "wasi")]
     {

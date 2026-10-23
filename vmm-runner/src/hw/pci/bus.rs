@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use bitfield::bitfield;
-use parking_lot::{Mutex, RwLock};
+use crate::sync::{Mutex, RwLock};
 
 use crate::mem;
 use crate::mem::mmio::Mmio;

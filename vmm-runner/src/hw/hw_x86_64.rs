@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::host::arch::Cpuid;
 use crate::host::{Hypervisor, Vcpu};

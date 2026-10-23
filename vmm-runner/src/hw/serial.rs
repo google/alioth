@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::host::{IntxSender, SerialConsole};
 use crate::mem;

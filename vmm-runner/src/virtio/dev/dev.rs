@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64};
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::host::{PollEvent, Token, Vm};
 use crate::mem::MemRegion;

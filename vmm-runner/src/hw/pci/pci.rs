@@ -16,7 +16,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 use bitfield::bitfield;
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 use thiserror::Error;
 
 use crate::mem;

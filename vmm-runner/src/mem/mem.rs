@@ -17,7 +17,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 use thiserror::Error;
 
 use crate::host::{self, VmEntry, VmMemory};

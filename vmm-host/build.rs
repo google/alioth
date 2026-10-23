@@ -27,7 +27,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../vmm-runner/src");
     println!("cargo:rerun-if-changed=../vmm-runner/Cargo.toml");
-    println!("cargo:rerun-if-changed=../wit/vmm.wit");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
 
@@ -53,7 +52,7 @@ fn main() {
         .arg("--bin")
         .arg("vmm-runner")
         .arg("--target")
-        .arg("wasm32-wasip2")
+        .arg("wasm32-wasip1-threads")
         .arg("--target-dir")
         .arg(&wasm_target_dir)
         .arg("--release")
@@ -61,22 +60,24 @@ fn main() {
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status()
-        .expect("Failed to invoke cargo to build vmm-runner for wasm32-wasip2");
+        .expect("Failed to invoke cargo to build vmm-runner for wasm32-wasip1-threads");
 
     if !status.success() {
-        panic!("Building vmm-runner for wasm32-wasip2 failed");
+        panic!("Building vmm-runner for wasm32-wasip1-threads failed");
     }
 
-    let built_wasm = wasm_target_dir.join("wasm32-wasip2/release/vmm-runner.wasm");
+    let built_wasm = wasm_target_dir.join("wasm32-wasip1-threads/release/vmm-runner.wasm");
     let wasm_bytes = fs::read(&built_wasm).expect("Failed to read built vmm-runner.wasm");
 
     let mut config = Config::new();
+    config.wasm_threads(true);
+    config.shared_memory(true);
     config
         .target(&target)
         .expect("Failed to configure Wasmtime target");
     let engine = Engine::new(&config).expect("Failed to create Wasmtime engine");
     let cwasm_bytes = engine
-        .precompile_component(&wasm_bytes)
+        .precompile_module(&wasm_bytes)
         .expect("Failed to precompile vmm-runner.wasm to cwasm");
 
     fs::write(out_dir.join("vmm-runner.wasm"), &wasm_bytes)
@@ -87,7 +88,7 @@ fn main() {
     let _ = fs::write(profile_dir.join("vmm-runner.wasm"), &wasm_bytes);
     let _ = fs::write(profile_dir.join("vmm-runner.cwasm"), &cwasm_bytes);
 
-    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-wasip2/release");
+    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-wasip1-threads/release");
     let _ = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o750)

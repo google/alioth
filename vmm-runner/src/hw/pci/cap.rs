@@ -17,7 +17,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use bitfield::bitfield;
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::addressable::SlotBackend;

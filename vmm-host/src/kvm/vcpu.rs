@@ -194,6 +194,10 @@ macro_rules! get_kvm_seg_reg {
 }
 
 impl Vcpu for KvmVcpu {
+    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
+        KvmVcpu::run(self, entry)
+    }
+
     fn get_reg(&self, reg: Reg) -> Result<u64, Error> {
         self.kvm_get_reg(reg)
     }
@@ -234,47 +238,6 @@ impl Vcpu for KvmVcpu {
 
     fn dump(&self) -> Result<(), Error> {
         Ok(())
-    }
-}
-
-pub struct SharedKvmVcpu(pub(super) std::sync::Arc<parking_lot::Mutex<KvmVcpu>>);
-
-impl Vcpu for SharedKvmVcpu {
-    fn get_reg(&self, reg: Reg) -> Result<u64, Error> {
-        self.0.lock().get_reg(reg)
-    }
-
-    fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error> {
-        self.0.lock().set_regs(vals)
-    }
-
-    fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error> {
-        self.0.lock().get_seg_reg(reg)
-    }
-
-    fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error> {
-        self.0.lock().get_dt_reg(reg)
-    }
-
-    fn get_sreg(&self, reg: SReg) -> Result<u64, Error> {
-        self.0.lock().get_sreg(reg)
-    }
-
-    fn set_sregs(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error> {
-        self.0.lock().set_sregs(sregs, seg_regs, dt_regs)
-    }
-
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
-        self.0.lock().set_cpuids(cpuids)
-    }
-
-    fn dump(&self) -> Result<(), Error> {
-        self.0.lock().dump()
     }
 }
 

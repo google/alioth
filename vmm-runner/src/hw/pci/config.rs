@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bitflags::bitflags;
 use derive_layout::Layout;
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::mem::mmio::Mmio;

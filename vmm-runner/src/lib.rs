@@ -13,6 +13,12 @@
 // limitations under the License.
 #![allow(clippy::missing_safety_doc)]
 
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::thread::ThreadId;
+
 use crate::host::Hypervisor;
 use crate::hw::BoardConfig;
 use crate::loader::{ExecType, Payload};
@@ -27,6 +33,7 @@ pub mod hw;
 pub mod loader;
 #[path = "mem/mem.rs"]
 pub mod mem;
+pub mod sync;
 pub(crate) mod utils;
 #[path = "virtio/virtio.rs"]
 pub mod virtio;
@@ -34,15 +41,52 @@ pub mod vm;
 #[cfg(target_os = "wasi")]
 pub mod wasm;
 
+struct PerThreadLogWriter {
+    path: PathBuf,
+    files: HashMap<ThreadId, File>,
+}
+
+impl PerThreadLogWriter {
+    fn new(path: PathBuf) -> io::Result<Self> {
+        let file = File::create(&path)?;
+        let mut files = HashMap::new();
+        files.insert(std::thread::current().id(), file);
+        Ok(Self { path, files })
+    }
+
+    fn current_file(&mut self) -> io::Result<&mut File> {
+        let tid = std::thread::current().id();
+        if !self.files.contains_key(&tid) {
+            let f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            self.files.insert(tid, f);
+        }
+        Ok(self.files.get_mut(&tid).unwrap())
+    }
+}
+
+impl Write for PerThreadLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.current_file()?.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.current_file()?.flush()
+    }
+}
+
 pub fn run(
     config_filename: &str,
     hv: Box<dyn Hypervisor>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = config::parse_config(config_filename)?;
 
-    let log_file = std::fs::File::create(config.log_file.as_path())
+    let log_writer = PerThreadLogWriter::new(config.log_file.clone())
         .unwrap_or_else(|e| panic!("Error creating log file {:?}: {e}", config.log_file));
-    simplelog::WriteLogger::init(config.log_level, simplelog::Config::default(), log_file).unwrap();
+    simplelog::WriteLogger::init(config.log_level, simplelog::Config::default(), log_writer)
+        .unwrap();
 
     let payload = if let Some(kernel) = config.kernel {
         Some(Payload {

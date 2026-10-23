@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 
 use crate::mem;
 use crate::mem::mmio::Mmio;

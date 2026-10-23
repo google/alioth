@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use derive_layout::Layout;
-use parking_lot::{Mutex, RwLock};
+use crate::sync::{Mutex, RwLock};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::host::MsiSender;

@@ -2,34 +2,33 @@
 
 WASM VMM is a fork of v0.2.0 of Lencerf's
 [Alioth](https://github.com/google/alioth), refactored to split the VMM into a
-WebAssembly guest component (`vmm-runner`) and a thin native Wasmtime/KVM host
-(`vmm-host`).
+multithreaded WebAssembly guest module (`vmm-runner`) targeting
+`wasm32-wasip1-threads` and a thin native Wasmtime/KVM host (`vmm-host`).
 
 ## Architecture
 
-The workspace consists of three crates and a WIT component interface:
+The workspace consists of three crates:
 
 - **`vmm-runner`** (`vmm-runner/`): The core VMM logic (x86_64 board, memory
   management, ACPI tables, Linux `bzImage`/ELF/PVH loader, 16450 serial console,
   PCI bus, `virtio-blk`, and `virtio-net`). It compiles to the
-  `wasm32-wasip2` target as a WASI Preview 2 component (`vmm-runner.wasm`,
-  ~655 KB) and is also AOT-precompiled into a native Wasmtime artifact
-  (`vmm-runner.cwasm`, ~1.8 MB).
+  `wasm32-wasip1-threads` target as a multithreaded WASI module
+  (`vmm-runner.wasm`, ~649 KB) that spawns one Wasm thread per vCPU (running its
+  own `KVM_RUN` + VM-exit emulation loop in parallel) plus an I/O polling Wasm
+  thread. It is also AOT-precompiled into a native Wasmtime module artifact
+  (`vmm-runner.cwasm`, ~1.9 MB).
 - **`vmm-host`** (`vmm-host/`): A thin native Linux host crate using
-  `wasmtime` and `wasmtime-wasi` to load and execute the `vmm-runner` WASI
-  Preview 2 component. It implements all host-side OS and KVM interactions
-  (`/dev/kvm` ioctls, vCPU worker threads, anonymous `mmap` guest RAM, raw
-  terminal serial I/O, `/dev/net/tun` TAP device, and `mio` event polling). It
-  builds two host binaries:
-  - **`vmm-host-cwasm`** ("small" host, ~2.9 MB static `musl`): Built without
+  `wasmtime` (with `threads` and shared linear memory) and `wasmtime-wasi`
+  (`p1`) to load and execute `vmm-runner`. It implements all host-side OS and
+  KVM interactions (`/dev/kvm` ioctls, `"wasi"::"thread-spawn"`, anonymous
+  `mmap` guest RAM, raw terminal serial I/O, `/dev/net/tun` TAP device, and
+  `mio` event polling). It builds two host binaries:
+  - **`vmm-host-cwasm`** ("small" host, ~2.2 MB static `musl`): Built without
     Wasmtime's Cranelift compiler; loads the AOT-precompiled
     `vmm-runner.cwasm`.
-  - **`vmm-host-wasm`** ("safe" host, ~12.4 MB static `musl`): Built with
+  - **`vmm-host-wasm`** ("safe" host, ~11.0 MB static `musl`): Built with
     Wasmtime's Cranelift compiler; validates and JIT-compiles `vmm-runner.wasm`
     at startup.
-- **`wit/vmm.wit`**: The WebAssembly Interface Type (WIT) definition for the
-  `vmm:host/api` interface and `vmm-world` component world connecting
-  `vmm-runner` and `vmm-host`.
 - **`derive-layout`** (`derive-layout/`): Procedural macro helper crate for
   register/memory layout offsets.
 
@@ -38,7 +37,7 @@ The workspace consists of three crates and a WIT component interface:
 Install the required Rust compilation targets:
 
 ```sh
-rustup target add wasm32-wasip2
+rustup target add wasm32-wasip1-threads
 rustup target add x86_64-unknown-linux-musl
 ```
 
@@ -48,8 +47,8 @@ rustup target add x86_64-unknown-linux-musl
 
 Use [`./publish.sh`](publish.sh) to build all four artifacts (`vmm-host-cwasm`,
 `vmm-host-wasm`, `vmm-runner.cwasm`, and `vmm-runner.wasm`) as static `musl` /
-`wasm32-wasip2` release binaries, copy them to a destination directory `$DIR`,
-and generate a `$DIR/run-vm.sh` launcher script:
+`wasm32-wasip1-threads` release binaries, copy them to a destination directory
+`$DIR`, and generate a `$DIR/run-vm.sh` launcher script:
 
 ```sh
 ./publish.sh /path/to/stage-dir
@@ -68,10 +67,10 @@ cargo build --release --target=x86_64-unknown-linux-musl
 
 Outputs placed in `target/x86_64-unknown-linux-musl/release/` (or
 `target/release/` / `target/debug/`):
-- `vmm-host-cwasm` (~2.9 MB): Small host without Cranelift (loads `vmm-runner.cwasm`)
-- `vmm-host-wasm` (~12.4 MB): Host with built-in Cranelift compiler (loads `vmm-runner.wasm`)
-- `vmm-runner.cwasm` (~1.8 MB): AOT-precompiled WASI Preview 2 component
-- `vmm-runner.wasm` (~655 KB): Portable WASI Preview 2 component
+- `vmm-host-cwasm` (~2.2 MB): Small host without Cranelift (loads `vmm-runner.cwasm`)
+- `vmm-host-wasm` (~11.0 MB): Host with built-in Cranelift compiler (loads `vmm-runner.wasm`)
+- `vmm-runner.cwasm` (~1.9 MB): AOT-precompiled `wasm32-wasip1-threads` module
+- `vmm-runner.wasm` (~649 KB): Portable `wasm32-wasip1-threads` module
 
 To run workspace unit tests:
 ```sh
@@ -93,10 +92,10 @@ or both (as staged by `./publish.sh`).
 
 | Artifact | Pair | Source | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`vmm-host-cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-host-cwasm` | Small statically linked Wasmtime + KVM host (~2.9 MB, no compiler). |
-| **`vmm-runner.cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-runner.cwasm` | AOT-precompiled WASI Preview 2 VMM runner component (~1.8 MB). |
-| **`vmm-host-wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-host-wasm` | Statically linked Wasmtime + KVM host with built-in Cranelift compiler (~12.4 MB). |
-| **`vmm-runner.wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-runner.wasm` | Portable WASI Preview 2 VMM runner component (~655 KB). |
+| **`vmm-host-cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-host-cwasm` | Small statically linked Wasmtime + KVM host (~2.2 MB, no compiler). |
+| **`vmm-runner.cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-runner.cwasm` | AOT-precompiled multithreaded WASI VMM runner module (~1.9 MB). |
+| **`vmm-host-wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-host-wasm` | Statically linked Wasmtime + KVM host with built-in Cranelift compiler (~11.0 MB). |
+| **`vmm-runner.wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-runner.wasm` | Portable multithreaded `wasm32-wasip1-threads` VMM runner module (~649 KB). |
 | **`run-vm.sh`** | Both | Generated by `./publish.sh <DIR>` | Helper script requiring `--wasm` or `--cwasm` that locates `vm.toml` and launches the chosen pair. |
 | **`vm.toml`** | Both | Example at [`vm.toml`](vm.toml) | VM configuration file (CPU count, RAM size, kernel/disk paths, TAP network config, log path). |
 | **Kernel image** (e.g. `bzImage`) | Both | User-provided Linux kernel (`bzImage` or PVH ELF) | Guest Linux kernel image referenced by `kernel` (or `pvh`) in `vm.toml` (plus `initramfs` if configured). |

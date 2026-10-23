@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::ThreadId;
 
 use bitflags::bitflags;
+use crate::sync::Mutex;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::host::PollEvent;
@@ -116,13 +119,17 @@ impl DevParam for BlockParam {
 pub struct Block {
     name: Arc<String>,
     config: Arc<BlockConfig>,
-    disk: File,
+    path: PathBuf,
+    disks: Mutex<HashMap<ThreadId, File>>,
     feature: BlockFeature,
 }
 
 impl Block {
     pub fn new(param: BlockParam, name: Arc<String>) -> Result<Self> {
-        let disk = OpenOptions::new().read(true).write(true).open(param.path)?;
+        let disk = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&param.path)?;
         let len = disk.metadata()?.len();
         let config = BlockConfig {
             capacity: len / SECTOR_SIZE as u64,
@@ -130,16 +137,25 @@ impl Block {
             ..Default::default()
         };
         let config = Arc::new(config);
+        let mut disks = HashMap::new();
+        disks.insert(std::thread::current().id(), disk);
         Ok(Block {
             name,
-            disk,
+            path: param.path,
+            disks: Mutex::new(disks),
             config,
             feature: BlockFeature::FLUSH,
         })
     }
 
     fn handle_req_queue(&self, desc: &mut Descriptor) -> io::Result<usize> {
-        let mut disk = &self.disk;
+        let tid = std::thread::current().id();
+        let mut disks = self.disks.lock();
+        if !disks.contains_key(&tid) {
+            let f = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            disks.insert(tid, f);
+        }
+        let disk = disks.get_mut(&tid).unwrap();
         let Some(buf0) = desc.readable.first() else {
             return Err(ErrorKind::InvalidData.into());
         };

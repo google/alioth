@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::mem::Result;
 use crate::mem::addressable::{Addressable, SlotBackend};
-use parking_lot::RwLock;
+use crate::sync::RwLock;
 
 pub trait Mmio: Debug + Send + Sync + 'static {
     fn read(&self, offset: usize, size: u8) -> Result<u64>;

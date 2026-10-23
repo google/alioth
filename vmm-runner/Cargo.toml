@@ -10,12 +10,8 @@ derive-layout.workspace = true
 bitfield.workspace = true
 bitflags.workspace = true
 log.workspace = true
-parking_lot.workspace = true
 serde.workspace = true
 simplelog.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 zerocopy.workspace = true
-
-[target.'cfg(target_os = "wasi")'.dependencies]
-wit-bindgen.workspace = true

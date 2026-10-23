@@ -19,7 +19,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use parking_lot::{RwLock, RwLockReadGuard};
+use crate::sync::{RwLock, RwLockReadGuard};
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::host::{MemMapOption, MemPages, VmMemory};
