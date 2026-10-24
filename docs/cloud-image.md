@@ -80,7 +80,7 @@ EOF
 Run the following command to start the VM.
 
 ```bash
-./alioth -l info --log-to-file boot \
+./alioth boot \
     -m size=4G -p count=4 \
     -k ./kernel-x86_64 \
     --entropy \
