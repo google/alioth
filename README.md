@@ -42,13 +42,12 @@ case $(uname -m) in
       ;;
 esac
 
-alioth -l info --log-to-file \
-    boot \
+alioth boot \
     --kernel /path/to/vmlinuz \
     --cmdline "console=$CONSOLE" \
     --initramfs /path/to/initramfs \
     --memory size=4G \
-    --num-cpu 2
+    --cpu count=2
 ```
 
 For instructions on booting a cloud image, see [Booting Cloud Images](docs/cloud-image.md).
