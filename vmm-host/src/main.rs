@@ -20,6 +20,7 @@ pub mod ioctls;
 pub mod kvm;
 pub mod serial;
 pub mod tap;
+pub mod verify_no_fp;
 pub mod wasm_host;
 
 #[cfg(feature = "compiler")]

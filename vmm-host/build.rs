@@ -20,6 +20,77 @@ use std::process::Command;
 
 use wasmtime::{Config, Engine};
 
+#[path = "src/verify_no_fp.rs"]
+mod verify_no_fp;
+
+fn read_uleb(buf: &[u8], mut pos: usize) -> (u32, usize) {
+    let mut res = 0u32;
+    let mut shift = 0u32;
+    loop {
+        let b = buf[pos];
+        pos += 1;
+        res |= ((b & 0x7f) as u32) << shift;
+        if (b & 0x80) == 0 {
+            return (res, pos);
+        }
+        shift += 7;
+    }
+}
+
+fn rewrite_wasm_memory_copy(wasm_bytes: &mut [u8]) {
+    let mut pos = 8;
+    let mut memcpy_idx: Option<u32> = None;
+    let mut code_range: Option<(usize, usize)> = None;
+
+    while pos < wasm_bytes.len() {
+        let sec_id = wasm_bytes[pos];
+        pos += 1;
+        let (sec_len, next_pos) = read_uleb(wasm_bytes, pos);
+        pos = next_pos;
+        let sec_end = pos + sec_len as usize;
+
+        if sec_id == 7 {
+            let (count, mut p) = read_uleb(wasm_bytes, pos);
+            for _ in 0..count {
+                let (name_len, next_p) = read_uleb(wasm_bytes, p);
+                p = next_p;
+                let name = std::str::from_utf8(&wasm_bytes[p..p + name_len as usize]).unwrap_or("");
+                p += name_len as usize;
+                let kind = wasm_bytes[p];
+                p += 1;
+                let (idx, next_p) = read_uleb(wasm_bytes, p);
+                p = next_p;
+                if name == "__vmm_memcpy" && kind == 0 {
+                    memcpy_idx = Some(idx);
+                }
+            }
+        } else if sec_id == 10 {
+            code_range = Some((pos, sec_end));
+        }
+
+        pos = sec_end;
+    }
+
+    let idx = memcpy_idx.expect("__vmm_memcpy export not found in vmm-runner.wasm");
+    let (code_start, code_end) = code_range.expect("Code section not found in vmm-runner.wasm");
+    let call_bytes = [
+        0x10u8,
+        0x80 | ((idx & 0x7f) as u8),
+        0x80 | (((idx >> 7) & 0x7f) as u8),
+        ((idx >> 14) & 0x7f) as u8,
+    ];
+
+    let mut i = code_start;
+    while i + 4 <= code_end {
+        if wasm_bytes[i..i + 4] == [0xfc, 0x0a, 0x00, 0x00] {
+            wasm_bytes[i..i + 4].copy_from_slice(&call_bytes);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 fn main() {
     if env::var_os("VMM_HOST_INNER_BUILD").is_some() {
         return;
@@ -57,7 +128,7 @@ fn main() {
         .arg(&wasm_target_dir)
         .arg("--release")
         .arg("--offline")
-        .env_remove("RUSTFLAGS")
+        .env("RUSTFLAGS", "-C target-feature=-bulk-memory,-simd128")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status()
         .expect("Failed to invoke cargo to build vmm-runner for wasm32-wasip1-threads");
@@ -67,11 +138,16 @@ fn main() {
     }
 
     let built_wasm = wasm_target_dir.join("wasm32-wasip1-threads/release/vmm-runner.wasm");
-    let wasm_bytes = fs::read(&built_wasm).expect("Failed to read built vmm-runner.wasm");
+    let mut wasm_bytes = fs::read(&built_wasm).expect("Failed to read built vmm-runner.wasm");
+    rewrite_wasm_memory_copy(&mut wasm_bytes);
+    verify_no_fp::validate_wasm_no_fp(&wasm_bytes)
+        .expect("vmm-runner.wasm failed zero-FP/SIMD validation");
 
     let mut config = Config::new();
     config.wasm_threads(true);
     config.shared_memory(true);
+    config.wasm_simd(false);
+    config.wasm_relaxed_simd(false);
     config
         .target(&target)
         .expect("Failed to configure Wasmtime target");
@@ -79,6 +155,8 @@ fn main() {
     let cwasm_bytes = engine
         .precompile_module(&wasm_bytes)
         .expect("Failed to precompile vmm-runner.wasm to cwasm");
+    verify_no_fp::validate_cwasm_no_fp(&cwasm_bytes)
+        .expect("vmm-runner.cwasm failed zero-FP/SIMD machine-code validation");
 
     fs::write(out_dir.join("vmm-runner.wasm"), &wasm_bytes)
         .expect("Failed to write vmm-runner.wasm to OUT_DIR");

@@ -1241,12 +1241,29 @@ pub fn run_wasm_vmm(
     let mut config = Config::new();
     config.wasm_threads(true);
     config.shared_memory(true);
+    config.wasm_simd(false);
+    config.wasm_relaxed_simd(false);
     let engine = Engine::new(&config)?;
 
     #[cfg(feature = "compiler")]
-    let module = Module::from_file(&engine, module_path)?;
+    let module = {
+        let wasm_bytes = std::fs::read(module_path)?;
+        crate::verify_no_fp::validate_wasm_no_fp(&wasm_bytes)
+            .map_err(|e| format!("Wasm FP/SIMD validation failed for {module_path:?}: {e}"))?;
+        let module = Module::new(&engine, &wasm_bytes)?;
+        let compiled_bytes = module.serialize()?;
+        crate::verify_no_fp::validate_cwasm_no_fp(&compiled_bytes).map_err(|e| {
+            format!("JIT machine-code FP/SIMD validation failed for {module_path:?}: {e}")
+        })?;
+        module
+    };
     #[cfg(not(feature = "compiler"))]
-    let module = unsafe { Module::deserialize_file(&engine, module_path)? };
+    let module = {
+        let cwasm_bytes = std::fs::read(module_path)?;
+        crate::verify_no_fp::validate_cwasm_no_fp(&cwasm_bytes)
+            .map_err(|e| format!("cwasm FP/SIMD validation failed for {module_path:?}: {e}"))?;
+        unsafe { Module::deserialize(&engine, &cwasm_bytes)? }
+    };
 
     let memory_ty = module
         .imports()

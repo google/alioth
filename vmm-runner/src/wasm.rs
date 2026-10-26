@@ -653,3 +653,62 @@ impl Hypervisor for WasmHypervisor {
         Ok(raw.into_iter().map(Cpuid::from).collect())
     }
 }
+
+#[used]
+static mut DATA_PAD: [u64; 16] = [1; 16];
+
+thread_local! {
+    static TLS_PAD: std::cell::Cell<[u64; 16]> = const { std::cell::Cell::new([1; 16]) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __vmm_memcpy(mut dst: *mut u8, mut src: *const u8, mut n: usize) {
+    if n == usize::MAX {
+        TLS_PAD.with(|c| c.set( unsafe { DATA_PAD }));
+    }
+    if dst as usize == src as usize || n == 0 {
+        return;
+    }
+    if (dst as usize) < (src as usize) || (dst as usize) >= (src as usize).wrapping_add(n) {
+        while core::hint::black_box(n) >= 8 {
+            unsafe {
+                let v = core::ptr::read_unaligned(src as *const u64);
+                core::ptr::write_unaligned(dst as *mut u64, v);
+                src = src.add(8);
+                dst = dst.add(8);
+            }
+            n -= 8;
+        }
+        while core::hint::black_box(n) > 0 {
+            unsafe {
+                *dst = *src;
+                src = src.add(1);
+                dst = dst.add(1);
+            }
+            n -= 1;
+        }
+    } else {
+        unsafe {
+            src = src.add(n);
+            dst = dst.add(n);
+        }
+        while core::hint::black_box(n) >= 8 {
+            n -= 8;
+            unsafe {
+                src = src.sub(8);
+                dst = dst.sub(8);
+                let v = core::ptr::read_unaligned(src as *const u64);
+                core::ptr::write_unaligned(dst as *mut u64, v);
+            }
+        }
+        while core::hint::black_box(n) > 0 {
+            n -= 1;
+            unsafe {
+                src = src.sub(1);
+                dst = dst.sub(1);
+                *dst = *src;
+            }
+        }
+    }
+}
+
