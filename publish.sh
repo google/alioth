@@ -12,21 +12,19 @@ REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mkdir -m 750 -p "$DEST_DIR"
 DEST_DIR=$(CDPATH= cd -- "$DEST_DIR" && pwd)
 
-echo "Building vmm-host-cwasm, vmm-host-wasm, vmm-runner.cwasm, and vmm-runner.wasm (x86_64-unknown-linux-musl release)..."
-cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-host --release --target=x86_64-unknown-linux-musl
+echo "Building split hosts and guests (x86_64-unknown-linux-musl release)..."
+cargo build --manifest-path "$REPO_ROOT/Cargo.toml" --release --target=x86_64-unknown-linux-musl
 
 echo "Copying artifacts to $DEST_DIR..."
-cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/vmm-host-cwasm" "$DEST_DIR/vmm-host-cwasm"
-chmod 750 "$DEST_DIR/vmm-host-cwasm"
+for bin in vmm-core-host-cwasm vmm-core-host-wasm vmm-io-host-cwasm vmm-io-host-wasm; do
+    cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/$bin" "$DEST_DIR/$bin"
+    chmod 750 "$DEST_DIR/$bin"
+done
 
-cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/vmm-host-wasm" "$DEST_DIR/vmm-host-wasm"
-chmod 750 "$DEST_DIR/vmm-host-wasm"
-
-cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/vmm-runner.cwasm" "$DEST_DIR/vmm-runner.cwasm"
-chmod 640 "$DEST_DIR/vmm-runner.cwasm"
-
-cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/vmm-runner.wasm" "$DEST_DIR/vmm-runner.wasm"
-chmod 640 "$DEST_DIR/vmm-runner.wasm"
+for mod in vmm-core.cwasm vmm-core.wasm vmm-io.cwasm vmm-io.wasm; do
+    cp "$REPO_ROOT/target/x86_64-unknown-linux-musl/release/$mod" "$DEST_DIR/$mod"
+    chmod 640 "$DEST_DIR/$mod"
+done
 
 cat > "$DEST_DIR/run-vm.sh" << 'EOF'
 #!/bin/sh
@@ -38,8 +36,8 @@ usage() {
     echo "Usage: $0 (--wasm | --cwasm) [path/to/vm.toml]" >&2
     echo "" >&2
     echo "Required mode flag (choose one):" >&2
-    echo "  --wasm    Run the 'safe' pair (vmm-host-wasm with built-in compiler + vmm-runner.wasm)" >&2
-    echo "  --cwasm   Run the 'small' pair (vmm-host-cwasm + precompiled vmm-runner.cwasm)" >&2
+    echo "  --wasm    Run the 'safe' split pair (vmm-{io,core}-host-wasm + vmm-{io,core}.wasm)" >&2
+    echo "  --cwasm   Run the 'small' split pair (vmm-{io,core}-host-cwasm + vmm-{io,core}.cwasm)" >&2
     exit 1
 }
 
@@ -116,11 +114,19 @@ CONFIG_FILE=$(basename -- "$CONFIG")
 
 cd "$CONFIG_DIR"
 if [ "$MODE" = "wasm" ]; then
-    exec "$SCRIPT_DIR/vmm-host-wasm" -c "$CONFIG_FILE" -w "$SCRIPT_DIR/vmm-runner.wasm"
+    exec "$SCRIPT_DIR/vmm-io-host-wasm" \
+        -c "$CONFIG_FILE" \
+        -w "$SCRIPT_DIR/vmm-io.wasm" \
+        --core-host "$SCRIPT_DIR/vmm-core-host-wasm" \
+        --core-wasm "$SCRIPT_DIR/vmm-core.wasm"
 else
-    exec "$SCRIPT_DIR/vmm-host-cwasm" -c "$CONFIG_FILE" -w "$SCRIPT_DIR/vmm-runner.cwasm"
+    exec "$SCRIPT_DIR/vmm-io-host-cwasm" \
+        -c "$CONFIG_FILE" \
+        -w "$SCRIPT_DIR/vmm-io.cwasm" \
+        --core-host "$SCRIPT_DIR/vmm-core-host-cwasm" \
+        --core-wasm "$SCRIPT_DIR/vmm-core.cwasm"
 fi
 EOF
 
 chmod 750 "$DEST_DIR/run-vm.sh"
-echo "Published vmm-host-cwasm, vmm-host-wasm, vmm-runner.cwasm, vmm-runner.wasm, and run-vm.sh to $DEST_DIR"
+echo "Published split VMM hosts, modules, and run-vm.sh to $DEST_DIR"

@@ -1,0 +1,15 @@
+[package]
+name = "vmm-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+derive-layout.workspace = true
+
+bitfield.workspace = true
+bitflags.workspace = true
+log.workspace = true
+simplelog.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true

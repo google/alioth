@@ -1,34 +1,38 @@
 # WASM VMM
 
 WASM VMM is a fork of v0.2.0 of Lencerf's
-[Alioth](https://github.com/google/alioth), refactored to split the VMM into a
-multithreaded WebAssembly guest module (`vmm-runner`) targeting
-`wasm32-wasip1-threads` and a thin native Wasmtime/KVM host (`vmm-host`).
+[Alioth](https://github.com/google/alioth), refactored to split the VMM into two
+isolated multithreaded WebAssembly guest modules (`vmm-core` and `vmm-io`)
+targeting `wasm32-wasip1-threads` and two corresponding native Wasmtime hosts
+(`vmm-core-host` and `vmm-io-host`). See [`split-vmm.md`](split-vmm.md) for the
+full architecture and cross-split bridge design.
 
 ## Architecture
 
-The workspace consists of three crates:
+The workspace consists of five crates:
 
-- **`vmm-runner`** (`vmm-runner/`): The core VMM logic (x86_64 board, memory
-  management, ACPI tables, Linux `bzImage`/ELF/PVH loader, 16450 serial console,
-  PCI bus, `virtio-blk`, and `virtio-net`). It compiles to the
-  `wasm32-wasip1-threads` target as a multithreaded WASI module
-  (`vmm-runner.wasm`, ~649 KB) that spawns one Wasm thread per vCPU (running its
-  own `KVM_RUN` + VM-exit emulation loop in parallel) plus an I/O polling Wasm
-  thread. It is also AOT-precompiled into a native Wasmtime module artifact
-  (`vmm-runner.cwasm`, ~1.9 MB).
-- **`vmm-host`** (`vmm-host/`): A thin native Linux host crate using
-  `wasmtime` (with `threads` and shared linear memory) and `wasmtime-wasi`
-  (`p1`) to load and execute `vmm-runner`. It implements all host-side OS and
-  KVM interactions (`/dev/kvm` ioctls, `"wasi"::"thread-spawn"`, anonymous
-  `mmap` guest RAM, raw terminal serial I/O, `/dev/net/tun` TAP device, and
-  `mio` event polling). It builds two host binaries:
-  - **`vmm-host-cwasm`** ("small" host, ~2.2 MB static `musl`): Built without
-    Wasmtime's Cranelift compiler; loads the AOT-precompiled
-    `vmm-runner.cwasm`.
-  - **`vmm-host-wasm`** ("safe" host, ~11.0 MB static `musl`): Built with
-    Wasmtime's Cranelift compiler; validates and JIT-compiles `vmm-runner.wasm`
-    at startup.
+- **`vmm-core`** (`vmm-core/`): The core VMM architecture logic (x86_64 board,
+  guest physical memory layout, ACPI tables, Linux `bzImage`/ELF/PVH loader,
+  16450 UART register emulation, PCIe bus, Virtio PCI transport (`CommonCfg`,
+  `NotifyCfg`, `IsrStatus`, `DeviceCfg`, MSI-X table), and vCPU run loops).
+  Compiles to `vmm-core.wasm` and AOT-precompiled `vmm-core.cwasm` with zero
+  floating-point or SIMD instructions.
+- **`vmm-io`** (`vmm-io/`): The device I/O backend logic (`vm.toml` parsing,
+  Virtio `SplitQueue` descriptor-ring traversal over shared guest RAM,
+  `virtio-blk` file backend, `virtio-net` TAP backend, host serial console
+  handling, and I/O event loop). Compiles to `vmm-io.wasm` and AOT-precompiled
+  `vmm-io.cwasm` with zero floating-point or SIMD instructions.
+- **`vmm-core-host`** (`vmm-core-host/`): Native Linux KVM host implementing the
+  `VmmHostCore` trait (`/dev/kvm` ioctls, guest RAM mapping, MSI-X / INTx
+  injection, and the core side of the shared-memory `BridgeShm` + `eventfd`
+  bridge). Builds both `vmm-core-host-cwasm` (no compiler) and
+  `vmm-core-host-wasm` (with Cranelift JIT).
+- **`vmm-io-host`** (`vmm-io-host/`): Native Linux I/O host implementing the
+  `VmmHostIo` trait (`/dev/net/tun` TAP devices, block image `pread`/`pwrite`,
+  raw terminal serial I/O, `mio` polling, and the I/O side of the shared-memory
+  bridge). Spawns `vmm-core-host-*` as a child process sharing `BridgeShm`,
+  guest RAM `memfd`, and `eventfd`s. Builds both `vmm-io-host-cwasm` and
+  `vmm-io-host-wasm`.
 - **`derive-layout`** (`derive-layout/`): Procedural macro helper crate for
   register/memory layout offsets.
 
@@ -45,10 +49,12 @@ rustup target add x86_64-unknown-linux-musl
 
 ### Option A: Build & Stage with `./publish.sh` (Recommended)
 
-Use [`./publish.sh`](publish.sh) to build all four artifacts (`vmm-host-cwasm`,
-`vmm-host-wasm`, `vmm-runner.cwasm`, and `vmm-runner.wasm`) as static `musl` /
-`wasm32-wasip1-threads` release binaries, copy them to a destination directory
-`$DIR`, and generate a `$DIR/run-vm.sh` launcher script:
+Use [`./publish.sh`](publish.sh) to build all eight artifacts
+(`vmm-core-host-cwasm`, `vmm-core-host-wasm`, `vmm-io-host-cwasm`,
+`vmm-io-host-wasm`, `vmm-core.cwasm`, `vmm-core.wasm`, `vmm-io.cwasm`, and
+`vmm-io.wasm`) as static `musl` / `wasm32-wasip1-threads` release binaries, copy
+them to a destination directory `$DIR`, and generate a `$DIR/run-vm.sh` launcher
+script:
 
 ```sh
 ./publish.sh /path/to/stage-dir
@@ -57,177 +63,32 @@ Use [`./publish.sh`](publish.sh) to build all four artifacts (`vmm-host-cwasm`,
 ### Option B: Build with `cargo`
 
 Running `cargo build` or `cargo build --release` (or with
-`--target=x86_64-unknown-linux-musl`) automatically builds **all four
-artifacts** via [`vmm-host/build.rs`](vmm-host/build.rs):
+`--target=x86_64-unknown-linux-musl`) automatically builds all eight host and
+guest artifacts via [`vmm-core-host/build.rs`](vmm-core-host/build.rs) and
+[`vmm-io-host/build.rs`](vmm-io-host/build.rs):
 
 ```sh
 cargo build --release --target=x86_64-unknown-linux-musl
 ```
-(Or for the default host target: `cargo build --release` or `cargo build`.)
-
-Outputs placed in `target/x86_64-unknown-linux-musl/release/` (or
-`target/release/` / `target/debug/`):
-- `vmm-host-cwasm` (~2.2 MB): Small host without Cranelift (loads `vmm-runner.cwasm`)
-- `vmm-host-wasm` (~11.0 MB): Host with built-in Cranelift compiler (loads `vmm-runner.wasm`)
-- `vmm-runner.cwasm` (~1.9 MB): AOT-precompiled `wasm32-wasip1-threads` module
-- `vmm-runner.wasm` (~649 KB): Portable `wasm32-wasip1-threads` module
 
 To run workspace unit tests:
 ```sh
 cargo test --workspace
 ```
 
-## Required Artifacts & Deploying to Another Host
+## Running Local Tests
 
-Because `vmm-host-cwasm` and `vmm-host-wasm` are statically linked when built
-with `--target=x86_64-unknown-linux-musl`, they have no dynamic library
-(`glibc`, etc.) dependencies and can be copied directly to any `x86_64` Linux
-machine with KVM enabled (`/dev/kvm`).
-
-You can deploy either the **"small" pair** (`vmm-host-cwasm` +
-`vmm-runner.cwasm`), the **"safe" pair** (`vmm-host-wasm` + `vmm-runner.wasm`),
-or both (as staged by `./publish.sh`).
-
-### List of Artifacts
-
-| Artifact | Pair | Source | Purpose |
-| :--- | :--- | :--- | :--- |
-| **`vmm-host-cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-host-cwasm` | Small statically linked Wasmtime + KVM host (~2.2 MB, no compiler). |
-| **`vmm-runner.cwasm`** | `--cwasm` ("small") | `./publish.sh` or `target/.../vmm-runner.cwasm` | AOT-precompiled multithreaded WASI VMM runner module (~1.9 MB). |
-| **`vmm-host-wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-host-wasm` | Statically linked Wasmtime + KVM host with built-in Cranelift compiler (~11.0 MB). |
-| **`vmm-runner.wasm`** | `--wasm` ("safe") | `./publish.sh` or `target/.../vmm-runner.wasm` | Portable multithreaded `wasm32-wasip1-threads` VMM runner module (~649 KB). |
-| **`run-vm.sh`** | Both | Generated by `./publish.sh <DIR>` | Helper script requiring `--wasm` or `--cwasm` that locates `vm.toml` and launches the chosen pair. |
-| **`vm.toml`** | Both | Example at [`vm.toml`](vm.toml) | VM configuration file (CPU count, RAM size, kernel/disk paths, TAP network config, log path). |
-| **Kernel image** (e.g. `bzImage`) | Both | User-provided Linux kernel (`bzImage` or PVH ELF) | Guest Linux kernel image referenced by `kernel` (or `pvh`) in `vm.toml` (plus `initramfs` if configured). |
-| **Disk image** (e.g. `alpine.raw`) | Both | User-provided raw disk image | Raw root filesystem / block device image(s) referenced by `blk` in `vm.toml`. |
-
-### Staging and Copying to Another Host
-
-Relative paths inside `vm.toml` (such as `kernel = "bzImage"` and
-`blk = ["alpine.raw"]`) are resolved relative to the directory containing
-`vm.toml` (when launched via `run-vm.sh`) or the current working directory from
-which `vmm-host-*` is executed. Place `vm.toml`, your kernel image, and your
-disk image in the same directory on the destination host (or use absolute paths
-in `vm.toml`).
-
-1. **Stage the VMM binaries and launcher script on the build machine**:
-   ```sh
-   ./publish.sh /tmp/wasm-vmm-dist
-   ```
-
-2. **Copy the staged directory, `vm.toml`, kernel, and disk image to the target host**
-   (use `rsync -S` if your raw disk image is sparse):
-   ```sh
-   ssh user@target-host "mkdir -m 750 -p ~/wasm-vmm-run"
-
-   rsync -avS --progress \
-       /tmp/wasm-vmm-dist/ \
-       vm.toml \
-       /path/to/bzImage \
-       /path/to/alpine.raw \
-       user@target-host:~/wasm-vmm-run/
-   ```
-
-   The resulting directory on `target-host` will look like:
-   ```text
-   ~/wasm-vmm-run/
-   ├── vmm-host-cwasm
-   ├── vmm-host-wasm
-   ├── vmm-runner.cwasm
-   ├── vmm-runner.wasm
-   ├── run-vm.sh
-   ├── vm.toml
-   ├── bzImage
-   └── alpine.raw
-   ```
-
-## Running a Linux VM
-
-### 1. VM Configuration (`vm.toml`)
-
-An example [`vm.toml`](vm.toml) is provided in the repository root:
-
-```toml
-kernel = "bzImage"
-cmd_line = "console=ttyS0 root=/dev/vda3 rw"
-num_cpus = 4
-mem_size = "256M"
-blk = ["alpine.raw"]
-log_file = "/tmp/wasm-vmm.log"
-log_level = "info"
-
-[net.dev0]
-mac = "a4:a1:c2:00:00:01"
-mtu = 1500
-if_name = "puff-tap"
-```
-
-> Note: If you want to run without networking, leave `[net]` as an empty table
-> (`[net]`) and omit `[net.dev0]`.
-
-### 2. Set Up Host TAP Networking (Optional)
-
-If your `vm.toml` configures a TAP network interface (such as
-`if_name = "puff-tap"`), create and configure the TAP device on the host before
-starting the VM:
-
-```sh
-sudo ip tuntap add mode tap puff-tap
-sudo ip addr add 192.168.8.1/24 dev puff-tap
-sudo ip addr add 2001:de8::1/64 dev puff-tap
-sudo ip link set puff-tap up
-
-# Optional: enable IPv4 forwarding and NAT masquerading for outbound guest traffic
-sudo sysctl -w net.ipv4.ip_forward=1
-sudo nft add table ip nat
-sudo nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; policy accept; }'
-sudo nft add rule ip nat postrouting ip saddr 192.168.8.0/24 masquerade
-```
-
-### 3. Launch the VM
-
-Ensure your user has read/write access to `/dev/kvm` (and `/dev/net/tun` if
-using TAP networking).
-
-Using the `run-vm.sh` script generated by `./publish.sh` (requires `--cwasm` or
-`--wasm`):
-
-```sh
-cd ~/wasm-vmm-run
-
-# Run the "small" pair (vmm-host-cwasm + vmm-runner.cwasm), using ./vm.toml by default:
-./run-vm.sh --cwasm
-
-# Run the "safe" pair (vmm-host-wasm + vmm-runner.wasm), using ./vm.toml by default:
-./run-vm.sh --wasm
-
-# Or pass a path to a configuration file:
-./run-vm.sh --cwasm /path/to/vm.toml
-./run-vm.sh --wasm /path/to/vm.toml
-```
-
-Or invoke either host binary directly:
-
-```sh
-# Small pair (precompiled .cwasm):
-./vmm-host-cwasm -c vm.toml -w vmm-runner.cwasm
-
-# Safe pair (JIT-compiled .wasm):
-./vmm-host-wasm -c vm.toml -w vmm-runner.wasm
-```
-
-If `-w` / `--wasm` / `--cwasm` (or `VMM_RUNNER_WASM`) is omitted,
-`vmm-host-cwasm` automatically looks for `vmm-runner.cwasm` and `vmm-host-wasm`
-automatically looks for `vmm-runner.wasm` in the same directory as the host
-executable (or the current working directory).
-
-### 4. Interacting with and Exiting the VM
-
-- **Serial Console**: The guest's `ttyS0` serial console is attached directly to
-  your terminal's standard input/output.
-- **Shutting Down**:
-  - Run `poweroff` inside the guest, or
-  - Press `Ctrl-a` followed by `q` in the serial console to immediately stop the
-    VM and exit.
-- **Logs**: VMM logs emitted by `vmm-runner` inside Wasm are written to the path
-  configured by `log_file` in `vm.toml` (default `/tmp/wasm-vmm.log`).
+- **Boot Alpine Linux (`virtio-blk` + `virtio-net`)**:
+  ```sh
+  ./local_test/run-vm.sh --cwasm
+  # or with JIT compilation:
+  ./local_test/run-vm.sh --wasm
+  ```
+- **Boot Linux Kernel + BusyBox `initramfs` (`../busybox-*/`)**:
+  ```sh
+  ./local_test/run-vm-initrd.sh --cwasm
+  # or with JIT compilation:
+  ./local_test/run-vm-initrd.sh --wasm
+  ```
+- Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
+  VM and exit.

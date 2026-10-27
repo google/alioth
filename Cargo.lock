@@ -1447,23 +1447,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vmm-host"
+name = "vmm-core"
+version = "0.0.1"
+dependencies = [
+ "bitfield",
+ "bitflags",
+ "derive-layout",
+ "log",
+ "thiserror 1.0.69",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmm-core-host"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "bitflags",
  "libc",
  "log",
- "mio 0.8.11",
  "parking_lot",
- "vmm-runner",
+ "vmm-core",
  "wasmtime",
  "wasmtime-wasi",
  "zerocopy",
 ]
 
 [[package]]
-name = "vmm-runner"
+name = "vmm-io"
 version = "0.0.1"
 dependencies = [
  "bitfield",
@@ -1472,6 +1483,23 @@ dependencies = [
  "log",
  "simplelog",
  "thiserror 1.0.69",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmm-io-host"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "libc",
+ "log",
+ "mio 0.8.11",
+ "parking_lot",
+ "vmm-core",
+ "vmm-io",
+ "wasmtime",
+ "wasmtime-wasi",
  "zerocopy",
 ]
 

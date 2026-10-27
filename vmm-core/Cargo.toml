@@ -1,0 +1,14 @@
+[package]
+name = "vmm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+derive-layout.workspace = true
+
+bitfield.workspace = true
+bitflags.workspace = true
+log.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true

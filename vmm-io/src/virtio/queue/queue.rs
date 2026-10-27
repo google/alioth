@@ -1,0 +1,45 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::virtio::Result;
+
+pub mod handlers;
+pub mod split;
+
+pub const QUEUE_SIZE_MAX: u16 = 256;
+
+#[derive(Debug)]
+pub struct Descriptor {
+    pub id: u16,
+    pub readable: Vec<Vec<u8>>,
+    pub writable: Vec<Vec<u8>>,
+    pub writable_gpas: Vec<(u64, usize)>,
+}
+
+pub trait LockedQueue<'g> {
+    fn next_desc(&self) -> Option<Result<Descriptor>>;
+    fn has_next_desc(&self) -> bool;
+    fn push_used(&mut self, desc: Descriptor, len: usize) -> u16;
+    fn enable_notification(&self, enabled: bool);
+    fn interrupt_enabled(&self) -> bool;
+}
+
+pub trait QueueGuard {
+    fn queue(&self) -> Result<impl LockedQueue<'_>>;
+}
+
+pub trait VirtQueue {
+    fn size(&self) -> u16;
+    fn lock_ram_layout(&self) -> impl QueueGuard;
+}

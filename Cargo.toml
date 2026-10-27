@@ -2,8 +2,10 @@
 resolver = "2"
 members = [
     "derive-layout",
-    "vmm-host",
-    "vmm-runner",
+    "vmm-core",
+    "vmm-io",
+    "vmm-core-host",
+    "vmm-io-host",
 ]
 
 [workspace.package]
@@ -13,7 +15,8 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 derive-layout = { path = "derive-layout" }
-vmm-runner = { path = "vmm-runner" }
+vmm-core = { path = "vmm-core" }
+vmm-io = { path = "vmm-io" }
 
 anyhow = "1"
 bitfield = "0.15.0"
