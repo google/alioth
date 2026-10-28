@@ -37,9 +37,8 @@ use vmm_core::host::abi::{
     ShmMsiEntry, ShmVirtioQueueConfig, spin_lock, spin_unlock,
 };
 use vmm_core::host::{
-    CoreBootInfo, Cpuid, DtReg, DtRegVal, Error, Handle, Hypervisor, IntxSender, MemMapOption,
-    MemPages, MsiSender, PayloadKind, Reg, Result, SReg, SegReg, SegRegVal, Vcpu, VirtioDeviceSpec,
-    VirtioQueueConfig, Vm, VmEntry, VmExit, VmMemory,
+    CoreBootInfo, Cpuid, Error, Handle, Hypervisor, IntxSender, MemMapOption, MemPages, MsiSender,
+    PayloadKind, Result, Vcpu, VirtioDeviceSpec, VirtioQueueConfig, Vm, VmMemory,
 };
 use vmm_core::loader::ExecType;
 
@@ -53,92 +52,6 @@ use bindings::{
     kvm_set_tss_addr, kvm_set_user_memory_region, kvm_signal_msi,
 };
 use vcpu::{KvmRunBlock, KvmVcpu};
-
-/// Host trait for the core hypervisor/vCPU/memory/interrupt domain (`vmm-core-host`).
-pub trait VmmHostCore: Send + Sync + 'static {
-    fn last_error(&self) -> String;
-
-    fn hv_new(&self) -> Result<Handle>;
-    fn hv_get_supported_cpuids(&self, hv: Handle) -> Result<Vec<Cpuid>>;
-    fn hv_create_vm(&self, hv: Handle) -> Result<Handle>;
-    fn hv_close(&self, hv: Handle);
-
-    fn vm_create_vcpu(&self, vm: Handle, id: u32) -> Result<Handle>;
-    fn vm_stop_vcpu(&self, vm: Handle, id: u32) -> Result<()>;
-    fn vm_create_vm_memory(&self, vm: Handle) -> Result<Handle>;
-    fn vm_create_intx_sender(&self, vm: Handle, pin: u8) -> Result<Handle>;
-    fn vm_create_msi_sender(&self, vm: Handle) -> Result<Handle>;
-    fn vm_close(&self, vm: Handle);
-
-    fn vcpu_run(&self, vcpu: Handle, entry: VmEntry) -> Result<VmExit>;
-    fn vcpu_get_reg(&self, vcpu: Handle, reg: Reg) -> Result<u64>;
-    fn vcpu_set_regs(&self, vcpu: Handle, vals: &[(Reg, u64)]) -> Result<()>;
-    fn vcpu_get_seg_reg(&self, vcpu: Handle, reg: SegReg) -> Result<SegRegVal>;
-    fn vcpu_get_dt_reg(&self, vcpu: Handle, reg: DtReg) -> Result<DtRegVal>;
-    fn vcpu_get_sreg(&self, vcpu: Handle, reg: SReg) -> Result<u64>;
-    fn vcpu_set_sregs(
-        &self,
-        vcpu: Handle,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<()>;
-    fn vcpu_set_cpuids(&self, vcpu: Handle, cpuids: Vec<Cpuid>) -> Result<()>;
-    fn vcpu_dump(&self, vcpu: Handle) -> Result<()>;
-    fn vcpu_close(&self, vcpu: Handle);
-
-    fn vm_memory_mem_map(
-        &self,
-        mem: Handle,
-        slot: u32,
-        gpa: u64,
-        size: u64,
-        hva: u64,
-        option: MemMapOption,
-    ) -> Result<()>;
-    fn vm_memory_unmap(&self, mem: Handle, slot: u32, gpa: u64, size: u64) -> Result<()>;
-    fn vm_memory_max_mem_slots(&self, mem: Handle) -> Result<u32>;
-    fn vm_memory_register_encrypted_range(&self, mem: Handle, addr: u64, size: u64) -> Result<()>;
-    fn vm_memory_deregister_encrypted_range(
-        &self,
-        mem: Handle,
-        addr: u64,
-        size: u64,
-    ) -> Result<()>;
-    fn vm_memory_alloc_anon_mem(&self, mem: Handle, size: u64) -> Result<(Handle, u64, u64)>;
-    fn vm_memory_close(&self, mem: Handle);
-
-    fn mem_pages_sync(&self, pages: Handle) -> Result<()>;
-    fn mem_pages_read(&self, pages: Handle, offset: u64, dst: &mut [u8]) -> Result<()>;
-    fn mem_pages_write(&self, pages: Handle, offset: u64, src: &[u8]) -> Result<()>;
-    fn mem_pages_close(&self, pages: Handle);
-
-    fn intx_sender_send(&self, sender: Handle) -> Result<()>;
-    fn intx_sender_close(&self, sender: Handle);
-
-    fn msi_sender_send(&self, sender: Handle, addr: u64, data: u32) -> Result<()>;
-    fn msi_sender_close(&self, sender: Handle);
-
-    fn core_get_boot_info(&self) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>)>;
-    fn core_read_payload(&self, kind: PayloadKind, offset: u64, dst: &mut [u8]) -> Result<usize>;
-    fn core_virtio_start(
-        &self,
-        dev: Handle,
-        driver_features: u64,
-        queues: &[VirtioQueueConfig],
-    ) -> Result<()>;
-    fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> Result<()>;
-    fn core_virtio_reset(&self, dev: Handle) -> Result<()>;
-    fn core_virtio_update_irq(
-        &self,
-        dev: Handle,
-        config_msi: Option<(u64, u32)>,
-        queue_msis: &[Option<(u64, u32)>],
-    ) -> Result<()>;
-    fn core_serial_tx(&self, byte: u8) -> Result<()>;
-    fn core_serial_rx(&self, dst: &mut [u8]) -> Result<usize>;
-    fn core_notify_shutdown(&self) -> Result<()>;
-}
 
 pub struct CoreBridgeFds {
     pub bridge_fd: RawFd,
@@ -262,6 +175,247 @@ impl SharedCoreBridge {
                     .store(pptr as usize as u64, Ordering::Release);
             }
         }
+        Ok(())
+    }
+
+    pub fn core_get_boot_info(&self) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>), Error> {
+        self.ensure_mapped()?;
+        let shm = unsafe { &*self.shm };
+        let raw_boot = shm.boot_info;
+        let exec_type = match raw_boot.exec_type {
+            EXEC_TYPE_LINUX => Some(ExecType::Linux),
+            EXEC_TYPE_PVH => Some(ExecType::Pvh),
+            _ => None,
+        };
+        let cmd_len = (raw_boot.cmd_line_len as usize).min(raw_boot.cmd_line.len());
+        let cmd_line = if cmd_len > 0 {
+            Some(
+                String::from_utf8_lossy(&raw_boot.cmd_line[..cmd_len])
+                    .into_owned(),
+            )
+        } else {
+            None
+        };
+        let initramfs_size = if raw_boot.initramfs_size > 0 {
+            Some(raw_boot.initramfs_size)
+        } else {
+            None
+        };
+        let boot_info = CoreBootInfo {
+            num_cpus: raw_boot.num_cpus,
+            mem_size: raw_boot.mem_size as usize,
+            exec_type,
+            kernel_size: raw_boot.kernel_size,
+            initramfs_size,
+            cmd_line,
+        };
+
+        let num_devs = (raw_boot.num_virtio_devs as usize).min(MAX_VIRTIO_DEVS);
+        let mut specs = Vec::with_capacity(num_devs);
+        for i in 0..num_devs {
+            let raw = shm.virtio_devs[i];
+            let nlen = (raw.name_len as usize).min(raw.name.len());
+            let name = String::from_utf8_lossy(&raw.name[..nlen]).into_owned();
+            let clen = (raw.config_len as usize).min(raw.config_bytes.len());
+            let config_bytes = raw.config_bytes[..clen].to_vec();
+            specs.push(VirtioDeviceSpec {
+                dev: raw.dev,
+                name,
+                device_id: raw.device_id,
+                device_features: raw.device_features,
+                num_queues: raw.num_queues,
+                config_bytes,
+            });
+        }
+        Ok((boot_info, specs))
+    }
+
+    pub fn core_read_payload(
+        &self,
+        kind: PayloadKind,
+        offset: u64,
+        dst: &mut [u8],
+    ) -> Result<usize, Error> {
+        self.ensure_mapped()?;
+        let shm = unsafe { &*self.shm };
+        let kernel_size = shm.boot_info.kernel_size;
+        let initramfs_size = shm.boot_info.initramfs_size;
+        let (base_off, total_size) = match kind {
+            PayloadKind::Kernel => (0u64, kernel_size),
+            PayloadKind::Initramfs => (kernel_size, initramfs_size),
+        };
+        if offset >= total_size || dst.is_empty() {
+            return Ok(0);
+        }
+        let avail = (total_size - offset) as usize;
+        let to_read = dst.len().min(avail);
+        let pbase = self.payload_base.load(Ordering::Acquire) as usize;
+        let plen = self.payload_len.load(Ordering::Acquire) as usize;
+        let start = (base_off + offset) as usize;
+        if pbase == 0 || start.checked_add(to_read).map_or(true, |end| end > plen) {
+            return Err(Error::Unexpected {
+                msg: "payload read out of bounds".to_string(),
+            });
+        }
+        let src = unsafe { std::slice::from_raw_parts((pbase + start) as *const u8, to_read) };
+        dst[..to_read].copy_from_slice(src);
+        Ok(to_read)
+    }
+
+    pub fn core_virtio_start(
+        &self,
+        dev: Handle,
+        driver_features: u64,
+        queues: &[VirtioQueueConfig],
+    ) -> Result<(), Error> {
+        let dev_idx = dev as usize;
+        if dev_idx >= MAX_VIRTIO_DEVS {
+            return Err(Error::Unexpected {
+                msg: format!("invalid virtio dev handle {dev}"),
+            });
+        }
+        let shm = self.shm;
+        let nq = queues.len().min(MAX_QUEUES_PER_DEV);
+        unsafe {
+            for (i, q) in queues.iter().copied().enumerate().take(nq) {
+                (*shm).device_queues[dev_idx][i] = ShmVirtioQueueConfig::from(q);
+            }
+        }
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_START,
+            aux_u16: nq as u16,
+            _pad: 0,
+            dev,
+            features: driver_features,
+            data: [0; 40],
+        };
+        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
+            self.wake_io();
+        }
+        Ok(())
+    }
+
+    pub fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> Result<(), Error> {
+        let shm = self.shm;
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_NOTIFY,
+            aux_u16: queue_index,
+            _pad: 0,
+            dev,
+            features: 0,
+            data: [0; 40],
+        };
+        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
+            self.wake_io();
+        }
+        Ok(())
+    }
+
+    pub fn core_virtio_reset(&self, dev: Handle) -> Result<(), Error> {
+        let shm = self.shm;
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_RESET,
+            aux_u16: 0,
+            _pad: 0,
+            dev,
+            features: 0,
+            data: [0; 40],
+        };
+        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
+            self.wake_io();
+        }
+        Ok(())
+    }
+
+    pub fn core_virtio_update_irq(
+        &self,
+        dev: Handle,
+        config_msi: Option<(u64, u32)>,
+        queue_msis: &[Option<(u64, u32)>],
+    ) -> Result<(), Error> {
+        let dev_idx = dev as usize;
+        if dev_idx >= MAX_VIRTIO_DEVS {
+            return Err(Error::Unexpected {
+                msg: format!("invalid virtio dev handle {dev}"),
+            });
+        }
+        let mut routing = ShmDeviceMsixRouting::default();
+        if let Some((addr, data)) = config_msi {
+            routing.config_msi = ShmMsiEntry {
+                addr,
+                data,
+                enabled: 1,
+            };
+        }
+        for (i, q_msi) in queue_msis.iter().enumerate().take(MAX_QUEUES_PER_DEV) {
+            if let Some((addr, data)) = q_msi {
+                routing.queue_msis[i] = ShmMsiEntry {
+                    addr: *addr,
+                    data: *data,
+                    enabled: 1,
+                };
+            }
+        }
+        let shm = self.shm;
+        let lock = unsafe { &(*shm).msix_lock };
+        spin_lock(lock);
+        unsafe {
+            (*shm).msix_routing[dev_idx] = routing;
+        }
+        spin_unlock(lock);
+        Ok(())
+    }
+
+    pub fn core_serial_tx(&self, byte: u8) -> Result<(), Error> {
+        let shm = self.shm;
+        let mut data = [0u8; 40];
+        data[0] = byte;
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_SERIAL_TX,
+            aux_u16: 1,
+            _pad: 0,
+            dev: 0,
+            features: 0,
+            data,
+        };
+        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
+            self.wake_io();
+        }
+        Ok(())
+    }
+
+    pub fn core_serial_rx(&self, dst: &mut [u8]) -> Result<usize, Error> {
+        let shm = self.shm;
+        let mut rx = self.serial_rx.lock();
+        while rx.is_empty() {
+            if unsafe { (*shm).shutdown_requested.load(Ordering::Acquire) != 0 } {
+                return Ok(0);
+            }
+            self.serial_rx_cv.wait(&mut rx);
+        }
+        let count = dst.len().min(rx.len());
+        for slot in dst.iter_mut().take(count) {
+            *slot = rx.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+
+    pub fn core_notify_shutdown(&self) -> Result<(), Error> {
+        let shm = self.shm;
+        unsafe {
+            (*shm).shutdown_requested.store(1, Ordering::Release);
+        }
+        self.serial_rx_cv.notify_all();
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_SHUTDOWN,
+            aux_u16: 0,
+            _pad: 0,
+            dev: 0,
+            features: 0,
+            data: [0; 40],
+        };
+        let _ = unsafe { BridgeShm::push_core_to_io(shm, entry) };
+        self.wake_io();
         Ok(())
     }
 }
@@ -418,55 +572,7 @@ impl Hypervisor for Kvm {
     }
 
     fn core_get_boot_info(&self) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>), Error> {
-        self.bridge.ensure_mapped()?;
-        let shm = unsafe { &*self.bridge.shm };
-        let raw_boot = shm.boot_info;
-        let exec_type = match raw_boot.exec_type {
-            EXEC_TYPE_LINUX => Some(ExecType::Linux),
-            EXEC_TYPE_PVH => Some(ExecType::Pvh),
-            _ => None,
-        };
-        let cmd_len = (raw_boot.cmd_line_len as usize).min(raw_boot.cmd_line.len());
-        let cmd_line = if cmd_len > 0 {
-            Some(
-                String::from_utf8_lossy(&raw_boot.cmd_line[..cmd_len])
-                    .into_owned(),
-            )
-        } else {
-            None
-        };
-        let initramfs_size = if raw_boot.initramfs_size > 0 {
-            Some(raw_boot.initramfs_size)
-        } else {
-            None
-        };
-        let boot_info = CoreBootInfo {
-            num_cpus: raw_boot.num_cpus,
-            mem_size: raw_boot.mem_size as usize,
-            exec_type,
-            kernel_size: raw_boot.kernel_size,
-            initramfs_size,
-            cmd_line,
-        };
-
-        let num_devs = (raw_boot.num_virtio_devs as usize).min(MAX_VIRTIO_DEVS);
-        let mut specs = Vec::with_capacity(num_devs);
-        for i in 0..num_devs {
-            let raw = shm.virtio_devs[i];
-            let nlen = (raw.name_len as usize).min(raw.name.len());
-            let name = String::from_utf8_lossy(&raw.name[..nlen]).into_owned();
-            let clen = (raw.config_len as usize).min(raw.config_bytes.len());
-            let config_bytes = raw.config_bytes[..clen].to_vec();
-            specs.push(VirtioDeviceSpec {
-                dev: raw.dev,
-                name,
-                device_id: raw.device_id,
-                device_features: raw.device_features,
-                num_queues: raw.num_queues,
-                config_bytes,
-            });
-        }
-        Ok((boot_info, specs))
+        self.bridge.core_get_boot_info()
     }
 
     fn core_read_payload(
@@ -475,30 +581,7 @@ impl Hypervisor for Kvm {
         offset: u64,
         dst: &mut [u8],
     ) -> Result<usize, Error> {
-        self.bridge.ensure_mapped()?;
-        let shm = unsafe { &*self.bridge.shm };
-        let kernel_size = shm.boot_info.kernel_size;
-        let initramfs_size = shm.boot_info.initramfs_size;
-        let (base_off, total_size) = match kind {
-            PayloadKind::Kernel => (0u64, kernel_size),
-            PayloadKind::Initramfs => (kernel_size, initramfs_size),
-        };
-        if offset >= total_size || dst.is_empty() {
-            return Ok(0);
-        }
-        let avail = (total_size - offset) as usize;
-        let to_read = dst.len().min(avail);
-        let pbase = self.bridge.payload_base.load(Ordering::Acquire) as usize;
-        let plen = self.bridge.payload_len.load(Ordering::Acquire) as usize;
-        let start = (base_off + offset) as usize;
-        if pbase == 0 || start.checked_add(to_read).map_or(true, |end| end > plen) {
-            return Err(Error::Unexpected {
-                msg: "payload read out of bounds".to_string(),
-            });
-        }
-        let src = unsafe { std::slice::from_raw_parts((pbase + start) as *const u8, to_read) };
-        dst[..to_read].copy_from_slice(src);
-        Ok(to_read)
+        self.bridge.core_read_payload(kind, offset, dst)
     }
 
     fn core_virtio_start(
@@ -507,63 +590,15 @@ impl Hypervisor for Kvm {
         driver_features: u64,
         queues: &[VirtioQueueConfig],
     ) -> Result<(), Error> {
-        let dev_idx = dev as usize;
-        if dev_idx >= MAX_VIRTIO_DEVS {
-            return Err(Error::Unexpected {
-                msg: format!("invalid virtio dev handle {dev}"),
-            });
-        }
-        let shm = self.bridge.shm;
-        let nq = queues.len().min(MAX_QUEUES_PER_DEV);
-        unsafe {
-            for (i, q) in queues.iter().copied().enumerate().take(nq) {
-                (*shm).device_queues[dev_idx][i] = ShmVirtioQueueConfig::from(q);
-            }
-        }
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_VIRTIO_START,
-            aux_u16: nq as u16,
-            _pad: 0,
-            dev,
-            features: driver_features,
-            data: [0; 40],
-        };
-        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
-            self.bridge.wake_io();
-        }
-        Ok(())
+        self.bridge.core_virtio_start(dev, driver_features, queues)
     }
 
     fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> Result<(), Error> {
-        let shm = self.bridge.shm;
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_VIRTIO_NOTIFY,
-            aux_u16: queue_index,
-            _pad: 0,
-            dev,
-            features: 0,
-            data: [0; 40],
-        };
-        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
-            self.bridge.wake_io();
-        }
-        Ok(())
+        self.bridge.core_virtio_notify(dev, queue_index)
     }
 
     fn core_virtio_reset(&self, dev: Handle) -> Result<(), Error> {
-        let shm = self.bridge.shm;
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_VIRTIO_RESET,
-            aux_u16: 0,
-            _pad: 0,
-            dev,
-            features: 0,
-            data: [0; 40],
-        };
-        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
-            self.bridge.wake_io();
-        }
-        Ok(())
+        self.bridge.core_virtio_reset(dev)
     }
 
     fn core_virtio_update_irq(
@@ -572,90 +607,20 @@ impl Hypervisor for Kvm {
         config_msi: Option<(u64, u32)>,
         queue_msis: &[Option<(u64, u32)>],
     ) -> Result<(), Error> {
-        let dev_idx = dev as usize;
-        if dev_idx >= MAX_VIRTIO_DEVS {
-            return Err(Error::Unexpected {
-                msg: format!("invalid virtio dev handle {dev}"),
-            });
-        }
-        let mut routing = ShmDeviceMsixRouting::default();
-        if let Some((addr, data)) = config_msi {
-            routing.config_msi = ShmMsiEntry {
-                addr,
-                data,
-                enabled: 1,
-            };
-        }
-        for (i, q_msi) in queue_msis.iter().enumerate().take(MAX_QUEUES_PER_DEV) {
-            if let Some((addr, data)) = q_msi {
-                routing.queue_msis[i] = ShmMsiEntry {
-                    addr: *addr,
-                    data: *data,
-                    enabled: 1,
-                };
-            }
-        }
-        let shm = self.bridge.shm;
-        let lock = unsafe { &(*shm).msix_lock };
-        spin_lock(lock);
-        unsafe {
-            (*shm).msix_routing[dev_idx] = routing;
-        }
-        spin_unlock(lock);
-        Ok(())
+        self.bridge
+            .core_virtio_update_irq(dev, config_msi, queue_msis)
     }
 
     fn core_serial_tx(&self, byte: u8) -> Result<(), Error> {
-        let shm = self.bridge.shm;
-        let mut data = [0u8; 40];
-        data[0] = byte;
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_SERIAL_TX,
-            aux_u16: 1,
-            _pad: 0,
-            dev: 0,
-            features: 0,
-            data,
-        };
-        if unsafe { BridgeShm::push_core_to_io(shm, entry) } {
-            self.bridge.wake_io();
-        }
-        Ok(())
+        self.bridge.core_serial_tx(byte)
     }
 
     fn core_serial_rx(&self, dst: &mut [u8]) -> Result<usize, Error> {
-        let shm = self.bridge.shm;
-        let mut rx = self.bridge.serial_rx.lock();
-        while rx.is_empty() {
-            if unsafe { (*shm).shutdown_requested.load(Ordering::Acquire) != 0 } {
-                return Ok(0);
-            }
-            self.bridge.serial_rx_cv.wait(&mut rx);
-        }
-        let count = dst.len().min(rx.len());
-        for slot in dst.iter_mut().take(count) {
-            *slot = rx.pop_front().unwrap();
-        }
-        Ok(count)
+        self.bridge.core_serial_rx(dst)
     }
 
     fn core_notify_shutdown(&self) -> Result<(), Error> {
-        let shm = self.bridge.shm;
-        unsafe {
-            (*shm).shutdown_requested.store(1, Ordering::Release);
-        }
-        self.bridge.serial_rx_cv.notify_all();
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_SHUTDOWN,
-            aux_u16: 0,
-            _pad: 0,
-            dev: 0,
-            features: 0,
-            data: [0; 40],
-        };
-        let _ = unsafe { BridgeShm::push_core_to_io(shm, entry) };
-        self.bridge.wake_io();
-        Ok(())
+        self.bridge.core_notify_shutdown()
     }
 }
 

@@ -33,26 +33,26 @@ unsafe extern "C" {
     fn vmm_last_error_len() -> u32;
     fn vmm_last_error_read(dst_ptr: u32, dst_len: u32) -> i32;
 
-    fn hv_new() -> i32;
-    fn hv_get_supported_cpuids(hv: u32, dst_ptr: u32, max_entries: u32) -> i32;
-    fn hv_create_vm(hv: u32) -> i32;
-    fn hv_close(hv: u32);
+    fn hv_new() -> i64;
+    fn hv_get_supported_cpuids(hv: u64, dst_ptr: u32, max_entries: u32) -> i32;
+    fn hv_create_vm(hv: u64) -> i64;
+    fn hv_close(hv: u64);
 
-    fn vm_create_vcpu(vm: u32, id: u32) -> i32;
-    fn vm_stop_vcpu(vm: u32, id: u32) -> i32;
-    fn vm_create_vm_memory(vm: u32) -> i32;
-    fn vm_create_intx_sender(vm: u32, pin: u32) -> i32;
-    fn vm_create_msi_sender(vm: u32) -> i32;
-    fn vm_close(vm: u32);
+    fn vm_create_vcpu(vm: u64, id: u32) -> i64;
+    fn vm_stop_vcpu(vm: u64, id: u32) -> i32;
+    fn vm_create_vm_memory(vm: u64) -> i64;
+    fn vm_create_intx_sender(vm: u64, pin: u32) -> i64;
+    fn vm_create_msi_sender(vm: u64) -> i64;
+    fn vm_close(vm: u64);
 
-    fn vcpu_run(vcpu: u32, entry_kind: u32, entry_data: u64, exit_out_ptr: u32) -> i32;
-    fn vcpu_get_reg(vcpu: u32, reg: u32, val_out_ptr: u32) -> i32;
-    fn vcpu_set_regs(vcpu: u32, vals_ptr: u32, vals_len: u32) -> i32;
-    fn vcpu_get_seg_reg(vcpu: u32, reg: u32, val_out_ptr: u32) -> i32;
-    fn vcpu_get_dt_reg(vcpu: u32, reg: u32, val_out_ptr: u32) -> i32;
-    fn vcpu_get_sreg(vcpu: u32, reg: u32, val_out_ptr: u32) -> i32;
+    fn vcpu_run(vcpu: u64, entry_kind: u32, entry_data: u64, exit_out_ptr: u32) -> i32;
+    fn vcpu_get_reg(vcpu: u64, reg: u32, val_out_ptr: u32) -> i32;
+    fn vcpu_set_regs(vcpu: u64, vals_ptr: u32, vals_len: u32) -> i32;
+    fn vcpu_get_seg_reg(vcpu: u64, reg: u32, val_out_ptr: u32) -> i32;
+    fn vcpu_get_dt_reg(vcpu: u64, reg: u32, val_out_ptr: u32) -> i32;
+    fn vcpu_get_sreg(vcpu: u64, reg: u32, val_out_ptr: u32) -> i32;
     fn vcpu_set_sregs(
-        vcpu: u32,
+        vcpu: u64,
         sregs_ptr: u32,
         sregs_len: u32,
         seg_regs_ptr: u32,
@@ -60,33 +60,33 @@ unsafe extern "C" {
         dt_regs_ptr: u32,
         dt_regs_len: u32,
     ) -> i32;
-    fn vcpu_set_cpuids(vcpu: u32, cpuids_ptr: u32, cpuids_len: u32) -> i32;
-    fn vcpu_dump(vcpu: u32) -> i32;
-    fn vcpu_close(vcpu: u32);
+    fn vcpu_set_cpuids(vcpu: u64, cpuids_ptr: u32, cpuids_len: u32) -> i32;
+    fn vcpu_dump(vcpu: u64) -> i32;
+    fn vcpu_close(vcpu: u64);
 
-    fn vm_memory_mem_map(mem: u32, slot: u32, gpa: u64, size: u64, hva: u64, flags: u32) -> i32;
-    fn vm_memory_unmap(mem: u32, slot: u32, gpa: u64, size: u64) -> i32;
-    fn vm_memory_max_mem_slots(mem: u32, out_ptr: u32) -> i32;
-    fn vm_memory_register_encrypted_range(mem: u32, addr: u64, size: u64) -> i32;
-    fn vm_memory_deregister_encrypted_range(mem: u32, addr: u64, size: u64) -> i32;
+    fn vm_memory_mem_map(mem: u64, slot: u32, gpa: u64, size: u64, hva: u64, flags: u32) -> i32;
+    fn vm_memory_unmap(mem: u64, slot: u32, gpa: u64, size: u64) -> i32;
+    fn vm_memory_max_mem_slots(mem: u64, out_ptr: u32) -> i32;
+    fn vm_memory_register_encrypted_range(mem: u64, addr: u64, size: u64) -> i32;
+    fn vm_memory_deregister_encrypted_range(mem: u64, addr: u64, size: u64) -> i32;
     fn vm_memory_alloc_anon_mem(
-        mem: u32,
+        mem: u64,
         size: u64,
         addr_out_ptr: u32,
         size_out_ptr: u32,
-    ) -> i32;
-    fn vm_memory_close(mem: u32);
+    ) -> i64;
+    fn vm_memory_close(mem: u64);
 
-    fn mem_pages_sync(pages: u32) -> i32;
-    fn mem_pages_read(pages: u32, offset: u64, dst_ptr: u32, len: u32) -> i32;
-    fn mem_pages_write(pages: u32, offset: u64, src_ptr: u32, len: u32) -> i32;
-    fn mem_pages_close(pages: u32);
+    fn mem_pages_sync(pages: u64) -> i32;
+    fn mem_pages_read(pages: u64, offset: u64, dst_ptr: u32, len: u32) -> i32;
+    fn mem_pages_write(pages: u64, offset: u64, src_ptr: u32, len: u32) -> i32;
+    fn mem_pages_close(pages: u64);
 
-    fn intx_sender_send(sender: u32) -> i32;
-    fn intx_sender_close(sender: u32);
+    fn intx_sender_send(sender: u64) -> i32;
+    fn intx_sender_close(sender: u64);
 
-    fn msi_sender_send(sender: u32, addr: u64, data: u32) -> i32;
-    fn msi_sender_close(sender: u32);
+    fn msi_sender_send(sender: u64, addr: u64, data: u32) -> i32;
+    fn msi_sender_close(sender: u64);
 
     fn core_get_boot_info(boot_info_out_ptr: u32, devs_out_ptr: u32, max_devs: u32) -> i32;
     fn core_read_payload(kind: u32, offset: u64, dst_ptr: u32, len: u32) -> i32;
@@ -124,6 +124,16 @@ fn check_hv(rc: i32) -> Result<u32, Error> {
     }
 }
 
+fn check_hv_handle(rc: i64) -> Result<Handle, Error> {
+    if rc < 0 {
+        Err(Error::Unexpected {
+            msg: fetch_last_error(),
+        })
+    } else {
+        Ok(rc as Handle)
+    }
+}
+
 fn check_hv_unit(rc: i32) -> Result<(), Error> {
     check_hv(rc).map(|_| ())
 }
@@ -140,13 +150,25 @@ fn check_io(rc: i32) -> std::io::Result<u32> {
     }
 }
 
+fn check_io_handle(rc: i64) -> std::io::Result<Handle> {
+    if rc >= 0 {
+        Ok(rc as Handle)
+    } else if rc == ERR_WOULD_BLOCK as i64 {
+        Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+    } else if rc == ERR_INTERRUPTED as i64 {
+        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+    } else {
+        Err(std::io::Error::other(fetch_last_error()))
+    }
+}
+
 fn check_io_unit(rc: i32) -> std::io::Result<()> {
     check_io(rc).map(|_| ())
 }
 
 #[derive(Debug)]
 pub struct WasmMemPages {
-    handle: u32,
+    handle: Handle,
     addr: u64,
     size: usize,
 }
@@ -195,7 +217,7 @@ impl MemPages for WasmMemPages {
 
 #[derive(Debug)]
 pub struct WasmVmMemory {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmVmMemory {
@@ -250,7 +272,7 @@ impl VmMemory for WasmVmMemory {
     fn alloc_anon_mem(&self, size: usize) -> std::io::Result<Arc<dyn MemPages>> {
         let mut addr = 0u64;
         let mut actual_size = 0u64;
-        let handle = check_io(unsafe {
+        let handle = check_io_handle(unsafe {
             vm_memory_alloc_anon_mem(
                 self.handle,
                 size as u64,
@@ -268,7 +290,7 @@ impl VmMemory for WasmVmMemory {
 
 #[derive(Debug)]
 pub struct WasmIntxSender {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmIntxSender {
@@ -285,7 +307,7 @@ impl IntxSender for WasmIntxSender {
 
 #[derive(Debug)]
 pub struct WasmMsiSender {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmMsiSender {
@@ -302,7 +324,7 @@ impl MsiSender for WasmMsiSender {
 
 #[derive(Debug)]
 pub struct WasmVcpu {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmVcpu {
@@ -464,7 +486,7 @@ impl Vcpu for WasmVcpu {
 
 #[derive(Debug)]
 pub struct WasmVm {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmVm {
@@ -475,7 +497,7 @@ impl Drop for WasmVm {
 
 impl Vm for WasmVm {
     fn create_vcpu(&self, id: u32) -> Result<Box<dyn Vcpu>, Error> {
-        let handle = check_hv(unsafe { vm_create_vcpu(self.handle, id) })?;
+        let handle = check_hv_handle(unsafe { vm_create_vcpu(self.handle, id) })?;
         Ok(Box::new(WasmVcpu { handle }))
     }
 
@@ -484,24 +506,24 @@ impl Vm for WasmVm {
     }
 
     fn create_vm_memory(&mut self) -> Result<Box<dyn VmMemory>, Error> {
-        let handle = check_hv(unsafe { vm_create_vm_memory(self.handle) })?;
+        let handle = check_hv_handle(unsafe { vm_create_vm_memory(self.handle) })?;
         Ok(Box::new(WasmVmMemory { handle }))
     }
 
     fn create_intx_sender(&self, pin: u8) -> Result<Box<dyn IntxSender>, Error> {
-        let handle = check_hv(unsafe { vm_create_intx_sender(self.handle, pin as u32) })?;
+        let handle = check_hv_handle(unsafe { vm_create_intx_sender(self.handle, pin as u32) })?;
         Ok(Box::new(WasmIntxSender { handle }))
     }
 
     fn create_msi_sender(&self) -> Result<Box<dyn MsiSender>, Error> {
-        let handle = check_hv(unsafe { vm_create_msi_sender(self.handle) })?;
+        let handle = check_hv_handle(unsafe { vm_create_msi_sender(self.handle) })?;
         Ok(Box::new(WasmMsiSender { handle }))
     }
 }
 
 #[derive(Debug)]
 pub struct WasmHypervisor {
-    handle: u32,
+    handle: Handle,
 }
 
 impl Drop for WasmHypervisor {
@@ -512,14 +534,14 @@ impl Drop for WasmHypervisor {
 
 impl WasmHypervisor {
     pub fn new() -> Result<Self, String> {
-        let handle = check_hv(unsafe { hv_new() }).map_err(|e| e.to_string())?;
+        let handle = check_hv_handle(unsafe { hv_new() }).map_err(|e| e.to_string())?;
         Ok(Self { handle })
     }
 }
 
 impl Hypervisor for WasmHypervisor {
     fn create_vm(&self) -> Result<Box<dyn Vm>, Error> {
-        let handle = check_hv(unsafe { hv_create_vm(self.handle) })?;
+        let handle = check_hv_handle(unsafe { hv_create_vm(self.handle) })?;
         Ok(Box::new(WasmVm { handle }))
     }
 

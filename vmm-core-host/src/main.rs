@@ -15,10 +15,12 @@
 
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub mod ioctls;
 #[path = "kvm/kvm.rs"]
 pub mod kvm;
+pub mod linux_host;
 pub mod verify_no_fp;
 pub mod wasm_host;
 
@@ -126,15 +128,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
 
-    wasm_host::run_wasm_core(
-        Path::new(&component_path),
-        kvm::CoreBridgeFds {
-            bridge_fd,
-            ram_fd,
-            payload_fd,
-            c2i_fd,
-            i2c_fd,
-            cfg_fd,
-        },
-    )
+    let host = Arc::new(linux_host::KvmCoreHost::new(kvm::CoreBridgeFds {
+        bridge_fd,
+        ram_fd,
+        payload_fd,
+        c2i_fd,
+        i2c_fd,
+        cfg_fd,
+    })?);
+
+    wasm_host::run_wasm_core(Path::new(&component_path), host)
 }

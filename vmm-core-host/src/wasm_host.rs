@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use vmm_core::host::abi::{
     ERR_GENERIC, ERR_INTERRUPTED, ERR_WOULD_BLOCK, EXIT_INTERRUPTED, EXIT_IO, EXIT_MMIO,
-    EXIT_REBOOT, EXIT_SHUTDOWN, EXIT_UNKNOWN, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid,
-    RawDtRegEntry, RawDtRegVal, RawRegVal, RawSegRegEntry, RawSegRegVal, RawVmExit,
-    ShmDeviceMsixRouting, ShmVirtioQueueConfig, decode_vm_entry, dt_reg_from_u32,
-    mem_map_option_from_u32, reg_from_u32, seg_reg_from_u32, sreg_from_u32, spin_lock, spin_unlock,
+    EXIT_REBOOT, EXIT_SHUTDOWN, EXIT_UNKNOWN, MAX_VIRTIO_DEVS, RawCpuid, RawDtRegEntry,
+    RawDtRegVal, RawRegVal, RawSegRegEntry, RawSegRegVal, RawVmExit, ShmBootInfo,
+    ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, decode_vm_entry,
+    dt_reg_from_u32, mem_map_option_from_u32, reg_from_u32, seg_reg_from_u32, sreg_from_u32,
 };
 use vmm_core::host::{
-    DtRegVal, Handle, Hypervisor, IntxSender, MemPages, MsiSender, PayloadKind, SegRegVal, Vcpu,
-    VirtioQueueConfig, Vm, VmExit, VmMemory,
+    CoreBootInfo, Cpuid, DtReg, DtRegVal, Error as HvError, Handle, MemMapOption, PayloadKind,
+    Reg, Result as HvResult, SReg, SegReg, SegRegVal, VirtioDeviceSpec, VirtioQueueConfig,
+    VmEntry, VmExit,
 };
 use wasmtime::{
     Caller, Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store,
@@ -36,106 +36,144 @@ use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{I32Exit, WasiCtxBuilder};
 use zerocopy::{AsBytes, FromBytes};
 
-use crate::kvm::{CoreBridgeFds, Kvm, SharedCoreBridge};
+/// Host interface trait for the core hypervisor/vCPU/memory/interrupt domain (`vmm-core-host`).
+///
+/// All `"vmm"::*` host imports registered by [`register_core_imports`] delegate exclusively
+/// to this trait, allowing alternate implementations (e.g. a Ring 0 kernel host in Motor OS).
+pub trait VmmHostCore: Send + Sync + 'static {
+    fn hv_new(&self) -> HvResult<Handle>;
+    fn hv_get_supported_cpuids(&self, hv: Handle) -> HvResult<Vec<Cpuid>>;
+    fn hv_create_vm(&self, hv: Handle) -> HvResult<Handle>;
+    fn hv_close(&self, hv: Handle);
 
-struct ResourceTable<T: ?Sized> {
-    next_id: AtomicU32,
-    items: RwLock<HashMap<u32, Arc<T>>>,
+    fn vm_create_vcpu(&self, vm: Handle, id: u32) -> HvResult<Handle>;
+    fn vm_stop_vcpu(&self, vm: Handle, id: u32) -> HvResult<()>;
+    fn vm_create_vm_memory(&self, vm: Handle) -> HvResult<Handle>;
+    fn vm_create_intx_sender(&self, vm: Handle, pin: u8) -> HvResult<Handle>;
+    fn vm_create_msi_sender(&self, vm: Handle) -> HvResult<Handle>;
+    fn vm_close(&self, vm: Handle);
+
+    fn vcpu_run(&self, vcpu: Handle, entry: VmEntry) -> HvResult<VmExit>;
+    fn vcpu_get_reg(&self, vcpu: Handle, reg: Reg) -> HvResult<u64>;
+    fn vcpu_set_regs(&self, vcpu: Handle, vals: &[(Reg, u64)]) -> HvResult<()>;
+    fn vcpu_get_seg_reg(&self, vcpu: Handle, reg: SegReg) -> HvResult<SegRegVal>;
+    fn vcpu_get_dt_reg(&self, vcpu: Handle, reg: DtReg) -> HvResult<DtRegVal>;
+    fn vcpu_get_sreg(&self, vcpu: Handle, reg: SReg) -> HvResult<u64>;
+    fn vcpu_set_sregs(
+        &self,
+        vcpu: Handle,
+        sregs: &[(SReg, u64)],
+        seg_regs: &[(SegReg, SegRegVal)],
+        dt_regs: &[(DtReg, DtRegVal)],
+    ) -> HvResult<()>;
+    fn vcpu_set_cpuids(&self, vcpu: Handle, cpuids: Vec<Cpuid>) -> HvResult<()>;
+    fn vcpu_dump(&self, vcpu: Handle) -> HvResult<()>;
+    fn vcpu_close(&self, vcpu: Handle);
+
+    fn vm_memory_mem_map(
+        &self,
+        mem: Handle,
+        slot: u32,
+        gpa: u64,
+        size: u64,
+        hva: u64,
+        option: MemMapOption,
+    ) -> HvResult<()>;
+    fn vm_memory_unmap(&self, mem: Handle, slot: u32, gpa: u64, size: u64) -> HvResult<()>;
+    fn vm_memory_max_mem_slots(&self, mem: Handle) -> HvResult<u32>;
+    fn vm_memory_register_encrypted_range(
+        &self,
+        mem: Handle,
+        addr: u64,
+        size: u64,
+    ) -> HvResult<()>;
+    fn vm_memory_deregister_encrypted_range(
+        &self,
+        mem: Handle,
+        addr: u64,
+        size: u64,
+    ) -> HvResult<()>;
+    fn vm_memory_alloc_anon_mem(&self, mem: Handle, size: u64) -> HvResult<(Handle, u64, u64)>;
+    fn vm_memory_close(&self, mem: Handle);
+
+    fn mem_pages_sync(&self, pages: Handle) -> HvResult<()>;
+    fn mem_pages_read(&self, pages: Handle, offset: u64, dst: &mut [u8]) -> HvResult<()>;
+    fn mem_pages_write(&self, pages: Handle, offset: u64, src: &[u8]) -> HvResult<()>;
+    fn mem_pages_close(&self, pages: Handle);
+
+    fn intx_sender_send(&self, sender: Handle) -> HvResult<()>;
+    fn intx_sender_close(&self, sender: Handle);
+
+    fn msi_sender_send(&self, sender: Handle, addr: u64, data: u32) -> HvResult<()>;
+    fn msi_sender_close(&self, sender: Handle);
+
+    fn core_get_boot_info(&self) -> HvResult<(CoreBootInfo, Vec<VirtioDeviceSpec>)>;
+    fn core_read_payload(
+        &self,
+        kind: PayloadKind,
+        offset: u64,
+        dst: &mut [u8],
+    ) -> HvResult<usize>;
+    fn core_virtio_start(
+        &self,
+        dev: Handle,
+        driver_features: u64,
+        queues: &[VirtioQueueConfig],
+    ) -> HvResult<()>;
+    fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> HvResult<()>;
+    fn core_virtio_reset(&self, dev: Handle) -> HvResult<()>;
+    fn core_virtio_update_irq(
+        &self,
+        dev: Handle,
+        config_msi: Option<(u64, u32)>,
+        queue_msis: &[Option<(u64, u32)>],
+    ) -> HvResult<()>;
+    fn core_serial_tx(&self, byte: u8) -> HvResult<()>;
+    fn core_serial_rx(&self, dst: &mut [u8]) -> HvResult<usize>;
+    fn core_notify_shutdown(&self) -> HvResult<()>;
 }
 
-impl<T: ?Sized> Default for ResourceTable<T> {
-    fn default() -> Self {
-        Self {
-            next_id: AtomicU32::new(1),
-            items: RwLock::new(HashMap::new()),
-        }
-    }
-}
-
-impl<T> ResourceTable<T> {
-    fn insert(&self, val: T) -> u32 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.items.write().insert(id, Arc::new(val));
-        id
-    }
-}
-
-impl<T: ?Sized> ResourceTable<T> {
-    fn insert_arc(&self, val: Arc<T>) -> u32 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.items.write().insert(id, val);
-        id
-    }
-
-    fn get(&self, id: u32) -> Result<Arc<T>, String> {
-        self.items
-            .read()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| format!("invalid resource handle {id}"))
-    }
-
-    fn remove(&self, id: u32) {
-        self.items.write().remove(&id);
-    }
-}
-
-struct SharedCoreHostResources {
-    bridge: Arc<SharedCoreBridge>,
-    hypervisors: ResourceTable<Kvm>,
-    vms: ResourceTable<RwLock<Box<dyn Vm>>>,
-    vcpus: ResourceTable<Mutex<Box<dyn Vcpu>>>,
-    vm_memories: ResourceTable<Box<dyn VmMemory>>,
-    mem_pages: ResourceTable<dyn MemPages>,
-    intx_senders: ResourceTable<Box<dyn IntxSender>>,
-    msi_senders: ResourceTable<Box<dyn MsiSender>>,
-}
-
-impl SharedCoreHostResources {
-    fn new(bridge: Arc<SharedCoreBridge>) -> Self {
-        Self {
-            bridge,
-            hypervisors: ResourceTable::default(),
-            vms: ResourceTable::default(),
-            vcpus: ResourceTable::default(),
-            vm_memories: ResourceTable::default(),
-            mem_pages: ResourceTable::default(),
-            intx_senders: ResourceTable::default(),
-            msi_senders: ResourceTable::default(),
-        }
-    }
-}
-
-fn build_core_wasi() -> wasmtime::Result<WasiP1Ctx> {
-    let mut builder = WasiCtxBuilder::new();
-    builder
-        .allow_blocking_current_thread(true)
-        .inherit_stdio()
-        .args(&["vmm-core"]);
-    Ok(builder.build_p1())
-}
-
-pub struct ThreadHostState {
-    wasi: WasiP1Ctx,
-    shared: Arc<SharedCoreHostResources>,
+/// Per-Wasm-thread ABI context binding a [`VmmHostCore`] implementation to a Wasmtime store.
+pub struct CoreWasmCtx<H: VmmHostCore + ?Sized> {
+    host: Arc<H>,
     memory: SharedMemory,
     last_error: String,
 }
 
-impl ThreadHostState {
+impl<H: VmmHostCore + ?Sized> CoreWasmCtx<H> {
+    pub fn new(host: Arc<H>, memory: SharedMemory) -> Self {
+        Self {
+            host,
+            memory,
+            last_error: String::new(),
+        }
+    }
+
     fn set_err(&mut self, msg: impl Into<String>) -> i32 {
         self.last_error = msg.into();
         ERR_GENERIC
+    }
+
+    fn set_err_i64(&mut self, msg: impl Into<String>) -> i64 {
+        self.set_err(msg) as i64
+    }
+
+    fn set_hv_err(&mut self, e: HvError) -> i32 {
+        match e {
+            HvError::StdIo { source } => self.set_io_err(source),
+            other => self.set_err(other.to_string()),
+        }
+    }
+
+    fn set_hv_err_i64(&mut self, e: HvError) -> i64 {
+        self.set_hv_err(e) as i64
     }
 
     fn set_io_err(&mut self, e: std::io::Error) -> i32 {
         match e.kind() {
             std::io::ErrorKind::WouldBlock => ERR_WOULD_BLOCK,
             std::io::ErrorKind::Interrupted => ERR_INTERRUPTED,
-            _ => {
-                self.last_error = e.to_string();
-                ERR_GENERIC
-            }
+            _ => self.set_err(e.to_string()),
         }
     }
 }
@@ -195,20 +233,29 @@ fn read_vec<T: FromBytes + Copy>(
     Ok(out)
 }
 
-fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Result<()> {
+/// Register all `"vmm"::*` imports for `vmm-core` against any [`VmmHostCore`] implementation.
+pub fn register_core_imports<T, H>(
+    linker: &mut Linker<T>,
+    get_ctx: impl Fn(&mut T) -> &mut CoreWasmCtx<H> + Copy + Send + Sync + 'static,
+) -> wasmtime::Result<()>
+where
+    T: Send + 'static,
+    H: VmmHostCore + ?Sized,
+{
     linker.func_wrap(
         "vmm",
         "vmm_last_error_len",
-        |caller: Caller<'_, ThreadHostState>| -> u32 { caller.data().last_error.len() as u32 },
+        move |mut caller: Caller<'_, T>| -> u32 { get_ctx(caller.data_mut()).last_error.len() as u32 },
     )?;
 
     linker.func_wrap(
         "vmm",
         "vmm_last_error_read",
-        |caller: Caller<'_, ThreadHostState>, dst_ptr: u32, dst_len: u32| -> i32 {
-            let err_bytes = caller.data().last_error.as_bytes();
+        move |mut caller: Caller<'_, T>, dst_ptr: u32, dst_len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let err_bytes = ctx.last_error.as_bytes();
             let n = err_bytes.len().min(dst_len as usize);
-            if write_bytes(&caller.data().memory, dst_ptr, &err_bytes[..n]).is_err() {
+            if write_bytes(&ctx.memory, dst_ptr, &err_bytes[..n]).is_err() {
                 return ERR_GENERIC;
             }
             n as i32
@@ -218,11 +265,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "hv_new",
-        |mut caller: Caller<'_, ThreadHostState>| -> i32 {
-            let bridge = caller.data().shared.bridge.clone();
-            match Kvm::new(bridge) {
-                Ok(kvm) => caller.data().shared.hypervisors.insert(kvm) as i32,
-                Err(e) => caller.data_mut().set_err(e.to_string()),
+        move |mut caller: Caller<'_, T>| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.hv_new() {
+                Ok(hv) => hv as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -230,41 +277,32 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "hv_get_supported_cpuids",
-        |mut caller: Caller<'_, ThreadHostState>, hv: u32, dst_ptr: u32, max_entries: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let hv_obj = caller.data().shared.hypervisors.get(hv)?;
-                let cpuids = hv_obj.get_supported_cpuids().map_err(|e| e.to_string())?;
-                let count = cpuids.len().min(max_entries as usize);
-                let elem_size = std::mem::size_of::<RawCpuid>();
-                for (i, cpuid) in cpuids.into_iter().take(count).enumerate() {
-                    let raw = RawCpuid::from(cpuid);
-                    write_struct(
-                        &caller.data().memory,
-                        dst_ptr + (i * elem_size) as u32,
-                        &raw,
-                    )?;
+        move |mut caller: Caller<'_, T>, hv: Handle, dst_ptr: u32, max_entries: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let cpuids = match ctx.host.hv_get_supported_cpuids(hv) {
+                Ok(c) => c,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            let count = cpuids.len().min(max_entries as usize);
+            let elem_size = std::mem::size_of::<RawCpuid>();
+            for (i, cpuid) in cpuids.into_iter().take(count).enumerate() {
+                let raw = RawCpuid::from(cpuid);
+                if let Err(e) = write_struct(&ctx.memory, dst_ptr + (i * elem_size) as u32, &raw) {
+                    return ctx.set_err(e);
                 }
-                Ok(count as u32)
-            })();
-            match res {
-                Ok(n) => n as i32,
-                Err(e) => caller.data_mut().set_err(e),
             }
+            count as i32
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "hv_create_vm",
-        |mut caller: Caller<'_, ThreadHostState>, hv: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let hv_obj = caller.data().shared.hypervisors.get(hv)?;
-                let vm = hv_obj.create_vm().map_err(|e| e.to_string())?;
-                Ok(caller.data().shared.vms.insert(RwLock::new(vm)))
-            })();
-            match res {
-                Ok(id) => id as i32,
-                Err(e) => caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>, hv: Handle| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.hv_create_vm(hv) {
+                Ok(id) => id as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -272,23 +310,19 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "hv_close",
-        |caller: Caller<'_, ThreadHostState>, hv: u32| {
-            caller.data().shared.hypervisors.remove(hv);
+        move |mut caller: Caller<'_, T>, hv: Handle| {
+            get_ctx(caller.data_mut()).host.hv_close(hv);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "vm_create_vcpu",
-        |mut caller: Caller<'_, ThreadHostState>, vm: u32, id: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let vm_obj = caller.data().shared.vms.get(vm)?;
-                let vcpu = vm_obj.read().create_vcpu(id).map_err(|e| e.to_string())?;
-                Ok(caller.data().shared.vcpus.insert(Mutex::new(vcpu)))
-            })();
-            match res {
-                Ok(handle) => handle as i32,
-                Err(e) => caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>, vm: Handle, id: u32| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_create_vcpu(vm, id) {
+                Ok(handle) => handle as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -296,14 +330,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_stop_vcpu",
-        |mut caller: Caller<'_, ThreadHostState>, vm: u32, id: u32| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vm_obj = caller.data().shared.vms.get(vm)?;
-                vm_obj.read().stop_vcpu(id).map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vm: Handle, id: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_stop_vcpu(vm, id) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -311,18 +342,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_create_vm_memory",
-        |mut caller: Caller<'_, ThreadHostState>, vm: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let vm_obj = caller.data().shared.vms.get(vm)?;
-                let mem = vm_obj
-                    .write()
-                    .create_vm_memory()
-                    .map_err(|e| e.to_string())?;
-                Ok(caller.data().shared.vm_memories.insert(mem))
-            })();
-            match res {
-                Ok(handle) => handle as i32,
-                Err(e) => caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>, vm: Handle| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_create_vm_memory(vm) {
+                Ok(handle) => handle as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -330,18 +354,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_create_intx_sender",
-        |mut caller: Caller<'_, ThreadHostState>, vm: u32, pin: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let vm_obj = caller.data().shared.vms.get(vm)?;
-                let sender = vm_obj
-                    .read()
-                    .create_intx_sender(pin as u8)
-                    .map_err(|e| e.to_string())?;
-                Ok(caller.data().shared.intx_senders.insert(sender))
-            })();
-            match res {
-                Ok(handle) => handle as i32,
-                Err(e) => caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>, vm: Handle, pin: u32| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_create_intx_sender(vm, pin as u8) {
+                Ok(handle) => handle as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -349,18 +366,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_create_msi_sender",
-        |mut caller: Caller<'_, ThreadHostState>, vm: u32| -> i32 {
-            let res = (|| -> Result<u32, String> {
-                let vm_obj = caller.data().shared.vms.get(vm)?;
-                let sender = vm_obj
-                    .read()
-                    .create_msi_sender()
-                    .map_err(|e| e.to_string())?;
-                Ok(caller.data().shared.msi_senders.insert(sender))
-            })();
-            match res {
-                Ok(handle) => handle as i32,
-                Err(e) => caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>, vm: Handle| -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_create_msi_sender(vm) {
+                Ok(handle) => handle as i64,
+                Err(e) => ctx.set_hv_err_i64(e),
             }
         },
     )?;
@@ -368,28 +378,25 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_close",
-        |caller: Caller<'_, ThreadHostState>, vm: u32| {
-            caller.data().shared.vms.remove(vm);
+        move |mut caller: Caller<'_, T>, vm: Handle| {
+            get_ctx(caller.data_mut()).host.vm_close(vm);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "vcpu_run",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         entry_kind: u32,
-         entry_data: u64,
-         exit_out_ptr: u32|
-         -> i32 {
-            let vcpu_obj = match caller.data().shared.vcpus.get(vcpu) {
-                Ok(v) => v,
-                Err(e) => return caller.data_mut().set_err(e),
-            };
+        move |mut caller: Caller<'_, T>,
+              vcpu: Handle,
+              entry_kind: u32,
+              entry_data: u64,
+              exit_out_ptr: u32|
+              -> i32 {
+            let ctx = get_ctx(caller.data_mut());
             let entry = decode_vm_entry(entry_kind, entry_data);
-            let exit = match vcpu_obj.lock().run(entry) {
+            let exit = match ctx.host.vcpu_run(vcpu, entry) {
                 Ok(exit) => exit,
-                Err(e) => return caller.data_mut().set_err(e.to_string()),
+                Err(e) => return ctx.set_hv_err(e),
             };
             let raw_exit = match exit {
                 VmExit::Io { port, write, size } => RawVmExit {
@@ -421,15 +428,15 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
                     ..Default::default()
                 },
                 VmExit::Unknown(msg) => {
-                    caller.data_mut().last_error = msg;
+                    let _ = ctx.set_err(msg);
                     RawVmExit {
                         kind: EXIT_UNKNOWN,
                         ..Default::default()
                     }
                 }
             };
-            if let Err(e) = write_struct(&caller.data().memory, exit_out_ptr, &raw_exit) {
-                return caller.data_mut().set_err(e);
+            if let Err(e) = write_struct(&ctx.memory, exit_out_ptr, &raw_exit) {
+                return ctx.set_err(e);
             }
             0
         },
@@ -438,22 +445,15 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_get_reg",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         reg: u32,
-         val_out_ptr: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                let val = vcpu_obj
-                    .lock()
-                    .get_reg(reg_from_u32(reg))
-                    .map_err(|e| e.to_string())?;
-                write_struct(&caller.data().memory, val_out_ptr, &val)
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, reg: u32, val_out_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.vcpu_get_reg(vcpu, reg_from_u32(reg)) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            match write_struct(&ctx.memory, val_out_ptr, &val) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_err(e),
             }
         },
     )?;
@@ -461,23 +461,19 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_set_regs",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         vals_ptr: u32,
-         vals_len: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let raw_vals = read_vec::<RawRegVal>(&caller.data().memory, vals_ptr, vals_len)?;
-                let vals: Vec<_> = raw_vals
-                    .into_iter()
-                    .map(|r| (reg_from_u32(r.reg), r.val))
-                    .collect();
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                vcpu_obj.lock().set_regs(&vals).map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, vals_ptr: u32, vals_len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let raw_vals = match read_vec::<RawRegVal>(&ctx.memory, vals_ptr, vals_len) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_err(e),
+            };
+            let vals: Vec<_> = raw_vals
+                .into_iter()
+                .map(|r| (reg_from_u32(r.reg), r.val))
+                .collect();
+            match ctx.host.vcpu_set_regs(vcpu, &vals) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -485,23 +481,16 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_get_seg_reg",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         reg: u32,
-         val_out_ptr: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                let val = vcpu_obj
-                    .lock()
-                    .get_seg_reg(seg_reg_from_u32(reg))
-                    .map_err(|e| e.to_string())?;
-                let raw = RawSegRegVal::from(val);
-                write_struct(&caller.data().memory, val_out_ptr, &raw)
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, reg: u32, val_out_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.vcpu_get_seg_reg(vcpu, seg_reg_from_u32(reg)) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            let raw = RawSegRegVal::from(val);
+            match write_struct(&ctx.memory, val_out_ptr, &raw) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_err(e),
             }
         },
     )?;
@@ -509,23 +498,16 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_get_dt_reg",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         reg: u32,
-         val_out_ptr: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                let val = vcpu_obj
-                    .lock()
-                    .get_dt_reg(dt_reg_from_u32(reg))
-                    .map_err(|e| e.to_string())?;
-                let raw = RawDtRegVal::from(val);
-                write_struct(&caller.data().memory, val_out_ptr, &raw)
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, reg: u32, val_out_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.vcpu_get_dt_reg(vcpu, dt_reg_from_u32(reg)) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            let raw = RawDtRegVal::from(val);
+            match write_struct(&ctx.memory, val_out_ptr, &raw) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_err(e),
             }
         },
     )?;
@@ -533,22 +515,15 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_get_sreg",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         reg: u32,
-         val_out_ptr: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                let val = vcpu_obj
-                    .lock()
-                    .get_sreg(sreg_from_u32(reg))
-                    .map_err(|e| e.to_string())?;
-                write_struct(&caller.data().memory, val_out_ptr, &val)
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, reg: u32, val_out_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.vcpu_get_sreg(vcpu, sreg_from_u32(reg)) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            match write_struct(&ctx.memory, val_out_ptr, &val) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_err(e),
             }
         },
     )?;
@@ -556,43 +531,45 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_set_sregs",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         sregs_ptr: u32,
-         sregs_len: u32,
-         seg_regs_ptr: u32,
-         seg_regs_len: u32,
-         dt_regs_ptr: u32,
-         dt_regs_len: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let raw_sregs =
-                    read_vec::<RawRegVal>(&caller.data().memory, sregs_ptr, sregs_len)?;
-                let raw_seg_regs =
-                    read_vec::<RawSegRegEntry>(&caller.data().memory, seg_regs_ptr, seg_regs_len)?;
-                let raw_dt_regs =
-                    read_vec::<RawDtRegEntry>(&caller.data().memory, dt_regs_ptr, dt_regs_len)?;
-                let sregs: Vec<_> = raw_sregs
-                    .into_iter()
-                    .map(|r| (sreg_from_u32(r.reg), r.val))
-                    .collect();
-                let seg_regs: Vec<_> = raw_seg_regs
-                    .into_iter()
-                    .map(|r| (seg_reg_from_u32(r.reg), SegRegVal::from(r.val)))
-                    .collect();
-                let dt_regs: Vec<_> = raw_dt_regs
-                    .into_iter()
-                    .map(|r| (dt_reg_from_u32(r.reg), DtRegVal::from(r.val)))
-                    .collect();
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                vcpu_obj
-                    .lock()
-                    .set_sregs(&sregs, &seg_regs, &dt_regs)
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>,
+              vcpu: Handle,
+              sregs_ptr: u32,
+              sregs_len: u32,
+              seg_regs_ptr: u32,
+              seg_regs_len: u32,
+              dt_regs_ptr: u32,
+              dt_regs_len: u32|
+              -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let raw_sregs = match read_vec::<RawRegVal>(&ctx.memory, sregs_ptr, sregs_len) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_err(e),
+            };
+            let raw_seg_regs =
+                match read_vec::<RawSegRegEntry>(&ctx.memory, seg_regs_ptr, seg_regs_len) {
+                    Ok(v) => v,
+                    Err(e) => return ctx.set_err(e),
+                };
+            let raw_dt_regs =
+                match read_vec::<RawDtRegEntry>(&ctx.memory, dt_regs_ptr, dt_regs_len) {
+                    Ok(v) => v,
+                    Err(e) => return ctx.set_err(e),
+                };
+            let sregs: Vec<_> = raw_sregs
+                .into_iter()
+                .map(|r| (sreg_from_u32(r.reg), r.val))
+                .collect();
+            let seg_regs: Vec<_> = raw_seg_regs
+                .into_iter()
+                .map(|r| (seg_reg_from_u32(r.reg), SegRegVal::from(r.val)))
+                .collect();
+            let dt_regs: Vec<_> = raw_dt_regs
+                .into_iter()
+                .map(|r| (dt_reg_from_u32(r.reg), DtRegVal::from(r.val)))
+                .collect();
+            match ctx.host.vcpu_set_sregs(vcpu, &sregs, &seg_regs, &dt_regs) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -600,24 +577,16 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_set_cpuids",
-        |mut caller: Caller<'_, ThreadHostState>,
-         vcpu: u32,
-         cpuids_ptr: u32,
-         cpuids_len: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let raw_cpuids =
-                    read_vec::<RawCpuid>(&caller.data().memory, cpuids_ptr, cpuids_len)?;
-                let cpuids = raw_cpuids.into_iter().map(Into::into).collect();
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                vcpu_obj
-                    .lock()
-                    .set_cpuids(cpuids)
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle, cpuids_ptr: u32, cpuids_len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let raw_cpuids = match read_vec::<RawCpuid>(&ctx.memory, cpuids_ptr, cpuids_len) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_err(e),
+            };
+            let cpuids = raw_cpuids.into_iter().map(Into::into).collect();
+            match ctx.host.vcpu_set_cpuids(vcpu, cpuids) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -625,14 +594,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_dump",
-        |mut caller: Caller<'_, ThreadHostState>, vcpu: u32| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let vcpu_obj = caller.data().shared.vcpus.get(vcpu)?;
-                vcpu_obj.lock().dump().map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, vcpu: Handle| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vcpu_dump(vcpu) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -640,37 +606,33 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vcpu_close",
-        |caller: Caller<'_, ThreadHostState>, vcpu: u32| {
-            caller.data().shared.vcpus.remove(vcpu);
+        move |mut caller: Caller<'_, T>, vcpu: Handle| {
+            get_ctx(caller.data_mut()).host.vcpu_close(vcpu);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "vm_memory_mem_map",
-        |mut caller: Caller<'_, ThreadHostState>,
-         mem: u32,
-         slot: u32,
-         gpa: u64,
-         size: u64,
-         hva: u64,
-         flags: u32|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let mem_obj = caller.data().shared.vm_memories.get(mem)?;
-                mem_obj
-                    .mem_map(
-                        slot,
-                        gpa,
-                        size as usize,
-                        hva,
-                        mem_map_option_from_u32(flags),
-                    )
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>,
+              mem: Handle,
+              slot: u32,
+              gpa: u64,
+              size: u64,
+              hva: u64,
+              flags: u32|
+              -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_memory_mem_map(
+                mem,
+                slot,
+                gpa,
+                size,
+                hva,
+                mem_map_option_from_u32(flags),
+            ) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -678,21 +640,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_memory_unmap",
-        |mut caller: Caller<'_, ThreadHostState>,
-         mem: u32,
-         slot: u32,
-         gpa: u64,
-         size: u64|
-         -> i32 {
-            let res = (|| -> Result<(), String> {
-                let mem_obj = caller.data().shared.vm_memories.get(mem)?;
-                mem_obj
-                    .unmap(slot, gpa, size as usize)
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, mem: Handle, slot: u32, gpa: u64, size: u64| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_memory_unmap(mem, slot, gpa, size) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -700,15 +652,15 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_memory_max_mem_slots",
-        |mut caller: Caller<'_, ThreadHostState>, mem: u32, out_ptr: u32| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let mem_obj = caller.data().shared.vm_memories.get(mem)?;
-                let slots = mem_obj.max_mem_slots().map_err(|e| e.to_string())?;
-                write_struct(&caller.data().memory, out_ptr, &slots)
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, mem: Handle, out_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let slots = match ctx.host.vm_memory_max_mem_slots(mem) {
+                Ok(s) => s,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            match write_struct(&ctx.memory, out_ptr, &slots) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_err(e),
             }
         },
     )?;
@@ -716,16 +668,11 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_memory_register_encrypted_range",
-        |mut caller: Caller<'_, ThreadHostState>, mem: u32, addr: u64, size: u64| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let mem_obj = caller.data().shared.vm_memories.get(mem)?;
-                mem_obj
-                    .register_encrypted_range(addr, size as usize)
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, mem: Handle, addr: u64, size: u64| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.vm_memory_register_encrypted_range(mem, addr, size) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -733,16 +680,14 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_memory_deregister_encrypted_range",
-        |mut caller: Caller<'_, ThreadHostState>, mem: u32, addr: u64, size: u64| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let mem_obj = caller.data().shared.vm_memories.get(mem)?;
-                mem_obj
-                    .deregister_encrypted_range(addr, size as usize)
-                    .map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, mem: Handle, addr: u64, size: u64| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx
+                .host
+                .vm_memory_deregister_encrypted_range(mem, addr, size)
+            {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -750,50 +695,43 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "vm_memory_alloc_anon_mem",
-        |mut caller: Caller<'_, ThreadHostState>,
-         mem: u32,
-         size: u64,
-         addr_out_ptr: u32,
-         size_out_ptr: u32|
-         -> i32 {
-            let mem_obj = match caller.data().shared.vm_memories.get(mem) {
-                Ok(m) => m,
-                Err(e) => return caller.data_mut().set_err(e),
+        move |mut caller: Caller<'_, T>,
+              mem: Handle,
+              size: u64,
+              addr_out_ptr: u32,
+              size_out_ptr: u32|
+              -> i64 {
+            let ctx = get_ctx(caller.data_mut());
+            let (handle, addr, actual_size) = match ctx.host.vm_memory_alloc_anon_mem(mem, size) {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err_i64(e),
             };
-            let pages = match mem_obj.alloc_anon_mem(size as usize) {
-                Ok(p) => p,
-                Err(e) => return caller.data_mut().set_io_err(e),
-            };
-            let addr = pages.addr();
-            let actual_size = pages.size() as u64;
-            if let Err(e) = write_struct(&caller.data().memory, addr_out_ptr, &addr)
-                .and_then(|_| write_struct(&caller.data().memory, size_out_ptr, &actual_size))
+            if let Err(e) = write_struct(&ctx.memory, addr_out_ptr, &addr)
+                .and_then(|_| write_struct(&ctx.memory, size_out_ptr, &actual_size))
             {
-                return caller.data_mut().set_err(e);
+                ctx.host.mem_pages_close(handle);
+                return ctx.set_err_i64(e);
             }
-            caller.data().shared.mem_pages.insert_arc(pages) as i32
+            handle as i64
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "vm_memory_close",
-        |caller: Caller<'_, ThreadHostState>, mem: u32| {
-            caller.data().shared.vm_memories.remove(mem);
+        move |mut caller: Caller<'_, T>, mem: Handle| {
+            get_ctx(caller.data_mut()).host.vm_memory_close(mem);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "mem_pages_sync",
-        |mut caller: Caller<'_, ThreadHostState>, pages: u32| -> i32 {
-            let pages_obj = match caller.data().shared.mem_pages.get(pages) {
-                Ok(p) => p,
-                Err(e) => return caller.data_mut().set_err(e),
-            };
-            match pages_obj.sync() {
+        move |mut caller: Caller<'_, T>, pages: Handle| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.mem_pages_sync(pages) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_io_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -801,29 +739,22 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "mem_pages_read",
-        |mut caller: Caller<'_, ThreadHostState>,
-         pages: u32,
-         offset: u64,
-         dst_ptr: u32,
-         len: u32|
-         -> i32 {
-            let pages_obj = match caller.data().shared.mem_pages.get(pages) {
-                Ok(p) => p,
-                Err(e) => return caller.data_mut().set_err(e),
-            };
-            let start = match check_bounds(&caller.data().memory, dst_ptr, len as usize) {
+        move |mut caller: Caller<'_, T>, pages: Handle, offset: u64, dst_ptr: u32, len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let start = match check_bounds(&ctx.memory, dst_ptr, len as usize) {
                 Ok(s) => s,
-                Err(e) => return caller.data_mut().set_err(e),
+                Err(e) => return ctx.set_err(e),
             };
             let dst = unsafe {
                 std::slice::from_raw_parts_mut(
-                    caller.data().memory.data().as_ptr().add(start) as *mut u8,
+                    ctx.memory.data().as_ptr().add(start) as *mut u8,
                     len as usize,
                 )
             };
-            match pages_obj.read(offset as usize, dst) {
+            let res = ctx.host.mem_pages_read(pages, offset, dst);
+            match res {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_io_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -831,29 +762,22 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "mem_pages_write",
-        |mut caller: Caller<'_, ThreadHostState>,
-         pages: u32,
-         offset: u64,
-         src_ptr: u32,
-         len: u32|
-         -> i32 {
-            let pages_obj = match caller.data().shared.mem_pages.get(pages) {
-                Ok(p) => p,
-                Err(e) => return caller.data_mut().set_err(e),
-            };
-            let start = match check_bounds(&caller.data().memory, src_ptr, len as usize) {
+        move |mut caller: Caller<'_, T>, pages: Handle, offset: u64, src_ptr: u32, len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let start = match check_bounds(&ctx.memory, src_ptr, len as usize) {
                 Ok(s) => s,
-                Err(e) => return caller.data_mut().set_err(e),
+                Err(e) => return ctx.set_err(e),
             };
             let src = unsafe {
                 std::slice::from_raw_parts(
-                    caller.data().memory.data().as_ptr().add(start) as *const u8,
+                    ctx.memory.data().as_ptr().add(start) as *const u8,
                     len as usize,
                 )
             };
-            match pages_obj.write(offset as usize, src) {
+            let res = ctx.host.mem_pages_write(pages, offset, src);
+            match res {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_io_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -861,22 +785,19 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "mem_pages_close",
-        |caller: Caller<'_, ThreadHostState>, pages: u32| {
-            caller.data().shared.mem_pages.remove(pages);
+        move |mut caller: Caller<'_, T>, pages: Handle| {
+            get_ctx(caller.data_mut()).host.mem_pages_close(pages);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "intx_sender_send",
-        |mut caller: Caller<'_, ThreadHostState>, sender: u32| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let s = caller.data().shared.intx_senders.get(sender)?;
-                s.send().map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, sender: Handle| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.intx_sender_send(sender) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -884,22 +805,19 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "intx_sender_close",
-        |caller: Caller<'_, ThreadHostState>, sender: u32| {
-            caller.data().shared.intx_senders.remove(sender);
+        move |mut caller: Caller<'_, T>, sender: Handle| {
+            get_ctx(caller.data_mut()).host.intx_sender_close(sender);
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "msi_sender_send",
-        |mut caller: Caller<'_, ThreadHostState>, sender: u32, addr: u64, data: u32| -> i32 {
-            let res = (|| -> Result<(), String> {
-                let s = caller.data().shared.msi_senders.get(sender)?;
-                s.send(addr, data).map_err(|e| e.to_string())
-            })();
-            match res {
+        move |mut caller: Caller<'_, T>, sender: Handle, addr: u64, data: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.msi_sender_send(sender, addr, data) {
                 Ok(()) => 0,
-                Err(e) => caller.data_mut().set_err(e),
+                Err(e) => ctx.set_hv_err(e),
             }
         },
     )?;
@@ -907,8 +825,8 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "msi_sender_close",
-        |caller: Caller<'_, ThreadHostState>, sender: u32| {
-            caller.data().shared.msi_senders.remove(sender);
+        move |mut caller: Caller<'_, T>, sender: Handle| {
+            get_ctx(caller.data_mut()).host.msi_sender_close(sender);
         },
     )?;
 
@@ -916,30 +834,67 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "core_get_boot_info",
-        |mut caller: Caller<'_, ThreadHostState>,
-         boot_info_out_ptr: u32,
-         devs_out_ptr: u32,
-         max_devs: u32|
-         -> i32 {
-            let bridge = caller.data().shared.bridge.clone();
-            if let Err(e) = bridge.ensure_mapped() {
-                return caller.data_mut().set_err(e.to_string());
+        move |mut caller: Caller<'_, T>,
+              boot_info_out_ptr: u32,
+              devs_out_ptr: u32,
+              max_devs: u32|
+              -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let (boot_info, specs) = match ctx.host.core_get_boot_info() {
+                Ok(v) => v,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            let mut raw_info = ShmBootInfo {
+                num_cpus: boot_info.num_cpus,
+                exec_type: match boot_info.exec_type {
+                    Some(vmm_core::loader::ExecType::Linux) => {
+                        vmm_core::host::abi::EXEC_TYPE_LINUX
+                    }
+                    Some(vmm_core::loader::ExecType::Pvh) => vmm_core::host::abi::EXEC_TYPE_PVH,
+                    None => vmm_core::host::abi::EXEC_TYPE_NONE,
+                },
+                mem_size: boot_info.mem_size as u64,
+                kernel_size: boot_info.kernel_size,
+                initramfs_size: boot_info.initramfs_size.unwrap_or(0),
+                num_virtio_devs: specs.len() as u32,
+                cmd_line_len: 0,
+                cmd_line: [0; vmm_core::host::abi::MAX_CMDLINE_LEN],
+            };
+            if let Some(cmd) = &boot_info.cmd_line {
+                let bytes = cmd.as_bytes();
+                let n = bytes.len().min(raw_info.cmd_line.len());
+                raw_info.cmd_line[..n].copy_from_slice(&bytes[..n]);
+                raw_info.cmd_line_len = n as u32;
             }
-            let shm = unsafe { &*bridge.shm };
-            if let Err(e) = write_struct(&caller.data().memory, boot_info_out_ptr, &shm.boot_info) {
-                return caller.data_mut().set_err(e);
+            if let Err(e) = write_struct(&ctx.memory, boot_info_out_ptr, &raw_info) {
+                return ctx.set_err(e);
             }
-            let count = (shm.boot_info.num_virtio_devs as usize)
-                .min(max_devs as usize)
-                .min(MAX_VIRTIO_DEVS);
-            let elem_size = std::mem::size_of::<vmm_core::host::abi::ShmVirtioDeviceSpec>();
-            for i in 0..count {
+            let count = specs.len().min(max_devs as usize).min(MAX_VIRTIO_DEVS);
+            let elem_size = std::mem::size_of::<ShmVirtioDeviceSpec>();
+            for (i, spec) in specs.into_iter().take(count).enumerate() {
+                let mut raw_spec = ShmVirtioDeviceSpec {
+                    dev: spec.dev,
+                    device_features: spec.device_features,
+                    device_id: spec.device_id,
+                    num_queues: spec.num_queues,
+                    config_len: 0,
+                    name_len: 0,
+                    name: [0; vmm_core::host::abi::MAX_DEV_NAME_LEN],
+                    config_bytes: [0; vmm_core::host::abi::MAX_CONFIG_BYTES],
+                };
+                let name_bytes = spec.name.as_bytes();
+                let nlen = name_bytes.len().min(raw_spec.name.len());
+                raw_spec.name[..nlen].copy_from_slice(&name_bytes[..nlen]);
+                raw_spec.name_len = nlen as u16;
+                let clen = spec.config_bytes.len().min(raw_spec.config_bytes.len());
+                raw_spec.config_bytes[..clen].copy_from_slice(&spec.config_bytes[..clen]);
+                raw_spec.config_len = clen as u16;
                 if let Err(e) = write_struct(
-                    &caller.data().memory,
+                    &ctx.memory,
                     devs_out_ptr + (i * elem_size) as u32,
-                    &shm.virtio_devs[i],
+                    &raw_spec,
                 ) {
-                    return caller.data_mut().set_err(e);
+                    return ctx.set_err(e);
                 }
             }
             count as i32
@@ -949,206 +904,142 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "core_read_payload",
-        |mut caller: Caller<'_, ThreadHostState>,
-         kind: u32,
-         offset: u64,
-         dst_ptr: u32,
-         len: u32|
-         -> i32 {
-            let bridge = caller.data().shared.bridge.clone();
-            if let Err(e) = bridge.ensure_mapped() {
-                return caller.data_mut().set_err(e.to_string());
-            }
+        move |mut caller: Caller<'_, T>, kind: u32, offset: u64, dst_ptr: u32, len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
             let pkind = if kind == 0 {
                 PayloadKind::Kernel
             } else {
                 PayloadKind::Initramfs
             };
-            let shm = unsafe { &*bridge.shm };
-            let kernel_size = shm.boot_info.kernel_size;
-            let initramfs_size = shm.boot_info.initramfs_size;
-            let (base_off, total_size) = match pkind {
-                PayloadKind::Kernel => (0u64, kernel_size),
-                PayloadKind::Initramfs => (kernel_size, initramfs_size),
+            let start = match check_bounds(&ctx.memory, dst_ptr, len as usize) {
+                Ok(s) => s,
+                Err(e) => return ctx.set_err(e),
             };
-            if offset >= total_size || len == 0 {
-                return 0;
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(
+                    ctx.memory.data().as_ptr().add(start) as *mut u8,
+                    len as usize,
+                )
+            };
+            let res = ctx.host.core_read_payload(pkind, offset, dst);
+            match res {
+                Ok(n) => n as i32,
+                Err(e) => ctx.set_hv_err(e),
             }
-            let avail = (total_size - offset) as usize;
-            let to_read = (len as usize).min(avail);
-            let pbase = bridge.payload_base.load(Ordering::Acquire) as usize;
-            let plen = bridge.payload_len.load(Ordering::Acquire) as usize;
-            let start = (base_off + offset) as usize;
-            if pbase == 0 || start.checked_add(to_read).map_or(true, |end| end > plen) {
-                return caller.data_mut().set_err("payload read out of bounds");
-            }
-            let src = unsafe { std::slice::from_raw_parts((pbase + start) as *const u8, to_read) };
-            if let Err(e) = write_bytes(&caller.data().memory, dst_ptr, src) {
-                return caller.data_mut().set_err(e);
-            }
-            to_read as i32
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_virtio_start",
-        |mut caller: Caller<'_, ThreadHostState>,
-         dev: Handle,
-         driver_features: u64,
-         queues_ptr: u32,
-         num_queues: u32|
-         -> i32 {
-            let raw_queues = match read_vec::<ShmVirtioQueueConfig>(
-                &caller.data().memory,
-                queues_ptr,
-                num_queues,
-            ) {
-                Ok(q) => q,
-                Err(e) => return caller.data_mut().set_err(e),
-            };
-            let dev_idx = dev as usize;
-            if dev_idx >= MAX_VIRTIO_DEVS {
-                return caller
-                    .data_mut()
-                    .set_err(format!("invalid virtio dev handle {dev}"));
+        move |mut caller: Caller<'_, T>,
+              dev: Handle,
+              driver_features: u64,
+              queues_ptr: u32,
+              num_queues: u32|
+              -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let raw_queues =
+                match read_vec::<ShmVirtioQueueConfig>(&ctx.memory, queues_ptr, num_queues) {
+                    Ok(q) => q,
+                    Err(e) => return ctx.set_err(e),
+                };
+            let queues: Vec<VirtioQueueConfig> = raw_queues.into_iter().map(Into::into).collect();
+            match ctx.host.core_virtio_start(dev, driver_features, &queues) {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            let bridge = caller.data().shared.bridge.clone();
-            let shm = bridge.shm;
-            let nq = raw_queues.len().min(MAX_QUEUES_PER_DEV);
-            unsafe {
-                for (i, q) in raw_queues.into_iter().enumerate().take(nq) {
-                    (*shm).device_queues[dev_idx][i] = q;
-                }
-            }
-            let entry = vmm_core::host::abi::CoreToIoEntry {
-                msg_type: vmm_core::host::abi::CORE_MSG_VIRTIO_START,
-                aux_u16: nq as u16,
-                _pad: 0,
-                dev,
-                features: driver_features,
-                data: [0; 40],
-            };
-            if unsafe { vmm_core::host::abi::BridgeShm::push_core_to_io(shm, entry) } {
-                bridge.wake_io();
-            }
-            let _ = VirtioQueueConfig::default();
-            0
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_virtio_notify",
-        |caller: Caller<'_, ThreadHostState>, dev: Handle, queue_index: u32| -> i32 {
-            let bridge = &caller.data().shared.bridge;
-            let shm = bridge.shm;
-            let entry = vmm_core::host::abi::CoreToIoEntry {
-                msg_type: vmm_core::host::abi::CORE_MSG_VIRTIO_NOTIFY,
-                aux_u16: queue_index as u16,
-                _pad: 0,
-                dev,
-                features: 0,
-                data: [0; 40],
-            };
-            if unsafe { vmm_core::host::abi::BridgeShm::push_core_to_io(shm, entry) } {
-                bridge.wake_io();
+        move |mut caller: Caller<'_, T>, dev: Handle, queue_index: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.core_virtio_notify(dev, queue_index as u16) {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            0
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_virtio_reset",
-        |caller: Caller<'_, ThreadHostState>, dev: Handle| -> i32 {
-            let bridge = &caller.data().shared.bridge;
-            let shm = bridge.shm;
-            let entry = vmm_core::host::abi::CoreToIoEntry {
-                msg_type: vmm_core::host::abi::CORE_MSG_VIRTIO_RESET,
-                aux_u16: 0,
-                _pad: 0,
-                dev,
-                features: 0,
-                data: [0; 40],
-            };
-            if unsafe { vmm_core::host::abi::BridgeShm::push_core_to_io(shm, entry) } {
-                bridge.wake_io();
+        move |mut caller: Caller<'_, T>, dev: Handle| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.core_virtio_reset(dev) {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            0
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_virtio_update_irq",
-        |mut caller: Caller<'_, ThreadHostState>, dev: Handle, routing_ptr: u32| -> i32 {
-            let routing = match read_struct::<ShmDeviceMsixRouting>(&caller.data().memory, routing_ptr)
-            {
+        move |mut caller: Caller<'_, T>, dev: Handle, routing_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let routing = match read_struct::<ShmDeviceMsixRouting>(&ctx.memory, routing_ptr) {
                 Ok(r) => r,
-                Err(e) => return caller.data_mut().set_err(e),
+                Err(e) => return ctx.set_err(e),
             };
-            let dev_idx = dev as usize;
-            if dev_idx >= MAX_VIRTIO_DEVS {
-                return caller
-                    .data_mut()
-                    .set_err(format!("invalid virtio dev handle {dev}"));
+            let config_msi = if routing.config_msi.enabled != 0 {
+                Some((routing.config_msi.addr, routing.config_msi.data))
+            } else {
+                None
+            };
+            let queue_msis: Vec<Option<(u64, u32)>> = routing
+                .queue_msis
+                .iter()
+                .map(|m| {
+                    if m.enabled != 0 {
+                        Some((m.addr, m.data))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            match ctx.host.core_virtio_update_irq(dev, config_msi, &queue_msis) {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            let shm = caller.data().shared.bridge.shm;
-            let lock = unsafe { &(*shm).msix_lock };
-            spin_lock(lock);
-            unsafe {
-                (*shm).msix_routing[dev_idx] = routing;
-            }
-            spin_unlock(lock);
-            0
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_serial_tx",
-        |caller: Caller<'_, ThreadHostState>, byte: u32| -> i32 {
-            let bridge = &caller.data().shared.bridge;
-            let shm = bridge.shm;
-            let mut data = [0u8; 40];
-            data[0] = byte as u8;
-            let entry = vmm_core::host::abi::CoreToIoEntry {
-                msg_type: vmm_core::host::abi::CORE_MSG_SERIAL_TX,
-                aux_u16: 1,
-                _pad: 0,
-                dev: 0,
-                features: 0,
-                data,
-            };
-            if unsafe { vmm_core::host::abi::BridgeShm::push_core_to_io(shm, entry) } {
-                bridge.wake_io();
+        move |mut caller: Caller<'_, T>, byte: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.core_serial_tx(byte as u8) {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            0
         },
     )?;
 
     linker.func_wrap(
         "vmm",
         "core_serial_rx",
-        |mut caller: Caller<'_, ThreadHostState>, dst_ptr: u32, max_len: u32| -> i32 {
-            let bridge = caller.data().shared.bridge.clone();
-            let shm = bridge.shm;
-            let mut rx = bridge.serial_rx.lock();
-            while rx.is_empty() {
-                if unsafe { (*shm).shutdown_requested.load(Ordering::Acquire) != 0 } {
-                    return 0;
-                }
-                bridge.serial_rx_cv.wait(&mut rx);
-            }
-            let count = (max_len as usize).min(rx.len());
-            let mut bytes = Vec::with_capacity(count);
-            for _ in 0..count {
-                bytes.push(rx.pop_front().unwrap());
-            }
-            drop(rx);
-            if let Err(e) = write_bytes(&caller.data().memory, dst_ptr, &bytes) {
-                return caller.data_mut().set_err(e);
+        move |mut caller: Caller<'_, T>, dst_ptr: u32, max_len: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let start = match check_bounds(&ctx.memory, dst_ptr, max_len as usize) {
+                Ok(s) => s,
+                Err(e) => return ctx.set_err(e),
+            };
+            let mut bytes = vec![0u8; max_len as usize];
+            let count = match ctx.host.core_serial_rx(&mut bytes) {
+                Ok(n) => n,
+                Err(e) => return ctx.set_hv_err(e),
+            };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    ctx.memory.data().as_ptr().add(start) as *mut u8,
+                    count,
+                );
             }
             count as i32
         },
@@ -1157,36 +1048,37 @@ fn register_core_imports(linker: &mut Linker<ThreadHostState>) -> wasmtime::Resu
     linker.func_wrap(
         "vmm",
         "core_notify_shutdown",
-        |caller: Caller<'_, ThreadHostState>| -> i32 {
-            let bridge = &caller.data().shared.bridge;
-            let shm = bridge.shm;
-            unsafe {
-                (*shm).shutdown_requested.store(1, Ordering::Release);
+        move |mut caller: Caller<'_, T>| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            match ctx.host.core_notify_shutdown() {
+                Ok(()) => 0,
+                Err(e) => ctx.set_hv_err(e),
             }
-            bridge.serial_rx_cv.notify_all();
-            let entry = vmm_core::host::abi::CoreToIoEntry {
-                msg_type: vmm_core::host::abi::CORE_MSG_SHUTDOWN,
-                aux_u16: 0,
-                _pad: 0,
-                dev: 0,
-                features: 0,
-                data: [0; 40],
-            };
-            let _ = unsafe { vmm_core::host::abi::BridgeShm::push_core_to_io(shm, entry) };
-            bridge.wake_io();
-            0
         },
     )?;
 
     Ok(())
 }
 
-pub fn run_wasm_core(
-    module_path: &Path,
-    fds: CoreBridgeFds,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let bridge = SharedCoreBridge::from_fds(fds)?;
+fn build_core_wasi() -> wasmtime::Result<WasiP1Ctx> {
+    let mut builder = WasiCtxBuilder::new();
+    builder
+        .allow_blocking_current_thread(true)
+        .inherit_stdio()
+        .args(&["vmm-core"]);
+    Ok(builder.build_p1())
+}
 
+struct CoreStoreState<H: VmmHostCore + ?Sized> {
+    wasi: WasiP1Ctx,
+    core: CoreWasmCtx<H>,
+}
+
+/// Instantiate and execute `vmm-core` against any [`VmmHostCore`] implementation.
+pub fn run_wasm_core<H: VmmHostCore + ?Sized>(
+    module_path: &Path,
+    host: Arc<H>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::new();
     config.wasm_threads(true);
     config.shared_memory(true);
@@ -1231,35 +1123,32 @@ pub fn run_wasm_core(
         .unwrap_or_else(|| MemoryType::shared(17, 16384));
 
     let shared_memory = SharedMemory::new(&engine, memory_ty)?;
-    let shared_resources = Arc::new(SharedCoreHostResources::new(bridge));
 
     let mut store = Store::new(
         &engine,
-        ThreadHostState {
+        CoreStoreState {
             wasi: build_core_wasi()?,
-            shared: shared_resources,
-            memory: shared_memory.clone(),
-            last_error: String::new(),
+            core: CoreWasmCtx::new(host, shared_memory.clone()),
         },
     );
 
-    let mut linker = Linker::<ThreadHostState>::new(&engine);
+    let mut linker = Linker::<CoreStoreState<H>>::new(&engine);
     linker.define(&store, "env", "memory", shared_memory)?;
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
-    register_core_imports(&mut linker)?;
+    register_core_imports(&mut linker, |state| &mut state.core)?;
 
     let next_tid = Arc::new(AtomicI32::new(1));
     let spawn_engine = engine.clone();
     let spawn_module = module.clone();
 
-    let spawn_linker_slot: Arc<RwLock<Option<Linker<ThreadHostState>>>> =
+    let spawn_linker_slot: Arc<RwLock<Option<Linker<CoreStoreState<H>>>>> =
         Arc::new(RwLock::new(None));
     let spawn_linker_ref = spawn_linker_slot.clone();
 
     linker.func_wrap(
         "wasi",
         "thread-spawn",
-        move |caller: Caller<'_, ThreadHostState>, start_arg: i32| -> i32 {
+        move |caller: Caller<'_, CoreStoreState<H>>, start_arg: i32| -> i32 {
             let tid = next_tid
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                     Some(if v >= 0x1fff_fffe { 1 } else { v + 1 })
@@ -1276,19 +1165,17 @@ pub fn run_wasm_core(
                 Ok(c) => c,
                 Err(_) => return -1,
             };
-            let shared = caller.data().shared.clone();
-            let memory = caller.data().memory.clone();
+            let child_host = caller.data().core.host.clone();
+            let memory = caller.data().core.memory.clone();
 
             let spawn_res = std::thread::Builder::new()
                 .name(format!("core_wasm_thread_{tid}"))
                 .spawn(move || {
                     let mut child_store = Store::new(
                         &engine,
-                        ThreadHostState {
+                        CoreStoreState {
                             wasi: wasi_ctx,
-                            shared,
-                            memory,
-                            last_error: String::new(),
+                            core: CoreWasmCtx::new(child_host, memory),
                         },
                     );
                     let instance = match child_linker.instantiate(&mut child_store, &module) {

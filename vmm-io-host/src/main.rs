@@ -17,12 +17,12 @@ use std::ffi::CString;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::Ordering;
 
 use libc::{EFD_NONBLOCK, eventfd, ftruncate};
 use vmm_core::host::abi::BridgeShm;
 
 pub mod ioctls;
+pub mod linux_host;
 pub mod serial;
 pub mod tap;
 pub mod verify_no_fp;
@@ -176,7 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let i2c_fd = create_eventfd(EFD_NONBLOCK)?;
     let cfg_fd = create_eventfd(0)?;
 
-    let shared_io = wasm_host::SharedIoHostResources::new(wasm_host::IoBridgeFds {
+    let io_host = linux_host::LinuxIoHost::new(linux_host::IoBridgeFds {
         bridge_fd,
         ram_fd,
         payload_fd,
@@ -203,14 +203,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn()
         .map_err(|e| format!("Failed to spawn {core_host:?}: {e}"))?;
 
-    let io_res = wasm_host::run_wasm_io(Path::new(&io_component), &config_filename, shared_io.clone());
+    let io_res = wasm_host::run_wasm_io(Path::new(&io_component), &config_filename, io_host.clone());
 
-    unsafe {
-        (*shared_io.shm).shutdown_requested.store(1, Ordering::Release);
-        (*shared_io.shm).config_ready.store(1, Ordering::Release);
-    }
-    shared_io.wake_cfg();
-    shared_io.wake_core();
+    io_host.shutdown_bridge();
 
     let _ = core_child.wait();
     io_res
