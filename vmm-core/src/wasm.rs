@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use crate::host::abi::{
-    CoreToIoEntry, EXIT_INTERRUPTED, EXIT_IO, EXIT_MMIO, EXIT_REBOOT, EXIT_SHUTDOWN,
-    IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawRegEntry, RawVmExit, ShmBootInfo,
-    ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, encode_vm_entry,
+    CoreToIoEntry, IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawRegEntry, ShmBootInfo,
+    ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
 };
 use crate::host::{
     DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, RegId,
-    RegVal, VcpuId, VmEntry, VmExit, VmmCoreBridge, VmmHostCore,
+    RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
 };
 
 #[link(wasm_import_module = "vmm")]
@@ -31,7 +30,7 @@ unsafe extern "C" {
     fn vcpu_get_regs(vcpu: u32, regs_ptr: u32, regs_len: u32) -> i32;
     fn vcpu_set_regs(vcpu: u32, regs_ptr: u32, regs_len: u32) -> i32;
     fn vcpu_kick(vcpu: u32) -> i32;
-    fn vcpu_run(vcpu: u32, entry_kind: u32, entry_data: u64, exit_out_ptr: u32) -> i32;
+    fn vcpu_run(vcpu: u32, comm_ptr: u32) -> i32;
 
     fn mem_alloc(size: u64) -> i32;
     fn mem_free(obj: u32) -> i32;
@@ -128,41 +127,8 @@ impl VmmHostCore for WasmHost {
         check_unit(unsafe { vcpu_kick(vcpu) })
     }
 
-    fn vcpu_run(&self, vcpu: VcpuId, entry: VmEntry) -> HvResult<VmExit> {
-        let (entry_kind, entry_data) = encode_vm_entry(entry);
-        let mut raw_exit = RawVmExit::default();
-        check_unit(unsafe {
-            vcpu_run(
-                vcpu,
-                entry_kind,
-                entry_data,
-                &mut raw_exit as *mut RawVmExit as u32,
-            )
-        })?;
-        match raw_exit.kind {
-            EXIT_IO => Ok(VmExit::Io {
-                port: raw_exit.addr_or_port as u16,
-                write: if raw_exit.is_write != 0 {
-                    Some(raw_exit.data as u32)
-                } else {
-                    None
-                },
-                size: raw_exit.size,
-            }),
-            EXIT_MMIO => Ok(VmExit::Mmio {
-                gpa: raw_exit.addr_or_port,
-                write: if raw_exit.is_write != 0 {
-                    Some(raw_exit.data)
-                } else {
-                    None
-                },
-                size: raw_exit.size,
-            }),
-            EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
-            EXIT_REBOOT => Ok(VmExit::Reboot),
-            EXIT_INTERRUPTED => Ok(VmExit::Interrupted),
-            _ => Err(HvError::HardwareFault),
-        }
+    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
+        check_unit(unsafe { vcpu_run(vcpu, comm as *mut VcpuCommPage as u32) })
     }
 
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {

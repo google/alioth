@@ -22,21 +22,22 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, c_void, eventfd};
 use parking_lot::{Mutex, RwLock};
 use vmm_core::host::abi::{
-    MAX_RAM_SLOTS, RawCpuid, ShmGuestRamSlot, spin_lock, spin_unlock,
+    MAX_RAM_SLOTS, RawCpuid, ShmGuestRamSlot, VcpuCommPage, spin_lock, spin_unlock,
 };
 use vmm_core::host::{
     DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, RegId, RegVal, VcpuId,
-    VmEntry, VmExit, VmmHostCore,
+    VmmHostCore,
 };
 
 use crate::ffi;
 use crate::kvm::bindings::{
-    KVM_API_VERSION, KVM_CAP_SIGNAL_MSI, KVM_CAP_SPLIT_IRQCHIP, KVM_MAX_CPUID_ENTRIES, KvmCpuid2,
-    KvmCpuid2Flag, KvmCpuidEntry2, KvmEnableCap, KvmIoEventFd, KvmIoEventFdFlag, KvmMemFlag,
-    KvmMsi, KvmUserspaceMemoryRegion, kvm_check_extension, kvm_create_vcpu, kvm_create_vm,
-    kvm_enable_cap, kvm_get_api_version, kvm_get_supported_cpuid, kvm_get_vcpu_mmap_size,
-    kvm_ioeventfd, kvm_set_identity_map_addr, kvm_set_tss_addr, kvm_set_user_memory_region,
-    kvm_signal_msi,
+    KVM_API_VERSION, KVM_CAP_EXIT_ON_EMULATION_FAILURE, KVM_CAP_SIGNAL_MSI, KVM_CAP_SPLIT_IRQCHIP,
+    KVM_CAP_SYNC_REGS, KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES, KVM_MAX_CPUID_ENTRIES,
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmEnableCap, KvmIoEventFd, KvmIoEventFdFlag,
+    KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion, kvm_check_extension, kvm_create_vcpu,
+    kvm_create_vm, kvm_enable_cap, kvm_get_api_version, kvm_get_supported_cpuid,
+    kvm_get_vcpu_mmap_size, kvm_ioeventfd, kvm_set_identity_map_addr, kvm_set_tss_addr,
+    kvm_set_user_memory_region, kvm_signal_msi,
 };
 use crate::kvm::vcpu::{KvmRunBlock, KvmVcpu, io_to_hv_err};
 use crate::kvm::{
@@ -77,6 +78,7 @@ pub struct KvmCoreHost {
     kvm_fd: OwnedFd,
     vm_fd: Arc<OwnedFd>,
     vcpu_mmap_size: usize,
+    sync_regs_cap: u64,
     bridge: Arc<SharedCoreBridge>,
     doorbells: Arc<DoorbellRegistry>,
     vcpus: RwLock<[Option<Arc<KvmVcpuSlot>>; MAX_VCPUS]>,
@@ -105,6 +107,9 @@ impl KvmCoreHost {
         ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })?;
 
         let vcpu_mmap_size = unsafe { kvm_get_vcpu_mmap_size(&kvm_fd) }? as usize;
+        let sync_regs_raw = unsafe { kvm_check_extension(&kvm_fd, KVM_CAP_SYNC_REGS) }.unwrap_or(0);
+        let sync_regs_cap = sync_regs_raw.max(0) as u64;
+
         let raw_vm_fd = unsafe { kvm_create_vm(&kvm_fd, 0) }?;
         let vm_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_vm_fd) });
 
@@ -122,6 +127,24 @@ impl KvmCoreHost {
             pad: [0; 64],
         };
         unsafe { kvm_enable_cap(&vm_fd, &split_cap) }?;
+
+        if let Ok(emul_flags) =
+            unsafe { kvm_check_extension(&vm_fd, KVM_CAP_EXIT_ON_EMULATION_FAILURE) }
+            && emul_flags > 0
+        {
+            let emul_cap = KvmEnableCap {
+                cap: KVM_CAP_EXIT_ON_EMULATION_FAILURE as u32,
+                flags: 0,
+                args: [
+                    (emul_flags as u64) & KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES,
+                    0,
+                    0,
+                    0,
+                ],
+                pad: [0; 64],
+            };
+            let _ = unsafe { kvm_enable_cap(&vm_fd, &emul_cap) };
+        }
         #[cfg(target_arch = "x86_64")]
         unsafe { kvm_set_tss_addr(&vm_fd, 0xf000_0000) }?;
         #[cfg(target_arch = "x86_64")]
@@ -133,6 +156,7 @@ impl KvmCoreHost {
             kvm_fd,
             vm_fd,
             vcpu_mmap_size,
+            sync_regs_cap,
             bridge,
             doorbells,
             vcpus: RwLock::new([const { None }; MAX_VCPUS]),
@@ -162,7 +186,12 @@ impl KvmCoreHost {
         let raw_vcpu_fd = unsafe { kvm_create_vcpu(&self.vm_fd, id) }.map_err(io_to_hv_err)?;
         let fd = unsafe { OwnedFd::from_raw_fd(raw_vcpu_fd) };
         let kvm_run = unsafe { KvmRunBlock::new(raw_vcpu_fd, self.vcpu_mmap_size) }?;
-        let mut kvm_vcpu = KvmVcpu { kvm_run, fd };
+        let mut kvm_vcpu = KvmVcpu {
+            kvm_run,
+            fd,
+            sync_regs_cap: self.sync_regs_cap,
+            sync_regs_valid: false,
+        };
         let immediate_exit = kvm_vcpu.immediate_exit_ptr();
         let slot = Arc::new(KvmVcpuSlot {
             vcpu: Mutex::new(kvm_vcpu),
@@ -230,12 +259,12 @@ impl VmmHostCore for KvmCoreHost {
         Ok(())
     }
 
-    fn vcpu_run(&self, vcpu: VcpuId, entry: VmEntry) -> HvResult<VmExit> {
+    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
         let slot = self.get_or_create_vcpu(vcpu)?;
         slot.runner_tid
             .store(unsafe { libc::pthread_self() } as u64, Ordering::Release);
         let mut guard = slot.vcpu.lock();
-        guard.run(entry)
+        guard.run(comm)
     }
 
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {

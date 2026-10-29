@@ -250,23 +250,66 @@ pub enum VmExit {
         write: Option<u32>,
         size: u8,
     },
+    /// Returned when the host already decoded the MMIO access (e.g. KVM, Xen, ARM64 `ISV=1`).
     Mmio {
         gpa: u64,
         write: Option<u64>,
         size: u8,
+    },
+    /// Returned by minimal Ring-0 hosts (Motor OS, MSHV, macOS HVF, ARM64 `ISV=0`, or KVM
+    /// emulation fallback). Hot architectural state is already synced in [`abi::VcpuCommPage`].
+    MmioFault {
+        gpa: u64,
+        gva: Option<u64>,
+        is_write: bool,
+        insn_len: u8,
+        insn_bytes: [u8; 15],
+    },
+    Cpuid {
+        func: u32,
+        index: u32,
+    },
+    MsrRead {
+        msr: u32,
+    },
+    MsrWrite {
+        msr: u32,
+        val: u64,
     },
     Shutdown,
     Reboot,
     Interrupted,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub enum VmEntry {
+    #[default]
     None,
     Shutdown,
     Reboot,
-    Io { data: u32 },
-    Mmio { data: u64 },
+    Io {
+        data: u32,
+    },
+    Mmio {
+        data: u64,
+    },
+    Msr {
+        data: u64,
+        error: u8,
+    },
+    InjectFault {
+        vector: u8,
+        error_code: Option<u32>,
+    },
+}
+
+/// High-level vCPU state transition returned by `Board::handle_vcpu_exit` (and `vmm_on_vcpu_exit`).
+#[repr(i32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum VmAction {
+    Continue = 0,
+    Shutdown = 1,
+    Reboot = 2,
 }
 
 #[repr(u32)]
@@ -352,7 +395,7 @@ pub trait VmmHostCore: Send + Sync + 'static {
     fn vcpu_get_regs(&self, vcpu: VcpuId, ids: &[RegId], out: &mut [RegVal]) -> HvResult<()>;
     fn vcpu_set_regs(&self, vcpu: VcpuId, regs: &[(RegId, RegVal)]) -> HvResult<()>;
     fn vcpu_kick(&self, vcpu: VcpuId) -> HvResult<()>;
-    fn vcpu_run(&self, vcpu: VcpuId, entry: VmEntry) -> HvResult<VmExit>;
+    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut abi::VcpuCommPage) -> HvResult<()>;
 
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId>;
     fn mem_free(&self, obj: MemObjId) -> HvResult<()>;
@@ -398,7 +441,7 @@ pub mod abi {
 
     use super::{
         Cpuid, DoorbellSpec, DtReg, DtRegVal, Handle, HvError, HvResult, IoSpace, MpState, Reg,
-        RegId, RegVal, SReg, SegReg, SegRegVal, VirtioQueueConfig, VmEntry,
+        RegId, RegVal, SReg, SegReg, SegRegVal, VirtioQueueConfig, VmEntry, VmExit,
     };
     use crate::hw::reg::SegAccess;
 
@@ -407,12 +450,44 @@ pub mod abi {
     pub const ENTRY_REBOOT: u32 = 2;
     pub const ENTRY_IO: u32 = 3;
     pub const ENTRY_MMIO: u32 = 4;
+    pub const ENTRY_MSR: u32 = 5;
+    pub const ENTRY_INJECT_FAULT: u32 = 6;
 
     pub const EXIT_IO: u32 = 0;
     pub const EXIT_MMIO: u32 = 1;
     pub const EXIT_SHUTDOWN: u32 = 2;
     pub const EXIT_REBOOT: u32 = 3;
     pub const EXIT_INTERRUPTED: u32 = 4;
+    pub const EXIT_MMIO_FAULT: u32 = 5;
+    pub const EXIT_CPUID: u32 = 6;
+    pub const EXIT_MSR_READ: u32 = 7;
+    pub const EXIT_MSR_WRITE: u32 = 8;
+
+    pub const EXIT_FLAG_IS_WRITE: u8 = 1 << 0;
+    pub const EXIT_FLAG_HAS_GVA: u8 = 1 << 1;
+
+    /// Bitflags for [`VcpuCommPage::synced_regs`] and [`VcpuCommPage::dirty_regs`].
+    pub const SYNC_REG_GPRS: u32 = 1 << 0;
+    pub const SYNC_REG_RIP_RFLAGS: u32 = 1 << 1;
+    pub const SYNC_REG_SREGS: u32 = 1 << 2;
+
+    /// Canonical x86_64 ModRM/REX general-purpose register indices in [`VcpuCommPage::gprs`].
+    pub const GPR_RAX: usize = 0;
+    pub const GPR_RCX: usize = 1;
+    pub const GPR_RDX: usize = 2;
+    pub const GPR_RBX: usize = 3;
+    pub const GPR_RSP: usize = 4;
+    pub const GPR_RBP: usize = 5;
+    pub const GPR_RSI: usize = 6;
+    pub const GPR_RDI: usize = 7;
+    pub const GPR_R8: usize = 8;
+    pub const GPR_R9: usize = 9;
+    pub const GPR_R10: usize = 10;
+    pub const GPR_R11: usize = 11;
+    pub const GPR_R12: usize = 12;
+    pub const GPR_R13: usize = 13;
+    pub const GPR_R14: usize = 14;
+    pub const GPR_R15: usize = 15;
 
     pub const EXEC_TYPE_NONE: u32 = 0;
     pub const EXEC_TYPE_LINUX: u32 = 1;
@@ -639,15 +714,308 @@ pub mod abi {
     }
 
     #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
     pub struct RawVmExit {
         pub addr_or_port: u64,
-        pub data: u64,
+        pub data_or_gva: u64,
         pub kind: u32,
-        pub is_write: u8,
+        pub flags: u8,
         pub size: u8,
+        pub insn_len: u8,
+        pub insn_bytes: [u8; 15],
         pub _pad: [u8; 2],
     }
+
+    impl RawVmExit {
+        pub fn from_exit(exit: VmExit) -> Self {
+            match exit {
+                VmExit::Io { port, write, size } => Self {
+                    addr_or_port: port as u64,
+                    data_or_gva: write.unwrap_or(0) as u64,
+                    kind: EXIT_IO,
+                    flags: if write.is_some() { EXIT_FLAG_IS_WRITE } else { 0 },
+                    size,
+                    ..Default::default()
+                },
+                VmExit::Mmio { gpa, write, size } => Self {
+                    addr_or_port: gpa,
+                    data_or_gva: write.unwrap_or(0),
+                    kind: EXIT_MMIO,
+                    flags: if write.is_some() { EXIT_FLAG_IS_WRITE } else { 0 },
+                    size,
+                    ..Default::default()
+                },
+                VmExit::MmioFault {
+                    gpa,
+                    gva,
+                    is_write,
+                    insn_len,
+                    insn_bytes,
+                } => {
+                    let mut flags = 0;
+                    if is_write {
+                        flags |= EXIT_FLAG_IS_WRITE;
+                    }
+                    if gva.is_some() {
+                        flags |= EXIT_FLAG_HAS_GVA;
+                    }
+                    Self {
+                        addr_or_port: gpa,
+                        data_or_gva: gva.unwrap_or(0),
+                        kind: EXIT_MMIO_FAULT,
+                        flags,
+                        size: 0,
+                        insn_len: insn_len.min(15),
+                        insn_bytes,
+                        _pad: [0; 2],
+                    }
+                }
+                VmExit::Cpuid { func, index } => Self {
+                    addr_or_port: ((index as u64) << 32) | (func as u64),
+                    kind: EXIT_CPUID,
+                    ..Default::default()
+                },
+                VmExit::MsrRead { msr } => Self {
+                    addr_or_port: msr as u64,
+                    kind: EXIT_MSR_READ,
+                    ..Default::default()
+                },
+                VmExit::MsrWrite { msr, val } => Self {
+                    addr_or_port: msr as u64,
+                    data_or_gva: val,
+                    kind: EXIT_MSR_WRITE,
+                    flags: EXIT_FLAG_IS_WRITE,
+                    ..Default::default()
+                },
+                VmExit::Shutdown => Self {
+                    kind: EXIT_SHUTDOWN,
+                    ..Default::default()
+                },
+                VmExit::Reboot => Self {
+                    kind: EXIT_REBOOT,
+                    ..Default::default()
+                },
+                VmExit::Interrupted => Self {
+                    kind: EXIT_INTERRUPTED,
+                    ..Default::default()
+                },
+            }
+        }
+
+        pub fn to_exit(&self) -> HvResult<VmExit> {
+            let is_write = (self.flags & EXIT_FLAG_IS_WRITE) != 0;
+            let has_gva = (self.flags & EXIT_FLAG_HAS_GVA) != 0;
+            match self.kind {
+                EXIT_IO => Ok(VmExit::Io {
+                    port: self.addr_or_port as u16,
+                    write: is_write.then_some(self.data_or_gva as u32),
+                    size: self.size,
+                }),
+                EXIT_MMIO => Ok(VmExit::Mmio {
+                    gpa: self.addr_or_port,
+                    write: is_write.then_some(self.data_or_gva),
+                    size: self.size,
+                }),
+                EXIT_MMIO_FAULT => Ok(VmExit::MmioFault {
+                    gpa: self.addr_or_port,
+                    gva: has_gva.then_some(self.data_or_gva),
+                    is_write,
+                    insn_len: self.insn_len.min(15),
+                    insn_bytes: self.insn_bytes,
+                }),
+                EXIT_CPUID => Ok(VmExit::Cpuid {
+                    func: self.addr_or_port as u32,
+                    index: (self.addr_or_port >> 32) as u32,
+                }),
+                EXIT_MSR_READ => Ok(VmExit::MsrRead {
+                    msr: self.addr_or_port as u32,
+                }),
+                EXIT_MSR_WRITE => Ok(VmExit::MsrWrite {
+                    msr: self.addr_or_port as u32,
+                    val: self.data_or_gva,
+                }),
+                EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
+                EXIT_REBOOT => Ok(VmExit::Reboot),
+                EXIT_INTERRUPTED => Ok(VmExit::Interrupted),
+                _ => Err(HvError::HardwareFault),
+            }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct RawVmEntry {
+        pub data: u64,
+        pub kind: u32,
+        pub error_code: u32,
+        pub vector: u8,
+        pub has_error_code: u8,
+        pub msr_error: u8,
+        pub _pad: [u8; 5],
+    }
+
+    impl RawVmEntry {
+        pub const fn from_entry(entry: VmEntry) -> Self {
+            match entry {
+                VmEntry::None => Self {
+                    data: 0,
+                    kind: ENTRY_NONE,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+                VmEntry::Shutdown => Self {
+                    data: 0,
+                    kind: ENTRY_SHUTDOWN,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+                VmEntry::Reboot => Self {
+                    data: 0,
+                    kind: ENTRY_REBOOT,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+                VmEntry::Io { data } => Self {
+                    data: data as u64,
+                    kind: ENTRY_IO,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+                VmEntry::Mmio { data } => Self {
+                    data,
+                    kind: ENTRY_MMIO,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+                VmEntry::Msr { data, error } => Self {
+                    data,
+                    kind: ENTRY_MSR,
+                    error_code: 0,
+                    vector: 0,
+                    has_error_code: 0,
+                    msr_error: error,
+                    _pad: [0; 5],
+                },
+                VmEntry::InjectFault { vector, error_code } => Self {
+                    data: 0,
+                    kind: ENTRY_INJECT_FAULT,
+                    error_code: match error_code {
+                        Some(ec) => ec,
+                        None => 0,
+                    },
+                    vector,
+                    has_error_code: error_code.is_some() as u8,
+                    msr_error: 0,
+                    _pad: [0; 5],
+                },
+            }
+        }
+
+        pub const fn to_entry(&self) -> VmEntry {
+            match self.kind {
+                ENTRY_SHUTDOWN => VmEntry::Shutdown,
+                ENTRY_REBOOT => VmEntry::Reboot,
+                ENTRY_IO => VmEntry::Io {
+                    data: self.data as u32,
+                },
+                ENTRY_MMIO => VmEntry::Mmio { data: self.data },
+                ENTRY_MSR => VmEntry::Msr {
+                    data: self.data,
+                    error: self.msr_error,
+                },
+                ENTRY_INJECT_FAULT => VmEntry::InjectFault {
+                    vector: self.vector,
+                    error_code: if self.has_error_code != 0 {
+                        Some(self.error_code)
+                    } else {
+                        None
+                    },
+                },
+                _ => VmEntry::None,
+            }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct RawSegReg {
+        pub base: u64,
+        pub limit: u32,
+        pub access: u32,
+        pub selector: u16,
+        pub _pad: [u8; 6],
+    }
+
+    impl From<SegRegVal> for RawSegReg {
+        fn from(seg: SegRegVal) -> Self {
+            Self {
+                base: seg.base,
+                limit: seg.limit,
+                access: seg.access.0,
+                selector: seg.selector,
+                _pad: [0; 6],
+            }
+        }
+    }
+
+    impl From<RawSegReg> for SegRegVal {
+        fn from(raw: RawSegReg) -> Self {
+            Self {
+                selector: raw.selector,
+                base: raw.base,
+                limit: raw.limit,
+                access: SegAccess(raw.access),
+            }
+        }
+    }
+
+    /// Cache-line-aligned per-vCPU communication page in shared Wasm linear memory.
+    ///
+    /// Eliminates per-exit register FFI calls on PIO, MMIO fault instruction decoding,
+    /// CPUID, and MSR exits. `gprs` is indexed in canonical x86_64 ModRM/REX order
+    /// (`GPR_RAX` = 0 .. `GPR_R15` = 15).
+    #[repr(C, align(64))]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct VcpuCommPage {
+        pub exit: RawVmExit,
+        pub synced_regs: u32,
+        pub dirty_regs: u32,
+        pub gprs: [u64; 16],
+        pub rip: u64,
+        pub rflags: u64,
+        pub cr0: u64,
+        pub cr2: u64,
+        pub cr3: u64,
+        pub cr4: u64,
+        pub efer: u64,
+        pub cs: RawSegReg,
+        pub entry: RawVmEntry,
+        pub ds_base: u64,
+        pub es_base: u64,
+        pub fs_base: u64,
+        pub gs_base: u64,
+        pub ss_base: u64,
+    }
+
+    const _: () = assert!(core::mem::size_of::<RawVmExit>() == 40);
+    const _: () = assert!(core::mem::size_of::<RawVmEntry>() == 24);
+    const _: () = assert!(core::mem::size_of::<RawSegReg>() == 24);
+    const _: () = assert!(core::mem::size_of::<VcpuCommPage>() == 320);
 
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
@@ -1106,26 +1474,6 @@ pub mod abi {
             _ => Err(HvError::InvalidParam),
         }
     }
-
-    pub const fn encode_vm_entry(e: VmEntry) -> (u32, u64) {
-        match e {
-            VmEntry::None => (ENTRY_NONE, 0),
-            VmEntry::Shutdown => (ENTRY_SHUTDOWN, 0),
-            VmEntry::Reboot => (ENTRY_REBOOT, 0),
-            VmEntry::Io { data } => (ENTRY_IO, data as u64),
-            VmEntry::Mmio { data } => (ENTRY_MMIO, data),
-        }
-    }
-
-    pub const fn decode_vm_entry(kind: u32, data: u64) -> VmEntry {
-        match kind {
-            ENTRY_SHUTDOWN => VmEntry::Shutdown,
-            ENTRY_REBOOT => VmEntry::Reboot,
-            ENTRY_IO => VmEntry::Io { data: data as u32 },
-            ENTRY_MMIO => VmEntry::Mmio { data },
-            _ => VmEntry::None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1138,6 +1486,7 @@ pub mod test {
     use crate::hw::reg::SegAccess;
     use crate::sync::Mutex;
 
+    use super::abi::{RawVmExit, VcpuCommPage};
     use super::{
         DoorbellSpec, DtReg, DtRegVal, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt,
         MpState, Reg, RegId, RegVal, SReg, SegReg, SegRegVal, VcpuId, VmEntry, VmExit, VmmHostCore,
@@ -1207,8 +1556,9 @@ pub mod test {
             Ok(())
         }
 
-        fn vcpu_run(&self, _vcpu: VcpuId, _entry: VmEntry) -> HvResult<VmExit> {
-            Ok(VmExit::Shutdown)
+        fn vcpu_run(&self, _vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
+            comm.exit = RawVmExit::from_exit(VmExit::Shutdown);
+            Ok(())
         }
 
         fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
@@ -1331,6 +1681,84 @@ pub mod test {
             let raw = RawRegEntry::from_pair(id, val);
             assert_eq!(raw.to_pair().unwrap(), (id, val));
         }
+    }
+
+    #[test]
+    fn test_vcpu_comm_page_roundtrip() {
+        use super::abi::{RawSegReg, RawVmEntry, RawVmExit, VcpuCommPage};
+
+        let mut insn = [0u8; 15];
+        insn[..3].copy_from_slice(&[0x8b, 0x07, 0x90]);
+        let exits = [
+            VmExit::Io {
+                port: 0x3f8,
+                write: Some(0x41),
+                size: 1,
+            },
+            VmExit::Mmio {
+                gpa: 0xfec0_0000,
+                write: None,
+                size: 4,
+            },
+            VmExit::MmioFault {
+                gpa: 0xfec0_0010,
+                gva: Some(0xffff_8880_fec0_0010),
+                is_write: true,
+                insn_len: 3,
+                insn_bytes: insn,
+            },
+            VmExit::Cpuid {
+                func: 0x7,
+                index: 1,
+            },
+            VmExit::MsrRead { msr: 0xc000_0080 },
+            VmExit::MsrWrite {
+                msr: 0xc000_0103,
+                val: 0x1234_5678_9abc_def0,
+            },
+            VmExit::Shutdown,
+            VmExit::Reboot,
+            VmExit::Interrupted,
+        ];
+        for ex in exits {
+            let raw = RawVmExit::from_exit(ex);
+            assert_eq!(raw.to_exit().unwrap(), ex);
+        }
+
+        let entries = [
+            VmEntry::None,
+            VmEntry::Shutdown,
+            VmEntry::Reboot,
+            VmEntry::Io { data: 0xff },
+            VmEntry::Mmio {
+                data: 0x1122_3344_5566_7788,
+            },
+            VmEntry::Msr {
+                data: 0x501,
+                error: 0,
+            },
+            VmEntry::InjectFault {
+                vector: 13,
+                error_code: Some(0),
+            },
+        ];
+        for ent in entries {
+            let raw = RawVmEntry::from_entry(ent);
+            assert_eq!(raw.to_entry(), ent);
+        }
+
+        let seg = SegRegVal {
+            selector: 0x10,
+            base: 0,
+            limit: 0xffff_ffff,
+            access: SegAccess(0xa09b),
+        };
+        let raw_seg = RawSegReg::from(seg);
+        assert_eq!(SegRegVal::from(raw_seg), seg);
+
+        let comm = VcpuCommPage::default();
+        assert_eq!(std::mem::size_of_val(&comm), 320);
+        assert_eq!(std::mem::align_of_val(&comm), 64);
     }
 
     #[test]

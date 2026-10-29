@@ -191,8 +191,10 @@ pub struct KvmRun {
 pub union KvmExit {
     pub mmio: KvmExitMmio,
     pub io: KvmExitIo,
+    pub emulation_failure: KvmExitEmulationFailure,
     pub system_event: KvmExitSystemEvent,
     pub eoi: KvmExitEoi,
+    pub msr: KvmExitMsr,
     pub padding: [u8; 256],
 }
 
@@ -217,6 +219,16 @@ pub struct KvmExitIo {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+pub struct KvmExitEmulationFailure {
+    pub suberror: u32,
+    pub ndata: u32,
+    pub flags: u64,
+    pub insn_size: u8,
+    pub insn_bytes: [u8; 15],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct KvmExitSystemEvent {
     pub type_: u32,
     pub ndata: u32,
@@ -230,16 +242,98 @@ pub struct KvmExitEoi {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvmExitMsr {
+    pub error: u8,
+    pub pad: [u8; 7],
+    pub reason: u32,
+    pub index: u32,
+    pub data: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmVcpuException {
+    pub injected: u8,
+    pub nr: u8,
+    pub has_error_code: u8,
+    pub pending: u8,
+    pub error_code: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmVcpuInterrupt {
+    pub injected: u8,
+    pub nr: u8,
+    pub soft: u8,
+    pub shadow: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmVcpuNmi {
+    pub injected: u8,
+    pub pending: u8,
+    pub masked: u8,
+    pub pad: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmVcpuSmi {
+    pub smm: u8,
+    pub pending: u8,
+    pub smm_inside_nmi: u8,
+    pub latched_init: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmVcpuEvents {
+    pub exception: KvmVcpuException,
+    pub interrupt: KvmVcpuInterrupt,
+    pub nmi: KvmVcpuNmi,
+    pub sipi_vector: u32,
+    pub flags: u32,
+    pub smi: KvmVcpuSmi,
+    pub triple_fault_pending: u8,
+    pub reserved: [u8; 26],
+    pub exception_has_payload: u8,
+    pub exception_payload: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmSyncRegs {
+    pub regs: KvmRegs,
+    pub sregs: KvmSregs,
+    pub events: KvmVcpuEvents,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub union KvmSyncRegsBlock {
+    pub regs: KvmSyncRegs,
     pub padding: [u8; 2048],
 }
+
+pub const KVM_SYNC_X86_REGS: u64 = 1 << 0;
+pub const KVM_SYNC_X86_SREGS: u64 = 1 << 1;
+pub const KVM_SYNC_X86_EVENTS: u64 = 1 << 2;
 
 pub const KVM_EXIT_IO: u32 = 2;
 pub const KVM_EXIT_MMIO: u32 = 6;
 pub const KVM_EXIT_SHUTDOWN: u32 = 8;
+pub const KVM_EXIT_CPUID: u32 = 10;
+pub const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 pub const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
 pub const KVM_EXIT_IOAPIC_EOI: u32 = 26;
+pub const KVM_EXIT_X86_RDMSR: u32 = 29;
+pub const KVM_EXIT_X86_WRMSR: u32 = 30;
+
+pub const KVM_INTERNAL_ERROR_EMULATION: u32 = 1;
+pub const KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES: u64 = 1 << 0;
 
 pub const KVM_SYSTEM_EVENT_SHUTDOWN: u32 = 1;
 pub const KVM_SYSTEM_EVENT_RESET: u32 = 2;
@@ -299,8 +393,10 @@ pub struct KvmMsi {
 
 pub const KVM_CAP_NR_MEMSLOTS: u64 = 10;
 pub const KVM_CAP_IRQFD: u64 = 32;
+pub const KVM_CAP_SYNC_REGS: u64 = 74;
 pub const KVM_CAP_SIGNAL_MSI: u64 = 77;
 pub const KVM_CAP_SPLIT_IRQCHIP: u64 = 121;
+pub const KVM_CAP_EXIT_ON_EMULATION_FAILURE: u64 = 204;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

@@ -18,7 +18,11 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::ptr::null_mut;
 
 use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
-use vmm_core::host::abi::RawCpuid;
+use vmm_core::host::abi::{
+    GPR_R8, GPR_R9, GPR_R10, GPR_R11, GPR_R12, GPR_R13, GPR_R14, GPR_R15, GPR_RAX, GPR_RBP,
+    GPR_RBX, GPR_RCX, GPR_RDI, GPR_RDX, GPR_RSI, GPR_RSP, RawCpuid, RawSegReg, RawVmEntry,
+    RawVmExit, SYNC_REG_GPRS, SYNC_REG_RIP_RFLAGS, SYNC_REG_SREGS, VcpuCommPage,
+};
 use vmm_core::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use vmm_core::host::{HvError, HvResult, MpState, RegId, RegVal, VmEntry, VmExit};
 use vmm_core::hw::layout::IOAPIC_START;
@@ -26,8 +30,11 @@ use vmm_core::hw::reg::SegAccess;
 
 use crate::ffi;
 use crate::kvm::bindings::{
-    KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_IOAPIC_EOI, KVM_EXIT_MMIO,
-    KVM_EXIT_SHUTDOWN, KVM_EXIT_SYSTEM_EVENT, KVM_MAX_CPUID_ENTRIES, KVM_SYSTEM_EVENT_RESET,
+    KVM_EXIT_CPUID, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT,
+    KVM_EXIT_IOAPIC_EOI, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN, KVM_EXIT_SYSTEM_EVENT,
+    KVM_EXIT_X86_RDMSR, KVM_EXIT_X86_WRMSR, KVM_INTERNAL_ERROR_EMULATION,
+    KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES, KVM_MAX_CPUID_ENTRIES,
+    KVM_SYNC_X86_EVENTS, KVM_SYNC_X86_REGS, KVM_SYNC_X86_SREGS, KVM_SYSTEM_EVENT_RESET,
     KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMpState, KvmMsrEntry, KvmMsrs, KvmRegs, KvmRun,
     KvmSregs, kvm_get_mp_state, kvm_get_msrs, kvm_get_regs, kvm_get_sregs, kvm_run,
     kvm_set_cpuid2, kvm_set_mp_state, kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
@@ -97,6 +104,8 @@ impl Drop for KvmRunBlock {
 pub struct KvmVcpu {
     pub(crate) kvm_run: KvmRunBlock,
     pub(crate) fd: OwnedFd,
+    pub(crate) sync_regs_cap: u64,
+    pub(crate) sync_regs_valid: bool,
 }
 
 macro_rules! set_kvm_sreg {
@@ -254,58 +263,263 @@ fn write_gpr(kvm_regs: &mut KvmRegs, reg: Reg, val: u64) {
     }
 }
 
+fn copy_kvm_regs_to_comm(regs: &KvmRegs, comm: &mut VcpuCommPage) {
+    comm.gprs[GPR_RAX] = regs.rax;
+    comm.gprs[GPR_RCX] = regs.rcx;
+    comm.gprs[GPR_RDX] = regs.rdx;
+    comm.gprs[GPR_RBX] = regs.rbx;
+    comm.gprs[GPR_RSP] = regs.rsp;
+    comm.gprs[GPR_RBP] = regs.rbp;
+    comm.gprs[GPR_RSI] = regs.rsi;
+    comm.gprs[GPR_RDI] = regs.rdi;
+    comm.gprs[GPR_R8] = regs.r8;
+    comm.gprs[GPR_R9] = regs.r9;
+    comm.gprs[GPR_R10] = regs.r10;
+    comm.gprs[GPR_R11] = regs.r11;
+    comm.gprs[GPR_R12] = regs.r12;
+    comm.gprs[GPR_R13] = regs.r13;
+    comm.gprs[GPR_R14] = regs.r14;
+    comm.gprs[GPR_R15] = regs.r15;
+    comm.rip = regs.rip;
+    comm.rflags = regs.rflags;
+}
+
+fn copy_comm_gprs_to_kvm(comm: &VcpuCommPage, regs: &mut KvmRegs) {
+    regs.rax = comm.gprs[GPR_RAX];
+    regs.rcx = comm.gprs[GPR_RCX];
+    regs.rdx = comm.gprs[GPR_RDX];
+    regs.rbx = comm.gprs[GPR_RBX];
+    regs.rsp = comm.gprs[GPR_RSP];
+    regs.rbp = comm.gprs[GPR_RBP];
+    regs.rsi = comm.gprs[GPR_RSI];
+    regs.rdi = comm.gprs[GPR_RDI];
+    regs.r8 = comm.gprs[GPR_R8];
+    regs.r9 = comm.gprs[GPR_R9];
+    regs.r10 = comm.gprs[GPR_R10];
+    regs.r11 = comm.gprs[GPR_R11];
+    regs.r12 = comm.gprs[GPR_R12];
+    regs.r13 = comm.gprs[GPR_R13];
+    regs.r14 = comm.gprs[GPR_R14];
+    regs.r15 = comm.gprs[GPR_R15];
+}
+
+fn copy_kvm_sregs_to_comm(sregs: &KvmSregs, comm: &mut VcpuCommPage) {
+    comm.cr0 = sregs.cr0;
+    comm.cr2 = sregs.cr2;
+    comm.cr3 = sregs.cr3;
+    comm.cr4 = sregs.cr4;
+    comm.efer = sregs.efer;
+    let cs_seg = SegReg::Cs;
+    comm.cs = RawSegReg::from(get_kvm_seg_reg!(sregs, cs_seg));
+    comm.ds_base = sregs.ds.base;
+    comm.es_base = sregs.es.base;
+    comm.fs_base = sregs.fs.base;
+    comm.gs_base = sregs.gs.base;
+    comm.ss_base = sregs.ss.base;
+}
+
+fn copy_comm_sregs_to_kvm(comm: &VcpuCommPage, sregs: &mut KvmSregs) {
+    sregs.cr0 = comm.cr0;
+    sregs.cr2 = comm.cr2;
+    sregs.cr3 = comm.cr3;
+    sregs.cr4 = comm.cr4;
+    sregs.efer = comm.efer;
+    let cs_seg = SegReg::Cs;
+    let cs_val = SegRegVal::from(comm.cs);
+    set_kvm_seg_reg!(sregs, cs_seg, cs_val);
+}
+
 impl KvmVcpu {
-    pub fn run(&mut self, entry: VmEntry) -> HvResult<VmExit> {
+    fn flush_comm_dirty_regs(&mut self, comm: &mut VcpuCommPage) -> HvResult<()> {
+        let dirty = comm.dirty_regs;
+        if dirty == 0 {
+            return Ok(());
+        }
+        let has_fast_sync = (self.sync_regs_cap & (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS))
+            == (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS);
+
+        if has_fast_sync {
+            if !self.sync_regs_valid {
+                let regs = unsafe { kvm_get_regs(&self.fd) }.map_err(io_to_hv_err)?;
+                let sregs = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+                let sync = unsafe { &mut self.kvm_run.s.regs };
+                sync.regs = regs;
+                sync.sregs = sregs;
+                self.sync_regs_valid = true;
+            }
+            if (dirty & (SYNC_REG_GPRS | SYNC_REG_RIP_RFLAGS)) != 0 {
+                let regs = unsafe { &mut self.kvm_run.s.regs.regs };
+                if (dirty & SYNC_REG_GPRS) != 0 {
+                    copy_comm_gprs_to_kvm(comm, regs);
+                }
+                if (dirty & SYNC_REG_RIP_RFLAGS) != 0 {
+                    regs.rip = comm.rip;
+                    regs.rflags = comm.rflags;
+                }
+                self.kvm_run.kvm_dirty_regs |= KVM_SYNC_X86_REGS;
+            }
+            if (dirty & SYNC_REG_SREGS) != 0 {
+                let sregs = unsafe { &mut self.kvm_run.s.regs.sregs };
+                copy_comm_sregs_to_kvm(comm, sregs);
+                self.kvm_run.kvm_dirty_regs |= KVM_SYNC_X86_SREGS;
+            }
+        } else {
+            if (dirty & (SYNC_REG_GPRS | SYNC_REG_RIP_RFLAGS)) != 0 {
+                let mut regs = unsafe { kvm_get_regs(&self.fd) }.map_err(io_to_hv_err)?;
+                if (dirty & SYNC_REG_GPRS) != 0 {
+                    copy_comm_gprs_to_kvm(comm, &mut regs);
+                }
+                if (dirty & SYNC_REG_RIP_RFLAGS) != 0 {
+                    regs.rip = comm.rip;
+                    regs.rflags = comm.rflags;
+                }
+                unsafe { kvm_set_regs(&self.fd, &regs) }.map_err(io_to_hv_err)?;
+            }
+            if (dirty & SYNC_REG_SREGS) != 0 {
+                let mut sregs = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+                copy_comm_sregs_to_kvm(comm, &mut sregs);
+                unsafe { kvm_set_sregs(&self.fd, &sregs) }.map_err(io_to_hv_err)?;
+            }
+        }
+        comm.dirty_regs = 0;
+        Ok(())
+    }
+
+    pub fn run(&mut self, comm: &mut VcpuCommPage) -> HvResult<()> {
+        self.flush_comm_dirty_regs(comm)?;
+        let entry = comm.entry.to_entry();
         match entry {
             VmEntry::None => {}
             VmEntry::Io { data } => self.entry_io(data),
             VmEntry::Mmio { data } => self.entry_mmio(data),
+            VmEntry::Msr { data, error } => {
+                let msr = unsafe { &mut self.kvm_run.exit.msr };
+                msr.data = data;
+                msr.error = error;
+            }
+            VmEntry::InjectFault { vector, error_code } => {
+                if (self.sync_regs_cap & KVM_SYNC_X86_EVENTS) != 0 {
+                    let ev = unsafe { &mut self.kvm_run.s.regs.events };
+                    ev.exception.injected = 1;
+                    ev.exception.nr = vector;
+                    ev.exception.has_error_code = u8::from(error_code.is_some());
+                    ev.exception.pending = 0;
+                    ev.exception.error_code = error_code.unwrap_or(0);
+                    self.kvm_run.kvm_dirty_regs |= KVM_SYNC_X86_EVENTS;
+                }
+            }
             VmEntry::Shutdown | VmEntry::Reboot => self.set_immediate_exit(true),
         };
+
+        self.kvm_run.kvm_valid_regs =
+            self.sync_regs_cap & (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS | KVM_SYNC_X86_EVENTS);
+
         let ret = unsafe { kvm_run(&self.fd) };
-        match ret {
+        let vm_exit = match ret {
             Err(e) => match (e.kind(), entry) {
-                (ErrorKind::WouldBlock, _) => Ok(VmExit::Interrupted),
+                (ErrorKind::WouldBlock, _) => VmExit::Interrupted,
                 (ErrorKind::Interrupted, VmEntry::Shutdown) => {
                     self.set_immediate_exit(false);
-                    Ok(VmExit::Shutdown)
+                    VmExit::Shutdown
                 }
                 (ErrorKind::Interrupted, VmEntry::Reboot) => {
                     self.set_immediate_exit(false);
-                    Ok(VmExit::Reboot)
+                    VmExit::Reboot
                 }
                 (ErrorKind::Interrupted, _) => {
                     self.set_immediate_exit(false);
-                    Ok(VmExit::Interrupted)
+                    VmExit::Interrupted
                 }
-                _ => Err(io_to_hv_err(e)),
+                _ => return Err(io_to_hv_err(e)),
             },
-            Ok(_) => match self.kvm_run.exit_reason {
-                KVM_EXIT_IO => self.handle_io(),
-                KVM_EXIT_MMIO => self.handle_mmio(),
-                KVM_EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
-                KVM_EXIT_SYSTEM_EVENT => {
-                    let ev_type = unsafe { self.kvm_run.exit.system_event.type_ };
-                    if ev_type == KVM_SYSTEM_EVENT_RESET {
-                        Ok(VmExit::Reboot)
-                    } else {
-                        Ok(VmExit::Shutdown)
+            Ok(_) => {
+                comm.synced_regs = 0;
+                if (self.sync_regs_cap & KVM_SYNC_X86_REGS) != 0 {
+                    let regs = unsafe { &self.kvm_run.s.regs.regs };
+                    copy_kvm_regs_to_comm(regs, comm);
+                    comm.synced_regs |= SYNC_REG_GPRS | SYNC_REG_RIP_RFLAGS;
+                }
+                if (self.sync_regs_cap & KVM_SYNC_X86_SREGS) != 0 {
+                    let sregs = unsafe { &self.kvm_run.s.regs.sregs };
+                    copy_kvm_sregs_to_comm(sregs, comm);
+                    comm.synced_regs |= SYNC_REG_SREGS;
+                }
+                if (self.sync_regs_cap & (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS))
+                    == (KVM_SYNC_X86_REGS | KVM_SYNC_X86_SREGS)
+                {
+                    self.sync_regs_valid = true;
+                }
+
+                match self.kvm_run.exit_reason {
+                    KVM_EXIT_IO => self.handle_io()?,
+                    KVM_EXIT_MMIO => self.handle_mmio()?,
+                    KVM_EXIT_SHUTDOWN => VmExit::Shutdown,
+                    KVM_EXIT_SYSTEM_EVENT => {
+                        let ev_type = unsafe { self.kvm_run.exit.system_event.type_ };
+                        if ev_type == KVM_SYSTEM_EVENT_RESET {
+                            VmExit::Reboot
+                        } else {
+                            VmExit::Shutdown
+                        }
+                    }
+                    KVM_EXIT_IOAPIC_EOI => {
+                        let vector = unsafe { self.kvm_run.exit.eoi.vector };
+                        VmExit::Mmio {
+                            gpa: (IOAPIC_START + 0x40) as u64,
+                            write: Some(vector as u64),
+                            size: 4,
+                        }
+                    }
+                    KVM_EXIT_INTERNAL_ERROR => {
+                        let ef = unsafe { self.kvm_run.exit.emulation_failure };
+                        if ef.suberror == KVM_INTERNAL_ERROR_EMULATION {
+                            let (insn_len, insn_bytes) =
+                                if (ef.flags & KVM_INTERNAL_ERROR_EMULATION_FLAG_INSTRUCTION_BYTES)
+                                    != 0
+                                {
+                                    (ef.insn_size.min(15), ef.insn_bytes)
+                                } else {
+                                    (0, [0u8; 15])
+                                };
+                            VmExit::MmioFault {
+                                gpa: 0,
+                                gva: None,
+                                is_write: false,
+                                insn_len,
+                                insn_bytes,
+                            }
+                        } else {
+                            log::error!("kvm internal error suberror={:#x}", ef.suberror);
+                            return Err(HvError::HardwareFault);
+                        }
+                    }
+                    KVM_EXIT_X86_RDMSR => {
+                        let msr = unsafe { self.kvm_run.exit.msr.index };
+                        VmExit::MsrRead { msr }
+                    }
+                    KVM_EXIT_X86_WRMSR => {
+                        let msr = unsafe { self.kvm_run.exit.msr };
+                        VmExit::MsrWrite {
+                            msr: msr.index,
+                            val: msr.data,
+                        }
+                    }
+                    KVM_EXIT_CPUID => VmExit::Cpuid {
+                        func: comm.gprs[GPR_RAX] as u32,
+                        index: comm.gprs[GPR_RCX] as u32,
+                    },
+                    reason => {
+                        log::error!("unknown kvm exit: {reason:#x}");
+                        return Err(HvError::HardwareFault);
                     }
                 }
-                KVM_EXIT_IOAPIC_EOI => {
-                    let vector = unsafe { self.kvm_run.exit.eoi.vector };
-                    Ok(VmExit::Mmio {
-                        gpa: (IOAPIC_START + 0x40) as u64,
-                        write: Some(vector as u64),
-                        size: 4,
-                    })
-                }
-                reason => {
-                    log::error!("unknown kvm exit: {reason:#x}");
-                    Err(HvError::HardwareFault)
-                }
-            },
-        }
+            }
+        };
+
+        comm.exit = RawVmExit::from_exit(vm_exit);
+        comm.entry = RawVmEntry::default();
+        comm.dirty_regs = 0;
+        Ok(())
     }
 
     pub(crate) fn immediate_exit_ptr(&mut self) -> *mut std::sync::atomic::AtomicU8 {
@@ -488,6 +702,8 @@ impl KvmVcpu {
     }
 
     pub fn set_regs_batch(&mut self, regs: &[(RegId, RegVal)]) -> HvResult<()> {
+        self.kvm_run.kvm_dirty_regs = 0;
+        self.sync_regs_valid = false;
         let mut has_sregs = false;
         let mut has_gprs = false;
         let mut msr_count = 0usize;

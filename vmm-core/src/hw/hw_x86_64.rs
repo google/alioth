@@ -284,6 +284,7 @@ use layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 
 pub struct ArchBoard {
     cpuids: Vec<RawCpuid>,
+    guest_msrs: Mutex<Vec<(VcpuId, u32, u64)>>,
 }
 
 impl ArchBoard {
@@ -298,7 +299,46 @@ impl ArchBoard {
                 // AMD Volume 3, section E.4.17.
             }
         }
-        Ok(Self { cpuids })
+        Ok(Self {
+            cpuids,
+            guest_msrs: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn lookup_cpuid(&self, vcpu: VcpuId, func: u32, index: u32) -> (u32, u32, u32, u32) {
+        for c in &self.cpuids {
+            if c.func == func && (c.has_index == 0 || c.index == index) {
+                let mut ebx = c.ebx;
+                let mut edx = c.edx;
+                if func == 0x1 {
+                    ebx = (ebx & 0x00ff_ffff) | (vcpu << 24);
+                } else if func == 0xb {
+                    edx = vcpu;
+                }
+                return (c.eax, ebx, c.ecx, edx);
+            }
+        }
+        (0, 0, 0, 0)
+    }
+
+    pub fn read_msr(&self, vcpu: VcpuId, msr_idx: u32) -> u64 {
+        let msrs = self.guest_msrs.lock();
+        msrs.iter()
+            .find(|&&(id, idx, _)| id == vcpu && idx == msr_idx)
+            .map_or(0, |&(_, _, val)| val)
+    }
+
+    pub fn write_msr(&self, vcpu: VcpuId, msr_idx: u32, val: u64) {
+        const MAX_TRACKED_MSRS: usize = 256;
+        let mut msrs = self.guest_msrs.lock();
+        if let Some(entry) = msrs
+            .iter_mut()
+            .find(|(id, idx, _)| *id == vcpu && *idx == msr_idx)
+        {
+            entry.2 = val;
+        } else if msrs.len() < MAX_TRACKED_MSRS {
+            msrs.push((vcpu, msr_idx, val));
+        }
     }
 }
 

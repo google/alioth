@@ -27,6 +27,7 @@ use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
 use crate::hw::{
     self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING, STATE_SHUTDOWN,
+    VcpuCommSlot,
 };
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
@@ -64,7 +65,7 @@ pub enum Error {
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct Machine {
-    board: Arc<Board>,
+    pub board: Arc<Board>,
     event_rx: Receiver<u32>,
     event_tx: Sender<u32>,
 }
@@ -80,6 +81,11 @@ impl Machine {
         let ioapic = (!hv.caps().contains(HostCaps::HW_IOAPIC))
             .then(|| Arc::new(IoApic::new(hv.clone())));
 
+        let comm_pages = (0..config.num_cpu.max(1))
+            .map(|_| VcpuCommSlot::new())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
         let board = Board {
             hv,
             bridge,
@@ -89,6 +95,7 @@ impl Machine {
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
             vcpus: Arc::new(RwLock::new(Vec::new())),
+            comm_pages,
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
             ioapic,
             io_devs: RwLock::new(Vec::new()),

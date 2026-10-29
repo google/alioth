@@ -19,14 +19,13 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use parking_lot::RwLock;
 use vmm_core::host::abi::{
-    CoreToIoEntry, EXIT_INTERRUPTED, EXIT_IO, EXIT_MMIO, EXIT_REBOOT, EXIT_SHUTDOWN,
-    IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid, RawDoorbellSpec, RawRegEntry,
-    RawVmExit, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
-    decode_vm_entry,
+    CoreToIoEntry, IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid, RawDoorbellSpec,
+    RawRegEntry, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
+    VcpuCommPage,
 };
 pub use vmm_core::host::{VmmCoreBridge, VmmHostCore};
 use vmm_core::host::{
-    HvError, HvResult, IoSpace, MemProt, PayloadKind, RegId, RegVal, VmExit,
+    HvError, HvResult, IoSpace, MemProt, PayloadKind, RegId, RegVal,
 };
 use wasmtime::{
     Caller, Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store,
@@ -247,49 +246,16 @@ where
     linker.func_wrap(
         "vmm",
         "vcpu_run",
-        move |mut caller: Caller<'_, T>,
-              vcpu: u32,
-              entry_kind: u32,
-              entry_data: u64,
-              exit_out_ptr: u32|
-              -> i32 {
+        move |mut caller: Caller<'_, T>, vcpu: u32, comm_ptr: u32| -> i32 {
             let ctx = get_ctx(caller.data_mut());
-            let entry = decode_vm_entry(entry_kind, entry_data);
-            let exit = match ctx.host.vcpu_run(vcpu, entry) {
-                Ok(exit) => exit,
+            let mut comm = match read_struct::<VcpuCommPage>(&ctx.memory, comm_ptr) {
+                Ok(c) => c,
                 Err(e) => return e.code(),
             };
-            let raw_exit = match exit {
-                VmExit::Io { port, write, size } => RawVmExit {
-                    addr_or_port: port as u64,
-                    data: write.unwrap_or(0) as u64,
-                    kind: EXIT_IO,
-                    is_write: u8::from(write.is_some()),
-                    size,
-                    _pad: [0; 2],
-                },
-                VmExit::Mmio { gpa, write, size } => RawVmExit {
-                    addr_or_port: gpa,
-                    data: write.unwrap_or(0),
-                    kind: EXIT_MMIO,
-                    is_write: u8::from(write.is_some()),
-                    size,
-                    _pad: [0; 2],
-                },
-                VmExit::Shutdown => RawVmExit {
-                    kind: EXIT_SHUTDOWN,
-                    ..Default::default()
-                },
-                VmExit::Reboot => RawVmExit {
-                    kind: EXIT_REBOOT,
-                    ..Default::default()
-                },
-                VmExit::Interrupted => RawVmExit {
-                    kind: EXIT_INTERRUPTED,
-                    ..Default::default()
-                },
-            };
-            unit_rc(write_struct(&ctx.memory, exit_out_ptr, &raw_exit))
+            if let Err(e) = ctx.host.vcpu_run(vcpu, &mut comm) {
+                return e.code();
+            }
+            unit_rc(write_struct(&ctx.memory, comm_ptr, &comm))
         },
     )?;
 
@@ -736,7 +702,8 @@ pub fn run_wasm_core<H: VmmHostCore + ?Sized, B: VmmCoreBridge + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vmm_core::host::{HostCaps, MemObjId, VcpuId, VmEntry};
+    use vmm_core::host::abi::RawVmExit;
+    use vmm_core::host::{HostCaps, MemObjId, VcpuId, VmExit};
 
     struct DummyHv;
 
@@ -764,8 +731,9 @@ mod tests {
         fn vcpu_kick(&self, _vcpu: VcpuId) -> HvResult<()> {
             Ok(())
         }
-        fn vcpu_run(&self, _vcpu: VcpuId, _entry: VmEntry) -> HvResult<VmExit> {
-            Ok(VmExit::Shutdown)
+        fn vcpu_run(&self, _vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
+            comm.exit = RawVmExit::from_exit(VmExit::Shutdown);
+            Ok(())
         }
         fn mem_alloc(&self, _size: u64) -> HvResult<MemObjId> {
             Ok(0)
