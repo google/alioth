@@ -15,9 +15,12 @@
 
 use std::sync::Arc;
 
-use crate::host::Hypervisor;
+use crate::host::abi::{
+    EXEC_TYPE_LINUX, EXEC_TYPE_PVH, MAX_VIRTIO_DEVS, ShmBootInfo, ShmVirtioDeviceSpec,
+};
+use crate::host::{CoreBootInfo, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
 use crate::hw::BoardConfig;
-use crate::loader::Payload;
+use crate::loader::{ExecType, Payload};
 use crate::vm::Machine;
 
 pub mod host;
@@ -35,8 +38,62 @@ pub mod vm;
 #[cfg(target_os = "wasi")]
 pub mod wasm;
 
-pub fn run(hv: Arc<dyn Hypervisor>) -> Result<(), Box<dyn std::error::Error>> {
-    let (boot_info, virtio_specs) = hv.core_get_boot_info()?;
+fn read_boot_config(
+    bridge: &dyn VmmCoreBridge,
+) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>), host::HvError> {
+    let mut raw_boot = ShmBootInfo::default();
+    let mut raw_devs = vec![ShmVirtioDeviceSpec::default(); MAX_VIRTIO_DEVS];
+    let num_devs = bridge.boot_info(&mut raw_boot, &mut raw_devs)?;
+    raw_devs.truncate(num_devs);
+
+    let exec_type = match raw_boot.exec_type {
+        EXEC_TYPE_LINUX => Some(ExecType::Linux),
+        EXEC_TYPE_PVH => Some(ExecType::Pvh),
+        _ => None,
+    };
+    let cmd_line_len = (raw_boot.cmd_line_len as usize).min(raw_boot.cmd_line.len());
+    let cmd_line = if cmd_line_len > 0 {
+        Some(String::from_utf8_lossy(&raw_boot.cmd_line[..cmd_line_len]).into_owned())
+    } else {
+        None
+    };
+    let initramfs_size = if raw_boot.initramfs_size > 0 {
+        Some(raw_boot.initramfs_size)
+    } else {
+        None
+    };
+    let boot_info = CoreBootInfo {
+        num_cpus: raw_boot.num_cpus,
+        mem_size: raw_boot.mem_size as usize,
+        exec_type,
+        kernel_size: raw_boot.kernel_size,
+        initramfs_size,
+        cmd_line,
+    };
+
+    let mut specs = Vec::with_capacity(raw_devs.len());
+    for raw in raw_devs {
+        let name_len = (raw.name_len as usize).min(raw.name.len());
+        let name = String::from_utf8_lossy(&raw.name[..name_len]).into_owned();
+        let cfg_len = (raw.config_len as usize).min(raw.config_bytes.len());
+        let config_bytes = raw.config_bytes[..cfg_len].to_vec();
+        specs.push(VirtioDeviceSpec {
+            dev: raw.dev as u32,
+            name,
+            device_id: raw.device_id,
+            device_features: raw.device_features,
+            num_queues: raw.num_queues,
+            config_bytes,
+        });
+    }
+    Ok((boot_info, specs))
+}
+
+pub fn run(
+    hv: Arc<dyn VmmHostCore>,
+    bridge: Arc<dyn VmmCoreBridge>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (boot_info, virtio_specs) = read_boot_config(bridge.as_ref())?;
 
     let payload = boot_info.exec_type.map(|exec_type| Payload {
         exec_type,
@@ -46,7 +103,8 @@ pub fn run(hv: Arc<dyn Hypervisor>) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut vm = Machine::new(
-        Arc::clone(&hv),
+        hv,
+        bridge,
         BoardConfig {
             mem_size: boot_info.mem_size,
             num_cpu: boot_info.num_cpus,

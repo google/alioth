@@ -136,6 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i2c_fd,
         cfg_fd,
     })?);
+    let bridge = host.bridge();
 
-    wasm_host::run_wasm_core(Path::new(&component_path), host)
+    wasm_host::run_wasm_core(Path::new(&component_path), host, bridge)
 }

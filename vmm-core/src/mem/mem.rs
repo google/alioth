@@ -15,12 +15,11 @@
 use std::any::type_name;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use crate::sync::Mutex;
 use thiserror::Error;
 
-use crate::host::{self, VmEntry, VmMemory};
+use crate::host::{self, VmEntry, VmmHostCore};
 use crate::hw::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 
 pub mod addressable;
@@ -214,9 +213,9 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(vm_memory: Box<dyn VmMemory>) -> Self {
+    pub fn new(hv: Arc<dyn VmmHostCore>) -> Self {
         Memory {
-            ram_bus: Arc::new(RamBus::new(vm_memory)),
+            ram_bus: Arc::new(RamBus::new(hv)),
             mmio_bus: MmioBus::new(),
             regions: Mutex::new(Addressable::new()),
             io_bus: MmioBus::new(),
@@ -230,7 +229,6 @@ impl Memory {
 
     pub fn reset(&self) -> Result<()> {
         self.clear()?;
-        self.ram_bus.next_slot_id.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -431,7 +429,7 @@ impl Memory {
 mod test {
     use std::sync::Arc;
 
-    use crate::host::test::FakeVmMemory;
+    use crate::host::test::FakeHost;
     use crate::mem::mmio::Mmio;
     use crate::mem::{AddrOpt, MMIO_32_START, MemRegion, MemRegionType, Memory, Result};
 
@@ -454,7 +452,7 @@ mod test {
             }
         }
 
-        let memory = Memory::new(FakeVmMemory());
+        let memory = Memory::new(FakeHost::new_arc());
         assert_eq!(
             memory
                 .add_region(

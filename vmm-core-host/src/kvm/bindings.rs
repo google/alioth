@@ -228,12 +228,41 @@ pub const KVM_EXIT_IO_OUT: u8 = 1;
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
+pub struct KvmIrqLevel {
+    pub irq: u32,
+    pub level: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct KvmIrqfd {
     pub fd: u32,
     pub gsi: u32,
     pub flags: u32,
     pub resamplefd: u32,
     pub pad: [u8; 16usize],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmMsrEntry {
+    pub index: u32,
+    pub reserved: u32,
+    pub data: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct KvmMsrs<const N: usize> {
+    pub nmsrs: u32,
+    pub pad: u32,
+    pub entries: [KvmMsrEntry; N],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct KvmMpState {
+    pub mp_state: u32,
 }
 
 #[repr(C)]
@@ -287,6 +316,7 @@ ioctl_write_val!(kvm_set_tss_addr, ioctl_io(KVMIO, 0x47));
 ioctl_write_ptr!(kvm_set_identity_map_addr, KVMIO, 0x48, u64);
 
 ioctl_none!(kvm_create_irqchip, KVMIO, 0x60, 0);
+ioctl_write_ptr!(kvm_irq_line, KVMIO, 0x61, KvmIrqLevel);
 
 ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
 
@@ -297,9 +327,16 @@ ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
 ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
 #[cfg(target_arch = "x86_64")]
 ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
+#[cfg(target_arch = "x86_64")]
+ioctl_writeread_buf!(kvm_get_msrs, KVMIO, 0x88, KvmMsrs);
+#[cfg(target_arch = "x86_64")]
+ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 
 #[cfg(target_arch = "x86_64")]
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
+
+ioctl_read!(kvm_get_mp_state, KVMIO, 0x98, KvmMpState);
+ioctl_write_ptr!(kvm_set_mp_state, KVMIO, 0x99, KvmMpState);
 
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 

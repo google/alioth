@@ -13,13 +13,15 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
+use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::sync::Arc;
 
 use bitfield::bitfield;
 use bitflags::bitflags;
 
-use crate::host::{Hypervisor, IntxSender};
+use crate::host::abi::{CORE_MSG_SERIAL_TX, CoreToIoEntry};
+use crate::host::{VmmCoreBridge, VmmHostCore};
 use crate::mem;
 use crate::mem::mmio::Mmio;
 use crate::sync::Mutex;
@@ -180,12 +182,22 @@ struct SerialReg {
     data: VecDeque<u8>,
 }
 
-#[derive(Debug)]
 pub struct Serial {
     base_port: u16,
-    irq_sender: Arc<dyn IntxSender>,
-    hv: Arc<dyn Hypervisor>,
+    gsi: u32,
+    hv: Arc<dyn VmmHostCore>,
+    bridge: Arc<dyn VmmCoreBridge>,
     reg: Arc<Mutex<SerialReg>>,
+}
+
+impl Debug for Serial {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Serial")
+            .field("base_port", &self.base_port)
+            .field("gsi", &self.gsi)
+            .field("reg", &self.reg)
+            .finish()
+    }
 }
 
 impl Mmio for Serial {
@@ -251,7 +263,13 @@ impl Mmio for Serial {
                     }
                     reg.line_status |= LineStatus::DATA_READY;
                 } else {
-                    if let Err(e) = self.hv.core_serial_tx(byte) {
+                    let mut entry = CoreToIoEntry {
+                        msg_type: CORE_MSG_SERIAL_TX,
+                        aux_u16: 1,
+                        ..Default::default()
+                    };
+                    entry.data[0] = byte;
+                    if let Err(e) = self.bridge.send_io_cmd(&entry) {
                         log::error!(
                             "Serial {:#x}: cannot write byte {:#02x}: {:?}",
                             self.base_port,
@@ -296,16 +314,17 @@ impl Mmio for Serial {
 impl Serial {
     pub fn new(
         base_port: u16,
-        intx_sender: Box<dyn IntxSender>,
-        hv: Arc<dyn Hypervisor>,
+        gsi: u32,
+        hv: Arc<dyn VmmHostCore>,
+        bridge: Arc<dyn VmmCoreBridge>,
     ) -> io::Result<Self> {
-        let irq_sender: Arc<dyn IntxSender> = Arc::from(intx_sender);
         let reg = Arc::new(Mutex::new(SerialReg::default()));
         Ok(Serial {
             reg,
             base_port,
-            irq_sender,
+            gsi,
             hv,
+            bridge,
         })
     }
 
@@ -326,7 +345,11 @@ impl Serial {
     }
 
     fn send_irq(&self) {
-        if let Err(e) = self.irq_sender.send() {
+        if let Err(e) = self
+            .hv
+            .set_gsi_level(self.gsi, true)
+            .and_then(|()| self.hv.set_gsi_level(self.gsi, false))
+        {
             log::error!("Serial {:#x}: sending interrupt: {:?}", self.base_port, e);
         }
     }

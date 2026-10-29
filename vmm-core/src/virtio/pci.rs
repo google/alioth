@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -21,7 +21,11 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use derive_layout::Layout;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::host::{Handle, Hypervisor, VirtioDeviceSpec, VirtioQueueConfig};
+use crate::host::abi::{
+    CORE_MSG_VIRTIO_NOTIFY, CORE_MSG_VIRTIO_RESET, CORE_MSG_VIRTIO_START, CoreToIoEntry,
+    MAX_QUEUES_PER_DEV, ShmDeviceMsixRouting, ShmMsiEntry, ShmVirtioQueueConfig,
+};
+use crate::host::{VirtioDeviceSpec, VmmCoreBridge};
 use crate::hw::pci::cap::{
     MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio, PciCap,
     PciCapHdr, PciCapId, PciCapList,
@@ -47,12 +51,20 @@ struct VirtioPciMsixVector {
     queues: Vec<AtomicU16>,
 }
 
-#[derive(Debug)]
 pub struct PciIrqRouting {
-    dev_handle: Handle,
+    dev_id: u32,
     msix_vector: VirtioPciMsixVector,
     msix_entries: Arc<Vec<RwLock<MsixTableEntry>>>,
-    hv: Arc<dyn Hypervisor>,
+    bridge: Arc<dyn VmmCoreBridge>,
+}
+
+impl Debug for PciIrqRouting {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PciIrqRouting")
+            .field("dev_id", &self.dev_id)
+            .field("msix_vector", &self.msix_vector)
+            .finish()
+    }
 }
 
 impl PciIrqRouting {
@@ -72,22 +84,32 @@ impl PciIrqRouting {
     }
 
     pub fn sync_to_host(&self) {
+        let mut routing = ShmDeviceMsixRouting::default();
         let config_vec = self.msix_vector.config.load(Ordering::Acquire);
-        let config_msi = self.resolve_vector(config_vec);
-        let queue_msis: Vec<Option<(u64, u32)>> = self
+        if let Some((addr, data)) = self.resolve_vector(config_vec) {
+            routing.config_msi = ShmMsiEntry {
+                addr,
+                data,
+                enabled: 1,
+            };
+        }
+        for (i, q) in self
             .msix_vector
             .queues
             .iter()
-            .map(|q| self.resolve_vector(q.load(Ordering::Acquire)))
-            .collect();
-        if let Err(e) = self
-            .hv
-            .core_virtio_update_irq(self.dev_handle, config_msi, &queue_msis)
+            .enumerate()
+            .take(MAX_QUEUES_PER_DEV)
         {
-            log::error!(
-                "dev {}: failed to update MSI-X routing: {e}",
-                self.dev_handle
-            );
+            if let Some((addr, data)) = self.resolve_vector(q.load(Ordering::Acquire)) {
+                routing.queue_msis[i] = ShmMsiEntry {
+                    addr,
+                    data,
+                    enabled: 1,
+                };
+            }
+        }
+        if let Err(e) = self.bridge.update_irq_route(self.dev_id, &routing) {
+            log::error!("dev {}: failed to update MSI-X routing: {e}", self.dev_id);
         }
     }
 }
@@ -168,42 +190,71 @@ pub struct VirtioPciRegister {
     queue_notify: PhantomData<[u32]>,
 }
 
-#[derive(Debug)]
 pub struct VirtioPciRegisterMmio {
     name: Arc<String>,
-    dev_handle: Handle,
+    dev_id: u32,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
     irq_routing: Arc<PciIrqRouting>,
-    hv: Arc<dyn Hypervisor>,
+    bridge: Arc<dyn VmmCoreBridge>,
+}
+
+impl Debug for VirtioPciRegisterMmio {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VirtioPciRegisterMmio")
+            .field("name", &self.name)
+            .field("dev_id", &self.dev_id)
+            .finish()
+    }
 }
 
 impl VirtioPciRegisterMmio {
     fn start_dev(&self) {
         self.irq_routing.sync_to_host();
         let driver_features = self.reg.driver_feature.load(Ordering::Acquire);
-        let queue_configs: Vec<VirtioQueueConfig> = self
-            .queues
-            .iter()
-            .map(|q| VirtioQueueConfig {
+        let mut raw_queues = [ShmVirtioQueueConfig::default(); MAX_QUEUES_PER_DEV];
+        let nq = self.queues.len().min(MAX_QUEUES_PER_DEV);
+        for (i, q) in self.queues.iter().take(nq).enumerate() {
+            raw_queues[i] = ShmVirtioQueueConfig {
                 size: q.size.load(Ordering::Acquire),
-                enabled: q.enabled.load(Ordering::Acquire),
+                enabled: u16::from(q.enabled.load(Ordering::Acquire)),
+                _pad: 0,
                 desc_gpa: q.desc.load(Ordering::Acquire),
                 avail_gpa: q.driver.load(Ordering::Acquire),
                 used_gpa: q.device.load(Ordering::Acquire),
-            })
-            .collect();
-        if let Err(e) =
-            self.hv
-                .core_virtio_start(self.dev_handle, driver_features, &queue_configs)
+            };
+        }
+        if let Err(e) = self
+            .bridge
+            .configure_device_queues(self.dev_id, &raw_queues[..nq])
         {
-            log::error!("{}: core_virtio_start failed: {e}", self.name);
+            log::error!("{}: configure_device_queues failed: {e}", self.name);
+            return;
+        }
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_START,
+            aux_u16: nq as u16,
+            _pad: 0,
+            dev: self.dev_id as u64,
+            features: driver_features,
+            data: [0; 40],
+        };
+        if let Err(e) = self.bridge.send_io_cmd(&entry) {
+            log::error!("{}: virtio start send_io_cmd failed: {e}", self.name);
         }
     }
 
     fn notify_dev(&self, q_index: u16) {
-        if let Err(e) = self.hv.core_virtio_notify(self.dev_handle, q_index) {
-            log::error!("{}: core_virtio_notify({q_index}) failed: {e}", self.name);
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_NOTIFY,
+            aux_u16: q_index,
+            _pad: 0,
+            dev: self.dev_id as u64,
+            features: 0,
+            data: [0; 40],
+        };
+        if let Err(e) = self.bridge.send_io_cmd(&entry) {
+            log::error!("{}: virtio notify({q_index}) failed: {e}", self.name);
         }
     }
 
@@ -217,8 +268,16 @@ impl VirtioPciRegisterMmio {
             q.enabled.store(false, Ordering::Release);
         }
         self.irq_routing.sync_to_host();
-        if let Err(e) = self.hv.core_virtio_reset(self.dev_handle) {
-            log::error!("{}: core_virtio_reset failed: {e}", self.name);
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_VIRTIO_RESET,
+            aux_u16: 0,
+            _pad: 0,
+            dev: self.dev_id as u64,
+            features: 0,
+            data: [0; 40],
+        };
+        if let Err(e) = self.bridge.send_io_cmd(&entry) {
+            log::error!("{}: virtio reset failed: {e}", self.name);
         }
     }
 }
@@ -552,7 +611,7 @@ pub struct VirtioPciDevice {
 }
 
 impl VirtioPciDevice {
-    pub fn from_spec(spec: VirtioDeviceSpec, hv: Arc<dyn Hypervisor>) -> Result<Self> {
+    pub fn from_spec(spec: VirtioDeviceSpec, bridge: Arc<dyn VmmCoreBridge>) -> Result<Self> {
         let name = Arc::new(spec.name);
         let device_id = DeviceId::from_u16(spec.device_id);
         let (class, subclass) = get_class(device_id);
@@ -672,10 +731,10 @@ impl VirtioPciDevice {
         };
 
         let irq_routing = Arc::new(PciIrqRouting {
-            dev_handle: spec.dev,
+            dev_id: spec.dev,
             msix_vector,
             msix_entries: msix_entries.clone(),
-            hv: hv.clone(),
+            bridge: bridge.clone(),
         });
 
         let irq_routing_cap_cb = {
@@ -717,11 +776,11 @@ impl VirtioPciDevice {
 
         let registers = Arc::new(VirtioPciRegisterMmio {
             name: name.clone(),
-            dev_handle: spec.dev,
+            dev_id: spec.dev,
             reg: reg.clone(),
             queues,
             irq_routing,
-            hv,
+            bridge,
         });
         bar0.ranges.push(MemRange::Emulated(Arc::new(MsixTableMmio {
             entries: msix_entries,

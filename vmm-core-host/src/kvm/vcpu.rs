@@ -18,30 +18,44 @@ use std::os::fd::{OwnedFd, RawFd};
 use std::ptr::null_mut;
 
 use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
-use vmm_core::host::arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
-use vmm_core::host::{Error, Result, Vcpu, VmEntry, VmExit};
+use vmm_core::host::abi::RawCpuid;
+use vmm_core::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
+use vmm_core::host::{HvError, HvResult, MpState, RegId, RegVal, VmEntry, VmExit};
 use vmm_core::hw::reg::SegAccess;
 
 use crate::ffi;
 use crate::kvm::bindings::{
     KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN,
-    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmRegs, KvmRun,
-    kvm_get_regs, kvm_get_sregs, kvm_get_sregs2, kvm_run, kvm_set_cpuid2, kvm_set_regs,
-    kvm_set_sregs, kvm_set_sregs2,
+    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMpState, KvmMsrEntry,
+    KvmMsrs, KvmRegs, KvmRun, KvmSregs, kvm_get_mp_state, kvm_get_msrs, kvm_get_regs,
+    kvm_get_sregs, kvm_run, kvm_set_cpuid2, kvm_set_mp_state, kvm_set_msrs, kvm_set_regs,
+    kvm_set_sregs,
 };
 
-pub(super) struct KvmRunBlock {
+pub(crate) fn io_to_hv_err(e: std::io::Error) -> HvError {
+    match e.kind() {
+        ErrorKind::WouldBlock => HvError::WouldBlock,
+        ErrorKind::Interrupted => HvError::Interrupted,
+        ErrorKind::InvalidInput => HvError::InvalidParam,
+        ErrorKind::OutOfMemory => HvError::NoMemory,
+        ErrorKind::Unsupported => HvError::Unsupported,
+        _ => HvError::HardwareFault,
+    }
+}
+
+pub(crate) struct KvmRunBlock {
     addr: usize,
     size: usize,
 }
 
 impl KvmRunBlock {
-    pub unsafe fn new(fd: RawFd, mmap_size: usize) -> Result<KvmRunBlock, Error> {
+    pub unsafe fn new(fd: RawFd, mmap_size: usize) -> HvResult<KvmRunBlock> {
         let prot = PROT_READ | PROT_WRITE;
         let addr = ffi!(
             unsafe { mmap(null_mut(), mmap_size, prot, MAP_SHARED, fd, 0) },
             MAP_FAILED
-        )?;
+        )
+        .map_err(io_to_hv_err)?;
         Ok(KvmRunBlock {
             addr: addr as usize,
             size: mmap_size,
@@ -80,12 +94,12 @@ impl Drop for KvmRunBlock {
 }
 
 pub struct KvmVcpu {
-    pub(super) kvm_run: KvmRunBlock,
-    pub(super) fd: OwnedFd,
+    pub(crate) kvm_run: KvmRunBlock,
+    pub(crate) fd: OwnedFd,
 }
 
 macro_rules! set_kvm_sreg {
-    ($kvm_sregs:ident, $sreg:ident, $val:expr) => {
+    ($kvm_sregs:ident, $sreg:ident, $val:expr) => {{
         match $sreg {
             SReg::Cr0 => $kvm_sregs.cr0 = $val,
             SReg::Cr2 => $kvm_sregs.cr2 = $val,
@@ -95,22 +109,22 @@ macro_rules! set_kvm_sreg {
             SReg::Efer => $kvm_sregs.efer = $val,
             SReg::ApicBase => $kvm_sregs.apic_base = $val,
         }
-    };
+    }};
 }
 
 macro_rules! set_kvm_dt_reg {
-    ($kvm_sregs:ident, $dt_reg:ident, $val:expr) => {
+    ($kvm_sregs:ident, $dt_reg:ident, $val:expr) => {{
         let target = match $dt_reg {
             DtReg::Idtr => &mut $kvm_sregs.idt,
             DtReg::Gdtr => &mut $kvm_sregs.gdt,
         };
         target.limit = $val.limit;
         target.base = $val.base;
-    };
+    }};
 }
 
 macro_rules! set_kvm_seg_reg {
-    ($kvm_sregs:ident, $seg_reg:ident, $val:expr) => {
+    ($kvm_sregs:ident, $seg_reg:ident, $val:expr) => {{
         let target = match $seg_reg {
             SegReg::Cs => &mut $kvm_sregs.cs,
             SegReg::Ds => &mut $kvm_sregs.ds,
@@ -133,7 +147,7 @@ macro_rules! set_kvm_seg_reg {
         target.g = $val.access.granularity() as u8;
         target.l = $val.access.l_64bit() as u8;
         target.unusable = $val.access.unusable() as u8;
-    };
+    }};
 }
 
 macro_rules! get_kvm_sreg {
@@ -193,56 +207,54 @@ macro_rules! get_kvm_seg_reg {
     }};
 }
 
-impl Vcpu for KvmVcpu {
-    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
-        KvmVcpu::run(self, entry)
+fn read_gpr(kvm_regs: &KvmRegs, reg: Reg) -> u64 {
+    match reg {
+        Reg::Rax => kvm_regs.rax,
+        Reg::Rbx => kvm_regs.rbx,
+        Reg::Rcx => kvm_regs.rcx,
+        Reg::Rdx => kvm_regs.rdx,
+        Reg::Rsi => kvm_regs.rsi,
+        Reg::Rdi => kvm_regs.rdi,
+        Reg::Rsp => kvm_regs.rsp,
+        Reg::Rbp => kvm_regs.rbp,
+        Reg::R8 => kvm_regs.r8,
+        Reg::R9 => kvm_regs.r9,
+        Reg::R10 => kvm_regs.r10,
+        Reg::R11 => kvm_regs.r11,
+        Reg::R12 => kvm_regs.r12,
+        Reg::R13 => kvm_regs.r13,
+        Reg::R14 => kvm_regs.r14,
+        Reg::R15 => kvm_regs.r15,
+        Reg::Rip => kvm_regs.rip,
+        Reg::Rflags => kvm_regs.rflags,
     }
+}
 
-    fn get_reg(&self, reg: Reg) -> Result<u64, Error> {
-        self.kvm_get_reg(reg)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error> {
-        self.kvm_get_dt_reg(reg)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error> {
-        self.kvm_get_seg_reg(reg)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn get_sreg(&self, reg: SReg) -> Result<u64, Error> {
-        self.kvm_get_sreg(reg)
-    }
-
-    fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error> {
-        self.kvm_set_regs(vals)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn set_sregs(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error> {
-        self.kvm_set_sregs(sregs, seg_regs, dt_regs)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
-        self.kvm_set_cpuids(cpuids)
-    }
-
-    fn dump(&self) -> Result<(), Error> {
-        Ok(())
+fn write_gpr(kvm_regs: &mut KvmRegs, reg: Reg, val: u64) {
+    match reg {
+        Reg::Rax => kvm_regs.rax = val,
+        Reg::Rbx => kvm_regs.rbx = val,
+        Reg::Rcx => kvm_regs.rcx = val,
+        Reg::Rdx => kvm_regs.rdx = val,
+        Reg::Rsi => kvm_regs.rsi = val,
+        Reg::Rdi => kvm_regs.rdi = val,
+        Reg::Rsp => kvm_regs.rsp = val,
+        Reg::Rbp => kvm_regs.rbp = val,
+        Reg::R8 => kvm_regs.r8 = val,
+        Reg::R9 => kvm_regs.r9 = val,
+        Reg::R10 => kvm_regs.r10 = val,
+        Reg::R11 => kvm_regs.r11 = val,
+        Reg::R12 => kvm_regs.r12 = val,
+        Reg::R13 => kvm_regs.r13 = val,
+        Reg::R14 => kvm_regs.r14 = val,
+        Reg::R15 => kvm_regs.r15 = val,
+        Reg::Rip => kvm_regs.rip = val,
+        Reg::Rflags => kvm_regs.rflags = val,
     }
 }
 
 impl KvmVcpu {
-    pub fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error> {
+    pub fn run(&mut self, entry: VmEntry) -> HvResult<VmExit> {
         match entry {
             VmEntry::None => {}
             VmEntry::Io { data } => self.entry_io(data),
@@ -265,18 +277,21 @@ impl KvmVcpu {
                     self.set_immediate_exit(false);
                     Ok(VmExit::Interrupted)
                 }
-                _ => Err(e.into()),
+                _ => Err(io_to_hv_err(e)),
             },
             Ok(_) => match self.kvm_run.exit_reason {
                 KVM_EXIT_IO => self.handle_io(),
                 KVM_EXIT_MMIO => self.handle_mmio(),
                 KVM_EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
-                reason => Ok(VmExit::Unknown(format!("unkown kvm exit: {reason:#x}"))),
+                reason => {
+                    log::error!("unknown kvm exit: {reason:#x}");
+                    Err(HvError::HardwareFault)
+                }
             },
         }
     }
 
-    pub(super) fn immediate_exit_ptr(&mut self) -> *mut std::sync::atomic::AtomicU8 {
+    pub(crate) fn immediate_exit_ptr(&mut self) -> *mut std::sync::atomic::AtomicU8 {
         (&mut self.kvm_run.immediate_exit as *mut u8).cast()
     }
 
@@ -313,10 +328,10 @@ impl KvmVcpu {
     }
 
     #[cfg(target_endian = "little")]
-    pub(super) fn handle_mmio(&mut self) -> Result<VmExit, Error> {
+    pub(super) fn handle_mmio(&mut self) -> HvResult<VmExit> {
         let kvm_mmio = unsafe { &self.kvm_run.exit.mmio };
         let exit = VmExit::Mmio {
-            addr: kvm_mmio.phys_addr,
+            gpa: kvm_mmio.phys_addr,
             write: if kvm_mmio.is_write > 0 {
                 Some(u64::from_ne_bytes(kvm_mmio.data))
             } else {
@@ -327,7 +342,7 @@ impl KvmVcpu {
         Ok(exit)
     }
 
-    pub(super) fn handle_io(&mut self) -> Result<VmExit, Error> {
+    pub(super) fn handle_io(&mut self) -> HvResult<VmExit> {
         let kvm_io = unsafe { &self.kvm_run.exit.io };
         let offset = kvm_io.data_offset as usize;
         let count = kvm_io.count as usize;
@@ -355,173 +370,200 @@ impl KvmVcpu {
         })
     }
 
-    fn get_kvm_regs(&self) -> Result<KvmRegs> {
-        let kvm_regs = unsafe { kvm_get_regs(&self.fd) }?;
-        Ok(kvm_regs)
-    }
-
-    fn set_kvm_regs(&self, kvm_regs: &KvmRegs) -> Result<()> {
-        unsafe { kvm_set_regs(&self.fd, kvm_regs) }?;
-        Ok(())
-    }
-
-    pub fn kvm_set_regs(&self, vals: &[(Reg, u64)]) -> Result<()> {
-        let mut kvm_regs = self.get_kvm_regs()?;
-        for (reg, val) in vals {
-            match reg {
-                Reg::Rax => kvm_regs.rax = *val,
-                Reg::Rbx => kvm_regs.rbx = *val,
-                Reg::Rcx => kvm_regs.rcx = *val,
-                Reg::Rdx => kvm_regs.rdx = *val,
-                Reg::Rsi => kvm_regs.rsi = *val,
-                Reg::Rdi => kvm_regs.rdi = *val,
-                Reg::Rsp => kvm_regs.rsp = *val,
-                Reg::Rbp => kvm_regs.rbp = *val,
-                Reg::R8 => kvm_regs.r8 = *val,
-                Reg::R9 => kvm_regs.r9 = *val,
-                Reg::R10 => kvm_regs.r10 = *val,
-                Reg::R11 => kvm_regs.r11 = *val,
-                Reg::R12 => kvm_regs.r12 = *val,
-                Reg::R13 => kvm_regs.r13 = *val,
-                Reg::R14 => kvm_regs.r14 = *val,
-                Reg::R15 => kvm_regs.r15 = *val,
-                Reg::Rip => kvm_regs.rip = *val,
-                Reg::Rflags => kvm_regs.rflags = *val,
-            }
-        }
-        self.set_kvm_regs(&kvm_regs)
-    }
-
-    pub fn kvm_get_reg(&self, reg: Reg) -> Result<u64> {
-        let kvm_regs = self.get_kvm_regs()?;
-        let val = match reg {
-            Reg::Rax => kvm_regs.rax,
-            Reg::Rbx => kvm_regs.rbx,
-            Reg::Rcx => kvm_regs.rcx,
-            Reg::Rdx => kvm_regs.rdx,
-            Reg::Rsi => kvm_regs.rsi,
-            Reg::Rdi => kvm_regs.rdi,
-            Reg::Rsp => kvm_regs.rsp,
-            Reg::Rbp => kvm_regs.rbp,
-            Reg::R8 => kvm_regs.r8,
-            Reg::R9 => kvm_regs.r9,
-            Reg::R10 => kvm_regs.r10,
-            Reg::R11 => kvm_regs.r11,
-            Reg::R12 => kvm_regs.r12,
-            Reg::R13 => kvm_regs.r13,
-            Reg::R14 => kvm_regs.r14,
-            Reg::R15 => kvm_regs.r15,
-            Reg::Rip => kvm_regs.rip,
-            Reg::Rflags => kvm_regs.rflags,
-        };
-        Ok(val)
-    }
-
-    #[allow(dead_code)]
-    pub fn kvm_set_sregs2(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error> {
-        let mut kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
-        for (reg, val) in sregs {
-            set_kvm_sreg!(kvm_sregs2, reg, *val)
-        }
-        for (reg, val) in dt_regs {
-            set_kvm_dt_reg!(kvm_sregs2, reg, val);
-        }
-        for (reg, val) in seg_regs {
-            set_kvm_seg_reg!(kvm_sregs2, reg, val);
-        }
-        unsafe { kvm_set_sregs2(&self.fd, &kvm_sregs2) }?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn kvm_get_dt_reg2(&self, reg: DtReg) -> Result<DtRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
-        let val = get_kvm_dt_reg!(kvm_sregs2, reg);
-        Ok(val)
-    }
-
-    #[allow(dead_code)]
-    pub fn kvm_get_seg_reg2(&self, reg: SegReg) -> Result<SegRegVal> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
-        let val = get_kvm_seg_reg!(kvm_sregs2, reg);
-        Ok(val)
-    }
-
-    #[allow(dead_code)]
-    pub fn kvm_get_sreg2(&self, reg: SReg) -> Result<u64> {
-        let kvm_sregs2 = unsafe { kvm_get_sregs2(&self.fd) }?;
-        let val = get_kvm_sreg!(kvm_sregs2, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_set_sregs(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error> {
-        let mut kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
-        for (reg, val) in sregs {
-            set_kvm_sreg!(kvm_sregs, reg, *val)
-        }
-        for (reg, val) in dt_regs {
-            set_kvm_dt_reg!(kvm_sregs, reg, val);
-        }
-        for (reg, val) in seg_regs {
-            set_kvm_seg_reg!(kvm_sregs, reg, val);
-        }
-        unsafe { kvm_set_sregs(&self.fd, &kvm_sregs) }?;
-        Ok(())
-    }
-
-    pub fn kvm_get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
-        let val = get_kvm_dt_reg!(kvm_sregs, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
-        let val = get_kvm_seg_reg!(kvm_sregs, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_get_sreg(&self, reg: SReg) -> Result<u64> {
-        let kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }?;
-        let val = get_kvm_sreg!(kvm_sregs, reg);
-        Ok(val)
-    }
-
-    pub fn kvm_set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error> {
+    pub fn configure_cpuids(&mut self, cpuids: &[RawCpuid]) -> HvResult<()> {
         if cpuids.len() > KVM_MAX_CPUID_ENTRIES {
-            Err(Error::Unexpected {
-                msg: format!("exeeds kvm cpuid entry limit: {KVM_MAX_CPUID_ENTRIES}"),
-            })?
+            return Err(HvError::InvalidParam);
         }
         let mut kvm_cpuid2 = KvmCpuid2 {
             nent: cpuids.len() as u32,
             padding: 0,
             entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
         };
-        for (cpuid, entry) in std::iter::zip(cpuids, kvm_cpuid2.entries.iter_mut()) {
+        for (cpuid, entry) in cpuids.iter().zip(kvm_cpuid2.entries.iter_mut()) {
             entry.eax = cpuid.eax;
             entry.ebx = cpuid.ebx;
             entry.ecx = cpuid.ecx;
             entry.edx = cpuid.edx;
             entry.function = cpuid.func;
-            if let Some(index) = cpuid.index {
-                entry.index = index;
+            if cpuid.has_index != 0 {
+                entry.index = cpuid.index;
                 entry.flags = KvmCpuid2Flag::SIGNIFCANT_INDEX;
             } else {
                 entry.flags = KvmCpuid2Flag::empty();
             }
         }
-        unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }?;
+        unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }.map_err(io_to_hv_err)?;
+        Ok(())
+    }
+
+    pub fn get_regs_batch(&self, ids: &[RegId], out: &mut [RegVal]) -> HvResult<()> {
+        if ids.len() != out.len() {
+            return Err(HvError::InvalidParam);
+        }
+        let mut cached_regs: Option<KvmRegs> = None;
+        let mut cached_sregs: Option<KvmSregs> = None;
+
+        for (id, dst) in ids.iter().copied().zip(out.iter_mut()) {
+            match id {
+                RegId::Gpr(reg) => {
+                    let kvm_regs = match &cached_regs {
+                        Some(r) => r,
+                        None => {
+                            let r = unsafe { kvm_get_regs(&self.fd) }.map_err(io_to_hv_err)?;
+                            cached_regs.insert(r)
+                        }
+                    };
+                    *dst = RegVal::Scalar(read_gpr(kvm_regs, reg));
+                }
+                RegId::SReg(sreg) => {
+                    let kvm_sregs = match &cached_sregs {
+                        Some(s) => s,
+                        None => {
+                            let s = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+                            cached_sregs.insert(s)
+                        }
+                    };
+                    *dst = RegVal::Scalar(get_kvm_sreg!(kvm_sregs, sreg));
+                }
+                RegId::SegReg(seg_reg) => {
+                    let kvm_sregs = match &cached_sregs {
+                        Some(s) => s,
+                        None => {
+                            let s = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+                            cached_sregs.insert(s)
+                        }
+                    };
+                    *dst = RegVal::Seg(get_kvm_seg_reg!(kvm_sregs, seg_reg));
+                }
+                RegId::DtReg(dt_reg) => {
+                    let kvm_sregs = match &cached_sregs {
+                        Some(s) => s,
+                        None => {
+                            let s = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+                            cached_sregs.insert(s)
+                        }
+                    };
+                    *dst = RegVal::Dt(get_kvm_dt_reg!(kvm_sregs, dt_reg));
+                }
+                RegId::Msr(index) => {
+                    let mut msrs = KvmMsrs::<1> {
+                        nmsrs: 1,
+                        pad: 0,
+                        entries: [KvmMsrEntry {
+                            index,
+                            reserved: 0,
+                            data: 0,
+                        }],
+                    };
+                    let n = unsafe { kvm_get_msrs(&self.fd, &mut msrs) }.map_err(io_to_hv_err)?;
+                    if n != 1 {
+                        return Err(HvError::InvalidParam);
+                    }
+                    *dst = RegVal::Scalar(msrs.entries[0].data);
+                }
+                RegId::MpState => {
+                    let st = unsafe { kvm_get_mp_state(&self.fd) }.map_err(io_to_hv_err)?;
+                    *dst = RegVal::MpState(MpState::from_u32(st.mp_state)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_regs_batch(&mut self, regs: &[(RegId, RegVal)]) -> HvResult<()> {
+        let mut has_sregs = false;
+        let mut has_gprs = false;
+        let mut msr_count = 0usize;
+        let mut mp_state: Option<MpState> = None;
+
+        for &(id, val) in regs {
+            match (id, val) {
+                (RegId::SReg(_), RegVal::Scalar(_))
+                | (RegId::SegReg(_), RegVal::Seg(_))
+                | (RegId::DtReg(_), RegVal::Dt(_)) => {
+                    has_sregs = true;
+                }
+                (RegId::Gpr(_), RegVal::Scalar(_)) => {
+                    has_gprs = true;
+                }
+                (RegId::Msr(_), RegVal::Scalar(_)) => {
+                    msr_count += 1;
+                }
+                (RegId::MpState, RegVal::MpState(st)) => {
+                    mp_state = Some(st);
+                }
+                _ => return Err(HvError::InvalidParam),
+            }
+        }
+
+        if has_sregs {
+            let mut kvm_sregs = unsafe { kvm_get_sregs(&self.fd) }.map_err(io_to_hv_err)?;
+            for &(id, val) in regs {
+                match (id, val) {
+                    (RegId::SReg(sreg), RegVal::Scalar(v)) => set_kvm_sreg!(kvm_sregs, sreg, v),
+                    (RegId::SegReg(seg_reg), RegVal::Seg(v)) => {
+                        set_kvm_seg_reg!(kvm_sregs, seg_reg, v)
+                    }
+                    (RegId::DtReg(dt_reg), RegVal::Dt(v)) => set_kvm_dt_reg!(kvm_sregs, dt_reg, v),
+                    _ => {}
+                }
+            }
+            unsafe { kvm_set_sregs(&self.fd, &kvm_sregs) }.map_err(io_to_hv_err)?;
+        }
+
+        if has_gprs {
+            let mut kvm_regs = unsafe { kvm_get_regs(&self.fd) }.map_err(io_to_hv_err)?;
+            for &(id, val) in regs {
+                if let (RegId::Gpr(reg), RegVal::Scalar(v)) = (id, val) {
+                    write_gpr(&mut kvm_regs, reg, v);
+                }
+            }
+            unsafe { kvm_set_regs(&self.fd, &kvm_regs) }.map_err(io_to_hv_err)?;
+        }
+
+        if msr_count > 0 {
+            const MSR_CHUNK: usize = 32;
+            let mut batch = KvmMsrs::<MSR_CHUNK> {
+                nmsrs: 0,
+                pad: 0,
+                entries: [KvmMsrEntry::default(); MSR_CHUNK],
+            };
+            let mut idx = 0usize;
+            for &(id, val) in regs {
+                if let (RegId::Msr(msr), RegVal::Scalar(data)) = (id, val) {
+                    batch.entries[idx] = KvmMsrEntry {
+                        index: msr,
+                        reserved: 0,
+                        data,
+                    };
+                    idx += 1;
+                    if idx == MSR_CHUNK {
+                        batch.nmsrs = idx as u32;
+                        let written =
+                            unsafe { kvm_set_msrs(&self.fd, &batch) }.map_err(io_to_hv_err)?;
+                        if written as usize != idx {
+                            return Err(HvError::InvalidParam);
+                        }
+                        idx = 0;
+                    }
+                }
+            }
+            if idx > 0 {
+                batch.nmsrs = idx as u32;
+                let written = unsafe { kvm_set_msrs(&self.fd, &batch) }.map_err(io_to_hv_err)?;
+                if written as usize != idx {
+                    return Err(HvError::InvalidParam);
+                }
+            }
+        }
+
+        if let Some(st) = mp_state {
+            let kvm_mp = KvmMpState {
+                mp_state: st as u32,
+            };
+            unsafe { kvm_set_mp_state(&self.fd, &kvm_mp) }.map_err(io_to_hv_err)?;
+        }
+
         Ok(())
     }
 }

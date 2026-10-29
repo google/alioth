@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use crate::sync::Mutex;
 
-use crate::host::arch::Cpuid;
-use crate::host::{Hypervisor, Vcpu};
+use crate::host::abi::RawCpuid;
+use crate::host::{MpState, RegId, RegVal, VcpuId, VmmHostCore};
 use crate::hw::{Board, Result};
 use crate::loader::InitState;
 use crate::mem::{AddrOpt, MemRange, MemRegion, MemRegionEntry, MemRegionType};
@@ -283,12 +283,14 @@ pub mod reg {
 use layout::{BIOS_DATA_END, EBDA_END, EBDA_START, MEM_64_START, RAM_32_SIZE};
 
 pub struct ArchBoard {
-    cpuids: Vec<Cpuid>,
+    cpuids: Vec<RawCpuid>,
 }
 
 impl ArchBoard {
-    pub fn new(hv: &dyn Hypervisor) -> Result<Self> {
-        let mut cpuids = hv.get_supported_cpuids()?;
+    pub fn new(hv: &dyn VmmHostCore) -> Result<Self> {
+        let mut cpuids = vec![RawCpuid::default(); 256];
+        let count = hv.supported_cpuids(&mut cpuids)?;
+        cpuids.truncate(count);
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
                 cpuid.ecx |= (1 << 24) | (1 << 31);
@@ -301,13 +303,31 @@ impl ArchBoard {
 }
 
 impl Board {
-    pub fn init_boot_vcpu(&self, vcpu: &mut dyn Vcpu, init_state: &InitState) -> Result<()> {
-        vcpu.set_sregs(&init_state.sregs, &init_state.seg_regs, &init_state.dt_regs)?;
-        vcpu.set_regs(&init_state.regs)?;
+    pub fn init_boot_vcpu(&self, id: VcpuId, init_state: &InitState) -> Result<()> {
+        let total = 1
+            + init_state.sregs.len()
+            + init_state.seg_regs.len()
+            + init_state.dt_regs.len()
+            + init_state.regs.len();
+        let mut batch = Vec::with_capacity(total);
+        batch.push((RegId::MpState, RegVal::MpState(MpState::Runnable)));
+        for &(r, v) in &init_state.sregs {
+            batch.push((RegId::SReg(r), RegVal::Scalar(v)));
+        }
+        for &(r, v) in &init_state.seg_regs {
+            batch.push((RegId::SegReg(r), RegVal::Seg(v)));
+        }
+        for &(r, v) in &init_state.dt_regs {
+            batch.push((RegId::DtReg(r), RegVal::Dt(v)));
+        }
+        for &(r, v) in &init_state.regs {
+            batch.push((RegId::Gpr(r), RegVal::Scalar(v)));
+        }
+        self.hv.vcpu_set_regs(id, &batch)?;
         Ok(())
     }
 
-    pub fn init_vcpu(&self, id: u32, vcpu: &mut dyn Vcpu) -> Result<()> {
+    pub fn init_vcpu(&self, id: VcpuId) -> Result<()> {
         let mut cpuids = self.arch.cpuids.clone();
         for cpuid in &mut cpuids {
             if cpuid.func == 0x1 {
@@ -317,7 +337,11 @@ impl Board {
                 cpuid.edx = id;
             }
         }
-        vcpu.set_cpuids(cpuids)?;
+        self.hv.vcpu_configure(id, &cpuids)?;
+        if id > 0 {
+            self.hv
+                .vcpu_set_regs(id, &[(RegId::MpState, RegVal::MpState(MpState::Uninitialized))])?;
+        }
         Ok(())
     }
 

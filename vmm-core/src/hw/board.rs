@@ -21,7 +21,12 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use zerocopy::AsBytes;
 
-use crate::host::{self, Hypervisor, PayloadKind, Vcpu, Vm, VmEntry, VmExit};
+use crate::host::abi::{
+    CORE_MSG_SHUTDOWN, CoreToIoEntry, IO_MSG_REQUEST_SHUTDOWN, IO_MSG_SERIAL_RX, IoToCoreEntry,
+};
+use crate::host::{
+    self, PayloadKind, VcpuId, VmEntry, VmExit, VmmCoreBridge, VmmHostCore,
+};
 use crate::loader::{self, ExecType, InitState, Payload, PayloadReader, linux, xen};
 use crate::mem::mmio::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
@@ -61,9 +66,6 @@ pub enum Error {
     #[error("virtio: {0}")]
     Virtio(#[from] virtio::Error),
 
-    #[error("cannot handle {0:#x?}")]
-    VmExit(String),
-
     #[error("host io: {0}")]
     HostIo(#[from] std::io::Error),
 
@@ -89,8 +91,8 @@ pub struct BoardConfig {
 type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
 
 pub struct Board {
-    pub hv: Arc<dyn Hypervisor>,
-    pub vm: Box<dyn Vm>,
+    pub hv: Arc<dyn VmmHostCore>,
+    pub bridge: Arc<dyn VmmCoreBridge>,
     pub memory: Memory,
     #[allow(clippy::type_complexity)]
     pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
@@ -130,10 +132,10 @@ impl Board {
         };
         let mem_regions = self.memory.mem_region_entries();
         let mut kernel_reader =
-            PayloadReader::new(self.hv.as_ref(), PayloadKind::Kernel, payload.kernel_size);
+            PayloadReader::new(self.bridge.as_ref(), PayloadKind::Kernel, payload.kernel_size);
         let mut initramfs_reader = payload
             .initramfs_size
-            .map(|sz| PayloadReader::new(self.hv.as_ref(), PayloadKind::Initramfs, sz));
+            .map(|sz| PayloadReader::new(self.bridge.as_ref(), PayloadKind::Initramfs, sz));
         let init_state = match payload.exec_type {
             ExecType::Linux => linux::load(
                 &self.memory.ram_bus(),
@@ -188,13 +190,13 @@ impl Board {
         Ok(())
     }
 
-    fn vcpu_loop(&self, vcpu: &mut dyn Vcpu, id: u32) -> Result<bool, Error> {
+    fn vcpu_loop(&self, id: VcpuId) -> Result<bool, Error> {
         let mut vm_entry = VmEntry::None;
         loop {
-            let vm_exit = vcpu.run(vm_entry)?;
+            let vm_exit = self.hv.vcpu_run(id, vm_entry)?;
             vm_entry = match vm_exit {
                 VmExit::Io { port, write, size } => self.memory.handle_io(port, write, size)?,
-                VmExit::Mmio { addr, write, size } => self.memory.handle_mmio(addr, write, size)?,
+                VmExit::Mmio { gpa, write, size } => self.memory.handle_mmio(gpa, write, size)?,
                 VmExit::Shutdown => {
                     log::info!("vcpu {id} requested shutdown");
                     break Ok(false);
@@ -210,7 +212,6 @@ impl Board {
                         _ => VmEntry::None,
                     }
                 }
-                VmExit::Unknown(msg) => break Err(Error::VmExit(msg)),
             };
         }
     }
@@ -227,15 +228,22 @@ impl Board {
         }
     }
 
+    pub fn notify_shutdown(&self) {
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_SHUTDOWN,
+            ..Default::default()
+        };
+        let _ = self.bridge.send_io_cmd(&entry);
+    }
+
     fn run_vcpu_inner(
         &self,
-        id: u32,
+        id: VcpuId,
         event_tx: &Sender<u32>,
         boot_rx: &Receiver<()>,
     ) -> Result<(), Error> {
-        let mut vcpu = self.vm.create_vcpu(id)?;
+        self.init_vcpu(id)?;
         event_tx.send(id).unwrap();
-        self.init_vcpu(id, vcpu.as_mut())?;
         boot_rx.recv().unwrap();
         loop {
             let vcpus = self.vcpus.read();
@@ -247,7 +255,7 @@ impl Board {
                     }
                     self.add_pci_devs()?;
                     let init_state = self.load_payload()?;
-                    self.init_boot_vcpu(vcpu.as_mut(), &init_state)?;
+                    self.init_boot_vcpu(id, &init_state)?;
                     self.create_firmware_data(&init_state)?;
                     Ok(())
                 })()
@@ -264,7 +272,7 @@ impl Board {
                 return Ok(());
             }
 
-            let reboot = self.vcpu_loop(vcpu.as_mut(), id)?;
+            let reboot = self.vcpu_loop(id)?;
 
             let new_state = if reboot {
                 STATE_REBOOT_PENDING
@@ -281,8 +289,8 @@ impl Board {
                 Ok(STATE_RUNNING) => {
                     for (vcpu_id, _) in vcpus.iter().enumerate() {
                         if id != vcpu_id as u32 {
-                            log::info!("vcpu{id} to kill {vcpu_id}");
-                            self.vm.stop_vcpu(vcpu_id as u32)?;
+                            log::info!("vcpu{id} to kick {vcpu_id}");
+                            let _ = self.hv.vcpu_kick(vcpu_id as u32);
                         }
                     }
                 }
@@ -317,29 +325,40 @@ impl Board {
 
     pub fn run_vcpu(
         &self,
-        id: u32,
+        id: VcpuId,
         event_tx: Sender<u32>,
         boot_rx: Receiver<()>,
     ) -> Result<(), Error> {
         let ret = self.run_vcpu_inner(id, &event_tx, &boot_rx);
         self.state.store(STATE_SHUTDOWN, Ordering::Release);
-        let _ = self.hv.core_notify_shutdown();
+        self.notify_shutdown();
         event_tx.send(id).unwrap();
         ret
     }
 
     pub fn run_serial_rx_loop(&self) -> Result<()> {
-        let mut buf = [0u8; 256];
+        let mut entry = IoToCoreEntry::default();
         loop {
             if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
                 break Ok(());
             }
-            let n = self.hv.core_serial_rx(&mut buf)?;
-            if n == 0 {
+            let got = self.bridge.recv_io_cmd(true, &mut entry)?;
+            if !got {
                 break Ok(());
             }
-            if let Some(com1) = self.com1.read().as_ref() {
-                com1.push_rx(&buf[..n]);
+            match entry.msg_type {
+                IO_MSG_SERIAL_RX => {
+                    let len = (entry.queue_index as usize).min(entry.data.len());
+                    if len > 0
+                        && let Some(com1) = self.com1.read().as_ref()
+                    {
+                        com1.push_rx(&entry.data[..len]);
+                    }
+                }
+                IO_MSG_REQUEST_SHUTDOWN => {
+                    break Ok(());
+                }
+                _ => {}
             }
         }
     }

@@ -12,23 +12,124 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+use core::fmt::{self, Debug, Display, Formatter};
 
 use bitflags::bitflags;
-use thiserror::Error;
 
 use crate::loader::ExecType;
 
-/// Resource handle (file descriptor / table index).
-/// Note: On Linux this is `u32` at the raw Wasm FFI / KVM boundary to match the
-/// existing KVM API, but in our host traits it is `u64` to be more generic.
+/// Legacy 64-bit device identifier used in shared-memory Virtio descriptors (`BridgeShm`).
 pub type Handle = u64;
+
+/// Dense 0-based vCPU index (`0..num_cpus`).
+pub type VcpuId = u32;
+
+/// Dense host physical memory object identifier returned by [`VmmHostCore::mem_alloc`].
+pub type MemObjId = u32;
+
+/// Compact `#![no_std]` hypervisor / bridge error code suitable for Ring 0 and Wasm FFI.
+#[repr(i32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum HvError {
+    InvalidParam = -1,
+    NoMemory = -2,
+    WouldBlock = -3,
+    Interrupted = -4,
+    Unsupported = -5,
+    HardwareFault = -6,
+}
+
+impl HvError {
+    #[inline]
+    pub const fn code(self) -> i32 {
+        self as i32
+    }
+
+    #[inline]
+    pub const fn from_code(code: i32) -> Self {
+        match code {
+            -1 => Self::InvalidParam,
+            -2 => Self::NoMemory,
+            -3 => Self::WouldBlock,
+            -4 => Self::Interrupted,
+            -5 => Self::Unsupported,
+            _ => Self::HardwareFault,
+        }
+    }
+}
+
+impl Display for HvError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::InvalidParam => "invalid parameter",
+            Self::NoMemory => "out of memory",
+            Self::WouldBlock => "operation would block",
+            Self::Interrupted => "operation interrupted",
+            Self::Unsupported => "unsupported operation",
+            Self::HardwareFault => "hardware or hypervisor fault",
+        };
+        f.write_str(s)
+    }
+}
+
+impl core::error::Error for HvError {}
+
+pub type Error = HvError;
+pub type HvResult<T> = core::result::Result<T, HvError>;
+pub type Result<T, E = HvError> = core::result::Result<T, E>;
+
+bitflags! {
+    /// Capabilities advertised by the underlying [`VmmHostCore`] implementation.
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct HostCaps: u32 {
+        /// Host decodes MMIO exits into `VmExit::Mmio` (e.g. KVM, Xen, ARM64 ISV=1).
+        const DECODED_MMIO = 1 << 0;
+        /// Host owns an in-hypervisor IOAPIC (`set_gsi_level` supported).
+        const HW_IOAPIC    = 1 << 1;
+        /// Host supports fast Ring-0 `register_doorbell` matching.
+        const DOORBELLS    = 1 << 2;
+    }
+
+    /// Stage-2 GPA mapping permissions passed to [`VmmHostCore::gpa_map`].
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct MemProt: u32 {
+        const READ      = 1 << 0;
+        const WRITE     = 1 << 1;
+        const EXEC      = 1 << 2;
+        const LOG_DIRTY = 1 << 3;
+        const RWX       = Self::READ.bits() | Self::WRITE.bits() | Self::EXEC.bits();
+    }
+}
+
+/// Architectural multiprocessor activity state (`INIT` / `SIPI` / `HLT`).
+#[repr(u32)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub enum MpState {
+    #[default]
+    Runnable = 0,
+    Uninitialized = 1,
+    InitReceived = 2,
+    Halted = 3,
+    SipiReceived = 4,
+}
+
+impl MpState {
+    pub const fn from_u32(v: u32) -> HvResult<Self> {
+        match v {
+            0 => Ok(Self::Runnable),
+            1 => Ok(Self::Uninitialized),
+            2 => Ok(Self::InitReceived),
+            3 => Ok(Self::Halted),
+            4 => Ok(Self::SipiReceived),
+            _ => Err(HvError::InvalidParam),
+        }
+    }
+}
 
 pub mod arch {
     use crate::hw::reg::SegAccess;
 
-    #[derive(Debug, Default, Clone)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     pub struct Cpuid {
         pub func: u32,
         pub index: Option<u32>,
@@ -116,80 +217,33 @@ pub mod arch {
 
 pub use arch::{Cpuid, DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 
-bitflags! {
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct Interest: u8 {
-        const READABLE = 1 << 0;
-        const WRITABLE = 1 << 1;
-    }
+/// Unified architectural register identifier for batched [`VmmHostCore`] register access.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RegId {
+    Gpr(Reg),
+    SReg(SReg),
+    SegReg(SegReg),
+    DtReg(DtReg),
+    Msr(u32),
+    MpState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Token(pub u64);
-
-#[derive(Debug, Clone, Copy)]
-pub struct PollEvent {
-    pub token: Token,
-    pub is_readable: bool,
-    pub is_writable: bool,
+/// Unified architectural register value paired with [`RegId`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RegVal {
+    Scalar(u64),
+    Seg(SegRegVal),
+    Dt(DtRegVal),
+    MpState(MpState),
 }
 
-impl PollEvent {
-    pub fn token(&self) -> Token {
-        self.token
-    }
-
-    pub fn is_readable(&self) -> bool {
-        self.is_readable
-    }
-
-    pub fn is_writable(&self) -> bool {
-        self.is_writable
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("invalid memory map option for {hypervisor}: {option:?}")]
-    MemMapOption {
-        option: MemMapOption,
-        hypervisor: &'static str,
-    },
-    #[error("IO error: {source}")]
-    StdIo {
-        #[from]
-        source: std::io::Error,
-    },
-    #[error("{msg}")]
-    Unexpected { msg: String },
-    #[error("lack capability: {cap}")]
-    LackCap { cap: String },
-    #[error("creating multiple memory")]
-    CreatingMultipleMemory,
-}
-
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemMapOption {
-    pub read: bool,
-    pub write: bool,
-    pub exec: bool,
-    pub log_dirty: bool,
-}
-
-impl Default for MemMapOption {
+impl Default for RegVal {
     fn default() -> Self {
-        Self {
-            read: true,
-            write: true,
-            exec: true,
-            log_dirty: false,
-        }
+        Self::Scalar(0)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum VmExit {
     Io {
         port: u16,
@@ -197,17 +251,16 @@ pub enum VmExit {
         size: u8,
     },
     Mmio {
-        addr: u64,
+        gpa: u64,
         write: Option<u64>,
         size: u8,
     },
     Shutdown,
     Reboot,
-    Unknown(String),
     Interrupted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum VmEntry {
     None,
     Shutdown,
@@ -216,10 +269,21 @@ pub enum VmEntry {
     Mmio { data: u64 },
 }
 
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadKind {
     Kernel = 0,
     Initramfs = 1,
+}
+
+impl PayloadKind {
+    pub const fn from_u32(v: u32) -> HvResult<Self> {
+        match v {
+            0 => Ok(Self::Kernel),
+            1 => Ok(Self::Initramfs),
+            _ => Err(HvError::InvalidParam),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +298,7 @@ pub struct CoreBootInfo {
 
 #[derive(Debug, Clone)]
 pub struct VirtioDeviceSpec {
-    pub dev: Handle,
+    pub dev: u32,
     pub name: String,
     pub device_id: u16,
     pub device_features: u64,
@@ -251,158 +315,62 @@ pub struct VirtioQueueConfig {
     pub used_gpa: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VirtioIrqKind {
-    Config,
-    Queue(u16),
-}
+/// Pure single-VM hardware virtualization backend (`#![no_std]`-clean, zero Virtio/UART).
+pub trait VmmHostCore: Send + Sync + 'static {
+    fn caps(&self) -> HostCaps;
+    fn supported_cpuids(&self, dst: &mut [abi::RawCpuid]) -> HvResult<usize>;
 
-#[derive(Debug, Clone)]
-pub enum IoBridgeEvent {
-    VirtioStart {
-        dev: Handle,
-        driver_features: u64,
-        queues: Vec<VirtioQueueConfig>,
-    },
-    VirtioNotify {
-        dev: Handle,
-        queue_index: u16,
-    },
-    VirtioReset {
-        dev: Handle,
-    },
-    Poll(PollEvent),
-    SerialInput,
-    SerialTx(Vec<u8>),
-    Shutdown,
-}
+    fn vcpu_configure(&self, vcpu: VcpuId, cpuids: &[abi::RawCpuid]) -> HvResult<()>;
+    fn vcpu_get_regs(&self, vcpu: VcpuId, ids: &[RegId], out: &mut [RegVal]) -> HvResult<()>;
+    fn vcpu_set_regs(&self, vcpu: VcpuId, regs: &[(RegId, RegVal)]) -> HvResult<()>;
+    fn vcpu_kick(&self, vcpu: VcpuId) -> HvResult<()>;
+    fn vcpu_run(&self, vcpu: VcpuId, entry: VmEntry) -> HvResult<VmExit>;
 
-pub trait MemPages: Debug + Send + Sync + 'static {
-    fn addr(&self) -> u64;
-    fn size(&self) -> usize;
-    fn sync(&self) -> std::io::Result<()>;
-    fn read(&self, offset: usize, dst: &mut [u8]) -> std::io::Result<()>;
-    fn write(&self, offset: usize, src: &[u8]) -> std::io::Result<()>;
-}
-
-pub trait VmMemory: Debug + Send + Sync + 'static {
-    fn mem_map(
+    fn mem_alloc(&self, size: u64) -> HvResult<MemObjId>;
+    fn mem_free(&self, obj: MemObjId) -> HvResult<()>;
+    fn mem_read(&self, obj: MemObjId, offset: u64, dst: &mut [u8]) -> HvResult<()>;
+    fn mem_write(&self, obj: MemObjId, offset: u64, src: &[u8]) -> HvResult<()>;
+    fn gpa_map(
         &self,
-        slot: u32,
         gpa: u64,
-        size: usize,
-        hva: u64,
-        option: MemMapOption,
-    ) -> Result<(), Error>;
+        size: u64,
+        obj: MemObjId,
+        offset: u64,
+        prot: MemProt,
+    ) -> HvResult<()>;
+    fn gpa_unmap(&self, gpa: u64, size: u64) -> HvResult<()>;
 
-    fn unmap(&self, slot: u32, gpa: u64, size: usize) -> Result<(), Error>;
-
-    fn max_mem_slots(&self) -> Result<u32, Error>;
-
-    fn register_encrypted_range(&self, addr: u64, size: usize) -> Result<()>;
-
-    fn deregister_encrypted_range(&self, addr: u64, size: usize) -> Result<()>;
-
-    fn alloc_anon_mem(&self, size: usize) -> std::io::Result<Arc<dyn MemPages>>;
+    fn inject_msi(&self, addr: u64, data: u32) -> HvResult<()>;
+    fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()>;
 }
 
-pub trait IntxSender: Debug + Send + Sync + 'static {
-    fn send(&self) -> Result<(), Error>;
-}
-
-impl<T: IntxSender + ?Sized> IntxSender for Arc<T> {
-    fn send(&self) -> Result<(), Error> {
-        IntxSender::send(self.as_ref())
-    }
-}
-
-impl<T: IntxSender + ?Sized> IntxSender for Box<T> {
-    fn send(&self) -> Result<(), Error> {
-        IntxSender::send(self.as_ref())
-    }
-}
-
-pub trait MsiSender: Debug + Send + Sync + 'static {
-    fn send(&self, addr: u64, data: u32) -> Result<()>;
-}
-
-impl<T: MsiSender + ?Sized> MsiSender for Arc<T> {
-    fn send(&self, addr: u64, data: u32) -> Result<()> {
-        MsiSender::send(self.as_ref(), addr, data)
-    }
-}
-
-impl<T: MsiSender + ?Sized> MsiSender for Box<T> {
-    fn send(&self, addr: u64, data: u32) -> Result<()> {
-        MsiSender::send(self.as_ref(), addr, data)
-    }
-}
-
-pub trait Vcpu: Send + Sync + 'static {
-    fn run(&mut self, entry: VmEntry) -> Result<VmExit, Error>;
-    fn get_reg(&self, reg: Reg) -> Result<u64, Error>;
-    fn set_regs(&mut self, vals: &[(Reg, u64)]) -> Result<(), Error>;
-    fn get_seg_reg(&self, reg: SegReg) -> Result<SegRegVal, Error>;
-    fn get_dt_reg(&self, reg: DtReg) -> Result<DtRegVal, Error>;
-    fn get_sreg(&self, reg: SReg) -> Result<u64, Error>;
-    fn set_sregs(
-        &mut self,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> Result<(), Error>;
-    fn set_cpuids(&mut self, cpuids: Vec<Cpuid>) -> Result<(), Error>;
-    fn dump(&self) -> Result<(), Error>;
-}
-
-pub trait Vm: Debug + Send + Sync + 'static {
-    fn create_vcpu(&self, id: u32) -> Result<Box<dyn Vcpu>, Error>;
-    fn stop_vcpu(&self, id: u32) -> Result<(), Error>;
-    fn create_vm_memory(&mut self) -> Result<Box<dyn VmMemory>, Error>;
-    fn create_intx_sender(&self, pin: u8) -> Result<Box<dyn IntxSender>, Error>;
-    fn create_msi_sender(&self) -> Result<Box<dyn MsiSender>, Error>;
-}
-
-pub trait Hypervisor: Debug + Send + Sync + 'static {
-    fn create_vm(&self) -> Result<Box<dyn Vm>, Error>;
-    fn get_supported_cpuids(&self) -> Result<Vec<Cpuid>, Error>;
-
-    // --- Cross-Split Core <-> IO Bridge Methods ---
-    fn core_get_boot_info(&self) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>), Error>;
-    fn core_read_payload(&self, kind: PayloadKind, offset: u64, dst: &mut [u8]) -> Result<usize, Error>;
-    fn core_virtio_start(
+/// Separate `#![no_std]`-clean trait for the Core <-> I/O split channel.
+pub trait VmmCoreBridge: Send + Sync + 'static {
+    fn boot_info(
         &self,
-        dev: Handle,
-        driver_features: u64,
-        queues: &[VirtioQueueConfig],
-    ) -> Result<(), Error>;
-    fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> Result<(), Error>;
-    fn core_virtio_reset(&self, dev: Handle) -> Result<(), Error>;
-    fn core_virtio_update_irq(
+        out_info: &mut abi::ShmBootInfo,
+        out_devs: &mut [abi::ShmVirtioDeviceSpec],
+    ) -> HvResult<usize>;
+    fn read_payload(&self, kind: PayloadKind, offset: u64, dst: &mut [u8]) -> HvResult<usize>;
+    fn configure_device_queues(
         &self,
-        dev: Handle,
-        config_msi: Option<(u64, u32)>,
-        queue_msis: &[Option<(u64, u32)>],
-    ) -> Result<(), Error>;
-    fn core_serial_tx(&self, byte: u8) -> Result<(), Error>;
-    fn core_serial_rx(&self, dst: &mut [u8]) -> Result<usize, Error>;
-    fn core_notify_shutdown(&self) -> Result<(), Error>;
+        dev: u32,
+        queues: &[abi::ShmVirtioQueueConfig],
+    ) -> HvResult<()>;
+    fn update_irq_route(&self, dev: u32, routing: &abi::ShmDeviceMsixRouting) -> HvResult<()>;
+    fn send_io_cmd(&self, entry: &abi::CoreToIoEntry) -> HvResult<()>;
+    fn recv_io_cmd(&self, blocking: bool, out: &mut abi::IoToCoreEntry) -> HvResult<bool>;
 }
 
 pub mod abi {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use core::sync::atomic::{AtomicU32, Ordering};
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
     use super::{
-        Cpuid, DtReg, DtRegVal, Handle, MemMapOption, Reg, SReg, SegReg, SegRegVal,
-        VirtioQueueConfig, VmEntry,
+        Cpuid, DtReg, DtRegVal, Handle, HvError, HvResult, MpState, Reg, RegId, RegVal, SReg,
+        SegReg, SegRegVal, VirtioQueueConfig, VmEntry,
     };
     use crate::hw::reg::SegAccess;
-
-    pub const ERR_GENERIC: i32 = -1;
-    pub const ERR_WOULD_BLOCK: i32 = -2;
-    pub const ERR_INTERRUPTED: i32 = -3;
-    pub const ERR_EOF: i32 = -4;
 
     pub const ENTRY_NONE: u32 = 0;
     pub const ENTRY_SHUTDOWN: u32 = 1;
@@ -415,11 +383,17 @@ pub mod abi {
     pub const EXIT_SHUTDOWN: u32 = 2;
     pub const EXIT_REBOOT: u32 = 3;
     pub const EXIT_INTERRUPTED: u32 = 4;
-    pub const EXIT_UNKNOWN: u32 = 5;
 
     pub const EXEC_TYPE_NONE: u32 = 0;
     pub const EXEC_TYPE_LINUX: u32 = 1;
     pub const EXEC_TYPE_PVH: u32 = 2;
+
+    pub const REG_CLASS_GPR: u32 = 0;
+    pub const REG_CLASS_SREG: u32 = 1;
+    pub const REG_CLASS_SEG: u32 = 2;
+    pub const REG_CLASS_DT: u32 = 3;
+    pub const REG_CLASS_MSR: u32 = 4;
+    pub const REG_CLASS_MP_STATE: u32 = 5;
 
     pub const MAX_VIRTIO_DEVS: usize = 16;
     pub const MAX_QUEUES_PER_DEV: usize = 8;
@@ -451,7 +425,7 @@ pub mod abi {
     pub const IRQ_KIND_QUEUE: u32 = 1;
 
     #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
     pub struct RawCpuid {
         pub func: u32,
         pub has_index: u32,
@@ -493,88 +467,100 @@ pub mod abi {
         }
     }
 
+    /// Flat 32-byte register descriptor + value used for zero-allocation Wasm FFI marshalling.
     #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawRegVal {
-        pub reg: u32,
-        pub _pad: u32,
-        pub val: u64,
-    }
-
-    #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawSegRegVal {
-        pub base: u64,
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct RawRegEntry {
+        pub reg_class: u32,
+        pub reg_index: u32,
+        pub scalar_or_base: u64,
         pub limit: u32,
         pub access: u32,
         pub selector: u16,
         pub _pad: [u8; 6],
     }
 
-    impl From<SegRegVal> for RawSegRegVal {
-        fn from(v: SegRegVal) -> Self {
+    impl RawRegEntry {
+        pub fn from_id(id: RegId) -> Self {
+            let (reg_class, reg_index) = match id {
+                RegId::Gpr(r) => (REG_CLASS_GPR, reg_to_u32(r)),
+                RegId::SReg(r) => (REG_CLASS_SREG, sreg_to_u32(r)),
+                RegId::SegReg(r) => (REG_CLASS_SEG, seg_reg_to_u32(r)),
+                RegId::DtReg(r) => (REG_CLASS_DT, dt_reg_to_u32(r)),
+                RegId::Msr(msr) => (REG_CLASS_MSR, msr),
+                RegId::MpState => (REG_CLASS_MP_STATE, 0),
+            };
             Self {
-                base: v.base,
-                limit: v.limit,
-                access: v.access.0,
-                selector: v.selector,
-                _pad: [0; 6],
+                reg_class,
+                reg_index,
+                ..Default::default()
             }
         }
-    }
 
-    impl From<RawSegRegVal> for SegRegVal {
-        fn from(v: RawSegRegVal) -> Self {
-            Self {
-                selector: v.selector,
-                base: v.base,
-                limit: v.limit,
-                access: SegAccess(v.access),
+        pub fn from_pair(id: RegId, val: RegVal) -> Self {
+            let mut raw = Self::from_id(id);
+            raw.set_val(val);
+            raw
+        }
+
+        pub fn set_val(&mut self, val: RegVal) {
+            match val {
+                RegVal::Scalar(v) => {
+                    self.scalar_or_base = v;
+                }
+                RegVal::Seg(seg) => {
+                    self.scalar_or_base = seg.base;
+                    self.limit = seg.limit;
+                    self.access = seg.access.0;
+                    self.selector = seg.selector;
+                }
+                RegVal::Dt(dt) => {
+                    self.scalar_or_base = dt.base;
+                    self.limit = dt.limit as u32;
+                }
+                RegVal::MpState(state) => {
+                    self.scalar_or_base = state as u64;
+                }
             }
         }
-    }
 
-    #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawSegRegEntry {
-        pub reg: u32,
-        pub _pad: u32,
-        pub val: RawSegRegVal,
-    }
-
-    #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawDtRegVal {
-        pub base: u64,
-        pub limit: u16,
-        pub _pad: [u8; 6],
-    }
-
-    impl From<DtRegVal> for RawDtRegVal {
-        fn from(v: DtRegVal) -> Self {
-            Self {
-                base: v.base,
-                limit: v.limit,
-                _pad: [0; 6],
+        pub fn to_id(&self) -> HvResult<RegId> {
+            match self.reg_class {
+                REG_CLASS_GPR => Ok(RegId::Gpr(reg_from_u32(self.reg_index)?)),
+                REG_CLASS_SREG => Ok(RegId::SReg(sreg_from_u32(self.reg_index)?)),
+                REG_CLASS_SEG => Ok(RegId::SegReg(seg_reg_from_u32(self.reg_index)?)),
+                REG_CLASS_DT => Ok(RegId::DtReg(dt_reg_from_u32(self.reg_index)?)),
+                REG_CLASS_MSR => Ok(RegId::Msr(self.reg_index)),
+                REG_CLASS_MP_STATE => Ok(RegId::MpState),
+                _ => Err(HvError::InvalidParam),
             }
         }
-    }
 
-    impl From<RawDtRegVal> for DtRegVal {
-        fn from(v: RawDtRegVal) -> Self {
-            Self {
-                base: v.base,
-                limit: v.limit,
+        pub fn to_val(&self) -> HvResult<RegVal> {
+            match self.reg_class {
+                REG_CLASS_GPR | REG_CLASS_SREG | REG_CLASS_MSR => {
+                    Ok(RegVal::Scalar(self.scalar_or_base))
+                }
+                REG_CLASS_SEG => Ok(RegVal::Seg(SegRegVal {
+                    selector: self.selector,
+                    base: self.scalar_or_base,
+                    limit: self.limit,
+                    access: SegAccess(self.access),
+                })),
+                REG_CLASS_DT => Ok(RegVal::Dt(DtRegVal {
+                    base: self.scalar_or_base,
+                    limit: self.limit as u16,
+                })),
+                REG_CLASS_MP_STATE => {
+                    Ok(RegVal::MpState(MpState::from_u32(self.scalar_or_base as u32)?))
+                }
+                _ => Err(HvError::InvalidParam),
             }
         }
-    }
 
-    #[repr(C)]
-    #[derive(Debug, Default, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawDtRegEntry {
-        pub reg: u32,
-        pub _pad: u32,
-        pub val: RawDtRegVal,
+        pub fn to_pair(&self) -> HvResult<(RegId, RegVal)> {
+            Ok((self.to_id()?, self.to_val()?))
+        }
     }
 
     #[repr(C)]
@@ -751,42 +737,6 @@ pub mod abi {
         }
     }
 
-    #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
-    pub struct RawIoBridgeEvent {
-        pub kind: u32,
-        pub queue_index: u16,
-        pub num_queues: u16,
-        pub dev: Handle,
-        pub driver_features: u64,
-        pub token: u64,
-        pub is_readable: u8,
-        pub is_writable: u8,
-        pub tx_len: u8,
-        pub _pad: [u8; 5],
-        pub tx_bytes: [u8; 40],
-        pub queues: [ShmVirtioQueueConfig; MAX_QUEUES_PER_DEV],
-    }
-
-    impl Default for RawIoBridgeEvent {
-        fn default() -> Self {
-            Self {
-                kind: 0,
-                queue_index: 0,
-                num_queues: 0,
-                dev: 0,
-                driver_features: 0,
-                token: 0,
-                is_readable: 0,
-                is_writable: 0,
-                tx_len: 0,
-                _pad: [0; 5],
-                tx_bytes: [0; 40],
-                queues: [ShmVirtioQueueConfig::default(); MAX_QUEUES_PER_DEV],
-            }
-        }
-    }
-
     /// Shared-memory layout mapped `MAP_SHARED` into both `vmm-core-host` and `vmm-io-host`.
     #[repr(C)]
     pub struct BridgeShm {
@@ -820,7 +770,7 @@ pub mod abi {
             .compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            std::hint::spin_loop();
+            core::hint::spin_loop();
         }
     }
 
@@ -833,7 +783,7 @@ pub mod abi {
         /// Push an entry from `vmm-core-host` to `vmm-io-host`.
         /// Coalesces duplicate pending `CORE_MSG_VIRTIO_NOTIFY` entries for `(dev, queue_index)`
         /// and consecutive `CORE_MSG_SERIAL_TX` bytes (up to 40 bytes per entry).
-        /// Returns `true` if the consumer (`vmm-io-host`) should be woken via `eventfd`.
+        /// Returns `true` if the consumer (`vmm-io-host`) should be woken.
         pub unsafe fn push_core_to_io(shm: *mut BridgeShm, entry: CoreToIoEntry) -> bool {
             let lock = unsafe { &(*shm).c2i_lock };
             loop {
@@ -876,7 +826,7 @@ pub mod abi {
                     if shutting_down {
                         return false;
                     }
-                    std::thread::yield_now();
+                    core::hint::spin_loop();
                     continue;
                 }
 
@@ -920,7 +870,8 @@ pub mod abi {
             if entry.msg_type == IO_MSG_VIRTIO_IRQ {
                 let mut idx = tail;
                 while idx != head {
-                    let existing = unsafe { &(*shm).i2c_entries[(idx as usize) & (RING_CAPACITY - 1)] };
+                    let existing =
+                        unsafe { &(*shm).i2c_entries[(idx as usize) & (RING_CAPACITY - 1)] };
                     if existing.msg_type == IO_MSG_VIRTIO_IRQ
                         && existing.dev == entry.dev
                         && existing.irq_kind == entry.irq_kind
@@ -967,7 +918,7 @@ pub mod abi {
         }
     }
 
-    pub fn reg_to_u32(r: Reg) -> u32 {
+    pub const fn reg_to_u32(r: Reg) -> u32 {
         match r {
             Reg::Rax => 0,
             Reg::Rbx => 1,
@@ -990,30 +941,31 @@ pub mod abi {
         }
     }
 
-    pub fn reg_from_u32(v: u32) -> Reg {
+    pub const fn reg_from_u32(v: u32) -> HvResult<Reg> {
         match v {
-            0 => Reg::Rax,
-            1 => Reg::Rbx,
-            2 => Reg::Rcx,
-            3 => Reg::Rdx,
-            4 => Reg::Rsi,
-            5 => Reg::Rdi,
-            6 => Reg::Rsp,
-            7 => Reg::Rbp,
-            8 => Reg::R8,
-            9 => Reg::R9,
-            10 => Reg::R10,
-            11 => Reg::R11,
-            12 => Reg::R12,
-            13 => Reg::R13,
-            14 => Reg::R14,
-            15 => Reg::R15,
-            16 => Reg::Rip,
-            _ => Reg::Rflags,
+            0 => Ok(Reg::Rax),
+            1 => Ok(Reg::Rbx),
+            2 => Ok(Reg::Rcx),
+            3 => Ok(Reg::Rdx),
+            4 => Ok(Reg::Rsi),
+            5 => Ok(Reg::Rdi),
+            6 => Ok(Reg::Rsp),
+            7 => Ok(Reg::Rbp),
+            8 => Ok(Reg::R8),
+            9 => Ok(Reg::R9),
+            10 => Ok(Reg::R10),
+            11 => Ok(Reg::R11),
+            12 => Ok(Reg::R12),
+            13 => Ok(Reg::R13),
+            14 => Ok(Reg::R14),
+            15 => Ok(Reg::R15),
+            16 => Ok(Reg::Rip),
+            17 => Ok(Reg::Rflags),
+            _ => Err(HvError::InvalidParam),
         }
     }
 
-    pub fn sreg_to_u32(r: SReg) -> u32 {
+    pub const fn sreg_to_u32(r: SReg) -> u32 {
         match r {
             SReg::Cr0 => 0,
             SReg::Cr2 => 1,
@@ -1025,19 +977,20 @@ pub mod abi {
         }
     }
 
-    pub fn sreg_from_u32(v: u32) -> SReg {
+    pub const fn sreg_from_u32(v: u32) -> HvResult<SReg> {
         match v {
-            0 => SReg::Cr0,
-            1 => SReg::Cr2,
-            2 => SReg::Cr3,
-            3 => SReg::Cr4,
-            4 => SReg::Cr8,
-            5 => SReg::Efer,
-            _ => SReg::ApicBase,
+            0 => Ok(SReg::Cr0),
+            1 => Ok(SReg::Cr2),
+            2 => Ok(SReg::Cr3),
+            3 => Ok(SReg::Cr4),
+            4 => Ok(SReg::Cr8),
+            5 => Ok(SReg::Efer),
+            6 => Ok(SReg::ApicBase),
+            _ => Err(HvError::InvalidParam),
         }
     }
 
-    pub fn seg_reg_to_u32(r: SegReg) -> u32 {
+    pub const fn seg_reg_to_u32(r: SegReg) -> u32 {
         match r {
             SegReg::Cs => 0,
             SegReg::Ds => 1,
@@ -1050,50 +1003,36 @@ pub mod abi {
         }
     }
 
-    pub fn seg_reg_from_u32(v: u32) -> SegReg {
+    pub const fn seg_reg_from_u32(v: u32) -> HvResult<SegReg> {
         match v {
-            0 => SegReg::Cs,
-            1 => SegReg::Ds,
-            2 => SegReg::Es,
-            3 => SegReg::Fs,
-            4 => SegReg::Gs,
-            5 => SegReg::Ss,
-            6 => SegReg::Tr,
-            _ => SegReg::Ldtr,
+            0 => Ok(SegReg::Cs),
+            1 => Ok(SegReg::Ds),
+            2 => Ok(SegReg::Es),
+            3 => Ok(SegReg::Fs),
+            4 => Ok(SegReg::Gs),
+            5 => Ok(SegReg::Ss),
+            6 => Ok(SegReg::Tr),
+            7 => Ok(SegReg::Ldtr),
+            _ => Err(HvError::InvalidParam),
         }
     }
 
-    pub fn dt_reg_to_u32(r: DtReg) -> u32 {
+    pub const fn dt_reg_to_u32(r: DtReg) -> u32 {
         match r {
             DtReg::Gdtr => 0,
             DtReg::Idtr => 1,
         }
     }
 
-    pub fn dt_reg_from_u32(v: u32) -> DtReg {
+    pub const fn dt_reg_from_u32(v: u32) -> HvResult<DtReg> {
         match v {
-            0 => DtReg::Gdtr,
-            _ => DtReg::Idtr,
+            0 => Ok(DtReg::Gdtr),
+            1 => Ok(DtReg::Idtr),
+            _ => Err(HvError::InvalidParam),
         }
     }
 
-    pub fn mem_map_option_to_u32(o: MemMapOption) -> u32 {
-        (u32::from(o.read))
-            | (u32::from(o.write) << 1)
-            | (u32::from(o.exec) << 2)
-            | (u32::from(o.log_dirty) << 3)
-    }
-
-    pub fn mem_map_option_from_u32(v: u32) -> MemMapOption {
-        MemMapOption {
-            read: (v & 1) != 0,
-            write: (v & 2) != 0,
-            exec: (v & 4) != 0,
-            log_dirty: (v & 8) != 0,
-        }
-    }
-
-    pub fn encode_vm_entry(e: VmEntry) -> (u32, u64) {
+    pub const fn encode_vm_entry(e: VmEntry) -> (u32, u64) {
         match e {
             VmEntry::None => (ENTRY_NONE, 0),
             VmEntry::Shutdown => (ENTRY_SHUTDOWN, 0),
@@ -1103,7 +1042,7 @@ pub mod abi {
         }
     }
 
-    pub fn decode_vm_entry(kind: u32, data: u64) -> VmEntry {
+    pub const fn decode_vm_entry(kind: u32, data: u64) -> VmEntry {
         match kind {
             ENTRY_SHUTDOWN => VmEntry::Shutdown,
             ENTRY_REBOOT => VmEntry::Reboot,
@@ -1117,121 +1056,181 @@ pub mod abi {
 #[cfg(test)]
 pub mod test {
     use std::alloc::{Layout, alloc_zeroed, dealloc};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::{Error, MemMapOption, MemPages, Result, VmMemory};
-    use crate::hw::layout::PAGE_SIZE;
+    use crate::hw::reg::SegAccess;
+    use crate::sync::Mutex;
 
-    #[derive(Debug)]
-    pub struct FakeMemPages {
-        addr: usize,
-        size: usize,
-        layout: Option<Layout>,
+    use super::{
+        DtReg, DtRegVal, HostCaps, HvError, HvResult, MemObjId, MemProt, MpState, Reg, RegId,
+        RegVal, SReg, SegReg, SegRegVal, VcpuId, VmEntry, VmExit, VmmHostCore,
+    };
+
+    pub struct FakeHost {
+        next_obj: AtomicU32,
+        objs: Mutex<BTreeMap<MemObjId, Vec<u8>>>,
+        mappings: Mutex<BTreeMap<u64, (u64, MemObjId, u64)>>,
     }
 
-    impl FakeMemPages {
-        pub fn new(size: usize) -> Self {
-            let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
-            let ptr = unsafe { alloc_zeroed(layout) };
-            assert!(!ptr.is_null());
+    impl Default for FakeHost {
+        fn default() -> Self {
             Self {
-                addr: ptr as usize,
-                size,
-                layout: Some(layout),
-            }
-        }
-
-        pub unsafe fn from_raw(addr: u64, size: usize) -> Self {
-            Self {
-                addr: addr as usize,
-                size,
-                layout: None,
+                next_obj: AtomicU32::new(1),
+                objs: Mutex::new(BTreeMap::new()),
+                mappings: Mutex::new(BTreeMap::new()),
             }
         }
     }
 
-    impl Drop for FakeMemPages {
-        fn drop(&mut self) {
-            if let Some(layout) = self.layout {
-                unsafe { dealloc(self.addr as *mut u8, layout) };
-            }
+    impl FakeHost {
+        pub fn new_arc() -> Arc<dyn VmmHostCore> {
+            Arc::new(Self::default())
         }
     }
 
-    impl MemPages for FakeMemPages {
-        fn addr(&self) -> u64 {
-            self.addr as u64
+    impl VmmHostCore for FakeHost {
+        fn caps(&self) -> HostCaps {
+            HostCaps::DECODED_MMIO | HostCaps::HW_IOAPIC
         }
 
-        fn size(&self) -> usize {
-            self.size
+        fn supported_cpuids(&self, _dst: &mut [super::abi::RawCpuid]) -> HvResult<usize> {
+            Ok(0)
         }
 
-        fn sync(&self) -> std::io::Result<()> {
+        fn vcpu_configure(&self, _vcpu: VcpuId, _cpuids: &[super::abi::RawCpuid]) -> HvResult<()> {
             Ok(())
         }
 
-        fn read(&self, offset: usize, dst: &mut [u8]) -> std::io::Result<()> {
-            let src =
-                unsafe { std::slice::from_raw_parts((self.addr + offset) as *const u8, dst.len()) };
-            dst.copy_from_slice(src);
-            Ok(())
-        }
-
-        fn write(&self, offset: usize, src: &[u8]) -> std::io::Result<()> {
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut((self.addr + offset) as *mut u8, src.len())
-            };
-            dst.copy_from_slice(src);
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct FakeVmMemoryStruct;
-
-    impl VmMemory for FakeVmMemoryStruct {
-        fn mem_map(
+        fn vcpu_get_regs(
             &self,
-            _slot: u32,
-            _gpa: u64,
-            _size: usize,
-            _hva: u64,
-            option: MemMapOption,
-        ) -> Result<(), Error> {
-            if !option.read || !option.exec {
-                return Err(Error::MemMapOption {
-                    option,
-                    hypervisor: "fake",
-                });
+            _vcpu: VcpuId,
+            _ids: &[RegId],
+            _out: &mut [RegVal],
+        ) -> HvResult<()> {
+            Ok(())
+        }
+
+        fn vcpu_set_regs(&self, _vcpu: VcpuId, _regs: &[(RegId, RegVal)]) -> HvResult<()> {
+            Ok(())
+        }
+
+        fn vcpu_kick(&self, _vcpu: VcpuId) -> HvResult<()> {
+            Ok(())
+        }
+
+        fn vcpu_run(&self, _vcpu: VcpuId, _entry: VmEntry) -> HvResult<VmExit> {
+            Ok(VmExit::Shutdown)
+        }
+
+        fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
+            let id = self.next_obj.fetch_add(1, Ordering::Relaxed);
+            self.objs.lock().insert(id, vec![0u8; size as usize]);
+            Ok(id)
+        }
+
+        fn mem_free(&self, obj: MemObjId) -> HvResult<()> {
+            self.objs
+                .lock()
+                .remove(&obj)
+                .map(|_| ())
+                .ok_or(HvError::InvalidParam)
+        }
+
+        fn mem_read(&self, obj: MemObjId, offset: u64, dst: &mut [u8]) -> HvResult<()> {
+            let objs = self.objs.lock();
+            let buf = objs.get(&obj).ok_or(HvError::InvalidParam)?;
+            let start = offset as usize;
+            let end = start.checked_add(dst.len()).ok_or(HvError::InvalidParam)?;
+            if end > buf.len() {
+                return Err(HvError::InvalidParam);
             }
+            dst.copy_from_slice(&buf[start..end]);
             Ok(())
         }
 
-        fn unmap(&self, _slot: u32, _gpa: u64, _size: usize) -> Result<(), Error> {
+        fn mem_write(&self, obj: MemObjId, offset: u64, src: &[u8]) -> HvResult<()> {
+            let mut objs = self.objs.lock();
+            let buf = objs.get_mut(&obj).ok_or(HvError::InvalidParam)?;
+            let start = offset as usize;
+            let end = start.checked_add(src.len()).ok_or(HvError::InvalidParam)?;
+            if end > buf.len() {
+                return Err(HvError::InvalidParam);
+            }
+            buf[start..end].copy_from_slice(src);
             Ok(())
         }
 
-        fn max_mem_slots(&self) -> Result<u32, Error> {
-            Ok(32)
-        }
-
-        fn register_encrypted_range(&self, _addr: u64, _size: usize) -> Result<()> {
+        fn gpa_map(
+            &self,
+            gpa: u64,
+            size: u64,
+            obj: MemObjId,
+            offset: u64,
+            prot: MemProt,
+        ) -> HvResult<()> {
+            if !prot.contains(MemProt::READ) || size == 0 {
+                return Err(HvError::InvalidParam);
+            }
+            let objs = self.objs.lock();
+            let buf = objs.get(&obj).ok_or(HvError::InvalidParam)?;
+            if offset.checked_add(size).is_none_or(|end| end > buf.len() as u64) {
+                return Err(HvError::InvalidParam);
+            }
+            drop(objs);
+            self.mappings.lock().insert(gpa, (size, obj, offset));
             Ok(())
         }
 
-        fn deregister_encrypted_range(&self, _addr: u64, _size: usize) -> Result<()> {
+        fn gpa_unmap(&self, gpa: u64, _size: u64) -> HvResult<()> {
+            self.mappings
+                .lock()
+                .remove(&gpa)
+                .map(|_| ())
+                .ok_or(HvError::InvalidParam)
+        }
+
+        fn inject_msi(&self, _addr: u64, _data: u32) -> HvResult<()> {
             Ok(())
         }
 
-        fn alloc_anon_mem(&self, size: usize) -> std::io::Result<Arc<dyn MemPages>> {
-            Ok(Arc::new(FakeMemPages::new(size)))
+        fn set_gsi_level(&self, _gsi: u32, _active: bool) -> HvResult<()> {
+            Ok(())
         }
     }
 
-    #[allow(non_snake_case)]
-    pub fn FakeVmMemory() -> Box<dyn VmMemory> {
-        Box::new(FakeVmMemoryStruct)
+    #[test]
+    fn test_raw_reg_entry_roundtrip() {
+        use super::abi::RawRegEntry;
+
+        let cases = [
+            (RegId::Gpr(Reg::R15), RegVal::Scalar(0xdead_beef_cafe_babe)),
+            (RegId::SReg(SReg::Efer), RegVal::Scalar(0x501)),
+            (
+                RegId::SegReg(SegReg::Cs),
+                RegVal::Seg(SegRegVal {
+                    selector: 0x10,
+                    base: 0,
+                    limit: 0xffff_ffff,
+                    access: SegAccess(0xa09b),
+                }),
+            ),
+            (
+                RegId::DtReg(DtReg::Gdtr),
+                RegVal::Dt(DtRegVal {
+                    base: 0x500,
+                    limit: 0xff,
+                }),
+            ),
+            (RegId::Msr(0xc000_0082), RegVal::Scalar(0xffff_ffff_8100_0000)),
+            (RegId::MpState, RegVal::MpState(MpState::Uninitialized)),
+        ];
+
+        for (id, val) in cases {
+            let raw = RawRegEntry::from_pair(id, val);
+            assert_eq!(raw.to_pair().unwrap(), (id, val));
+        }
     }
 
     #[test]
@@ -1246,7 +1245,6 @@ pub mod test {
         assert!(!shm.is_null());
 
         unsafe {
-            // 1. Duplicate CORE_MSG_VIRTIO_NOTIFY for the same (dev, queue) should coalesce
             let notify_ev = CoreToIoEntry {
                 msg_type: CORE_MSG_VIRTIO_NOTIFY,
                 aux_u16: 1,
@@ -1261,7 +1259,6 @@ pub mod test {
             assert_eq!(popped.aux_u16, 1);
             assert!(BridgeShm::pop_core_to_io(shm).is_none());
 
-            // 2. Consecutive CORE_MSG_SERIAL_TX bytes should coalesce into one entry
             for &b in b"hello" {
                 let mut tx = CoreToIoEntry {
                     msg_type: CORE_MSG_SERIAL_TX,
@@ -1277,7 +1274,6 @@ pub mod test {
             assert_eq!(&popped_tx.data[..5], b"hello");
             assert!(BridgeShm::pop_core_to_io(shm).is_none());
 
-            // 3. Duplicate IO_MSG_VIRTIO_IRQ for the same (dev, irq_kind, queue_index) should coalesce
             let irq_ev = IoToCoreEntry {
                 msg_type: IO_MSG_VIRTIO_IRQ,
                 irq_kind: IRQ_KIND_QUEUE as u16,

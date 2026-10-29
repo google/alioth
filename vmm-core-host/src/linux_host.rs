@@ -12,331 +12,409 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::fs::File;
+use std::mem::{size_of, transmute};
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use libc::{SIGRTMIN, c_void};
 use parking_lot::{Mutex, RwLock};
+use vmm_core::host::abi::{
+    MAX_RAM_SLOTS, RawCpuid, ShmGuestRamSlot, spin_lock, spin_unlock,
+};
 use vmm_core::host::{
-    CoreBootInfo, Cpuid, DtReg, DtRegVal, Error as HvError, Handle, Hypervisor, IntxSender,
-    MemMapOption, MemPages, MsiSender, PayloadKind, Reg, Result as HvResult, SReg, SegReg,
-    SegRegVal, Vcpu, VirtioDeviceSpec, VirtioQueueConfig, Vm, VmEntry, VmExit, VmMemory,
+    HostCaps, HvError, HvResult, MemObjId, MemProt, RegId, RegVal, VcpuId, VmEntry, VmExit,
+    VmmHostCore,
 };
 
-use crate::kvm::{CoreBridgeFds, Kvm, SharedCoreBridge};
-use crate::wasm_host::VmmHostCore;
+use crate::ffi;
+use crate::kvm::bindings::{
+    KVM_API_VERSION, KVM_CAP_SIGNAL_MSI, KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag,
+    KvmCpuidEntry2, KvmIrqLevel, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion,
+    kvm_check_extension, kvm_create_irqchip, kvm_create_vcpu, kvm_create_vm, kvm_get_api_version,
+    kvm_get_supported_cpuid, kvm_get_vcpu_mmap_size, kvm_irq_line, kvm_set_identity_map_addr,
+    kvm_set_tss_addr, kvm_set_user_memory_region, kvm_signal_msi,
+};
+use crate::kvm::vcpu::{KvmRunBlock, KvmVcpu, io_to_hv_err};
+use crate::kvm::{CoreBridgeFds, SharedCoreBridge, spawn_i2c_listener};
 
-struct ResourceTable<T: ?Sized> {
-    next_id: AtomicU64,
-    items: RwLock<HashMap<Handle, Arc<T>>>,
+pub const MAX_VCPUS: usize = 64;
+pub const MAX_MEM_OBJS: usize = 64;
+
+extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut c_void) {}
+
+struct KvmVcpuSlot {
+    vcpu: Mutex<KvmVcpu>,
+    immediate_exit: *mut AtomicU8,
+    runner_tid: AtomicU64,
 }
 
-impl<T: ?Sized> Default for ResourceTable<T> {
-    fn default() -> Self {
-        Self {
-            next_id: AtomicU64::new(1),
-            items: RwLock::new(HashMap::new()),
-        }
-    }
+unsafe impl Send for KvmVcpuSlot {}
+unsafe impl Sync for KvmVcpuSlot {}
+
+struct KvmMemObj {
+    addr: NonNull<c_void>,
+    shm_offset: u64,
+    len: u64,
 }
 
-impl<T> ResourceTable<T> {
-    fn insert(&self, val: T) -> Handle {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.items.write().insert(id, Arc::new(val));
-        id
-    }
+unsafe impl Send for KvmMemObj {}
+unsafe impl Sync for KvmMemObj {}
+
+#[derive(Debug, Clone, Copy)]
+struct KvmSlotMapping {
+    gpa: u64,
+    size: u64,
 }
 
-impl<T: ?Sized> ResourceTable<T> {
-    fn insert_arc(&self, val: Arc<T>) -> Handle {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.items.write().insert(id, val);
-        id
-    }
-
-    fn get(&self, id: Handle) -> HvResult<Arc<T>> {
-        self.items
-            .read()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| HvError::Unexpected {
-                msg: format!("invalid resource handle {id}"),
-            })
-    }
-
-    fn remove(&self, id: Handle) {
-        self.items.write().remove(&id);
-    }
-}
-
-/// Linux/KVM implementation of [`VmmHostCore`].
+/// Single-VM Linux/KVM partition implementing [`VmmHostCore`].
 pub struct KvmCoreHost {
+    kvm_fd: OwnedFd,
+    vm_fd: Arc<OwnedFd>,
+    vcpu_mmap_size: usize,
     bridge: Arc<SharedCoreBridge>,
-    hypervisors: ResourceTable<Kvm>,
-    vms: ResourceTable<RwLock<Box<dyn Vm>>>,
-    vcpus: ResourceTable<Mutex<Box<dyn Vcpu>>>,
-    vm_memories: ResourceTable<Box<dyn VmMemory>>,
-    mem_pages: ResourceTable<dyn MemPages>,
-    intx_senders: ResourceTable<Box<dyn IntxSender>>,
-    msi_senders: ResourceTable<Box<dyn MsiSender>>,
+    vcpus: RwLock<[Option<Arc<KvmVcpuSlot>>; MAX_VCPUS]>,
+    mem_objs: RwLock<[Option<KvmMemObj>; MAX_MEM_OBJS]>,
+    memslots: Mutex<[Option<KvmSlotMapping>; MAX_RAM_SLOTS]>,
 }
 
 impl KvmCoreHost {
     pub fn new(fds: CoreBridgeFds) -> std::io::Result<Self> {
         let bridge = SharedCoreBridge::from_fds(fds)?;
+
+        let kvm_file = File::open("/dev/kvm")?;
+        let kvm_fd = OwnedFd::from(kvm_file);
+        let version = unsafe { kvm_get_api_version(&kvm_fd) }?;
+        if version != KVM_API_VERSION {
+            return Err(std::io::Error::other(format!(
+                "unsupported KVM API version {version}, expected {KVM_API_VERSION}"
+            )));
+        }
+
+        let mut action: libc::sigaction = unsafe { transmute([0u8; size_of::<libc::sigaction>()]) };
+        action.sa_flags = libc::SA_SIGINFO;
+        action.sa_sigaction = sigrtmin_handler as *const () as _;
+        ffi!(unsafe { libc::sigfillset(&mut action.sa_mask) })?;
+        ffi!(unsafe { libc::sigaction(SIGRTMIN(), &action, null_mut()) })?;
+
+        let vcpu_mmap_size = unsafe { kvm_get_vcpu_mmap_size(&kvm_fd) }? as usize;
+        let raw_vm_fd = unsafe { kvm_create_vm(&kvm_fd, 0) }?;
+        let vm_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_vm_fd) });
+
+        if unsafe { kvm_check_extension(&vm_fd, KVM_CAP_SIGNAL_MSI) }? != 1 {
+            return Err(std::io::Error::other("KVM lacks KVM_CAP_SIGNAL_MSI"));
+        }
+
+        unsafe { kvm_create_irqchip(&vm_fd) }?;
+        #[cfg(target_arch = "x86_64")]
+        unsafe { kvm_set_tss_addr(&vm_fd, 0xf000_0000) }?;
+        #[cfg(target_arch = "x86_64")]
+        unsafe { kvm_set_identity_map_addr(&vm_fd, &0xf000_3000) }?;
+
+        spawn_i2c_listener(vm_fd.clone(), bridge.clone());
+
         Ok(Self {
+            kvm_fd,
+            vm_fd,
+            vcpu_mmap_size,
             bridge,
-            hypervisors: ResourceTable::default(),
-            vms: ResourceTable::default(),
-            vcpus: ResourceTable::default(),
-            vm_memories: ResourceTable::default(),
-            mem_pages: ResourceTable::default(),
-            intx_senders: ResourceTable::default(),
-            msi_senders: ResourceTable::default(),
+            vcpus: RwLock::new([const { None }; MAX_VCPUS]),
+            mem_objs: RwLock::new([const { None }; MAX_MEM_OBJS]),
+            memslots: Mutex::new([None; MAX_RAM_SLOTS]),
         })
+    }
+
+    pub fn bridge(&self) -> Arc<SharedCoreBridge> {
+        self.bridge.clone()
+    }
+
+    fn get_or_create_vcpu(&self, id: VcpuId) -> HvResult<Arc<KvmVcpuSlot>> {
+        let idx = id as usize;
+        if idx >= MAX_VCPUS {
+            return Err(HvError::InvalidParam);
+        }
+        if let Some(slot) = self.vcpus.read()[idx].clone() {
+            return Ok(slot);
+        }
+
+        let mut vcpus = self.vcpus.write();
+        if let Some(slot) = vcpus[idx].clone() {
+            return Ok(slot);
+        }
+
+        let raw_vcpu_fd = unsafe { kvm_create_vcpu(&self.vm_fd, id) }.map_err(io_to_hv_err)?;
+        let fd = unsafe { OwnedFd::from_raw_fd(raw_vcpu_fd) };
+        let kvm_run = unsafe { KvmRunBlock::new(raw_vcpu_fd, self.vcpu_mmap_size) }?;
+        let mut kvm_vcpu = KvmVcpu { kvm_run, fd };
+        let immediate_exit = kvm_vcpu.immediate_exit_ptr();
+        let slot = Arc::new(KvmVcpuSlot {
+            vcpu: Mutex::new(kvm_vcpu),
+            immediate_exit,
+            runner_tid: AtomicU64::new(0),
+        });
+        vcpus[idx] = Some(slot.clone());
+        Ok(slot)
     }
 }
 
 impl VmmHostCore for KvmCoreHost {
-    fn hv_new(&self) -> HvResult<Handle> {
-        let kvm = Kvm::new(self.bridge.clone())?;
-        Ok(self.hypervisors.insert(kvm))
+    fn caps(&self) -> HostCaps {
+        HostCaps::DECODED_MMIO | HostCaps::HW_IOAPIC
     }
 
-    fn hv_get_supported_cpuids(&self, hv: Handle) -> HvResult<Vec<Cpuid>> {
-        self.hypervisors.get(hv)?.get_supported_cpuids()
+    fn supported_cpuids(&self, dst: &mut [RawCpuid]) -> HvResult<usize> {
+        let mut kvm_cpuid2 = KvmCpuid2 {
+            nent: KVM_MAX_CPUID_ENTRIES as u32,
+            padding: 0,
+            entries: [KvmCpuidEntry2::default(); KVM_MAX_CPUID_ENTRIES],
+        };
+        unsafe { kvm_get_supported_cpuid(&self.kvm_fd, &mut kvm_cpuid2) }.map_err(io_to_hv_err)?;
+        let total = (kvm_cpuid2.nent as usize).min(KVM_MAX_CPUID_ENTRIES);
+        let count = total.min(dst.len());
+        for (src, out) in kvm_cpuid2.entries[..count].iter().zip(dst[..count].iter_mut()) {
+            *out = RawCpuid {
+                func: src.function,
+                has_index: u32::from(src.flags.contains(KvmCpuid2Flag::SIGNIFCANT_INDEX)),
+                index: src.index,
+                eax: src.eax,
+                ebx: src.ebx,
+                ecx: src.ecx,
+                edx: src.edx,
+            };
+        }
+        Ok(count)
     }
 
-    fn hv_create_vm(&self, hv: Handle) -> HvResult<Handle> {
-        let vm = self.hypervisors.get(hv)?.create_vm()?;
-        Ok(self.vms.insert(RwLock::new(vm)))
+    fn vcpu_configure(&self, vcpu: VcpuId, cpuids: &[RawCpuid]) -> HvResult<()> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        slot.vcpu.lock().configure_cpuids(cpuids)
     }
 
-    fn hv_close(&self, hv: Handle) {
-        self.hypervisors.remove(hv);
+    fn vcpu_get_regs(&self, vcpu: VcpuId, ids: &[RegId], out: &mut [RegVal]) -> HvResult<()> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        slot.vcpu.lock().get_regs_batch(ids, out)
     }
 
-    fn vm_create_vcpu(&self, vm: Handle, id: u32) -> HvResult<Handle> {
-        let vcpu = self.vms.get(vm)?.read().create_vcpu(id)?;
-        Ok(self.vcpus.insert(Mutex::new(vcpu)))
+    fn vcpu_set_regs(&self, vcpu: VcpuId, regs: &[(RegId, RegVal)]) -> HvResult<()> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        slot.vcpu.lock().set_regs_batch(regs)
     }
 
-    fn vm_stop_vcpu(&self, vm: Handle, id: u32) -> HvResult<()> {
-        self.vms.get(vm)?.read().stop_vcpu(id)
+    fn vcpu_kick(&self, vcpu: VcpuId) -> HvResult<()> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        unsafe { (*slot.immediate_exit).store(1, Ordering::SeqCst) };
+        let tid = slot.runner_tid.load(Ordering::Acquire);
+        if tid != 0 {
+            let rc = unsafe { libc::pthread_kill(tid as libc::pthread_t, SIGRTMIN()) };
+            if rc != 0 && rc != libc::ESRCH {
+                return Err(HvError::HardwareFault);
+            }
+        }
+        Ok(())
     }
 
-    fn vm_create_vm_memory(&self, vm: Handle) -> HvResult<Handle> {
-        let mem = self.vms.get(vm)?.write().create_vm_memory()?;
-        Ok(self.vm_memories.insert(mem))
+    fn vcpu_run(&self, vcpu: VcpuId, entry: VmEntry) -> HvResult<VmExit> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        slot.runner_tid
+            .store(unsafe { libc::pthread_self() } as u64, Ordering::Release);
+        let mut guard = slot.vcpu.lock();
+        guard.run(entry)
     }
 
-    fn vm_create_intx_sender(&self, vm: Handle, pin: u8) -> HvResult<Handle> {
-        let sender = self.vms.get(vm)?.read().create_intx_sender(pin)?;
-        Ok(self.intx_senders.insert(sender))
+    fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
+        let (addr, shm_offset, len) = self.bridge.alloc_shared_ram(size)?;
+        let mut objs = self.mem_objs.write();
+        let Some(id) = objs.iter().position(Option::is_none) else {
+            self.bridge.free_shared_ram(shm_offset, len);
+            return Err(HvError::NoMemory);
+        };
+        objs[id] = Some(KvmMemObj {
+            addr,
+            shm_offset,
+            len,
+        });
+        Ok(id as MemObjId)
     }
 
-    fn vm_create_msi_sender(&self, vm: Handle) -> HvResult<Handle> {
-        let sender = self.vms.get(vm)?.read().create_msi_sender()?;
-        Ok(self.msi_senders.insert(sender))
+    fn mem_free(&self, obj: MemObjId) -> HvResult<()> {
+        let idx = obj as usize;
+        if idx >= MAX_MEM_OBJS {
+            return Err(HvError::InvalidParam);
+        }
+        let Some(mem_obj) = self.mem_objs.write()[idx].take() else {
+            return Err(HvError::InvalidParam);
+        };
+        self.bridge.free_shared_ram(mem_obj.shm_offset, mem_obj.len);
+        Ok(())
     }
 
-    fn vm_close(&self, vm: Handle) {
-        self.vms.remove(vm);
+    fn mem_read(&self, obj: MemObjId, offset: u64, dst: &mut [u8]) -> HvResult<()> {
+        let idx = obj as usize;
+        let objs = self.mem_objs.read();
+        let Some(mem_obj) = objs.get(idx).and_then(Option::as_ref) else {
+            return Err(HvError::InvalidParam);
+        };
+        let end = offset
+            .checked_add(dst.len() as u64)
+            .ok_or(HvError::InvalidParam)?;
+        if end > mem_obj.len {
+            return Err(HvError::InvalidParam);
+        }
+        let src = unsafe {
+            std::slice::from_raw_parts(
+                (mem_obj.addr.as_ptr() as *const u8).add(offset as usize),
+                dst.len(),
+            )
+        };
+        dst.copy_from_slice(src);
+        Ok(())
     }
 
-    fn vcpu_run(&self, vcpu: Handle, entry: VmEntry) -> HvResult<VmExit> {
-        self.vcpus.get(vcpu)?.lock().run(entry)
+    fn mem_write(&self, obj: MemObjId, offset: u64, src: &[u8]) -> HvResult<()> {
+        let idx = obj as usize;
+        let objs = self.mem_objs.read();
+        let Some(mem_obj) = objs.get(idx).and_then(Option::as_ref) else {
+            return Err(HvError::InvalidParam);
+        };
+        let end = offset
+            .checked_add(src.len() as u64)
+            .ok_or(HvError::InvalidParam)?;
+        if end > mem_obj.len {
+            return Err(HvError::InvalidParam);
+        }
+        let dst = unsafe {
+            std::slice::from_raw_parts_mut(
+                (mem_obj.addr.as_ptr() as *mut u8).add(offset as usize),
+                src.len(),
+            )
+        };
+        dst.copy_from_slice(src);
+        Ok(())
     }
 
-    fn vcpu_get_reg(&self, vcpu: Handle, reg: Reg) -> HvResult<u64> {
-        self.vcpus.get(vcpu)?.lock().get_reg(reg)
-    }
-
-    fn vcpu_set_regs(&self, vcpu: Handle, vals: &[(Reg, u64)]) -> HvResult<()> {
-        self.vcpus.get(vcpu)?.lock().set_regs(vals)
-    }
-
-    fn vcpu_get_seg_reg(&self, vcpu: Handle, reg: SegReg) -> HvResult<SegRegVal> {
-        self.vcpus.get(vcpu)?.lock().get_seg_reg(reg)
-    }
-
-    fn vcpu_get_dt_reg(&self, vcpu: Handle, reg: DtReg) -> HvResult<DtRegVal> {
-        self.vcpus.get(vcpu)?.lock().get_dt_reg(reg)
-    }
-
-    fn vcpu_get_sreg(&self, vcpu: Handle, reg: SReg) -> HvResult<u64> {
-        self.vcpus.get(vcpu)?.lock().get_sreg(reg)
-    }
-
-    fn vcpu_set_sregs(
+    fn gpa_map(
         &self,
-        vcpu: Handle,
-        sregs: &[(SReg, u64)],
-        seg_regs: &[(SegReg, SegRegVal)],
-        dt_regs: &[(DtReg, DtRegVal)],
-    ) -> HvResult<()> {
-        self.vcpus
-            .get(vcpu)?
-            .lock()
-            .set_sregs(sregs, seg_regs, dt_regs)
-    }
-
-    fn vcpu_set_cpuids(&self, vcpu: Handle, cpuids: Vec<Cpuid>) -> HvResult<()> {
-        self.vcpus.get(vcpu)?.lock().set_cpuids(cpuids)
-    }
-
-    fn vcpu_dump(&self, vcpu: Handle) -> HvResult<()> {
-        self.vcpus.get(vcpu)?.lock().dump()
-    }
-
-    fn vcpu_close(&self, vcpu: Handle) {
-        self.vcpus.remove(vcpu);
-    }
-
-    fn vm_memory_mem_map(
-        &self,
-        mem: Handle,
-        slot: u32,
         gpa: u64,
         size: u64,
-        hva: u64,
-        option: MemMapOption,
-    ) -> HvResult<()> {
-        self.vm_memories
-            .get(mem)?
-            .mem_map(slot, gpa, size as usize, hva, option)
-    }
-
-    fn vm_memory_unmap(&self, mem: Handle, slot: u32, gpa: u64, size: u64) -> HvResult<()> {
-        self.vm_memories.get(mem)?.unmap(slot, gpa, size as usize)
-    }
-
-    fn vm_memory_max_mem_slots(&self, mem: Handle) -> HvResult<u32> {
-        self.vm_memories.get(mem)?.max_mem_slots()
-    }
-
-    fn vm_memory_register_encrypted_range(
-        &self,
-        mem: Handle,
-        addr: u64,
-        size: u64,
-    ) -> HvResult<()> {
-        self.vm_memories
-            .get(mem)?
-            .register_encrypted_range(addr, size as usize)
-    }
-
-    fn vm_memory_deregister_encrypted_range(
-        &self,
-        mem: Handle,
-        addr: u64,
-        size: u64,
-    ) -> HvResult<()> {
-        self.vm_memories
-            .get(mem)?
-            .deregister_encrypted_range(addr, size as usize)
-    }
-
-    fn vm_memory_alloc_anon_mem(&self, mem: Handle, size: u64) -> HvResult<(Handle, u64, u64)> {
-        let pages = self.vm_memories.get(mem)?.alloc_anon_mem(size as usize)?;
-        let addr = pages.addr();
-        let actual_size = pages.size() as u64;
-        let handle = self.mem_pages.insert_arc(pages);
-        Ok((handle, addr, actual_size))
-    }
-
-    fn vm_memory_close(&self, mem: Handle) {
-        self.vm_memories.remove(mem);
-    }
-
-    fn mem_pages_sync(&self, pages: Handle) -> HvResult<()> {
-        self.mem_pages.get(pages)?.sync().map_err(Into::into)
-    }
-
-    fn mem_pages_read(&self, pages: Handle, offset: u64, dst: &mut [u8]) -> HvResult<()> {
-        self.mem_pages
-            .get(pages)?
-            .read(offset as usize, dst)
-            .map_err(Into::into)
-    }
-
-    fn mem_pages_write(&self, pages: Handle, offset: u64, src: &[u8]) -> HvResult<()> {
-        self.mem_pages
-            .get(pages)?
-            .write(offset as usize, src)
-            .map_err(Into::into)
-    }
-
-    fn mem_pages_close(&self, pages: Handle) {
-        self.mem_pages.remove(pages);
-    }
-
-    fn intx_sender_send(&self, sender: Handle) -> HvResult<()> {
-        self.intx_senders.get(sender)?.send()
-    }
-
-    fn intx_sender_close(&self, sender: Handle) {
-        self.intx_senders.remove(sender);
-    }
-
-    fn msi_sender_send(&self, sender: Handle, addr: u64, data: u32) -> HvResult<()> {
-        self.msi_senders.get(sender)?.send(addr, data)
-    }
-
-    fn msi_sender_close(&self, sender: Handle) {
-        self.msi_senders.remove(sender);
-    }
-
-    fn core_get_boot_info(&self) -> HvResult<(CoreBootInfo, Vec<VirtioDeviceSpec>)> {
-        self.bridge.core_get_boot_info()
-    }
-
-    fn core_read_payload(
-        &self,
-        kind: PayloadKind,
+        obj: MemObjId,
         offset: u64,
-        dst: &mut [u8],
-    ) -> HvResult<usize> {
-        self.bridge.core_read_payload(kind, offset, dst)
-    }
-
-    fn core_virtio_start(
-        &self,
-        dev: Handle,
-        driver_features: u64,
-        queues: &[VirtioQueueConfig],
+        prot: MemProt,
     ) -> HvResult<()> {
-        self.bridge.core_virtio_start(dev, driver_features, queues)
+        if size == 0 || (gpa & 0xfff) != 0 || (size & 0xfff) != 0 || (offset & 0xfff) != 0 {
+            return Err(HvError::InvalidParam);
+        }
+        if !prot.contains(MemProt::READ) || !prot.contains(MemProt::EXEC) {
+            return Err(HvError::Unsupported);
+        }
+        let gpa_end = gpa.checked_add(size).ok_or(HvError::InvalidParam)?;
+
+        let (hva, shm_offset) = {
+            let objs = self.mem_objs.read();
+            let Some(mem_obj) = objs.get(obj as usize).and_then(Option::as_ref) else {
+                return Err(HvError::InvalidParam);
+            };
+            let end = offset.checked_add(size).ok_or(HvError::InvalidParam)?;
+            if end > mem_obj.len {
+                return Err(HvError::InvalidParam);
+            }
+            let hva = (mem_obj.addr.as_ptr() as usize as u64) + offset;
+            (hva, mem_obj.shm_offset + offset)
+        };
+
+        let mut flags = KvmMemFlag::empty();
+        if !prot.contains(MemProt::WRITE) {
+            flags |= KvmMemFlag::READONLY;
+        }
+        if prot.contains(MemProt::LOG_DIRTY) {
+            flags |= KvmMemFlag::LOG_DIRTY_PAGES;
+        }
+
+        let mut slots = self.memslots.lock();
+        for existing in slots.iter().flatten() {
+            let ex_end = existing.gpa + existing.size;
+            if gpa < ex_end && existing.gpa < gpa_end {
+                return Err(HvError::InvalidParam);
+            }
+        }
+        let slot_idx = slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(HvError::NoMemory)?;
+
+        let region = KvmUserspaceMemoryRegion {
+            slot: slot_idx as u32,
+            flags,
+            guest_phys_addr: gpa,
+            memory_size: size,
+            userspace_addr: hva,
+        };
+        unsafe { kvm_set_user_memory_region(&self.vm_fd, &region) }.map_err(io_to_hv_err)?;
+        slots[slot_idx] = Some(KvmSlotMapping { gpa, size });
+
+        let shm = self.bridge.shm;
+        let lock = unsafe { &(*shm).ram_slots_lock };
+        spin_lock(lock);
+        unsafe {
+            (*shm).ram_slots[slot_idx] = ShmGuestRamSlot {
+                gpa,
+                size,
+                shm_offset,
+                active: 1,
+                _pad: 0,
+            };
+        }
+        spin_unlock(lock);
+
+        Ok(())
     }
 
-    fn core_virtio_notify(&self, dev: Handle, queue_index: u16) -> HvResult<()> {
-        self.bridge.core_virtio_notify(dev, queue_index)
+    fn gpa_unmap(&self, gpa: u64, size: u64) -> HvResult<()> {
+        let mut slots = self.memslots.lock();
+        let slot_idx = slots
+            .iter()
+            .position(|s| matches!(s, Some(m) if m.gpa == gpa && m.size == size))
+            .ok_or(HvError::InvalidParam)?;
+
+        let region = KvmUserspaceMemoryRegion {
+            slot: slot_idx as u32,
+            flags: KvmMemFlag::empty(),
+            guest_phys_addr: gpa,
+            memory_size: 0,
+            userspace_addr: 0,
+        };
+        unsafe { kvm_set_user_memory_region(&self.vm_fd, &region) }.map_err(io_to_hv_err)?;
+        slots[slot_idx] = None;
+
+        let shm = self.bridge.shm;
+        let lock = unsafe { &(*shm).ram_slots_lock };
+        spin_lock(lock);
+        unsafe {
+            (*shm).ram_slots[slot_idx].active = 0;
+        }
+        spin_unlock(lock);
+
+        Ok(())
     }
 
-    fn core_virtio_reset(&self, dev: Handle) -> HvResult<()> {
-        self.bridge.core_virtio_reset(dev)
+    fn inject_msi(&self, addr: u64, data: u32) -> HvResult<()> {
+        let kvm_msi = KvmMsi {
+            address_lo: addr as u32,
+            address_hi: (addr >> 32) as u32,
+            data,
+            ..Default::default()
+        };
+        unsafe { kvm_signal_msi(&self.vm_fd, &kvm_msi) }.map_err(io_to_hv_err)?;
+        Ok(())
     }
 
-    fn core_virtio_update_irq(
-        &self,
-        dev: Handle,
-        config_msi: Option<(u64, u32)>,
-        queue_msis: &[Option<(u64, u32)>],
-    ) -> HvResult<()> {
-        self.bridge
-            .core_virtio_update_irq(dev, config_msi, queue_msis)
-    }
-
-    fn core_serial_tx(&self, byte: u8) -> HvResult<()> {
-        self.bridge.core_serial_tx(byte)
-    }
-
-    fn core_serial_rx(&self, dst: &mut [u8]) -> HvResult<usize> {
-        self.bridge.core_serial_rx(dst)
-    }
-
-    fn core_notify_shutdown(&self) -> HvResult<()> {
-        self.bridge.core_notify_shutdown()
+    fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()> {
+        let req = KvmIrqLevel {
+            irq: gsi,
+            level: u32::from(active),
+        };
+        unsafe { kvm_irq_line(&self.vm_fd, &req) }.map_err(io_to_hv_err)?;
+        Ok(())
     }
 }

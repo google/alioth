@@ -18,7 +18,7 @@ use std::ops::Range;
 use thiserror::Error;
 
 use crate::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
-use crate::host::{Hypervisor, PayloadKind};
+use crate::host::{PayloadKind, VmmCoreBridge};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
@@ -40,16 +40,16 @@ pub enum ExecType {
 }
 
 pub struct PayloadReader<'a> {
-    hv: &'a dyn Hypervisor,
+    bridge: &'a dyn VmmCoreBridge,
     kind: PayloadKind,
     size: u64,
     pos: u64,
 }
 
 impl<'a> PayloadReader<'a> {
-    pub fn new(hv: &'a dyn Hypervisor, kind: PayloadKind, size: u64) -> Self {
+    pub fn new(bridge: &'a dyn VmmCoreBridge, kind: PayloadKind, size: u64) -> Self {
         Self {
-            hv,
+            bridge,
             kind,
             size,
             pos: 0,
@@ -68,8 +68,8 @@ impl Read for PayloadReader<'_> {
         }
         let max_len = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
         let n = self
-            .hv
-            .core_read_payload(self.kind, self.pos, &mut buf[..max_len])
+            .bridge
+            .read_payload(self.kind, self.pos, &mut buf[..max_len])
             .map_err(|e| io::Error::other(e.to_string()))?;
         self.pos += n as u64;
         Ok(n)

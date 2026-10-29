@@ -15,9 +15,8 @@
 fn main() {
     #[cfg(target_os = "wasi")]
     {
-        let hv = std::sync::Arc::new(
-            vmm_core::wasm::WasmHypervisor::new().expect("Failed to get hypervisor"),
-        );
-        vmm_core::run(hv).expect("Failed to run VM core");
+        let hv = std::sync::Arc::new(vmm_core::wasm::WasmHost);
+        let bridge = std::sync::Arc::new(vmm_core::wasm::WasmBridge);
+        vmm_core::run(hv, bridge).expect("Failed to run VM core");
     }
 }

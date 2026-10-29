@@ -12,29 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Formatter};
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::size_of;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::sync::{RwLock, RwLockReadGuard};
 use zerocopy::{AsBytes, FromBytes};
 
-use crate::host::{MemMapOption, MemPages, VmMemory};
+use crate::host::{MemObjId, MemProt, VmmHostCore};
+use crate::sync::{RwLock, RwLockReadGuard};
 
 use super::addressable::{Addressable, SlotBackend};
 use super::{Error, Result};
 
-// ArcMemPages uses Arc to manage the underlying memory and caches
-// the address and size on the stack. Compared with using Arc<dyn MemPages>,
-// it avoids a memory load when a caller tries to read/write the pages.
+struct MemObjHandle {
+    id: MemObjId,
+    total_size: usize,
+    hv: Arc<dyn VmmHostCore>,
+}
+
+impl Debug for MemObjHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemObjHandle")
+            .field("id", &self.id)
+            .field("total_size", &self.total_size)
+            .finish()
+    }
+}
+
+impl Drop for MemObjHandle {
+    fn drop(&mut self) {
+        let _ = self.hv.mem_free(self.id);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ArcMemPages {
-    addr: u64,
+    obj: Arc<MemObjHandle>,
+    offset: usize,
     size: usize,
-    inner: Arc<dyn MemPages>,
 }
 
 impl SlotBackend for ArcMemPages {
@@ -44,25 +61,54 @@ impl SlotBackend for ArcMemPages {
 }
 
 impl ArcMemPages {
-    pub fn new(inner: Arc<dyn MemPages>) -> Self {
-        ArcMemPages {
-            addr: inner.addr(),
-            size: inner.size(),
-            inner,
-        }
+    pub fn alloc(hv: Arc<dyn VmmHostCore>, size: usize) -> Result<Self> {
+        let id = hv.mem_alloc(size as u64)?;
+        Ok(Self {
+            obj: Arc::new(MemObjHandle {
+                id,
+                total_size: size,
+                hv,
+            }),
+            offset: 0,
+            size,
+        })
     }
 
-    pub fn addr(&self) -> u64 {
-        self.addr
+    pub fn subslice(&self, offset: usize, size: usize) -> Result<Self> {
+        let abs_offset = self
+            .offset
+            .checked_add(offset)
+            .ok_or(Error::OutOfRange {
+                addr: offset as u64,
+                size,
+            })?;
+        let end = abs_offset.checked_add(size).ok_or(Error::OutOfRange {
+            addr: offset as u64,
+            size,
+        })?;
+        if end > self.obj.total_size {
+            return Err(Error::OutOfRange {
+                addr: offset as u64,
+                size,
+            });
+        }
+        Ok(Self {
+            obj: self.obj.clone(),
+            offset: abs_offset,
+            size,
+        })
+    }
+
+    pub fn mem_obj_id(&self) -> MemObjId {
+        self.obj.id
+    }
+
+    pub fn mem_obj_offset(&self) -> u64 {
+        self.offset as u64
     }
 
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    pub fn sync(&self) -> Result<()> {
-        self.inner.sync()?;
-        Ok(())
     }
 
     fn get_valid_len(&self, offset: usize, len: usize) -> Result<usize> {
@@ -73,7 +119,7 @@ impl ArcMemPages {
                 size: len,
             });
         }
-        Ok(std::cmp::min(self.size - offset, len))
+        Ok(core::cmp::min(self.size - offset, len))
     }
 
     pub fn read_bytes(&self, offset: usize, dst: &mut [u8]) -> Result<usize, Error> {
@@ -81,7 +127,11 @@ impl ArcMemPages {
             return Ok(0);
         }
         let valid_len = self.get_valid_len(offset, dst.len())?;
-        self.inner.read(offset, &mut dst[..valid_len])?;
+        self.obj.hv.mem_read(
+            self.obj.id,
+            (self.offset + offset) as u64,
+            &mut dst[..valid_len],
+        )?;
         Ok(valid_len)
     }
 
@@ -90,7 +140,11 @@ impl ArcMemPages {
             return Ok(0);
         }
         let valid_len = self.get_valid_len(offset, src.len())?;
-        self.inner.write(offset, &src[..valid_len])?;
+        self.obj.hv.mem_write(
+            self.obj.id,
+            (self.offset + offset) as u64,
+            &src[..valid_len],
+        )?;
         Ok(valid_len)
     }
 
@@ -114,7 +168,10 @@ impl ArcMemPages {
         T: AsBytes,
     {
         let bytes = val.as_bytes();
-        if offset.checked_add(bytes.len()).map_or(true, |end| end > self.size) {
+        if offset
+            .checked_add(bytes.len())
+            .is_none_or(|end| end > self.size)
+        {
             return Err(Error::OutOfRange {
                 addr: offset as u64,
                 size: size_of::<T>(),
@@ -125,58 +182,51 @@ impl ArcMemPages {
     }
 }
 
-#[derive(Debug)]
-pub struct MappedSlot {
-    pub pages: ArcMemPages,
-    slot_id: u32,
+pub struct RamBus {
+    inner: RwLock<Addressable<ArcMemPages>>,
+    hv: Arc<dyn VmmHostCore>,
 }
 
-impl SlotBackend for MappedSlot {
-    fn size(&self) -> usize {
-        self.pages.size
+impl Debug for RamBus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RamBus")
+            .field("inner", &self.inner)
+            .finish()
     }
 }
 
-#[derive(Debug)]
-pub struct RamBus {
-    inner: RwLock<Addressable<MappedSlot>>,
-    vm_memory: Box<dyn VmMemory>,
-    pub(super) next_slot_id: AtomicU32,
-    max_mem_slots: u32,
-}
-
 pub struct RamLayoutGuard<'a> {
-    inner: RwLockReadGuard<'a, Addressable<MappedSlot>>,
+    inner: RwLockReadGuard<'a, Addressable<ArcMemPages>>,
 }
 
 impl Deref for RamLayoutGuard<'_> {
-    type Target = Addressable<MappedSlot>;
+    type Target = Addressable<ArcMemPages>;
 
-    fn deref(&self) -> &Addressable<MappedSlot> {
+    fn deref(&self) -> &Addressable<ArcMemPages> {
         &self.inner
     }
 }
 
-impl Addressable<MappedSlot> {
+impl Addressable<ArcMemPages> {
     pub fn get_chunk_len(&self, gpa: u64, len: usize) -> Result<usize> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.get_valid_len((gpa - start) as usize, len)
+        user_mem.get_valid_len((gpa - start) as usize, len)
     }
 
     pub fn read_partial(&self, gpa: u64, dst: &mut [u8]) -> Result<usize> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.read_bytes((gpa - start) as usize, dst)
+        user_mem.read_bytes((gpa - start) as usize, dst)
     }
 
     pub fn write_partial(&self, gpa: u64, src: &[u8]) -> Result<usize> {
         let Some((start, user_mem)) = self.search(gpa) else {
             return Err(Error::NotMapped(gpa));
         };
-        user_mem.pages.write_bytes((gpa - start) as usize, src)
+        user_mem.write_bytes((gpa - start) as usize, src)
     }
 
     pub fn validate_range(&self, mut gpa: u64, mut remain: usize) -> Result<Vec<(u64, usize)>> {
@@ -254,82 +304,57 @@ impl RamBus {
         }
     }
 
-    pub fn new(vm_memory: Box<dyn VmMemory>) -> Self {
-        let max_mem_slots = match vm_memory.max_mem_slots() {
-            Ok(val) => val,
-            Err(e) => {
-                log::error!(
-                    "quering hypervisor for maximum supported memory slots, got error {e:?}"
-                );
-                log::error!(
-                    "assuming the maximum assuported memory slots is {:#x}",
-                    u16::MAX
-                );
-                u16::MAX as u32
-            }
-        };
+    pub fn new(hv: Arc<dyn VmmHostCore>) -> Self {
         Self {
             inner: RwLock::new(Addressable::default()),
-            vm_memory,
-            next_slot_id: AtomicU32::new(0),
-            max_mem_slots,
+            hv,
         }
     }
 
     pub fn alloc_anon_mem(&self, size: usize) -> Result<ArcMemPages, Error> {
-        let pages = self.vm_memory.alloc_anon_mem(size).map_err(Error::Mmap)?;
-        Ok(ArcMemPages::new(pages))
+        ArcMemPages::alloc(self.hv.clone(), size)
     }
 
-    fn map_to_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
-        let mem_options = MemMapOption {
-            read: true,
-            write: true,
-            exec: true,
-            log_dirty: false,
-        };
-        self.vm_memory.mem_map(
-            user_mem.slot_id,
-            addr,
-            user_mem.pages.size,
-            user_mem.pages.addr,
-            mem_options,
+    fn map_to_vm(&self, user_mem: &ArcMemPages, gpa: u64) -> Result<(), Error> {
+        self.hv.gpa_map(
+            gpa,
+            user_mem.size as u64,
+            user_mem.mem_obj_id(),
+            user_mem.mem_obj_offset(),
+            MemProt::RWX,
         )?;
         log::trace!(
-            "user memory {} mapped: {:#018x} -> {addr:#018x}, size = {:#x}",
-            user_mem.slot_id,
-            user_mem.pages.addr,
-            user_mem.pages.size
+            "mem_obj {} (off={:#x}) mapped at gpa {gpa:#018x}, size = {:#x}",
+            user_mem.mem_obj_id(),
+            user_mem.mem_obj_offset(),
+            user_mem.size
         );
         Ok(())
     }
 
-    fn unmap_from_vm(&self, user_mem: &MappedSlot, addr: u64) -> Result<(), Error> {
-        self.vm_memory
-            .unmap(user_mem.slot_id, addr, user_mem.size())?;
+    fn unmap_from_vm(&self, user_mem: &ArcMemPages, gpa: u64) -> Result<(), Error> {
+        self.hv.gpa_unmap(gpa, user_mem.size as u64)?;
         log::trace!(
-            "user memory {} unmapped: {:#018x} -> {addr:#018x}, size = {:#x}",
-            user_mem.slot_id,
-            user_mem.pages.addr,
-            user_mem.pages.size
+            "mem_obj {} unmapped from gpa {gpa:#018x}, size = {:#x}",
+            user_mem.mem_obj_id(),
+            user_mem.size
         );
         Ok(())
     }
 
     pub(crate) fn add(&self, gpa: u64, user_mem: ArcMemPages) -> Result<(), Error> {
         let mut inner = self.inner.write();
-        let slot = MappedSlot {
-            slot_id: self.next_slot_id.fetch_add(1, Ordering::AcqRel) % self.max_mem_slots,
-            pages: user_mem,
-        };
-        let slot = inner.add(gpa, slot)?;
-        self.map_to_vm(slot, gpa)?;
+        let added = inner.add(gpa, user_mem)?;
+        if let Err(e) = self.map_to_vm(added, gpa) {
+            let _ = inner.remove(gpa);
+            return Err(e);
+        }
         Ok(())
     }
 
     fn clear(&self) -> Result<()> {
-        let mut innter = self.inner.write();
-        for (gpa, user_mem) in innter.drain(..) {
+        let mut inner = self.inner.write();
+        for (gpa, user_mem) in inner.drain(..) {
             self.unmap_from_vm(&user_mem, gpa)?;
         }
         Ok(())
@@ -339,7 +364,7 @@ impl RamBus {
         let mut inner = self.inner.write();
         let mem = inner.remove(gpa)?;
         self.unmap_from_vm(&mem, gpa)?;
-        Ok(mem.pages)
+        Ok(mem)
     }
 
     pub fn read<T>(&self, gpa: u64) -> Result<T, Error>
@@ -359,21 +384,35 @@ impl RamBus {
     }
 
     pub fn read_range(&self, gpa: u64, len: usize, dst: &mut impl Write) -> Result<()> {
+        const CHUNK: usize = 64 * 1024;
         let inner = self.inner.read();
-        for (chunk_gpa, chunk_len) in inner.validate_range(gpa, len)? {
-            let mut buf = vec![0u8; chunk_len];
-            inner.read_exact_bytes(chunk_gpa, &mut buf)?;
-            dst.write_all(&buf)?;
+        let ranges = inner.validate_range(gpa, len)?;
+        let mut buf = vec![0u8; len.min(CHUNK)];
+        for (mut chunk_gpa, mut remain) in ranges {
+            while remain > 0 {
+                let n = remain.min(buf.len());
+                inner.read_exact_bytes(chunk_gpa, &mut buf[..n])?;
+                dst.write_all(&buf[..n])?;
+                chunk_gpa += n as u64;
+                remain -= n;
+            }
         }
         Ok(())
     }
 
     pub fn write_range(&self, gpa: u64, len: usize, mut src: impl Read) -> Result<()> {
+        const CHUNK: usize = 64 * 1024;
         let inner = self.inner.read();
-        for (chunk_gpa, chunk_len) in inner.validate_range(gpa, len)? {
-            let mut buf = vec![0u8; chunk_len];
-            src.read_exact(&mut buf)?;
-            inner.write_exact_bytes(chunk_gpa, &buf)?;
+        let ranges = inner.validate_range(gpa, len)?;
+        let mut buf = vec![0u8; len.min(CHUNK)];
+        for (mut chunk_gpa, mut remain) in ranges {
+            while remain > 0 {
+                let n = remain.min(buf.len());
+                src.read_exact(&mut buf[..n])?;
+                inner.write_exact_bytes(chunk_gpa, &buf[..n])?;
+                chunk_gpa += n as u64;
+                remain -= n;
+            }
         }
         Ok(())
     }
@@ -408,30 +447,16 @@ impl RamBus {
         }
         Ok(res)
     }
-
-    pub fn register_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
-        self.vm_memory
-            .register_encrypted_range(pages.addr(), pages.size())?;
-        Ok(())
-    }
-
-    pub fn deregister_encrypted_pages(&self, pages: &ArcMemPages) -> Result<()> {
-        self.vm_memory
-            .deregister_encrypted_range(pages.addr(), pages.size())?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod test {
     use std::io::{Read, Write};
     use std::mem::size_of;
-    use std::sync::Arc;
 
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-    use crate::host::MemPages;
-    use crate::host::test::{FakeMemPages, FakeVmMemory};
+    use crate::host::test::FakeHost;
 
     use super::{ArcMemPages, RamBus};
 
@@ -452,13 +477,11 @@ mod test {
 
     #[test]
     fn test_ram_bus_read() {
-        let bus = RamBus::new(FakeVmMemory());
-        let backing = FakeMemPages::new(3 * PAGE_SIZE);
-        let addr = backing.addr();
-        let mem1 = ArcMemPages::new(Arc::new(unsafe { FakeMemPages::from_raw(addr, PAGE_SIZE) }));
-        let mem2 = ArcMemPages::new(Arc::new(unsafe {
-            FakeMemPages::from_raw(addr + 2 * PAGE_SIZE_U64, PAGE_SIZE)
-        }));
+        let hv = FakeHost::new_arc();
+        let bus = RamBus::new(hv.clone());
+        let backing = ArcMemPages::alloc(hv, 3 * PAGE_SIZE).unwrap();
+        let mem1 = backing.subslice(0, PAGE_SIZE).unwrap();
+        let mem2 = backing.subslice(2 * PAGE_SIZE, PAGE_SIZE).unwrap();
 
         bus.add(0x0, mem1).unwrap();
         bus.add(PAGE_SIZE_U64, mem2).unwrap();
@@ -510,7 +533,7 @@ mod test {
 
         let locked_bus = bus.lock_layout();
         let bufs = locked_bus.translate_iov(&guest_iov).unwrap();
-        println!("{:?}", bufs);
+        assert_eq!(bufs.len(), 4);
         drop(locked_bus);
         bus.remove(0x0).unwrap();
         bus.remove(PAGE_SIZE_U64).unwrap();

@@ -20,7 +20,7 @@ use std::thread;
 
 use thiserror::Error;
 
-use crate::host::{self, Hypervisor, VirtioDeviceSpec};
+use crate::host::{self, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
 use crate::hw::pci::bus::PciBus;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
@@ -58,9 +58,6 @@ pub enum Error {
 
     #[error("ACPI bytes exceed EBDA area")]
     AcpiTooLong,
-
-    #[error("cannot handle {0:#x?}")]
-    VmExit(String),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -72,15 +69,17 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub fn new(hv: Arc<dyn Hypervisor>, config: BoardConfig) -> Result<Self, Error> {
-        let mut vm = hv.create_vm()?;
-        let vm_memory = vm.create_vm_memory()?;
-        let memory = Memory::new(vm_memory);
+    pub fn new(
+        hv: Arc<dyn VmmHostCore>,
+        bridge: Arc<dyn VmmCoreBridge>,
+        config: BoardConfig,
+    ) -> Result<Self, Error> {
+        let memory = Memory::new(hv.clone());
         let arch = ArchBoard::new(hv.as_ref())?;
 
         let board = Board {
             hv,
-            vm,
+            bridge,
             memory,
             arch,
             config,
@@ -103,11 +102,11 @@ impl Machine {
     }
 
     pub fn add_com1(&self) -> Result<(), Error> {
-        let com1_intx_sender = self.board.vm.create_intx_sender(4)?;
         let com1 = Arc::new(Serial::new(
             0x3f8,
-            com1_intx_sender,
+            4,
             self.board.hv.clone(),
+            self.board.bridge.clone(),
         )?);
         *self.board.com1.write() = Some(com1.clone());
         self.board.io_devs.write().push((0x3f8, com1));
@@ -124,8 +123,11 @@ impl Machine {
         Ok(())
     }
 
-    pub fn add_virtio_spec(&mut self, spec: VirtioDeviceSpec) -> Result<Arc<VirtioPciDevice>, Error> {
-        let dev = Arc::new(VirtioPciDevice::from_spec(spec, self.board.hv.clone())?);
+    pub fn add_virtio_spec(
+        &mut self,
+        spec: VirtioDeviceSpec,
+    ) -> Result<Arc<VirtioPciDevice>, Error> {
+        let dev = Arc::new(VirtioPciDevice::from_spec(spec, self.board.bridge.clone())?);
         let pci_dev = PciDevice::new(dev.name.clone(), dev.clone());
         self.add_pci_dev(pci_dev)?;
         Ok(dev)
@@ -173,7 +175,7 @@ impl Machine {
         {
             let vcpus = self.board.vcpus.read();
             for vcpu_id in 0..vcpus.len() {
-                let _ = self.board.vm.stop_vcpu(vcpu_id as u32);
+                let _ = self.board.hv.vcpu_kick(vcpu_id as u32);
             }
         }
 
@@ -182,7 +184,7 @@ impl Machine {
             let _ = self.event_rx.recv();
         }
 
-        let _ = self.board.hv.core_notify_shutdown();
+        self.board.notify_shutdown();
 
         let mut vcpus = self.board.vcpus.write();
         vcpus
