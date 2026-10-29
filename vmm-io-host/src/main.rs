@@ -61,6 +61,8 @@ fn find_sibling_file(filename: &str) -> Option<PathBuf> {
             filename.to_string(),
             format!("../wasm32-wasip1-threads/release/{filename}"),
             format!("../../wasm32-wasip1-threads/release/{filename}"),
+            format!("../wasm32-unknown-unknown/release/{filename}"),
+            format!("../../wasm32-unknown-unknown/release/{filename}"),
         ] {
             let candidate = exe_dir.join(rel);
             if candidate.is_file() {

@@ -49,31 +49,36 @@ fn main() {
     let host_manifest = manifest_dir.join("Cargo.toml");
 
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let status = Command::new(&cargo)
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(&core_manifest)
-        .arg("--bin")
-        .arg("vmm-core")
-        .arg("--target")
-        .arg("wasm32-wasip1-threads")
-        .arg("--target-dir")
-        .arg(&wasm_target_dir)
-        .arg("--release")
-        .arg("--offline")
-        .env(
-            "RUSTFLAGS",
-            "-C target-feature=-bulk-memory,-simd128 -C link-self-contained=no -C link-arg=--no-entry -C link-arg=--export=__stack_pointer",
-        )
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-        .expect("Failed to invoke cargo to build vmm-core for wasm32-wasip1-threads");
+    let wasm_rustflags = "-C target-feature=+atomics,+bulk-memory,+mutable-globals,-simd128 -C link-arg=--no-entry -C link-arg=--import-memory -C link-arg=--shared-memory -C link-arg=--max-memory=1073741824 -C link-arg=--export=__stack_pointer";
+    let build_wasm = |offline: bool| {
+        let mut cmd = Command::new(&cargo);
+        cmd.arg("build")
+            .arg("-Z")
+            .arg("build-std=core,alloc")
+            .arg("--manifest-path")
+            .arg(&core_manifest)
+            .arg("--bin")
+            .arg("vmm-core")
+            .arg("--target")
+            .arg("wasm32-unknown-unknown")
+            .arg("--target-dir")
+            .arg(&wasm_target_dir)
+            .arg("--release");
+        if offline {
+            cmd.arg("--offline");
+        }
+        cmd.env("RUSTC_BOOTSTRAP", "1")
+            .env("RUSTFLAGS", wasm_rustflags)
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .status()
+            .expect("Failed to invoke cargo to build vmm-core for wasm32-unknown-unknown")
+    };
 
-    if !status.success() {
-        panic!("Building vmm-core for wasm32-wasip1-threads failed");
+    if !build_wasm(true).success() && !build_wasm(false).success() {
+        panic!("Building vmm-core for wasm32-unknown-unknown failed");
     }
 
-    let built_wasm = wasm_target_dir.join("wasm32-wasip1-threads/release/vmm-core.wasm");
+    let built_wasm = wasm_target_dir.join("wasm32-unknown-unknown/release/vmm-core.wasm");
     let mut wasm_bytes = fs::read(&built_wasm).expect("Failed to read built vmm-core.wasm");
     verify_no_fp::rewrite_wasm_bulk_memory(&mut wasm_bytes)
         .expect("Failed to rewrite bulk-memory ops in vmm-core.wasm");
@@ -106,7 +111,7 @@ fn main() {
     let _ = fs::write(profile_dir.join("vmm-core.wasm"), &wasm_bytes);
     let _ = fs::write(profile_dir.join("vmm-core.cwasm"), &cwasm_bytes);
 
-    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-wasip1-threads/release");
+    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-unknown-unknown/release");
     let _ = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o750)

@@ -2,10 +2,12 @@
 
 WASM VMM is a fork of v0.2.0 of Lencerf's
 [Alioth](https://github.com/google/alioth), refactored to split the VMM into two
-isolated multithreaded WebAssembly guest modules (`vmm-core` and `vmm-io`)
-targeting `wasm32-wasip1-threads` and two corresponding native Wasmtime hosts
-(`vmm-core-host` and `vmm-io-host`). See [`split-vmm.md`](split-vmm.md) for the
-full architecture and cross-split bridge design.
+isolated multithreaded WebAssembly guest modules (`#![no_std]` `vmm-core`
+targeting `wasm32-unknown-unknown` and `vmm-io` targeting
+`wasm32-wasip1-threads`) and two corresponding native Wasmtime hosts
+(`vmm-core-host` and `vmm-io-host`). See [`split-vmm.md`](split-vmm.md) and
+[`vmm-core-kernel.md`](vmm-core-kernel.md) for the full architecture and
+cross-split bridge design.
 
 ## Architecture
 
@@ -38,9 +40,13 @@ The workspace consists of five crates:
 
 ## Prerequisites
 
-Install the required Rust compilation targets:
+Install the required Rust compilation targets and `rust-src` (used by
+`-Z build-std=core,alloc` when compiling `vmm-core` for
+`wasm32-unknown-unknown`):
 
 ```sh
+rustup component add rust-src
+rustup target add wasm32-unknown-unknown
 rustup target add wasm32-wasip1-threads
 rustup target add x86_64-unknown-linux-musl
 ```
@@ -52,7 +58,8 @@ rustup target add x86_64-unknown-linux-musl
 Use [`./publish.sh`](publish.sh) to build all eight artifacts
 (`vmm-core-host-cwasm`, `vmm-core-host-wasm`, `vmm-io-host-cwasm`,
 `vmm-io-host-wasm`, `vmm-core.cwasm`, `vmm-core.wasm`, `vmm-io.cwasm`, and
-`vmm-io.wasm`) as static `musl` / `wasm32-wasip1-threads` release binaries, copy
+`vmm-io.wasm`) as static `musl` / `wasm32-unknown-unknown` +
+`wasm32-wasip1-threads` release binaries, copy
 them to a destination directory `$DIR`, and generate a `$DIR/run-vm.sh` launcher
 script:
 

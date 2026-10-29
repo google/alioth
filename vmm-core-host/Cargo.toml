@@ -13,7 +13,7 @@ name = "vmm-core-host-cwasm"
 path = "src/main.rs"
 
 [dependencies]
-vmm-core = { path = "../vmm-core" }
+vmm-core.workspace = true
 
 anyhow.workspace = true
 bitflags.workspace = true

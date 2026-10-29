@@ -63,14 +63,15 @@ fn skip_leb(buf: &[u8], mut pos: usize, max_bytes: usize) -> Result<usize, Strin
 /// Walks a single Wasm function's instruction slice (`[start..end)`), optionally rewriting
 /// `memory.copy` (`0xfc 0x0a 0x00 0x00`, 4B) -> `call __vmm_memcpy` (4B) and
 /// `memory.fill` (`0xfc 0x0b 0x00`, 3B) -> `call __vmm_memset` (3B), while rejecting any
-/// floating-point or SIMD instructions.
+/// floating-point or SIMD instructions and returning the count of hardware `0xfe` atomic RMW ops.
 fn scan_or_rewrite_wasm_insns(
     wasm_bytes: &mut [u8],
     mut pc: usize,
     body_end: usize,
     fn_idx: u32,
     rewrite_targets: Option<([u8; 4], [u8; 3])>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
+    let mut atomic_rmw_count = 0usize;
     while pc < body_end {
         let op_pos = pc;
         let op = wasm_bytes[pc];
@@ -215,6 +216,9 @@ fn scan_or_rewrite_wasm_insns(
             0xfe => {
                 let (subop, next_pc) = read_uleb(wasm_bytes, pc)?;
                 pc = next_pc;
+                if subop >= 0x10 {
+                    atomic_rmw_count += 1;
+                }
                 if subop == 0x03 {
                     // `atomic.fence 0x00`
                     pc += 1;
@@ -234,7 +238,7 @@ fn scan_or_rewrite_wasm_insns(
     if pc != body_end {
         return Err(format!("Wasm instruction scan overran Code function[{fn_idx}]"));
     }
-    Ok(())
+    Ok(atomic_rmw_count)
 }
 
 /// Rewrites all `memory.copy` (`0xfc 0x0a 0x00 0x00`) and `memory.fill` (`0xfc 0x0b 0x00`)
@@ -336,6 +340,8 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
     }
 
     let mut pos = 8;
+    let mut has_shared_memory_import = false;
+    let mut total_atomic_rmws = 0usize;
     while pos < wasm_bytes.len() {
         let sec_id = wasm_bytes[pos];
         pos += 1;
@@ -423,6 +429,10 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
                         }
                         0x02 => {
                             let (flags, next_p) = read_uleb(wasm_bytes, p)?;
+                            if mod_name == "env" && field_name == "memory" && (flags & 0x03) == 0x03
+                            {
+                                has_shared_memory_import = true;
+                            }
                             let (_min, mut next_p) = read_uleb(wasm_bytes, next_p)?;
                             if (flags & 0x01) != 0 {
                                 let (_max, np) = read_uleb(wasm_bytes, next_p)?;
@@ -473,7 +483,8 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
                     }
                     let mut body_copy = wasm_bytes[lp..body_end].to_vec();
                     let body_len = body_copy.len();
-                    scan_or_rewrite_wasm_insns(&mut body_copy, 0, body_len, fn_idx, None)?;
+                    total_atomic_rmws +=
+                        scan_or_rewrite_wasm_insns(&mut body_copy, 0, body_len, fn_idx, None)?;
                     p = body_end;
                 }
             }
@@ -481,6 +492,16 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
         }
 
         pos = sec_end;
+    }
+
+    if !has_shared_memory_import {
+        return Err("vmm-core.wasm must import bounded shared env::memory".to_string());
+    }
+    if total_atomic_rmws == 0 {
+        return Err(
+            "vmm-core.wasm contains zero 0xfe hardware atomic RMW ops (+atomics / build-std missing)"
+                .to_string(),
+        );
     }
 
     Ok(())

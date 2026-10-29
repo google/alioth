@@ -45,8 +45,8 @@ fn find_default_component() -> Option<PathBuf> {
     {
         for rel in [
             DEFAULT_COMPONENT_FILENAME.to_string(),
-            format!("../wasm32-wasip1-threads/release/{DEFAULT_COMPONENT_FILENAME}"),
-            format!("../../wasm32-wasip1-threads/release/{DEFAULT_COMPONENT_FILENAME}"),
+            format!("../wasm32-unknown-unknown/release/{DEFAULT_COMPONENT_FILENAME}"),
+            format!("../../wasm32-unknown-unknown/release/{DEFAULT_COMPONENT_FILENAME}"),
         ] {
             let candidate = exe_dir.join(rel);
             if candidate.is_file() {
