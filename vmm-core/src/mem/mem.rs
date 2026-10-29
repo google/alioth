@@ -449,10 +449,17 @@ impl Memory {
                 Err(e) => Err(e),
             }
         } else {
-            let unmapped = match size {
-                1 => 0xff,
-                2 => 0xffff,
-                _ => 0xffff_ffff,
+            // Return 0 on unmapped CMOS RTC ports (0x70/0x71) so guests probing without ACPI
+            // never see RTC_UIP (0x80) stuck high and spin for ~1.24s per probe; float all
+            // other unmapped ISA/PIO ports high to all-ones.
+            let unmapped = if port == 0x70 || port == 0x71 {
+                0
+            } else {
+                match size {
+                    1 => 0xff,
+                    2 => 0xffff,
+                    _ => 0xffff_ffff,
+                }
             };
             let data = self.io_bus.read_or(port as u64, size, unmapped)? as u32;
             Ok(VmEntry::Io { data })

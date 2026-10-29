@@ -24,8 +24,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use libc::{
-    EFD_CLOEXEC, EFD_NONBLOCK, MAP_FAILED, MAP_SHARED, POLLIN, PROT_EXEC, PROT_READ, PROT_WRITE,
-    c_void, eventfd, mmap, poll, pollfd, read, write,
+    EFD_CLOEXEC, EFD_NONBLOCK, MAP_FAILED, MAP_SHARED, POLLIN, PROT_READ, PROT_WRITE, c_void,
+    eventfd, mmap, poll, pollfd, read, write,
 };
 use parking_lot::{Condvar, Mutex};
 use vmm_core::host::abi::{
@@ -168,7 +168,7 @@ impl SharedCoreBridge {
                     mmap(
                         null_mut(),
                         rlen,
-                        PROT_READ | PROT_WRITE | PROT_EXEC,
+                        PROT_READ | PROT_WRITE,
                         MAP_SHARED,
                         self.ram_fd,
                         0,

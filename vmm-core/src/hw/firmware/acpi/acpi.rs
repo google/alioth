@@ -138,6 +138,8 @@ fn create_fadt(dsdt_addr: u64) -> AcpiTableFadt {
             access_width: 1,
             address: transmute!(0x601u64),
         },
+        // IA-PC Boot Architecture Flags: VGA Not Present (bit 2) | CMOS RTC Not Present (bit 5).
+        boot_flags: (1 << 5) | (1 << 2),
         flags: (1 << 20) | (1 << 10),
         minor_revision: FADT_MINOR_VERSION,
         hypervisor_id: *b"ALIOTH  ",

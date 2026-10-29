@@ -288,7 +288,23 @@ impl Mmio for Serial {
                 }
             }
             INTERRUPT_ENABLE_REGISTER => {
+                let old = reg.interrupt_enable;
                 reg.interrupt_enable = InterruptEnable::from_bits_truncate(byte);
+                if reg
+                    .interrupt_enable
+                    .contains(InterruptEnable::RECEIVED_DATA_AVAILABLE)
+                    && !reg.data.is_empty()
+                {
+                    reg.interrupt_identification.set_rx_data_available();
+                    self.send_irq();
+                } else if !old.contains(InterruptEnable::TX_HOLDING_REGISTER_EMPTY)
+                    && reg
+                        .interrupt_enable
+                        .contains(InterruptEnable::TX_HOLDING_REGISTER_EMPTY)
+                {
+                    reg.interrupt_identification.set_tx_room_empty();
+                    self.send_irq();
+                }
             }
             FIFO_CONTROL_REGISTER => {}
             LINE_CONTROL_REGISTER => {
