@@ -20,7 +20,8 @@ use std::thread;
 
 use thiserror::Error;
 
-use crate::host::{self, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
+use crate::host::{self, HostCaps, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
+use crate::hw::ioapic::IoApic;
 use crate::hw::pci::bus::PciBus;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
@@ -76,6 +77,8 @@ impl Machine {
     ) -> Result<Self, Error> {
         let memory = Memory::new(hv.clone());
         let arch = ArchBoard::new(hv.as_ref())?;
+        let ioapic = (!hv.caps().contains(HostCaps::HW_IOAPIC))
+            .then(|| Arc::new(IoApic::new(hv.clone())));
 
         let board = Board {
             hv,
@@ -87,6 +90,7 @@ impl Machine {
             payload: RwLock::new(None),
             vcpus: Arc::new(RwLock::new(Vec::new())),
             mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
+            ioapic,
             io_devs: RwLock::new(Vec::new()),
             com1: RwLock::new(None),
             pci_bus: PciBus::new(),
@@ -106,6 +110,7 @@ impl Machine {
             0x3f8,
             4,
             self.board.hv.clone(),
+            self.board.ioapic.clone(),
             self.board.bridge.clone(),
         )?);
         *self.board.com1.write() = Some(com1.clone());
@@ -127,7 +132,11 @@ impl Machine {
         &mut self,
         spec: VirtioDeviceSpec,
     ) -> Result<Arc<VirtioPciDevice>, Error> {
-        let dev = Arc::new(VirtioPciDevice::from_spec(spec, self.board.bridge.clone())?);
+        let dev = Arc::new(VirtioPciDevice::from_spec(
+            spec,
+            self.board.hv.clone(),
+            self.board.bridge.clone(),
+        )?);
         let pci_dev = PciDevice::new(dev.name.clone(), dev.clone());
         self.add_pci_dev(pci_dev)?;
         Ok(dev)

@@ -130,10 +130,14 @@ where
     }
 
     pub fn read(&self, addr: u64, size: u8) -> Result<u64> {
+        self.read_or(addr, size, 0)
+    }
+
+    pub fn read_or(&self, addr: u64, size: u8, unmapped_val: u64) -> Result<u64> {
         let inner = self.inner.read();
         match inner.search(addr) {
             Some((start, dev)) => dev.read((addr - start) as usize, size),
-            None => Ok(0),
+            None => Ok(unmapped_val),
         }
     }
 

@@ -14,12 +14,12 @@
 
 use crate::host::abi::{
     CoreToIoEntry, EXIT_INTERRUPTED, EXIT_IO, EXIT_MMIO, EXIT_REBOOT, EXIT_SHUTDOWN,
-    IoToCoreEntry, RawCpuid, RawRegEntry, RawVmExit, ShmBootInfo, ShmDeviceMsixRouting,
-    ShmVirtioDeviceSpec, ShmVirtioQueueConfig, encode_vm_entry,
+    IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawRegEntry, RawVmExit, ShmBootInfo,
+    ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, encode_vm_entry,
 };
 use crate::host::{
-    HostCaps, HvError, HvResult, MemObjId, MemProt, PayloadKind, RegId, RegVal, VcpuId, VmEntry,
-    VmExit, VmmCoreBridge, VmmHostCore,
+    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, RegId,
+    RegVal, VcpuId, VmEntry, VmExit, VmmCoreBridge, VmmHostCore,
 };
 
 #[link(wasm_import_module = "vmm")]
@@ -42,6 +42,8 @@ unsafe extern "C" {
 
     fn inject_msi(addr: u64, data: u32) -> i32;
     fn set_gsi_level(gsi: u32, active: u32) -> i32;
+    fn register_doorbell(spec_ptr: u32) -> i32;
+    fn unregister_doorbell(space: u32, addr: u64, size: u32) -> i32;
 }
 
 #[link(wasm_import_module = "vmm_bridge")]
@@ -200,6 +202,15 @@ impl VmmHostCore for WasmHost {
 
     fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()> {
         check_unit(unsafe { set_gsi_level(gsi, u32::from(active)) })
+    }
+
+    fn register_doorbell(&self, spec: DoorbellSpec) -> HvResult<()> {
+        let raw = RawDoorbellSpec::from(spec);
+        check_unit(unsafe { register_doorbell(&raw as *const RawDoorbellSpec as u32) })
+    }
+
+    fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()> {
+        check_unit(unsafe { unregister_doorbell(space as u32, addr, size as u32) })
     }
 }
 

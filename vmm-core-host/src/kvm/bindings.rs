@@ -191,6 +191,8 @@ pub struct KvmRun {
 pub union KvmExit {
     pub mmio: KvmExitMmio,
     pub io: KvmExitIo,
+    pub system_event: KvmExitSystemEvent,
+    pub eoi: KvmExitEoi,
     pub padding: [u8; 256],
 }
 
@@ -214,6 +216,20 @@ pub struct KvmExitIo {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvmExitSystemEvent {
+    pub type_: u32,
+    pub ndata: u32,
+    pub flags: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KvmExitEoi {
+    pub vector: u8,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub union KvmSyncRegsBlock {
     pub padding: [u8; 2048],
@@ -222,6 +238,11 @@ pub union KvmSyncRegsBlock {
 pub const KVM_EXIT_IO: u32 = 2;
 pub const KVM_EXIT_MMIO: u32 = 6;
 pub const KVM_EXIT_SHUTDOWN: u32 = 8;
+pub const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
+pub const KVM_EXIT_IOAPIC_EOI: u32 = 26;
+
+pub const KVM_SYSTEM_EVENT_SHUTDOWN: u32 = 1;
+pub const KVM_SYSTEM_EVENT_RESET: u32 = 2;
 
 pub const KVM_EXIT_IO_IN: u8 = 0;
 pub const KVM_EXIT_IO_OUT: u8 = 1;
@@ -279,6 +300,16 @@ pub struct KvmMsi {
 pub const KVM_CAP_NR_MEMSLOTS: u64 = 10;
 pub const KVM_CAP_IRQFD: u64 = 32;
 pub const KVM_CAP_SIGNAL_MSI: u64 = 77;
+pub const KVM_CAP_SPLIT_IRQCHIP: u64 = 121;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmEnableCap {
+    pub cap: u32,
+    pub flags: u32,
+    pub args: [u64; 4],
+    pub pad: [u8; 64],
+}
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -287,6 +318,17 @@ bitflags! {
         const PIO = 1 << 1;
         const DEASSIGN = 1 << 2;
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct KvmIoEventFd {
+    pub datamatch: u64,
+    pub addr: u64,
+    pub len: u32,
+    pub fd: i32,
+    pub flags: KvmIoEventFdFlag,
+    pub pad: [u8; 36],
 }
 
 #[repr(C)]
@@ -319,6 +361,7 @@ ioctl_none!(kvm_create_irqchip, KVMIO, 0x60, 0);
 ioctl_write_ptr!(kvm_irq_line, KVMIO, 0x61, KvmIrqLevel);
 
 ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, KvmIrqfd);
+ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, KvmIoEventFd);
 
 ioctl_none!(kvm_run, KVMIO, 0x80, 0);
 ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
@@ -338,6 +381,7 @@ ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
 ioctl_read!(kvm_get_mp_state, KVMIO, 0x98, KvmMpState);
 ioctl_write_ptr!(kvm_set_mp_state, KVMIO, 0x99, KvmMpState);
 
+ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 
 ioctl_write_ptr!(

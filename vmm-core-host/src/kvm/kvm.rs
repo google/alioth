@@ -18,23 +18,23 @@ pub(crate) mod vcpu;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use libc::{
-    MAP_FAILED, MAP_SHARED, POLLIN, PROT_EXEC, PROT_READ, PROT_WRITE, c_void, mmap, poll, pollfd,
-    read, write,
+    EFD_CLOEXEC, EFD_NONBLOCK, MAP_FAILED, MAP_SHARED, POLLIN, PROT_EXEC, PROT_READ, PROT_WRITE,
+    c_void, eventfd, mmap, poll, pollfd, read, write,
 };
 use parking_lot::{Condvar, Mutex};
 use vmm_core::host::abi::{
-    BridgeShm, CORE_MSG_SHUTDOWN, CoreToIoEntry, IO_MSG_REQUEST_SHUTDOWN, IO_MSG_SERIAL_RX,
-    IO_MSG_VIRTIO_IRQ, IRQ_KIND_CONFIG, IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS,
-    ShmBootInfo, ShmDeviceMsixRouting, ShmMsiEntry, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
-    spin_lock, spin_unlock,
+    BridgeShm, CORE_MSG_SHUTDOWN, CORE_MSG_VIRTIO_NOTIFY, CoreToIoEntry, IO_MSG_REQUEST_SHUTDOWN,
+    IO_MSG_SERIAL_RX, IO_MSG_VIRTIO_IRQ, IRQ_KIND_CONFIG, IoToCoreEntry, MAX_QUEUES_PER_DEV,
+    MAX_VIRTIO_DEVS, ShmBootInfo, ShmDeviceMsixRouting, ShmMsiEntry, ShmVirtioDeviceSpec,
+    ShmVirtioQueueConfig, spin_lock, spin_unlock,
 };
-use vmm_core::host::{HvError, HvResult, PayloadKind, VmmCoreBridge};
+use vmm_core::host::{HvError, HvResult, IoSpace, PayloadKind, VmmCoreBridge};
 
 use crate::ffi;
 use bindings::{KvmMsi, kvm_signal_msi};
@@ -359,11 +359,53 @@ impl VmmCoreBridge for SharedCoreBridge {
     }
 }
 
-pub(crate) fn spawn_i2c_listener(vm_fd: Arc<OwnedFd>, bridge: Arc<SharedCoreBridge>) {
+pub(crate) struct KvmDoorbellEntry {
+    pub space: IoSpace,
+    pub addr: u64,
+    pub size: u8,
+    pub datamatch: Option<u64>,
+    pub dev_id: u32,
+    pub queue_idx: u16,
+    pub evt_fd: Arc<OwnedFd>,
+}
+
+pub(crate) struct DoorbellRegistry {
+    pub wake_fd: OwnedFd,
+    pub entries: Mutex<Vec<KvmDoorbellEntry>>,
+}
+
+impl DoorbellRegistry {
+    pub fn new() -> std::io::Result<Arc<Self>> {
+        let raw_fd = ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })?;
+        Ok(Arc::new(Self {
+            wake_fd: unsafe { OwnedFd::from_raw_fd(raw_fd) },
+            entries: Mutex::new(Vec::new()),
+        }))
+    }
+
+    pub fn wake(&self) {
+        let val = 1u64;
+        unsafe {
+            let _ = write(
+                self.wake_fd.as_raw_fd(),
+                &val as *const u64 as *const c_void,
+                8,
+            );
+        }
+    }
+}
+
+pub(crate) fn spawn_i2c_listener(
+    vm_fd: Arc<OwnedFd>,
+    bridge: Arc<SharedCoreBridge>,
+    doorbells: Arc<DoorbellRegistry>,
+) {
     let _ = std::thread::Builder::new()
         .name("core-i2c-listener".to_string())
         .spawn(move || {
             let shm = bridge.shm;
+            let mut poll_fds: Vec<pollfd> = Vec::with_capacity(16);
+            let mut snapshot: Vec<(u32, u16, Arc<OwnedFd>)> = Vec::with_capacity(16);
             loop {
                 while let Some(entry) = unsafe { BridgeShm::pop_io_to_core(shm) } {
                     match entry.msg_type {
@@ -419,15 +461,70 @@ pub(crate) fn spawn_i2c_listener(vm_fd: Arc<OwnedFd>, bridge: Arc<SharedCoreBrid
                     return;
                 }
 
-                let mut pfd = pollfd {
+                poll_fds.clear();
+                snapshot.clear();
+                poll_fds.push(pollfd {
                     fd: bridge.i2c_fd,
                     events: POLLIN,
                     revents: 0,
-                };
-                let rc = unsafe { poll(&mut pfd, 1, 50) };
-                if rc > 0 && (pfd.revents & POLLIN) != 0 {
-                    let mut val = 0u64;
-                    let _ = unsafe { read(bridge.i2c_fd, &mut val as *mut u64 as *mut c_void, 8) };
+                });
+                poll_fds.push(pollfd {
+                    fd: doorbells.wake_fd.as_raw_fd(),
+                    events: POLLIN,
+                    revents: 0,
+                });
+                {
+                    let entries = doorbells.entries.lock();
+                    for db in entries.iter() {
+                        poll_fds.push(pollfd {
+                            fd: db.evt_fd.as_raw_fd(),
+                            events: POLLIN,
+                            revents: 0,
+                        });
+                        snapshot.push((db.dev_id, db.queue_idx, db.evt_fd.clone()));
+                    }
+                }
+
+                let rc = unsafe { poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, 50) };
+                if rc > 0 {
+                    if (poll_fds[0].revents & POLLIN) != 0 {
+                        let mut val = 0u64;
+                        let _ =
+                            unsafe { read(bridge.i2c_fd, &mut val as *mut u64 as *mut c_void, 8) };
+                    }
+                    if (poll_fds[1].revents & POLLIN) != 0 {
+                        let mut val = 0u64;
+                        let _ = unsafe {
+                            read(
+                                doorbells.wake_fd.as_raw_fd(),
+                                &mut val as *mut u64 as *mut c_void,
+                                8,
+                            )
+                        };
+                    }
+                    for (i, &(dev_id, queue_idx, ref evt_fd)) in snapshot.iter().enumerate() {
+                        if (poll_fds[2 + i].revents & POLLIN) != 0 {
+                            let mut val = 0u64;
+                            let _ = unsafe {
+                                read(
+                                    evt_fd.as_raw_fd(),
+                                    &mut val as *mut u64 as *mut c_void,
+                                    8,
+                                )
+                            };
+                            let notify = CoreToIoEntry {
+                                msg_type: CORE_MSG_VIRTIO_NOTIFY,
+                                aux_u16: queue_idx,
+                                _pad: 0,
+                                dev: dev_id as u64,
+                                features: 0,
+                                data: [0; 40],
+                            };
+                            if unsafe { BridgeShm::push_core_to_io(shm, notify) } {
+                                bridge.wake_io();
+                            }
+                        }
+                    }
                 }
             }
         });

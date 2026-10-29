@@ -25,7 +25,9 @@ use crate::host::abi::{
     CORE_MSG_VIRTIO_NOTIFY, CORE_MSG_VIRTIO_RESET, CORE_MSG_VIRTIO_START, CoreToIoEntry,
     MAX_QUEUES_PER_DEV, ShmDeviceMsixRouting, ShmMsiEntry, ShmVirtioQueueConfig,
 };
-use crate::host::{VirtioDeviceSpec, VmmCoreBridge};
+use crate::host::{
+    DoorbellSpec, HostCaps, IoSpace, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore,
+};
 use crate::hw::pci::cap::{
     MsixCap, MsixCapMmio, MsixCapOffset, MsixMsgCtrl, MsixTableEntry, MsixTableMmio, PciCap,
     PciCapHdr, PciCapId, PciCapList,
@@ -35,7 +37,7 @@ use crate::hw::pci::config::{
 };
 use crate::hw::pci::{self, Pci, PciBar};
 use crate::mem::mmio::Mmio;
-use crate::mem::{MemRange, MemRegion, MemRegionEntry};
+use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
 use crate::sync::{Mutex, RwLock};
 use crate::utils::{
     get_atomic_high32, get_atomic_low32, get_high32, get_low32, set_atomic_high32, set_atomic_low32,
@@ -190,12 +192,113 @@ pub struct VirtioPciRegister {
     queue_notify: PhantomData<[u32]>,
 }
 
+#[derive(Debug, Default)]
+struct DoorbellState {
+    bar_gpa: Option<u64>,
+    driver_ok: bool,
+    registered_addr: Option<u64>,
+}
+
+struct VirtioDoorbellTracker {
+    dev_id: u32,
+    num_queues: u16,
+    notify_bar_offset: u64,
+    hv: Arc<dyn VmmHostCore>,
+    state: Mutex<DoorbellState>,
+}
+
+impl Debug for VirtioDoorbellTracker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VirtioDoorbellTracker")
+            .field("dev_id", &self.dev_id)
+            .field("num_queues", &self.num_queues)
+            .field("notify_bar_offset", &self.notify_bar_offset)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+impl VirtioDoorbellTracker {
+    fn sync(&self, st: &mut DoorbellState) {
+        if !self.hv.caps().contains(HostCaps::DOORBELLS) || self.num_queues == 0 {
+            return;
+        }
+        let desired_addr = if st.driver_ok {
+            st.bar_gpa.map(|base| base + self.notify_bar_offset)
+        } else {
+            None
+        };
+        if st.registered_addr == desired_addr {
+            return;
+        }
+        if let Some(old_addr) = st.registered_addr.take()
+            && let Err(e) = self.hv.unregister_doorbell(IoSpace::Mmio, old_addr, 2)
+        {
+            log::error!(
+                "dev {}: unregister_doorbell({old_addr:#x}) failed: {e}",
+                self.dev_id
+            );
+        }
+        if let Some(new_addr) = desired_addr {
+            for q_idx in 0..self.num_queues {
+                let spec = DoorbellSpec {
+                    space: IoSpace::Mmio,
+                    addr: new_addr,
+                    size: 2,
+                    datamatch: Some(q_idx as u64),
+                    dev_id: self.dev_id,
+                    queue_idx: q_idx,
+                };
+                if let Err(e) = self.hv.register_doorbell(spec) {
+                    log::error!(
+                        "dev {}: register_doorbell({new_addr:#x}, q={q_idx}) failed: {e}",
+                        self.dev_id
+                    );
+                    let _ = self.hv.unregister_doorbell(IoSpace::Mmio, new_addr, 2);
+                    return;
+                }
+            }
+            st.registered_addr = Some(new_addr);
+        }
+    }
+
+    fn set_bar_gpa(&self, gpa: Option<u64>) {
+        let mut st = self.state.lock();
+        st.bar_gpa = gpa;
+        self.sync(&mut st);
+    }
+
+    fn set_driver_ok(&self, driver_ok: bool) {
+        let mut st = self.state.lock();
+        st.driver_ok = driver_ok;
+        self.sync(&mut st);
+    }
+}
+
+#[derive(Debug)]
+struct VirtioBarDoorbellCallback {
+    tracker: Arc<VirtioDoorbellTracker>,
+}
+
+impl MemRegionCallback for VirtioBarDoorbellCallback {
+    fn mapped(&self, addr: u64) -> mem::Result<()> {
+        self.tracker.set_bar_gpa(Some(addr));
+        Ok(())
+    }
+
+    fn unmapped(&self) -> mem::Result<()> {
+        self.tracker.set_bar_gpa(None);
+        Ok(())
+    }
+}
+
 pub struct VirtioPciRegisterMmio {
     name: Arc<String>,
     dev_id: u32,
     reg: Arc<Register>,
     queues: Arc<Vec<Queue>>,
     irq_routing: Arc<PciIrqRouting>,
+    doorbells: Arc<VirtioDoorbellTracker>,
     bridge: Arc<dyn VmmCoreBridge>,
 }
 
@@ -241,7 +344,9 @@ impl VirtioPciRegisterMmio {
         };
         if let Err(e) = self.bridge.send_io_cmd(&entry) {
             log::error!("{}: virtio start send_io_cmd failed: {e}", self.name);
+            return;
         }
+        self.doorbells.set_driver_ok(true);
     }
 
     fn notify_dev(&self, q_index: u16) {
@@ -259,6 +364,7 @@ impl VirtioPciRegisterMmio {
     }
 
     fn reset(&self) {
+        self.doorbells.set_driver_ok(false);
         let config_msix = &self.irq_routing.msix_vector.config;
         config_msix.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         for q_vector in self.irq_routing.msix_vector.queues.iter() {
@@ -611,7 +717,11 @@ pub struct VirtioPciDevice {
 }
 
 impl VirtioPciDevice {
-    pub fn from_spec(spec: VirtioDeviceSpec, bridge: Arc<dyn VmmCoreBridge>) -> Result<Self> {
+    pub fn from_spec(
+        spec: VirtioDeviceSpec,
+        hv: Arc<dyn VmmHostCore>,
+        bridge: Arc<dyn VmmCoreBridge>,
+    ) -> Result<Self> {
         let name = Arc::new(spec.name);
         let device_id = DeviceId::from_u16(spec.device_id);
         let (class, subclass) = get_class(device_id);
@@ -639,6 +749,8 @@ impl VirtioPciDevice {
         let msix_table_size = size_of::<MsixTableEntry>() * table_entries;
         let msix_pba_offset = 8 << 10;
         let virtio_register_offset = 12 << 10;
+        let notify_bar_offset =
+            (virtio_register_offset + VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u64;
         let device_config_offset =
             virtio_register_offset + size_of::<VirtioPciRegister>() + size_of::<u32>() * num_queues;
 
@@ -689,7 +801,7 @@ impl VirtioPciDevice {
                 cfg_type: VirtioPciCfg::Notify as u8,
                 bar: 0,
                 id: 0,
-                offset: (virtio_register_offset + VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u32,
+                offset: notify_bar_offset as u32,
                 length: (size_of::<u32>() * num_queues) as u32,
                 ..Default::default()
             },
@@ -713,6 +825,13 @@ impl VirtioPciDevice {
                 .map(|_| RwLock::new(MsixTableEntry::default()))
                 .collect(),
         );
+        let doorbells = Arc::new(VirtioDoorbellTracker {
+            dev_id: spec.dev,
+            num_queues: spec.num_queues,
+            notify_bar_offset,
+            hv,
+            state: Mutex::new(DoorbellState::default()),
+        });
         let mut bar0 = MemRegion {
             size: 16 << 10,
             ranges: vec![],
@@ -720,7 +839,9 @@ impl VirtioPciDevice {
                 size: 16 << 10,
                 type_: mem::MemRegionType::Hidden,
             }],
-            callbacks: Mutex::new(vec![]),
+            callbacks: Mutex::new(vec![Box::new(VirtioBarDoorbellCallback {
+                tracker: doorbells.clone(),
+            })]),
         };
 
         let msix_vector = VirtioPciMsixVector {
@@ -780,6 +901,7 @@ impl VirtioPciDevice {
             reg: reg.clone(),
             queues,
             irq_routing,
+            doorbells,
             bridge,
         });
         bar0.ranges.push(MemRange::Emulated(Arc::new(MsixTableMmio {
@@ -821,5 +943,120 @@ impl Pci for VirtioPciDevice {
         self.registers.reset();
         self.reg.status.store(0, Ordering::Release);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::host::abi::{IoToCoreEntry, ShmBootInfo, ShmVirtioDeviceSpec};
+    use crate::host::test::FakeHost;
+    use crate::host::{HvResult, PayloadKind};
+    use crate::mem::{AddrOpt, Memory};
+
+    struct NoopBridge;
+
+    impl VmmCoreBridge for NoopBridge {
+        fn boot_info(
+            &self,
+            _out_info: &mut ShmBootInfo,
+            _out_devs: &mut [ShmVirtioDeviceSpec],
+        ) -> HvResult<usize> {
+            Ok(0)
+        }
+        fn read_payload(
+            &self,
+            _kind: PayloadKind,
+            _offset: u64,
+            _dst: &mut [u8],
+        ) -> HvResult<usize> {
+            Ok(0)
+        }
+        fn configure_device_queues(
+            &self,
+            _dev: u32,
+            _queues: &[ShmVirtioQueueConfig],
+        ) -> HvResult<()> {
+            Ok(())
+        }
+        fn update_irq_route(&self, _dev: u32, _routing: &ShmDeviceMsixRouting) -> HvResult<()> {
+            Ok(())
+        }
+        fn send_io_cmd(&self, _entry: &CoreToIoEntry) -> HvResult<()> {
+            Ok(())
+        }
+        fn recv_io_cmd(&self, _blocking: bool, _out: &mut IoToCoreEntry) -> HvResult<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn test_virtio_pci_doorbell_lifecycle() {
+        let host = Arc::new(FakeHost::default());
+        let mem = Memory::new(host.clone());
+        let spec = VirtioDeviceSpec {
+            dev: 2,
+            name: "virtio-net-test".to_string(),
+            device_id: DeviceId::Net as u16,
+            device_features: 0,
+            num_queues: 2,
+            config_bytes: vec![0; 8],
+        };
+        let dev = VirtioPciDevice::from_spec(spec, host.clone(), Arc::new(NoopBridge)).unwrap();
+        let PciBar::Mem64(bar0) = dev.config.get_header().bars[0].clone() else {
+            panic!("expected 64-bit BAR0");
+        };
+
+        let bar_gpa = mem.add_region(AddrOpt::Above4G, bar0.clone()).unwrap();
+        assert!(host.doorbells().is_empty());
+
+        // Transitioning status to DRIVER_OK registers doorbells for queues 0 and 1.
+        dev.registers
+            .write(
+                VirtioCommonCfg::LAYOUT_DEVICE_STATUS.0,
+                1,
+                DevStatus::DRIVER_OK.bits() as u64,
+            )
+            .unwrap();
+
+        let notify_addr = bar_gpa + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
+        assert_eq!(
+            host.doorbells(),
+            vec![
+                DoorbellSpec {
+                    space: IoSpace::Mmio,
+                    addr: notify_addr,
+                    size: 2,
+                    datamatch: Some(0),
+                    dev_id: 2,
+                    queue_idx: 0,
+                },
+                DoorbellSpec {
+                    space: IoSpace::Mmio,
+                    addr: notify_addr,
+                    size: 2,
+                    datamatch: Some(1),
+                    dev_id: 2,
+                    queue_idx: 1,
+                },
+            ]
+        );
+
+        // Relocating BAR0 unregisters old doorbells and registers new ones.
+        mem.remove_region(bar_gpa).unwrap();
+        assert!(host.doorbells().is_empty());
+
+        let new_bar_gpa = bar_gpa + 0x10_0000;
+        mem.add_region(AddrOpt::Fixed(new_bar_gpa), bar0).unwrap();
+        let new_notify_addr =
+            new_bar_gpa + (12 << 10) + VirtioPciRegister::OFFSET_QUEUE_NOTIFY as u64;
+        assert_eq!(host.doorbells().len(), 2);
+        assert_eq!(host.doorbells()[0].addr, new_notify_addr);
+
+        // Resetting device unregisters doorbells.
+        dev.reset().unwrap();
+        assert!(host.doorbells().is_empty());
     }
 }

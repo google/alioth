@@ -22,6 +22,7 @@ use bitflags::bitflags;
 
 use crate::host::abi::{CORE_MSG_SERIAL_TX, CoreToIoEntry};
 use crate::host::{VmmCoreBridge, VmmHostCore};
+use crate::hw::ioapic::IoApic;
 use crate::mem;
 use crate::mem::mmio::Mmio;
 use crate::sync::Mutex;
@@ -186,6 +187,7 @@ pub struct Serial {
     base_port: u16,
     gsi: u32,
     hv: Arc<dyn VmmHostCore>,
+    ioapic: Option<Arc<IoApic>>,
     bridge: Arc<dyn VmmCoreBridge>,
     reg: Arc<Mutex<SerialReg>>,
 }
@@ -316,6 +318,7 @@ impl Serial {
         base_port: u16,
         gsi: u32,
         hv: Arc<dyn VmmHostCore>,
+        ioapic: Option<Arc<IoApic>>,
         bridge: Arc<dyn VmmCoreBridge>,
     ) -> io::Result<Self> {
         let reg = Arc::new(Mutex::new(SerialReg::default()));
@@ -324,6 +327,7 @@ impl Serial {
             base_port,
             gsi,
             hv,
+            ioapic,
             bridge,
         })
     }
@@ -345,7 +349,9 @@ impl Serial {
     }
 
     fn send_irq(&self) {
-        if let Err(e) = self
+        if let Some(ioapic) = &self.ioapic {
+            ioapic.pulse_irq(self.gsi);
+        } else if let Err(e) = self
             .hv
             .set_gsi_level(self.gsi, true)
             .and_then(|()| self.hv.set_gsi_level(self.gsi, false))

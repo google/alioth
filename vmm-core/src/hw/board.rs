@@ -37,13 +37,15 @@ use crate::virtio;
 pub mod firmware;
 pub mod hw_x86_64;
 pub use hw_x86_64::*;
+pub mod ioapic;
 #[path = "pci/pci.rs"]
 pub mod pci;
 pub mod serial;
 
 use firmware::acpi::bindings::AcpiTableRsdp;
 use firmware::acpi::create_acpi;
-use layout::{EBDA_START, PCIE_CONFIG_START};
+use ioapic::IoApic;
+use layout::{EBDA_START, IOAPIC_START, PCIE_CONFIG_START};
 use pci::bus::{CONFIG_ADDRESS, PciBus};
 use pci::config::Command;
 use pci::{PciBar, PciDevice};
@@ -101,6 +103,7 @@ pub struct Board {
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
     pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
+    pub ioapic: Option<Arc<IoApic>>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     pub com1: RwLock<Option<Arc<Serial>>>,
     pub pci_bus: PciBus,
@@ -250,6 +253,16 @@ impl Board {
             let setup_res = if id == 0 && self.state.load(Ordering::Acquire) == STATE_RUNNING {
                 (|| -> Result<()> {
                     self.create_ram()?;
+                    if let Some(ioapic) = &self.ioapic {
+                        ioapic.reset();
+                        self.memory.add_region(
+                            AddrOpt::Fixed(IOAPIC_START as u64),
+                            Arc::new(MemRegion::with_emulated(
+                                ioapic.clone(),
+                                MemRegionType::Reserved,
+                            )),
+                        )?;
+                    }
                     for (port, dev) in self.io_devs.read().iter() {
                         self.memory.add_io_dev(Some(*port), dev.clone())?;
                     }

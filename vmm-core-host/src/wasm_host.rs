@@ -20,12 +20,14 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use parking_lot::RwLock;
 use vmm_core::host::abi::{
     CoreToIoEntry, EXIT_INTERRUPTED, EXIT_IO, EXIT_MMIO, EXIT_REBOOT, EXIT_SHUTDOWN,
-    IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid, RawRegEntry, RawVmExit,
-    ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
+    IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid, RawDoorbellSpec, RawRegEntry,
+    RawVmExit, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
     decode_vm_entry,
 };
 pub use vmm_core::host::{VmmCoreBridge, VmmHostCore};
-use vmm_core::host::{HvError, HvResult, MemProt, PayloadKind, RegId, RegVal, VmExit};
+use vmm_core::host::{
+    HvError, HvResult, IoSpace, MemProt, PayloadKind, RegId, RegVal, VmExit,
+};
 use wasmtime::{
     Caller, Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store,
 };
@@ -395,6 +397,39 @@ where
         },
     )?;
 
+    linker.func_wrap(
+        "vmm",
+        "register_doorbell",
+        move |mut caller: Caller<'_, T>, spec_ptr: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let raw = match read_struct::<RawDoorbellSpec>(&ctx.memory, spec_ptr) {
+                Ok(r) => r,
+                Err(e) => return e.code(),
+            };
+            let spec = match raw.to_spec() {
+                Ok(s) => s,
+                Err(e) => return e.code(),
+            };
+            unit_rc(ctx.host.register_doorbell(spec))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "unregister_doorbell",
+        move |mut caller: Caller<'_, T>, space: u32, addr: u64, size: u32| -> i32 {
+            let ctx = get_ctx(caller.data_mut());
+            let io_space = match IoSpace::from_u32(space) {
+                Ok(s) => s,
+                Err(e) => return e.code(),
+            };
+            if size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            unit_rc(ctx.host.unregister_doorbell(io_space, addr, size as u8))
+        },
+    )?;
+
     Ok(())
 }
 
@@ -761,6 +796,12 @@ mod tests {
             Ok(())
         }
         fn set_gsi_level(&self, _gsi: u32, _active: bool) -> HvResult<()> {
+            Ok(())
+        }
+        fn register_doorbell(&self, _spec: vmm_core::host::DoorbellSpec) -> HvResult<()> {
+            Ok(())
+        }
+        fn unregister_doorbell(&self, _space: IoSpace, _addr: u64, _size: u8) -> HvResult<()> {
             Ok(())
         }
     }

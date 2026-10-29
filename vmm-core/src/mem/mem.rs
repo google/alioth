@@ -407,6 +407,11 @@ impl Memory {
             if write == Some(0x34) {
                 return Ok(VmEntry::Shutdown);
             }
+            return Ok(if write.is_some() {
+                VmEntry::None
+            } else {
+                VmEntry::Io { data: 0 }
+            });
         }
         // TODO: add an IO device
         if port == 0x604 && write == Some(0x1) {
@@ -419,7 +424,12 @@ impl Memory {
                 Err(e) => Err(e),
             }
         } else {
-            let data = self.io_bus.read(port as u64, size)? as u32;
+            let unmapped = match size {
+                1 => 0xff,
+                2 => 0xffff,
+                _ => 0xffff_ffff,
+            };
+            let data = self.io_bus.read_or(port as u64, size, unmapped)? as u32;
             Ok(VmEntry::Io { data })
         }
     }

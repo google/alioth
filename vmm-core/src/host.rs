@@ -270,6 +270,34 @@ pub enum VmEntry {
 }
 
 #[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum IoSpace {
+    Pio = 0,
+    Mmio = 1,
+}
+
+impl IoSpace {
+    pub const fn from_u32(v: u32) -> HvResult<Self> {
+        match v {
+            0 => Ok(Self::Pio),
+            1 => Ok(Self::Mmio),
+            _ => Err(HvError::InvalidParam),
+        }
+    }
+}
+
+/// Fast-path Ring-0 doorbell registration (e.g. `KVM_IOEVENTFD` / sorted GPA-match table).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct DoorbellSpec {
+    pub space: IoSpace,
+    pub addr: u64,
+    pub size: u8,
+    pub datamatch: Option<u64>,
+    pub dev_id: u32,
+    pub queue_idx: u16,
+}
+
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadKind {
     Kernel = 0,
@@ -342,6 +370,8 @@ pub trait VmmHostCore: Send + Sync + 'static {
 
     fn inject_msi(&self, addr: u64, data: u32) -> HvResult<()>;
     fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()>;
+    fn register_doorbell(&self, spec: DoorbellSpec) -> HvResult<()>;
+    fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()>;
 }
 
 /// Separate `#![no_std]`-clean trait for the Core <-> I/O split channel.
@@ -367,8 +397,8 @@ pub mod abi {
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
     use super::{
-        Cpuid, DtReg, DtRegVal, Handle, HvError, HvResult, MpState, Reg, RegId, RegVal, SReg,
-        SegReg, SegRegVal, VirtioQueueConfig, VmEntry,
+        Cpuid, DoorbellSpec, DtReg, DtRegVal, Handle, HvError, HvResult, IoSpace, MpState, Reg,
+        RegId, RegVal, SReg, SegReg, SegRegVal, VirtioQueueConfig, VmEntry,
     };
     use crate::hw::reg::SegAccess;
 
@@ -560,6 +590,51 @@ pub mod abi {
 
         pub fn to_pair(&self) -> HvResult<(RegId, RegVal)> {
             Ok((self.to_id()?, self.to_val()?))
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct RawDoorbellSpec {
+        pub addr: u64,
+        pub datamatch: u64,
+        pub space: u32,
+        pub has_datamatch: u32,
+        pub dev_id: u32,
+        pub queue_idx: u16,
+        pub size: u8,
+        pub _pad: u8,
+    }
+
+    impl From<DoorbellSpec> for RawDoorbellSpec {
+        fn from(spec: DoorbellSpec) -> Self {
+            Self {
+                addr: spec.addr,
+                datamatch: spec.datamatch.unwrap_or(0),
+                space: spec.space as u32,
+                has_datamatch: u32::from(spec.datamatch.is_some()),
+                dev_id: spec.dev_id,
+                queue_idx: spec.queue_idx,
+                size: spec.size,
+                _pad: 0,
+            }
+        }
+    }
+
+    impl RawDoorbellSpec {
+        pub fn to_spec(&self) -> HvResult<DoorbellSpec> {
+            Ok(DoorbellSpec {
+                space: IoSpace::from_u32(self.space)?,
+                addr: self.addr,
+                size: self.size,
+                datamatch: if self.has_datamatch != 0 {
+                    Some(self.datamatch)
+                } else {
+                    None
+                },
+                dev_id: self.dev_id,
+                queue_idx: self.queue_idx,
+            })
         }
     }
 
@@ -1064,14 +1139,16 @@ pub mod test {
     use crate::sync::Mutex;
 
     use super::{
-        DtReg, DtRegVal, HostCaps, HvError, HvResult, MemObjId, MemProt, MpState, Reg, RegId,
-        RegVal, SReg, SegReg, SegRegVal, VcpuId, VmEntry, VmExit, VmmHostCore,
+        DoorbellSpec, DtReg, DtRegVal, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt,
+        MpState, Reg, RegId, RegVal, SReg, SegReg, SegRegVal, VcpuId, VmEntry, VmExit, VmmHostCore,
     };
 
     pub struct FakeHost {
         next_obj: AtomicU32,
         objs: Mutex<BTreeMap<MemObjId, Vec<u8>>>,
         mappings: Mutex<BTreeMap<u64, (u64, MemObjId, u64)>>,
+        msis: Mutex<Vec<(u64, u32)>>,
+        doorbells: Mutex<Vec<DoorbellSpec>>,
     }
 
     impl Default for FakeHost {
@@ -1080,6 +1157,8 @@ pub mod test {
                 next_obj: AtomicU32::new(1),
                 objs: Mutex::new(BTreeMap::new()),
                 mappings: Mutex::new(BTreeMap::new()),
+                msis: Mutex::new(Vec::new()),
+                doorbells: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1088,11 +1167,19 @@ pub mod test {
         pub fn new_arc() -> Arc<dyn VmmHostCore> {
             Arc::new(Self::default())
         }
+
+        pub fn take_msis(&self) -> Vec<(u64, u32)> {
+            std::mem::take(&mut *self.msis.lock())
+        }
+
+        pub fn doorbells(&self) -> Vec<DoorbellSpec> {
+            self.doorbells.lock().clone()
+        }
     }
 
     impl VmmHostCore for FakeHost {
         fn caps(&self) -> HostCaps {
-            HostCaps::DECODED_MMIO | HostCaps::HW_IOAPIC
+            HostCaps::DECODED_MMIO | HostCaps::DOORBELLS
         }
 
         fn supported_cpuids(&self, _dst: &mut [super::abi::RawCpuid]) -> HvResult<usize> {
@@ -1191,11 +1278,24 @@ pub mod test {
                 .ok_or(HvError::InvalidParam)
         }
 
-        fn inject_msi(&self, _addr: u64, _data: u32) -> HvResult<()> {
+        fn inject_msi(&self, addr: u64, data: u32) -> HvResult<()> {
+            self.msis.lock().push((addr, data));
             Ok(())
         }
 
         fn set_gsi_level(&self, _gsi: u32, _active: bool) -> HvResult<()> {
+            Ok(())
+        }
+
+        fn register_doorbell(&self, spec: DoorbellSpec) -> HvResult<()> {
+            self.doorbells.lock().push(spec);
+            Ok(())
+        }
+
+        fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()> {
+            self.doorbells
+                .lock()
+                .retain(|d| !(d.space == space && d.addr == addr && d.size == size));
             Ok(())
         }
     }

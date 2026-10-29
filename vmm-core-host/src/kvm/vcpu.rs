@@ -21,15 +21,16 @@ use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, mmap, munmap};
 use vmm_core::host::abi::RawCpuid;
 use vmm_core::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use vmm_core::host::{HvError, HvResult, MpState, RegId, RegVal, VmEntry, VmExit};
+use vmm_core::hw::layout::IOAPIC_START;
 use vmm_core::hw::reg::SegAccess;
 
 use crate::ffi;
 use crate::kvm::bindings::{
-    KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN,
-    KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMpState, KvmMsrEntry,
-    KvmMsrs, KvmRegs, KvmRun, KvmSregs, kvm_get_mp_state, kvm_get_msrs, kvm_get_regs,
-    kvm_get_sregs, kvm_run, kvm_set_cpuid2, kvm_set_mp_state, kvm_set_msrs, kvm_set_regs,
-    kvm_set_sregs,
+    KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_IOAPIC_EOI, KVM_EXIT_MMIO,
+    KVM_EXIT_SHUTDOWN, KVM_EXIT_SYSTEM_EVENT, KVM_MAX_CPUID_ENTRIES, KVM_SYSTEM_EVENT_RESET,
+    KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMpState, KvmMsrEntry, KvmMsrs, KvmRegs, KvmRun,
+    KvmSregs, kvm_get_mp_state, kvm_get_msrs, kvm_get_regs, kvm_get_sregs, kvm_run,
+    kvm_set_cpuid2, kvm_set_mp_state, kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
 };
 
 pub(crate) fn io_to_hv_err(e: std::io::Error) -> HvError {
@@ -283,6 +284,22 @@ impl KvmVcpu {
                 KVM_EXIT_IO => self.handle_io(),
                 KVM_EXIT_MMIO => self.handle_mmio(),
                 KVM_EXIT_SHUTDOWN => Ok(VmExit::Shutdown),
+                KVM_EXIT_SYSTEM_EVENT => {
+                    let ev_type = unsafe { self.kvm_run.exit.system_event.type_ };
+                    if ev_type == KVM_SYSTEM_EVENT_RESET {
+                        Ok(VmExit::Reboot)
+                    } else {
+                        Ok(VmExit::Shutdown)
+                    }
+                }
+                KVM_EXIT_IOAPIC_EOI => {
+                    let vector = unsafe { self.kvm_run.exit.eoi.vector };
+                    Ok(VmExit::Mmio {
+                        gpa: (IOAPIC_START + 0x40) as u64,
+                        write: Some(vector as u64),
+                        size: 4,
+                    })
+                }
                 reason => {
                     log::error!("unknown kvm exit: {reason:#x}");
                     Err(HvError::HardwareFault)

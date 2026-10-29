@@ -14,31 +14,34 @@
 
 use std::fs::File;
 use std::mem::{size_of, transmute};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use libc::{SIGRTMIN, c_void};
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK, SIGRTMIN, c_void, eventfd};
 use parking_lot::{Mutex, RwLock};
 use vmm_core::host::abi::{
     MAX_RAM_SLOTS, RawCpuid, ShmGuestRamSlot, spin_lock, spin_unlock,
 };
 use vmm_core::host::{
-    HostCaps, HvError, HvResult, MemObjId, MemProt, RegId, RegVal, VcpuId, VmEntry, VmExit,
-    VmmHostCore,
+    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, RegId, RegVal, VcpuId,
+    VmEntry, VmExit, VmmHostCore,
 };
 
 use crate::ffi;
 use crate::kvm::bindings::{
-    KVM_API_VERSION, KVM_CAP_SIGNAL_MSI, KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag,
-    KvmCpuidEntry2, KvmIrqLevel, KvmMemFlag, KvmMsi, KvmUserspaceMemoryRegion,
-    kvm_check_extension, kvm_create_irqchip, kvm_create_vcpu, kvm_create_vm, kvm_get_api_version,
-    kvm_get_supported_cpuid, kvm_get_vcpu_mmap_size, kvm_irq_line, kvm_set_identity_map_addr,
-    kvm_set_tss_addr, kvm_set_user_memory_region, kvm_signal_msi,
+    KVM_API_VERSION, KVM_CAP_SIGNAL_MSI, KVM_CAP_SPLIT_IRQCHIP, KVM_MAX_CPUID_ENTRIES, KvmCpuid2,
+    KvmCpuid2Flag, KvmCpuidEntry2, KvmEnableCap, KvmIoEventFd, KvmIoEventFdFlag, KvmMemFlag,
+    KvmMsi, KvmUserspaceMemoryRegion, kvm_check_extension, kvm_create_vcpu, kvm_create_vm,
+    kvm_enable_cap, kvm_get_api_version, kvm_get_supported_cpuid, kvm_get_vcpu_mmap_size,
+    kvm_ioeventfd, kvm_set_identity_map_addr, kvm_set_tss_addr, kvm_set_user_memory_region,
+    kvm_signal_msi,
 };
 use crate::kvm::vcpu::{KvmRunBlock, KvmVcpu, io_to_hv_err};
-use crate::kvm::{CoreBridgeFds, SharedCoreBridge, spawn_i2c_listener};
+use crate::kvm::{
+    CoreBridgeFds, DoorbellRegistry, KvmDoorbellEntry, SharedCoreBridge, spawn_i2c_listener,
+};
 
 pub const MAX_VCPUS: usize = 64;
 pub const MAX_MEM_OBJS: usize = 64;
@@ -75,6 +78,7 @@ pub struct KvmCoreHost {
     vm_fd: Arc<OwnedFd>,
     vcpu_mmap_size: usize,
     bridge: Arc<SharedCoreBridge>,
+    doorbells: Arc<DoorbellRegistry>,
     vcpus: RwLock<[Option<Arc<KvmVcpuSlot>>; MAX_VCPUS]>,
     mem_objs: RwLock<[Option<KvmMemObj>; MAX_MEM_OBJS]>,
     memslots: Mutex<[Option<KvmSlotMapping>; MAX_RAM_SLOTS]>,
@@ -83,6 +87,7 @@ pub struct KvmCoreHost {
 impl KvmCoreHost {
     pub fn new(fds: CoreBridgeFds) -> std::io::Result<Self> {
         let bridge = SharedCoreBridge::from_fds(fds)?;
+        let doorbells = DoorbellRegistry::new()?;
 
         let kvm_file = File::open("/dev/kvm")?;
         let kvm_fd = OwnedFd::from(kvm_file);
@@ -106,20 +111,30 @@ impl KvmCoreHost {
         if unsafe { kvm_check_extension(&vm_fd, KVM_CAP_SIGNAL_MSI) }? != 1 {
             return Err(std::io::Error::other("KVM lacks KVM_CAP_SIGNAL_MSI"));
         }
+        if unsafe { kvm_check_extension(&vm_fd, KVM_CAP_SPLIT_IRQCHIP) }? <= 0 {
+            return Err(std::io::Error::other("KVM lacks KVM_CAP_SPLIT_IRQCHIP"));
+        }
 
-        unsafe { kvm_create_irqchip(&vm_fd) }?;
+        let split_cap = KvmEnableCap {
+            cap: KVM_CAP_SPLIT_IRQCHIP as u32,
+            flags: 0,
+            args: [24, 0, 0, 0],
+            pad: [0; 64],
+        };
+        unsafe { kvm_enable_cap(&vm_fd, &split_cap) }?;
         #[cfg(target_arch = "x86_64")]
         unsafe { kvm_set_tss_addr(&vm_fd, 0xf000_0000) }?;
         #[cfg(target_arch = "x86_64")]
         unsafe { kvm_set_identity_map_addr(&vm_fd, &0xf000_3000) }?;
 
-        spawn_i2c_listener(vm_fd.clone(), bridge.clone());
+        spawn_i2c_listener(vm_fd.clone(), bridge.clone(), doorbells.clone());
 
         Ok(Self {
             kvm_fd,
             vm_fd,
             vcpu_mmap_size,
             bridge,
+            doorbells,
             vcpus: RwLock::new([const { None }; MAX_VCPUS]),
             mem_objs: RwLock::new([const { None }; MAX_MEM_OBJS]),
             memslots: Mutex::new([None; MAX_RAM_SLOTS]),
@@ -161,7 +176,7 @@ impl KvmCoreHost {
 
 impl VmmHostCore for KvmCoreHost {
     fn caps(&self) -> HostCaps {
-        HostCaps::DECODED_MMIO | HostCaps::HW_IOAPIC
+        HostCaps::DECODED_MMIO | HostCaps::DOORBELLS
     }
 
     fn supported_cpuids(&self, dst: &mut [RawCpuid]) -> HvResult<usize> {
@@ -409,12 +424,83 @@ impl VmmHostCore for KvmCoreHost {
         Ok(())
     }
 
-    fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()> {
-        let req = KvmIrqLevel {
-            irq: gsi,
-            level: u32::from(active),
+    fn set_gsi_level(&self, _gsi: u32, _active: bool) -> HvResult<()> {
+        Err(HvError::Unsupported)
+    }
+
+    fn register_doorbell(&self, spec: DoorbellSpec) -> HvResult<()> {
+        if !matches!(spec.size, 1 | 2 | 4 | 8) {
+            return Err(HvError::InvalidParam);
+        }
+        let raw_fd =
+            ffi!(unsafe { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) }).map_err(io_to_hv_err)?;
+        let evt_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+
+        let mut flags = KvmIoEventFdFlag::empty();
+        if spec.space == IoSpace::Pio {
+            flags |= KvmIoEventFdFlag::PIO;
+        }
+        if spec.datamatch.is_some() {
+            flags |= KvmIoEventFdFlag::DATA_MATCH;
+        }
+        let req = KvmIoEventFd {
+            datamatch: spec.datamatch.unwrap_or(0),
+            addr: spec.addr,
+            len: spec.size as u32,
+            fd: evt_fd.as_raw_fd(),
+            flags,
+            pad: [0; 36],
         };
-        unsafe { kvm_irq_line(&self.vm_fd, &req) }.map_err(io_to_hv_err)?;
+        unsafe { kvm_ioeventfd(&self.vm_fd, &req) }.map_err(io_to_hv_err)?;
+
+        self.doorbells.entries.lock().push(KvmDoorbellEntry {
+            space: spec.space,
+            addr: spec.addr,
+            size: spec.size,
+            datamatch: spec.datamatch,
+            dev_id: spec.dev_id,
+            queue_idx: spec.queue_idx,
+            evt_fd,
+        });
+        self.doorbells.wake();
+        Ok(())
+    }
+
+    fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()> {
+        let mut removed = Vec::new();
+        {
+            let mut entries = self.doorbells.entries.lock();
+            let mut i = 0;
+            while i < entries.len() {
+                if entries[i].space == space && entries[i].addr == addr && entries[i].size == size {
+                    removed.push(entries.swap_remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if removed.is_empty() {
+            return Ok(());
+        }
+        for db in &removed {
+            let mut flags = KvmIoEventFdFlag::DEASSIGN;
+            if db.space == IoSpace::Pio {
+                flags |= KvmIoEventFdFlag::PIO;
+            }
+            if db.datamatch.is_some() {
+                flags |= KvmIoEventFdFlag::DATA_MATCH;
+            }
+            let req = KvmIoEventFd {
+                datamatch: db.datamatch.unwrap_or(0),
+                addr: db.addr,
+                len: db.size as u32,
+                fd: db.evt_fd.as_raw_fd(),
+                flags,
+                pad: [0; 36],
+            };
+            let _ = unsafe { kvm_ioeventfd(&self.vm_fd, &req) };
+        }
+        self.doorbells.wake();
         Ok(())
     }
 }
