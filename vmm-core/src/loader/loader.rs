@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{self, Read, Seek, SeekFrom};
-use std::ops::Range;
-
-use thiserror::Error;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::{self, Display, Formatter};
+use core::ops::Range;
 
 use crate::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
-use crate::host::{PayloadKind, VmmCoreBridge};
+use crate::host::{HvError, HvResult, PayloadKind, VmmCoreBridge};
+use crate::mem::mapped::ByteRead;
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub mod elf;
@@ -59,38 +60,27 @@ impl<'a> PayloadReader<'a> {
     pub fn size(&self) -> u64 {
         self.size
     }
-}
 
-impl Read for PayloadReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos >= self.size || buf.is_empty() {
-            return Ok(0);
-        }
-        let max_len = std::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
-        let n = self
-            .bridge
-            .read_payload(self.kind, self.pos, &mut buf[..max_len])
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        self.pos += n as u64;
-        Ok(n)
+    pub fn seek_to(&mut self, offset: u64) {
+        self.pos = offset;
+    }
+
+    pub fn skip(&mut self, delta: u64) {
+        self.pos = self.pos.saturating_add(delta);
     }
 }
 
-impl Seek for PayloadReader<'_> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new_pos = match pos {
-            SeekFrom::Start(offset) => offset as i128,
-            SeekFrom::End(delta) => self.size as i128 + delta as i128,
-            SeekFrom::Current(delta) => self.pos as i128 + delta as i128,
-        };
-        if new_pos < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid seek to negative position",
-            ));
+impl ByteRead for PayloadReader<'_> {
+    fn read_bytes(&mut self, buf: &mut [u8]) -> HvResult<usize> {
+        if self.pos >= self.size || buf.is_empty() {
+            return Ok(0);
         }
-        self.pos = new_pos as u64;
-        Ok(self.pos)
+        let max_len = core::cmp::min(buf.len() as u64, self.size - self.pos) as usize;
+        let n = self
+            .bridge
+            .read_payload(self.kind, self.pos, &mut buf[..max_len])?;
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 
@@ -103,40 +93,24 @@ pub struct InitState {
     pub initramfs: Option<Range<u64>>,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("mem: {0}")]
-    Mem(#[from] crate::mem::Error),
-
-    #[error("msssing magic number {magic:#x}, found {found:#x}")]
-    MissingMagic { magic: u64, found: u64 },
-
-    #[error("cannot find entry point")]
+    Hv(HvError),
+    Mem(crate::mem::Error),
+    MissingMagic {
+        magic: u64,
+        found: u64,
+    },
     NoEntryPoint,
-
-    #[error("not a 64bit kernel")]
     Not64BitKernel,
-
-    #[error("not a relocatable kernel")]
     NotRelocatableKernel,
-
-    #[error("kernel command line too long, length: {0}, limit: {1}")]
     CmdLineTooLong(usize, usize),
-
-    #[error("cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}")]
     InitramfsAddrLimit {
         addr: u64,
         max: u64,
         addr_max: u64,
     },
-
-    #[error("cannot find a memory region to load initramfs")]
     CannotLoadInitramfs,
-
-    #[error("{name} too old, minimum supported version {min:#x}, found version {found:#x}")]
     TooOld {
         name: &'static str,
         min: u64,
@@ -144,7 +118,55 @@ pub enum Error {
     },
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hv(e) => write!(f, "hv: {e}"),
+            Self::Mem(e) => write!(f, "mem: {e}"),
+            Self::MissingMagic { magic, found } => {
+                write!(f, "missing magic number {magic:#x}, found {found:#x}")
+            }
+            Self::NoEntryPoint => f.write_str("cannot find entry point"),
+            Self::Not64BitKernel => f.write_str("not a 64bit kernel"),
+            Self::NotRelocatableKernel => f.write_str("not a relocatable kernel"),
+            Self::CmdLineTooLong(len, limit) => {
+                write!(
+                    f,
+                    "kernel command line too long, length: {len}, limit: {limit}"
+                )
+            }
+            Self::InitramfsAddrLimit {
+                addr,
+                max,
+                addr_max,
+            } => write!(
+                f,
+                "cannot load initramfs at {addr:#x} - {max:#x}, initramfs max address: {addr_max:#x}"
+            ),
+            Self::CannotLoadInitramfs => f.write_str("cannot find a memory region to load initramfs"),
+            Self::TooOld { name, min, found } => write!(
+                f,
+                "{name} too old, minimum supported version {min:#x}, found version {found:#x}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<HvError> for Error {
+    fn from(e: HvError) -> Self {
+        Self::Hv(e)
+    }
+}
+
+impl From<crate::mem::Error> for Error {
+    fn from(e: crate::mem::Error) -> Self {
+        Self::Mem(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 pub fn search_initramfs_address(
     entries: &[(u64, MemRegionEntry)],
@@ -153,7 +175,7 @@ pub fn search_initramfs_address(
 ) -> Result<u64, Error> {
     for (start, entry) in entries.iter().rev() {
         let region_max = entry.size as u64 - 1 + start;
-        let limit = std::cmp::min(region_max, addr_max);
+        let limit = core::cmp::min(region_max, addr_max);
         if limit < size - 1 {
             continue;
         }

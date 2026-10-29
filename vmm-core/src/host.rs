@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::{self, Debug, Display, Formatter};
 
 use bitflags::bitflags;
@@ -312,6 +314,17 @@ pub enum VmAction {
     Reboot = 2,
 }
 
+impl VmAction {
+    pub const fn from_i32(v: i32) -> HvResult<Self> {
+        match v {
+            0 => Ok(Self::Continue),
+            1 => Ok(Self::Shutdown),
+            2 => Ok(Self::Reboot),
+            _ => Err(HvError::InvalidParam),
+        }
+    }
+}
+
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum IoSpace {
@@ -386,7 +399,7 @@ pub struct VirtioQueueConfig {
     pub used_gpa: u64,
 }
 
-/// Pure single-VM hardware virtualization backend (`#![no_std]`-clean, zero Virtio/UART).
+/// Pure single-VM hardware virtualization backend (100% non-blocking, `#![no_std]`-clean, zero Virtio/UART).
 pub trait VmmHostCore: Send + Sync + 'static {
     fn caps(&self) -> HostCaps;
     fn supported_cpuids(&self, dst: &mut [abi::RawCpuid]) -> HvResult<usize>;
@@ -395,7 +408,6 @@ pub trait VmmHostCore: Send + Sync + 'static {
     fn vcpu_get_regs(&self, vcpu: VcpuId, ids: &[RegId], out: &mut [RegVal]) -> HvResult<()>;
     fn vcpu_set_regs(&self, vcpu: VcpuId, regs: &[(RegId, RegVal)]) -> HvResult<()>;
     fn vcpu_kick(&self, vcpu: VcpuId) -> HvResult<()>;
-    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut abi::VcpuCommPage) -> HvResult<()>;
 
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId>;
     fn mem_free(&self, obj: MemObjId) -> HvResult<()>;
@@ -417,7 +429,7 @@ pub trait VmmHostCore: Send + Sync + 'static {
     fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()>;
 }
 
-/// Separate `#![no_std]`-clean trait for the Core <-> I/O split channel.
+/// Separate 100% non-blocking, `#![no_std]`-clean trait for the Core <-> I/O split channel.
 pub trait VmmCoreBridge: Send + Sync + 'static {
     fn boot_info(
         &self,
@@ -432,7 +444,7 @@ pub trait VmmCoreBridge: Send + Sync + 'static {
     ) -> HvResult<()>;
     fn update_irq_route(&self, dev: u32, routing: &abi::ShmDeviceMsixRouting) -> HvResult<()>;
     fn send_io_cmd(&self, entry: &abi::CoreToIoEntry) -> HvResult<()>;
-    fn recv_io_cmd(&self, blocking: bool, out: &mut abi::IoToCoreEntry) -> HvResult<bool>;
+    fn recv_io_cmd(&self, out: &mut abi::IoToCoreEntry) -> HvResult<bool>;
 }
 
 pub mod abi {
@@ -1478,15 +1490,16 @@ pub mod abi {
 
 #[cfg(test)]
 pub mod test {
-    use std::alloc::{Layout, alloc_zeroed, dealloc};
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use alloc::alloc::{Layout, alloc_zeroed, dealloc};
+    use alloc::collections::BTreeMap;
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicU32, Ordering};
 
     use crate::hw::reg::SegAccess;
     use crate::sync::Mutex;
 
-    use super::abi::{RawVmExit, VcpuCommPage};
     use super::{
         DoorbellSpec, DtReg, DtRegVal, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt,
         MpState, Reg, RegId, RegVal, SReg, SegReg, SegRegVal, VcpuId, VmEntry, VmExit, VmmHostCore,
@@ -1518,7 +1531,7 @@ pub mod test {
         }
 
         pub fn take_msis(&self) -> Vec<(u64, u32)> {
-            std::mem::take(&mut *self.msis.lock())
+            core::mem::take(&mut *self.msis.lock())
         }
 
         pub fn doorbells(&self) -> Vec<DoorbellSpec> {
@@ -1553,11 +1566,6 @@ pub mod test {
         }
 
         fn vcpu_kick(&self, _vcpu: VcpuId) -> HvResult<()> {
-            Ok(())
-        }
-
-        fn vcpu_run(&self, _vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
-            comm.exit = RawVmExit::from_exit(VmExit::Shutdown);
             Ok(())
         }
 
@@ -1757,8 +1765,8 @@ pub mod test {
         assert_eq!(SegRegVal::from(raw_seg), seg);
 
         let comm = VcpuCommPage::default();
-        assert_eq!(std::mem::size_of_val(&comm), 320);
-        assert_eq!(std::mem::align_of_val(&comm), 64);
+        assert_eq!(core::mem::size_of_val(&comm), 320);
+        assert_eq!(core::mem::align_of_val(&comm), 64);
     }
 
     #[test]

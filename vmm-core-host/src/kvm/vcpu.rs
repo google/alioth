@@ -602,6 +602,7 @@ impl KvmVcpu {
     }
 
     pub fn configure_cpuids(&mut self, cpuids: &[RawCpuid]) -> HvResult<()> {
+        self.set_immediate_exit(false);
         if cpuids.len() > KVM_MAX_CPUID_ENTRIES {
             return Err(HvError::InvalidParam);
         }

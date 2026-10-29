@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::any::type_name;
-use std::fmt::Debug;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::any::type_name;
+use core::fmt::{self, Debug, Display, Formatter};
 
 use crate::sync::Mutex;
-use thiserror::Error;
 
 use crate::host::{self, VmEntry, VmmHostCore};
 use crate::hw::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
@@ -40,51 +42,74 @@ pub trait ChangeLayout: Debug + Send + Sync + 'static {
     fn change(&self, memory: &Memory) -> Result<()>;
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("{new_item:#x?} overlaps with {exist_item:#x?}")]
     Overlap {
         new_item: [u64; 2],
         exist_item: [u64; 2],
     },
-    #[error("(addr={addr:#x}, size={size:#x}) is out of range")]
-    OutOfRange { addr: u64, size: usize },
-    #[error("io: {source:#x?}")]
-    Io {
-        #[from]
-        source: std::io::Error,
+    OutOfRange {
+        addr: u64,
+        size: usize,
     },
-    #[error("mmap: {0}")]
-    Mmap(#[source] std::io::Error),
-    #[error("offset {offset:#x} exceeds limit {limit:#x}")]
-    ExceedLimit { offset: usize, limit: usize },
-    #[error("{0:#x} is not mapped")]
+    ExceedLimit {
+        offset: usize,
+        limit: usize,
+    },
     NotMapped(u64),
-    #[error("zero memory size")]
     ZeroMemorySize,
-    #[error("lock poisoned")]
     LockPoisoned,
-    #[error("cannot allocate")]
     CanotAllocate,
-    #[error("cannot register MMIO notifier: {0}")]
-    Notifier(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
-    #[error("{0}")]
-    Hv(#[from] host::Error),
-    #[error("cannot handle action: {0:x?}")]
+    Hv(host::Error),
     Action(Action),
-    #[error("not aligned")]
     NotAligned,
-    #[error("not backed by continuous host memory")]
     NotContinuous,
-    #[error("adding a slot of size 0")]
     ZeroSizedSlot,
-    #[error("total length of region entries does not match mam range size")]
     MemRegionEntryMismatch,
-    #[error("total length of backends does not match the mem range size")]
     MemRangeMismatch,
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overlap {
+                new_item,
+                exist_item,
+            } => write!(f, "{new_item:#x?} overlaps with {exist_item:#x?}"),
+            Self::OutOfRange { addr, size } => {
+                write!(f, "(addr={addr:#x}, size={size:#x}) is out of range")
+            }
+            Self::ExceedLimit { offset, limit } => {
+                write!(f, "offset {offset:#x} exceeds limit {limit:#x}")
+            }
+            Self::NotMapped(addr) => write!(f, "{addr:#x} is not mapped"),
+            Self::ZeroMemorySize => f.write_str("zero memory size"),
+            Self::LockPoisoned => f.write_str("lock poisoned"),
+            Self::CanotAllocate => f.write_str("cannot allocate"),
+            Self::Hv(e) => write!(f, "{e}"),
+            Self::Action(a) => write!(f, "cannot handle action: {a:x?}"),
+            Self::NotAligned => f.write_str("not aligned"),
+            Self::NotContinuous => f.write_str("not backed by continuous host memory"),
+            Self::ZeroSizedSlot => f.write_str("adding a slot of size 0"),
+            Self::MemRegionEntryMismatch => {
+                f.write_str("total length of region entries does not match mem range size")
+            }
+            Self::MemRangeMismatch => {
+                f.write_str("total length of backends does not match the mem range size")
+            }
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<host::Error> for Error {
+    fn from(e: host::Error) -> Self {
+        Self::Hv(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Debug)]
 pub enum MemRange {
@@ -247,11 +272,11 @@ impl Memory {
                 Ok(addr)
             }
             AddrOpt::Any | AddrOpt::Above4G => {
-                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE) as u64;
+                let align = core::cmp::max(region.size.next_power_of_two(), PAGE_SIZE) as u64;
                 regions.add_within(MEM_64_START, u64::MAX, align, region)
             }
             AddrOpt::Below4G => {
-                let align = std::cmp::max(region.size.next_power_of_two(), PAGE_SIZE) as u64;
+                let align = core::cmp::max(region.size.next_power_of_two(), PAGE_SIZE) as u64;
                 regions.add_within(MMIO_32_START as u64, (MMIO_32_END - 1) as u64, align, region)
             }
         }
@@ -437,7 +462,7 @@ impl Memory {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::host::test::FakeHost;
     use crate::mem::mmio::Mmio;

@@ -17,8 +17,8 @@
 //! Translates legacy ISA/GSI pin assertions (`0..24`) into architectural x86 MSI
 //! `(addr, data)` writes delivered via [`VmmHostCore::inject_msi`].
 
+use alloc::sync::Arc;
 use core::fmt::{self, Debug, Formatter};
-use std::sync::Arc;
 
 use crate::host::VmmHostCore;
 use crate::hw::layout::APIC_START;
@@ -289,7 +289,8 @@ impl Mmio for IoApic {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
+    use alloc::vec;
 
     use super::*;
     use crate::host::test::FakeHost;

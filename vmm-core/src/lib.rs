@@ -11,9 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#![no_std]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::Arc;
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::host::abi::{
     EXEC_TYPE_LINUX, EXEC_TYPE_PVH, MAX_VIRTIO_DEVS, ShmBootInfo, ShmVirtioDeviceSpec,
@@ -23,6 +31,7 @@ use crate::hw::BoardConfig;
 use crate::loader::{ExecType, Payload};
 use crate::vm::Machine;
 
+pub mod alloc_wasm;
 pub mod host;
 #[path = "hw/board.rs"]
 pub mod hw;
@@ -35,10 +44,10 @@ pub(crate) mod utils;
 #[path = "virtio/virtio.rs"]
 pub mod virtio;
 pub mod vm;
-#[cfg(target_os = "wasi")]
+#[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-fn read_boot_config(
+pub fn read_boot_config(
     bridge: &dyn VmmCoreBridge,
 ) -> Result<(CoreBootInfo, Vec<VirtioDeviceSpec>), host::HvError> {
     let mut raw_boot = ShmBootInfo::default();
@@ -89,10 +98,11 @@ fn read_boot_config(
     Ok((boot_info, specs))
 }
 
-pub fn run(
+/// Construct, configure, and initialize the VM [`Machine`] from `bridge` boot metadata.
+pub fn init_machine(
     hv: Arc<dyn VmmHostCore>,
     bridge: Arc<dyn VmmCoreBridge>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Machine, vm::Error> {
     let (boot_info, virtio_specs) = read_boot_config(bridge.as_ref())?;
 
     let payload = boot_info.exec_type.map(|exec_type| Payload {
@@ -120,11 +130,6 @@ pub fn run(
         vm.add_virtio_spec(spec)?;
     }
 
-    vm.boot()?;
-
-    for result in vm.wait() {
-        result?;
-    }
-
-    Ok(())
+    vm.init_vm()?;
+    Ok(vm)
 }

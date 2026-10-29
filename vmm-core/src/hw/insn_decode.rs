@@ -1217,7 +1217,7 @@ fn mask_addr(val: u64, addr_bits: u8) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::host::abi::{
         GPR_R8, GPR_R9, GPR_RAX, GPR_RBX, GPR_RCX, GPR_RDI, GPR_RDX, GPR_RSI, GPR_RSP,

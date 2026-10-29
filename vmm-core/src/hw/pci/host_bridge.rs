@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::hw::pci;
 use crate::hw::pci::cap::PciCapList;

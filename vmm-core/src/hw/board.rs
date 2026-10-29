@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
-use std::thread::JoinHandle;
+use core::fmt::{self, Display, Formatter};
+use core::mem::size_of;
+use core::sync::atomic::{AtomicU8, Ordering};
 
-use thiserror::Error;
 use zerocopy::AsBytes;
 
 use crate::host::abi::{
@@ -33,7 +33,7 @@ use crate::host::{
 use crate::loader::{self, ExecType, InitState, Payload, PayloadReader, linux, xen};
 use crate::mem::mmio::Mmio;
 use crate::mem::{self, AddrOpt, MemRegion, MemRegionType, Memory};
-use crate::sync::{Condvar, Mutex, RwLock, RwLockReadGuard};
+use crate::sync::RwLock;
 use crate::virtio;
 
 #[path = "firmware/firmware.rs"]
@@ -55,39 +55,76 @@ use pci::config::Command;
 use pci::{PciBar, PciDevice};
 use serial::Serial;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] host::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] pci::Error),
-
-    #[error("loader: {0}")]
-    Loader(#[from] loader::Error),
-
-    #[error("virtio: {0}")]
-    Virtio(#[from] virtio::Error),
-
-    #[error("host io: {0}")]
-    HostIo(#[from] std::io::Error),
-
-    #[error("ACPI bytes exceed EBDA area")]
+    Hv(host::Error),
+    Memory(mem::Error),
+    PciBus(pci::Error),
+    Loader(loader::Error),
+    Virtio(virtio::Error),
     AcpiTooLong,
-
-    #[error("memory too small")]
     MemoryTooSmall,
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hv(e) => write!(f, "hypervisor: {e}"),
+            Self::Memory(e) => write!(f, "memory: {e}"),
+            Self::PciBus(e) => write!(f, "PCI bus: {e}"),
+            Self::Loader(e) => write!(f, "loader: {e}"),
+            Self::Virtio(e) => write!(f, "virtio: {e}"),
+            Self::AcpiTooLong => f.write_str("ACPI bytes exceed EBDA area"),
+            Self::MemoryTooSmall => f.write_str("memory too small"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<host::Error> for Error {
+    fn from(e: host::Error) -> Self {
+        Self::Hv(e)
+    }
+}
+
+impl From<mem::Error> for Error {
+    fn from(e: mem::Error) -> Self {
+        Self::Memory(e)
+    }
+}
+
+impl From<pci::Error> for Error {
+    fn from(e: pci::Error) -> Self {
+        Self::PciBus(e)
+    }
+}
+
+impl From<loader::Error> for Error {
+    fn from(e: loader::Error) -> Self {
+        Self::Loader(e)
+    }
+}
+
+impl From<virtio::Error> for Error {
+    fn from(e: virtio::Error) -> Self {
+        Self::Virtio(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 pub const STATE_CREATED: u8 = 0;
 pub const STATE_RUNNING: u8 = 1;
 pub const STATE_SHUTDOWN: u8 = 2;
 pub const STATE_REBOOT_PENDING: u8 = 3;
+
+/// Per-worker disjoint Wasm shadow stack size (64 KiB, 16-byte aligned).
+pub const WORKER_STACK_SIZE: usize = 64 * 1024;
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct StackAlign16(pub [u8; 16]);
 
 pub struct BoardConfig {
     pub mem_size: usize,
@@ -113,20 +150,16 @@ impl Default for VcpuCommSlot {
 unsafe impl Send for VcpuCommSlot {}
 unsafe impl Sync for VcpuCommSlot {}
 
-type VcpuGuard<'a> = RwLockReadGuard<'a, Vec<(JoinHandle<Result<()>>, Sender<()>)>>;
-
 pub struct Board {
     pub hv: Arc<dyn VmmHostCore>,
     pub bridge: Arc<dyn VmmCoreBridge>,
     pub memory: Memory,
-    #[allow(clippy::type_complexity)]
-    pub vcpus: Arc<RwLock<Vec<(JoinHandle<Result<()>>, Sender<()>)>>>,
     pub comm_pages: Box<[VcpuCommSlot]>,
+    pub worker_stacks: Box<[StackAlign16]>,
     pub arch: ArchBoard,
     pub config: BoardConfig,
     pub state: AtomicU8,
     pub payload: RwLock<Option<Payload>>,
-    pub mp_sync: Arc<(Mutex<u32>, Condvar)>,
     pub ioapic: Option<Arc<IoApic>>,
     pub io_devs: RwLock<Vec<(u16, Arc<dyn Mmio>)>>,
     pub com1: RwLock<Option<Arc<Serial>>>,
@@ -217,6 +250,20 @@ impl Board {
         Ok(())
     }
 
+    /// Number of preallocated worker shadow stacks (`0..num_cpu` for vCPUs, `num_cpu` for bridge RX).
+    pub fn num_worker_stacks(&self) -> u32 {
+        (self.worker_stacks.len() / (WORKER_STACK_SIZE / size_of::<StackAlign16>())) as u32
+    }
+
+    /// 16-byte-aligned top address of worker shadow stack `slot` (`[base .. top]`).
+    pub fn worker_stack_top(&self, slot: u32) -> Option<usize> {
+        if slot >= self.num_worker_stacks() {
+            return None;
+        }
+        let base = self.worker_stacks.as_ptr() as usize;
+        Some(base + (slot as usize + 1) * WORKER_STACK_SIZE)
+    }
+
     /// Base pointer to the contiguous `[VcpuCommPage; num_cpu]` array in Wasm linear memory.
     pub fn comm_pages_ptr(&self) -> *mut VcpuCommPage {
         self.comm_pages.as_ptr() as *mut VcpuCommPage
@@ -229,6 +276,68 @@ impl Board {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn comm_page_mut(&self, id: VcpuId) -> &mut VcpuCommPage {
         unsafe { &mut *self.comm_pages[id as usize].0.get() }
+    }
+
+    /// Initialize Guest RAM, chipset/PCI devices, kernel payload, ACPI tables, and BSP/AP vCPUs.
+    pub fn init_vm(&self) -> Result<()> {
+        for id in 0..self.config.num_cpu {
+            self.init_vcpu(id)?;
+            let comm = unsafe { self.comm_page_mut(id) };
+            *comm = VcpuCommPage::default();
+        }
+        self.create_ram()?;
+        if let Some(ioapic) = &self.ioapic {
+            ioapic.reset();
+            self.memory.add_region(
+                AddrOpt::Fixed(IOAPIC_START as u64),
+                Arc::new(MemRegion::with_emulated(
+                    ioapic.clone(),
+                    MemRegionType::Reserved,
+                )),
+            )?;
+        }
+        for (port, dev) in self.io_devs.read().iter() {
+            self.memory.add_io_dev(Some(*port), dev.clone())?;
+        }
+        self.add_pci_devs()?;
+        let init_state = self.load_payload()?;
+        if self.config.num_cpu > 0 {
+            self.init_boot_vcpu(0, &init_state)?;
+        }
+        self.create_firmware_data(&init_state)?;
+        self.state.store(STATE_RUNNING, Ordering::Release);
+        Ok(())
+    }
+
+    /// Reset all emulated hardware, unmap Guest RAM/BARs, and re-initialize the VM for reboot.
+    pub fn reset_vm(&self) -> Result<()> {
+        self.state.store(STATE_CREATED, Ordering::Release);
+        for dev in self.pci_devs.read().iter() {
+            dev.dev.reset()?;
+        }
+        if let Some(com1) = self.com1.read().as_ref() {
+            com1.reset();
+        }
+        self.arch.reset();
+        self.memory.reset()?;
+        self.init_vm()
+    }
+
+    pub fn kick_other_vcpus(&self, except: Option<VcpuId>) {
+        for vcpu_id in 0..self.config.num_cpu {
+            if Some(vcpu_id) != except {
+                log::info!("kicking vcpu {vcpu_id}");
+                let _ = self.hv.vcpu_kick(vcpu_id);
+            }
+        }
+    }
+
+    pub fn notify_shutdown(&self) {
+        let entry = CoreToIoEntry {
+            msg_type: CORE_MSG_SHUTDOWN,
+            ..Default::default()
+        };
+        let _ = self.bridge.send_io_cmd(&entry);
     }
 
     /// Handle one slow-path VM exit recorded in `comm`, populating `comm.entry` and `comm.dirty_regs`.
@@ -316,182 +425,74 @@ impl Board {
                 }
                 VmEntry::Msr { data: 0, error: 0 }
             }
-            VmExit::Shutdown => {
-                log::info!("vcpu {id} requested shutdown");
-                comm.entry = RawVmEntry::from_entry(VmEntry::Shutdown);
-                return Ok(VmAction::Shutdown);
-            }
-            VmExit::Reboot => {
-                comm.entry = RawVmEntry::from_entry(VmEntry::Reboot);
-                return Ok(VmAction::Reboot);
-            }
-            VmExit::Interrupted => {
-                let state = self.state.load(Ordering::Acquire);
-                match state {
-                    STATE_SHUTDOWN => VmEntry::Shutdown,
-                    STATE_REBOOT_PENDING => VmEntry::Reboot,
-                    _ => VmEntry::None,
-                }
-            }
+            VmExit::Shutdown => VmEntry::Shutdown,
+            VmExit::Reboot => VmEntry::Reboot,
+            VmExit::Interrupted => match self.state.load(Ordering::Acquire) {
+                STATE_SHUTDOWN => VmEntry::Shutdown,
+                STATE_REBOOT_PENDING => VmEntry::Reboot,
+                _ => VmEntry::None,
+            },
         };
 
         comm.entry = RawVmEntry::from_entry(vm_entry);
-        Ok(VmAction::Continue)
+        match vm_entry {
+            VmEntry::Shutdown => {
+                log::info!("vcpu {id} requested shutdown");
+                Ok(VmAction::Shutdown)
+            }
+            VmEntry::Reboot => {
+                log::info!("vcpu {id} requested reboot");
+                Ok(VmAction::Reboot)
+            }
+            _ => Ok(VmAction::Continue),
+        }
     }
 
-    fn vcpu_loop(&self, id: VcpuId) -> Result<bool, Error> {
+    /// Host-driven vCPU exit entrypoint (`vmm_on_vcpu_exit`). Strictly non-blocking.
+    pub fn on_vcpu_exit(&self, id: VcpuId) -> Result<VmAction> {
+        if id >= self.config.num_cpu {
+            return Err(Error::Hv(host::HvError::InvalidParam));
+        }
         let comm = unsafe { self.comm_page_mut(id) };
-        *comm = VcpuCommPage::default();
-        loop {
-            self.hv.vcpu_run(id, comm)?;
-            match self.handle_vcpu_exit(id, comm)? {
-                VmAction::Continue => {}
-                VmAction::Shutdown => break Ok(false),
-                VmAction::Reboot => break Ok(true),
-            }
-        }
-    }
-
-    fn sync_vcpus(&self, vcpus: &VcpuGuard) {
-        let (lock, cvar) = &*self.mp_sync;
-        let mut count = lock.lock();
-        *count += 1;
-        if *count == vcpus.len() as u32 {
-            *count = 0;
-            cvar.notify_all();
-        } else {
-            drop(cvar.wait(count));
-        }
-    }
-
-    pub fn notify_shutdown(&self) {
-        let entry = CoreToIoEntry {
-            msg_type: CORE_MSG_SHUTDOWN,
-            ..Default::default()
-        };
-        let _ = self.bridge.send_io_cmd(&entry);
-    }
-
-    fn run_vcpu_inner(
-        &self,
-        id: VcpuId,
-        event_tx: &Sender<u32>,
-        boot_rx: &Receiver<()>,
-    ) -> Result<(), Error> {
-        self.init_vcpu(id)?;
-        event_tx.send(id).unwrap();
-        boot_rx.recv().unwrap();
-        loop {
-            let vcpus = self.vcpus.read();
-            let setup_res = if id == 0 && self.state.load(Ordering::Acquire) == STATE_RUNNING {
-                (|| -> Result<()> {
-                    self.create_ram()?;
-                    if let Some(ioapic) = &self.ioapic {
-                        ioapic.reset();
-                        self.memory.add_region(
-                            AddrOpt::Fixed(IOAPIC_START as u64),
-                            Arc::new(MemRegion::with_emulated(
-                                ioapic.clone(),
-                                MemRegionType::Reserved,
-                            )),
-                        )?;
-                    }
-                    for (port, dev) in self.io_devs.read().iter() {
-                        self.memory.add_io_dev(Some(*port), dev.clone())?;
-                    }
-                    self.add_pci_devs()?;
-                    let init_state = self.load_payload()?;
-                    self.init_boot_vcpu(id, &init_state)?;
-                    self.create_firmware_data(&init_state)?;
-                    Ok(())
-                })()
-            } else {
-                Ok(())
-            };
-            if setup_res.is_err() {
-                self.state.store(STATE_SHUTDOWN, Ordering::Release);
-            }
-            self.sync_vcpus(&vcpus);
-            drop(vcpus);
-            setup_res?;
-            if self.state.load(Ordering::Acquire) != STATE_RUNNING {
-                return Ok(());
-            }
-
-            let reboot = self.vcpu_loop(id)?;
-
-            let new_state = if reboot {
-                STATE_REBOOT_PENDING
-            } else {
-                STATE_SHUTDOWN
-            };
-            let vcpus = self.vcpus.read();
-            match self.state.compare_exchange(
-                STATE_RUNNING,
-                new_state,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(STATE_RUNNING) => {
-                    for (vcpu_id, _) in vcpus.iter().enumerate() {
-                        if id != vcpu_id as u32 {
-                            log::info!("vcpu{id} to kick {vcpu_id}");
-                            let _ = self.hv.vcpu_kick(vcpu_id as u32);
-                        }
-                    }
+        let action = self.handle_vcpu_exit(id, comm)?;
+        match action {
+            VmAction::Continue => match self.state.load(Ordering::Acquire) {
+                STATE_SHUTDOWN => Ok(VmAction::Shutdown),
+                STATE_REBOOT_PENDING => Ok(VmAction::Reboot),
+                _ => Ok(VmAction::Continue),
+            },
+            VmAction::Shutdown => {
+                if self.state.swap(STATE_SHUTDOWN, Ordering::AcqRel) != STATE_SHUTDOWN {
+                    self.kick_other_vcpus(Some(id));
+                    self.notify_shutdown();
                 }
-                Err(s) if s == new_state => {}
-                Ok(s) | Err(s) => {
-                    log::error!("unexpected state: {s}");
+                Ok(VmAction::Shutdown)
+            }
+            VmAction::Reboot => {
+                match self.state.compare_exchange(
+                    STATE_RUNNING,
+                    STATE_REBOOT_PENDING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        self.kick_other_vcpus(Some(id));
+                        Ok(VmAction::Reboot)
+                    }
+                    Err(STATE_SHUTDOWN) => Ok(VmAction::Shutdown),
+                    Err(_) => Ok(VmAction::Reboot),
                 }
             }
-
-            self.sync_vcpus(&vcpus);
-
-            if new_state == STATE_SHUTDOWN {
-                break Ok(());
-            }
-
-            match self.state.compare_exchange(
-                STATE_REBOOT_PENDING,
-                STATE_RUNNING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(STATE_REBOOT_PENDING) | Err(STATE_RUNNING) => {}
-                _ => break Ok(()),
-            }
-
-            if id == 0 {
-                self.memory.reset()?;
-            }
-            self.sync_vcpus(&vcpus);
         }
     }
 
-    pub fn run_vcpu(
-        &self,
-        id: VcpuId,
-        event_tx: Sender<u32>,
-        boot_rx: Receiver<()>,
-    ) -> Result<(), Error> {
-        let ret = self.run_vcpu_inner(id, &event_tx, &boot_rx);
-        self.state.store(STATE_SHUTDOWN, Ordering::Release);
-        self.notify_shutdown();
-        event_tx.send(id).unwrap();
-        ret
-    }
-
-    pub fn run_serial_rx_loop(&self) -> Result<()> {
+    /// Host-driven `vmm-io -> vmm-core` control channel drain (`vmm_on_bridge_rx`). Strictly non-blocking.
+    pub fn on_bridge_rx(&self) -> Result<VmAction> {
+        if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
+            return Ok(VmAction::Shutdown);
+        }
         let mut entry = IoToCoreEntry::default();
-        loop {
-            if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
-                break Ok(());
-            }
-            let got = self.bridge.recv_io_cmd(true, &mut entry)?;
-            if !got {
-                break Ok(());
-            }
+        while self.bridge.recv_io_cmd(&mut entry)? {
             match entry.msg_type {
                 IO_MSG_SERIAL_RX => {
                     let len = (entry.queue_index as usize).min(entry.data.len());
@@ -502,21 +503,33 @@ impl Board {
                     }
                 }
                 IO_MSG_REQUEST_SHUTDOWN => {
-                    break Ok(());
+                    if self.state.swap(STATE_SHUTDOWN, Ordering::AcqRel) != STATE_SHUTDOWN {
+                        self.kick_other_vcpus(None);
+                        self.notify_shutdown();
+                    }
+                    return Ok(VmAction::Shutdown);
                 }
                 _ => {}
             }
+        }
+        if self.state.load(Ordering::Acquire) == STATE_SHUTDOWN {
+            Ok(VmAction::Shutdown)
+        } else {
+            Ok(VmAction::Continue)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::collections::VecDeque;
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
 
     use crate::host::abi::{
-        GPR_RAX, GPR_RDI, GPR_RDX, IoToCoreEntry, RawSegReg, RawVmExit, ShmBootInfo,
-        ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
+        CORE_MSG_SHUTDOWN, CoreToIoEntry, GPR_RAX, GPR_RDI, GPR_RDX, IO_MSG_REQUEST_SHUTDOWN,
+        IO_MSG_SERIAL_RX, IoToCoreEntry, RawSegReg, RawVmExit, ShmBootInfo, ShmDeviceMsixRouting,
+        ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
     };
     use crate::host::test::FakeHost;
     use crate::host::{HvResult, PayloadKind, VmAction, VmEntry, VmExit, VmmCoreBridge};
@@ -524,11 +537,17 @@ mod tests {
     use crate::hw::msr::Efer;
     use crate::hw::reg::{Cr0, Cr4, Rflags};
     use crate::mem::{AddrOpt, MemRegion, MemRegionType};
+    use crate::sync::Mutex;
     use crate::vm::Machine;
 
     use super::BoardConfig;
 
-    struct DummyBridge;
+    #[derive(Default)]
+    struct DummyBridge {
+        rx_queue: Mutex<VecDeque<IoToCoreEntry>>,
+        tx_log: Mutex<Vec<CoreToIoEntry>>,
+    }
+
     impl VmmCoreBridge for DummyBridge {
         fn boot_info(
             &self,
@@ -537,27 +556,42 @@ mod tests {
         ) -> HvResult<usize> {
             Ok(0)
         }
-        fn read_payload(&self, _kind: PayloadKind, _offset: u64, _dst: &mut [u8]) -> HvResult<usize> {
+        fn read_payload(
+            &self,
+            _kind: PayloadKind,
+            _offset: u64,
+            _dst: &mut [u8],
+        ) -> HvResult<usize> {
             Ok(0)
         }
-        fn configure_device_queues(&self, _dev: u32, _queues: &[ShmVirtioQueueConfig]) -> HvResult<()> {
+        fn configure_device_queues(
+            &self,
+            _dev: u32,
+            _queues: &[ShmVirtioQueueConfig],
+        ) -> HvResult<()> {
             Ok(())
         }
         fn update_irq_route(&self, _dev: u32, _routing: &ShmDeviceMsixRouting) -> HvResult<()> {
             Ok(())
         }
-        fn send_io_cmd(&self, _entry: &crate::host::abi::CoreToIoEntry) -> HvResult<()> {
+        fn send_io_cmd(&self, entry: &CoreToIoEntry) -> HvResult<()> {
+            self.tx_log.lock().push(*entry);
             Ok(())
         }
-        fn recv_io_cmd(&self, _blocking: bool, _out: &mut IoToCoreEntry) -> HvResult<bool> {
-            Ok(false)
+        fn recv_io_cmd(&self, out: &mut IoToCoreEntry) -> HvResult<bool> {
+            if let Some(e) = self.rx_queue.lock().pop_front() {
+                *out = e;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         }
     }
 
     #[test]
     fn test_handle_vcpu_exit_mmio_fault_ioapic_and_msrs() {
         let hv = Arc::new(FakeHost::default());
-        let bridge = Arc::new(DummyBridge);
+        let bridge = Arc::new(DummyBridge::default());
         let machine = Machine::new(
             hv,
             bridge,
@@ -604,7 +638,10 @@ mod tests {
             insn_len: 3,
             insn_bytes: insn,
         });
-        assert_eq!(board.handle_vcpu_exit(0, &mut comm).unwrap(), VmAction::Continue);
+        assert_eq!(
+            board.handle_vcpu_exit(0, &mut comm).unwrap(),
+            VmAction::Continue
+        );
         assert_eq!(comm.rip, 0x1003);
 
         // 2. Read IOWIN (`0xfec0_0010`) via `mov eax, dword [rdi + 0x10]` (0x8b 0x47 0x10)
@@ -617,7 +654,10 @@ mod tests {
             insn_len: 3,
             insn_bytes: insn2,
         });
-        assert_eq!(board.handle_vcpu_exit(0, &mut comm).unwrap(), VmAction::Continue);
+        assert_eq!(
+            board.handle_vcpu_exit(0, &mut comm).unwrap(),
+            VmAction::Continue
+        );
         assert_eq!(comm.gprs[GPR_RAX], 0x0017_0020);
         assert_eq!(comm.rip, 0x1006);
 
@@ -627,12 +667,18 @@ mod tests {
             val: 0x0000_0002_0000_0007,
         });
         comm.exit.insn_len = 2;
-        assert_eq!(board.handle_vcpu_exit(1, &mut comm).unwrap(), VmAction::Continue);
+        assert_eq!(
+            board.handle_vcpu_exit(1, &mut comm).unwrap(),
+            VmAction::Continue
+        );
         assert_eq!(comm.rip, 0x1008);
 
         comm.exit = RawVmExit::from_exit(VmExit::MsrRead { msr: 0xc000_0103 });
         comm.exit.insn_len = 2;
-        assert_eq!(board.handle_vcpu_exit(1, &mut comm).unwrap(), VmAction::Continue);
+        assert_eq!(
+            board.handle_vcpu_exit(1, &mut comm).unwrap(),
+            VmAction::Continue
+        );
         assert_eq!(comm.gprs[GPR_RAX], 7);
         assert_eq!(comm.gprs[GPR_RDX], 2);
         assert_eq!(comm.rip, 0x100a);
@@ -643,5 +689,85 @@ mod tests {
                 error: 0
             }
         );
+    }
+
+    #[test]
+    fn test_host_driven_init_bridge_rx_and_acpi_shutdown() {
+        let hv = Arc::new(FakeHost::default());
+        let bridge = Arc::new(DummyBridge::default());
+        let machine = Machine::new(
+            hv,
+            bridge.clone(),
+            BoardConfig {
+                mem_size: 16 << 20,
+                num_cpu: 2,
+            },
+        )
+        .unwrap();
+        machine.add_com1().unwrap();
+        machine.init_vm().unwrap();
+        let board = &machine.board;
+
+        // Disjoint 16-byte aligned worker stacks for vcpu 0, vcpu 1, and bridge_rx (slot 2).
+        let s0 = board.worker_stack_top(0).unwrap();
+        let s1 = board.worker_stack_top(1).unwrap();
+        let s2 = board.worker_stack_top(2).unwrap();
+        assert_eq!(s0 & 15, 0);
+        assert_eq!(s1 - s0, super::WORKER_STACK_SIZE);
+        assert_eq!(s2 - s1, super::WORKER_STACK_SIZE);
+        assert!(board.worker_stack_top(3).is_none());
+
+        // Feed a serial RX byte via `on_bridge_rx` and read it back via `on_vcpu_exit` on port 0x3f8.
+        let mut rx = IoToCoreEntry {
+            msg_type: IO_MSG_SERIAL_RX,
+            queue_index: 1,
+            ..Default::default()
+        };
+        rx.data[0] = b'Z';
+        bridge.rx_queue.lock().push_back(rx);
+        assert_eq!(board.on_bridge_rx().unwrap(), VmAction::Continue);
+
+        unsafe {
+            let comm0 = board.comm_page_mut(0);
+            comm0.exit = RawVmExit::from_exit(VmExit::Io {
+                port: 0x3f8,
+                write: None,
+                size: 1,
+            });
+            comm0.exit.insn_len = 1;
+        }
+        assert_eq!(board.on_vcpu_exit(0).unwrap(), VmAction::Continue);
+        assert_eq!(unsafe { board.comm_page_mut(0).gprs[GPR_RAX] } & 0xff, b'Z' as u64);
+
+        // ACPI S5 sleep write (`outb 0x34, 0x600`) on vcpu 0 immediately returns `VmAction::Shutdown`,
+        // sends `CORE_MSG_SHUTDOWN` to `vmm-io`, and causes peer vcpu 1's interrupted exit to return Shutdown.
+        unsafe {
+            board.comm_page_mut(0).exit = RawVmExit::from_exit(VmExit::Io {
+                port: 0x600,
+                write: Some(0x34),
+                size: 1,
+            });
+        }
+        assert_eq!(board.on_vcpu_exit(0).unwrap(), VmAction::Shutdown);
+        assert!(
+            bridge
+                .tx_log
+                .lock()
+                .iter()
+                .any(|e| e.msg_type == CORE_MSG_SHUTDOWN)
+        );
+
+        unsafe {
+            board.comm_page_mut(1).exit = RawVmExit::from_exit(VmExit::Interrupted);
+        }
+        assert_eq!(board.on_vcpu_exit(1).unwrap(), VmAction::Shutdown);
+
+        // Reset VM and verify `IO_MSG_REQUEST_SHUTDOWN` from `vmm-io` also triggers clean shutdown.
+        board.reset_vm().unwrap();
+        bridge.rx_queue.lock().push_back(IoToCoreEntry {
+            msg_type: IO_MSG_REQUEST_SHUTDOWN,
+            ..Default::default()
+        });
+        assert_eq!(board.on_bridge_rx().unwrap(), VmAction::Shutdown);
     }
 }

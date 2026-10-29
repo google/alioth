@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::iter::zip;
-use std::mem::size_of;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::iter::zip;
+use core::mem::size_of;
 
 use bitflags::bitflags;
 use derive_layout::Layout;

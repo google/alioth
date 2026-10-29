@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::sync::Mutex;
 
@@ -340,6 +342,10 @@ impl ArchBoard {
             msrs.push((vcpu, msr_idx, val));
         }
     }
+
+    pub fn reset(&self) {
+        self.guest_msrs.lock().clear();
+    }
 }
 
 impl Board {
@@ -389,7 +395,7 @@ impl Board {
         let config = &self.config;
         let memory = &self.memory;
 
-        let low_mem_size = std::cmp::min(config.mem_size, RAM_32_SIZE);
+        let low_mem_size = core::cmp::min(config.mem_size, RAM_32_SIZE);
         let pages_low = memory.alloc_anon_mem(low_mem_size)?;
         let region_low = MemRegion {
             size: low_mem_size,

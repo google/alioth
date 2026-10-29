@@ -11,12 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#![cfg_attr(target_arch = "wasm32", no_std)]
+#![cfg_attr(target_arch = "wasm32", no_main)]
 
-fn main() {
-    #[cfg(target_os = "wasi")]
-    {
-        let hv = std::sync::Arc::new(vmm_core::wasm::WasmHost);
-        let bridge = std::sync::Arc::new(vmm_core::wasm::WasmBridge);
-        vmm_core::run(hv, bridge).expect("Failed to run VM core");
-    }
+#[cfg(target_arch = "wasm32")]
+use vmm_core as _;
+
+#[cfg(target_arch = "wasm32")]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    core::arch::wasm32::unreachable()
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {}

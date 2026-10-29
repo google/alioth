@@ -21,7 +21,7 @@ use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use libc::{
     EFD_CLOEXEC, EFD_NONBLOCK, MAP_FAILED, MAP_SHARED, POLLIN, PROT_EXEC, PROT_READ, PROT_WRITE,
@@ -75,6 +75,7 @@ pub struct SharedCoreBridge {
     pub payload_len: AtomicU64,
     pub ctrl_rx: Mutex<VecDeque<IoToCoreEntry>>,
     pub ctrl_rx_cv: Condvar,
+    pub bridge_stopped: AtomicBool,
 }
 
 unsafe impl Send for SharedCoreBridge {}
@@ -119,7 +120,29 @@ impl SharedCoreBridge {
             payload_len: AtomicU64::new(0),
             ctrl_rx: Mutex::new(VecDeque::new()),
             ctrl_rx_cv: Condvar::new(),
+            bridge_stopped: AtomicBool::new(false),
         }))
+    }
+
+    pub fn wait_ctrl_rx(&self) -> bool {
+        let shm = self.shm;
+        let mut rx = self.ctrl_rx.lock();
+        loop {
+            if !rx.is_empty() {
+                return true;
+            }
+            if self.bridge_stopped.load(Ordering::Acquire)
+                || unsafe { (*shm).shutdown_requested.load(Ordering::Acquire) != 0 }
+            {
+                return false;
+            }
+            self.ctrl_rx_cv.wait(&mut rx);
+        }
+    }
+
+    pub fn wake_ctrl_rx(&self) {
+        self.bridge_stopped.store(true, Ordering::Release);
+        self.ctrl_rx_cv.notify_all();
     }
 
     pub fn wake_io(&self) {
@@ -343,18 +366,12 @@ impl VmmCoreBridge for SharedCoreBridge {
         Ok(())
     }
 
-    fn recv_io_cmd(&self, blocking: bool, out: &mut IoToCoreEntry) -> HvResult<bool> {
-        let shm = self.shm;
-        let mut rx = self.ctrl_rx.lock();
-        loop {
-            if let Some(entry) = rx.pop_front() {
-                *out = entry;
-                return Ok(true);
-            }
-            if !blocking || unsafe { (*shm).shutdown_requested.load(Ordering::Acquire) != 0 } {
-                return Ok(false);
-            }
-            self.ctrl_rx_cv.wait(&mut rx);
+    fn recv_io_cmd(&self, out: &mut IoToCoreEntry) -> HvResult<bool> {
+        if let Some(entry) = self.ctrl_rx.lock().pop_front() {
+            *out = entry;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }
@@ -445,10 +462,10 @@ pub(crate) fn spawn_i2c_listener(
                             }
                         }
                         IO_MSG_REQUEST_SHUTDOWN => {
+                            bridge.ctrl_rx.lock().push_back(entry);
                             unsafe {
                                 (*shm).shutdown_requested.store(1, Ordering::Release);
                             }
-                            bridge.ctrl_rx.lock().push_back(entry);
                             bridge.ctrl_rx_cv.notify_all();
                             return;
                         }

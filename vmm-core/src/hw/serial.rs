@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::VecDeque;
-use std::fmt::{self, Debug, Formatter};
-use std::io;
-use std::sync::Arc;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::fmt::{self, Debug, Formatter};
 
 use bitfield::bitfield;
 use bitflags::bitflags;
@@ -320,16 +319,20 @@ impl Serial {
         hv: Arc<dyn VmmHostCore>,
         ioapic: Option<Arc<IoApic>>,
         bridge: Arc<dyn VmmCoreBridge>,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let reg = Arc::new(Mutex::new(SerialReg::default()));
-        Ok(Serial {
+        Serial {
             reg,
             base_port,
             gsi,
             hv,
             ioapic,
             bridge,
-        })
+        }
+    }
+
+    pub fn reset(&self) {
+        *self.reg.lock() = SerialReg::default();
     }
 
     pub fn push_rx(&self, bytes: &[u8]) {

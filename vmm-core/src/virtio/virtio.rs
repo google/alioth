@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64};
+use core::fmt::{self, Debug, Display, Formatter};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64};
 
 use bitflags::bitflags;
-use thiserror::Error;
 
 use crate::mem;
 
@@ -43,22 +42,44 @@ pub struct Register {
     pub status: AtomicU8,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] crate::host::Error),
-
-    #[error("IO: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] crate::hw::pci::Error),
+    Hv(crate::host::Error),
+    Memory(mem::Error),
+    PciBus(crate::hw::pci::Error),
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hv(e) => write!(f, "hypervisor: {e}"),
+            Self::Memory(e) => write!(f, "memory: {e}"),
+            Self::PciBus(e) => write!(f, "PCI bus: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<crate::host::Error> for Error {
+    fn from(e: crate::host::Error) -> Self {
+        Self::Hv(e)
+    }
+}
+
+impl From<mem::Error> for Error {
+    fn from(e: mem::Error) -> Self {
+        Self::Memory(e)
+    }
+}
+
+impl From<crate::hw::pci::Error> for Error {
+    fn from(e: crate::hw::pci::Error) -> Self {
+        Self::PciBus(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 bitflags! {
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]

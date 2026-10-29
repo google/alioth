@@ -14,7 +14,9 @@
 
 pub mod bindings;
 
-use std::mem::{offset_of, size_of, size_of_val};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::mem::{offset_of, size_of, size_of_val};
 
 use zerocopy::{transmute, AsBytes, FromBytes, FromZeroes};
 

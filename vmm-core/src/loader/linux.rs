@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{Read, Seek, SeekFrom};
-use std::mem::{size_of, size_of_val};
+use alloc::vec;
+use core::mem::{size_of, size_of_val};
 
 use bitflags::bitflags;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
@@ -27,7 +27,7 @@ use crate::hw::paging::Entry;
 use crate::hw::reg::{Cr0, Cr4, Rflags, SegAccess};
 use crate::host::arch::{DtReg, DtRegVal, Reg, SReg, SegReg, SegRegVal};
 use crate::loader::{Error, InitState, PayloadReader, search_initramfs_address};
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{ByteRead, RamBus};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub const MAGIC_AA55: u16 = 0xaa55;
@@ -171,8 +171,8 @@ pub fn load(
 ) -> Result<InitState, Error> {
     let mut boot_params = BootParams::new_zeroed();
     let kernel_len = kernel.size();
-    kernel.seek(SeekFrom::Start(SETUP_HEADER_OFFSET))?;
-    kernel.read_exact(boot_params.hdr.as_bytes_mut())?;
+    kernel.seek_to(SETUP_HEADER_OFFSET);
+    kernel.read_exact_into(boot_params.hdr.as_bytes_mut())?;
 
     // For backwards compatibility, if the setup_sects field contains 0,
     // the real value is 4.
@@ -212,7 +212,7 @@ pub fn load(
     // load cmd line
     if let Some(cmd_line) = cmd_line {
         let cmd_line_limit =
-            std::cmp::min(boot_params.hdr.cmdline_size as usize, KERNEL_CMD_LINE_LIMIT);
+            core::cmp::min(boot_params.hdr.cmdline_size as usize, KERNEL_CMD_LINE_LIMIT);
         if cmd_line.len() > cmd_line_limit {
             return Err(Error::CmdLineTooLong(cmd_line.len(), cmd_line_limit));
         }
@@ -227,14 +227,14 @@ pub fn load(
 
     // load kernel image
     let kernel_offset = (boot_params.hdr.setup_sects as u64 + 1) * 512;
-    kernel.seek(SeekFrom::Start(kernel_offset))?;
+    kernel.seek_to(kernel_offset);
     let kernel_size = (kernel_len - kernel_offset) as usize;
     memory.write_range(KERNEL_IMAGE_START as u64, kernel_size, kernel)?;
 
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        initramfs.seek(SeekFrom::Start(0))?;
+        initramfs.seek_to(0);
         let initramfs_size = initramfs.size() as usize;
         let initramfs_gpa = search_initramfs_address(
             mem_regions,
@@ -287,9 +287,9 @@ pub fn load(
     memory.write(pml4_start, &pml4e)?;
     let alignment = boot_params.hdr.kernel_alignment as usize;
     let runtime_start = (KERNEL_IMAGE_START + alignment - 1) & !(alignment - 1);
-    let max_addr = std::cmp::max(
+    let max_addr = core::cmp::max(
         runtime_start + boot_params.hdr.init_size as usize,
-        std::cmp::max(
+        core::cmp::max(
             LINUX_BOOT_PARAMS_START + size_of::<BootParams>(),
             KERNEL_CMD_LINE_START + KERNEL_CMD_LINE_LIMIT,
         ),

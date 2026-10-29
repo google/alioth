@@ -259,14 +259,6 @@ impl VmmHostCore for KvmCoreHost {
         Ok(())
     }
 
-    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
-        let slot = self.get_or_create_vcpu(vcpu)?;
-        slot.runner_tid
-            .store(unsafe { libc::pthread_self() } as u64, Ordering::Release);
-        let mut guard = slot.vcpu.lock();
-        guard.run(comm)
-    }
-
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
         let (addr, shm_offset, len) = self.bridge.alloc_shared_ram(size)?;
         let mut objs = self.mem_objs.write();
@@ -531,5 +523,23 @@ impl VmmHostCore for KvmCoreHost {
         }
         self.doorbells.wake();
         Ok(())
+    }
+}
+
+impl crate::wasm_host::VmmHostRunner for KvmCoreHost {
+    fn enter_guest(&self, vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
+        let slot = self.get_or_create_vcpu(vcpu)?;
+        slot.runner_tid
+            .store(unsafe { libc::pthread_self() } as u64, Ordering::Release);
+        let mut guard = slot.vcpu.lock();
+        guard.run(comm)
+    }
+
+    fn wait_bridge_rx(&self) -> bool {
+        self.bridge.wait_ctrl_rx()
+    }
+
+    fn wake_bridge_rx(&self) {
+        self.bridge.wake_ctrl_rx();
     }
 }

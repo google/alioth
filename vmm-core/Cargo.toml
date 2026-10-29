@@ -10,5 +10,4 @@ derive-layout.workspace = true
 bitfield.workspace = true
 bitflags.workspace = true
 log.workspace = true
-thiserror.workspace = true
 zerocopy.workspace = true

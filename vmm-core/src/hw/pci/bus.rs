@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use bitfield::bitfield;
 use crate::sync::{Mutex, RwLock};
@@ -101,7 +101,7 @@ pub struct PciBus {
 impl PciBus {
     pub fn new() -> Self {
         let bridge = HostBridge::new();
-        let configs = HashMap::from([(Bdf(0), bridge.config())]);
+        let configs = BTreeMap::from([(Bdf(0), bridge.config())]);
 
         let segment = Arc::new(PciSegment {
             configs: RwLock::new(configs),

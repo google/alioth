@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::mem::size_of;
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug, Formatter};
+use core::mem::size_of;
 
 use bitfield::bitfield;
 use crate::sync::RwLock;
@@ -210,7 +212,7 @@ pub struct MsixCapMmio {
 }
 
 impl Debug for MsixCapMmio {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("MsixCapMmio")
             .field("cap", &self.cap)
             .finish()
@@ -256,7 +258,7 @@ pub struct MsixTableMmio {
 }
 
 impl Debug for MsixTableMmio {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("MsixTableMmio")
             .field("entries", &self.entries)
             .finish()

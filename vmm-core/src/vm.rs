@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-
-use thiserror::Error;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug, Display, Formatter};
+use core::mem::size_of;
+use core::sync::atomic::AtomicU8;
 
 use crate::host::{self, HostCaps, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
 use crate::hw::ioapic::IoApic;
@@ -26,48 +25,82 @@ use crate::hw::pci::bus::PciBus;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
 use crate::hw::{
-    self, ArchBoard, Board, BoardConfig, STATE_CREATED, STATE_RUNNING, STATE_SHUTDOWN,
-    VcpuCommSlot,
+    self, ArchBoard, Board, BoardConfig, STATE_CREATED, StackAlign16, VcpuCommSlot,
+    WORKER_STACK_SIZE,
 };
 use crate::loader::{self, Payload};
 use crate::mem::Memory;
-use crate::sync::{Condvar, Mutex, RwLock};
+use crate::sync::RwLock;
 use crate::virtio::pci::VirtioPciDevice;
 use crate::{mem, virtio};
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("hypervisor: {0}")]
-    Hv(#[from] host::Error),
-
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("host io: {0}")]
-    HostIo(#[from] std::io::Error),
-
-    #[error("loader: {0}")]
-    Loader(#[from] loader::Error),
-
-    #[error("board: {0}")]
-    Board(#[from] hw::Error),
-
-    #[error("PCI bus: {0}")]
-    PciBus(#[from] pci::Error),
-
-    #[error("Virtio: {0}")]
-    Virtio(#[from] virtio::Error),
-
-    #[error("ACPI bytes exceed EBDA area")]
+    Hv(host::Error),
+    Memory(mem::Error),
+    Loader(loader::Error),
+    Board(hw::Error),
+    PciBus(pci::Error),
+    Virtio(virtio::Error),
     AcpiTooLong,
 }
 
-type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hv(e) => write!(f, "hypervisor: {e}"),
+            Self::Memory(e) => write!(f, "memory: {e}"),
+            Self::Loader(e) => write!(f, "loader: {e}"),
+            Self::Board(e) => write!(f, "board: {e}"),
+            Self::PciBus(e) => write!(f, "PCI bus: {e}"),
+            Self::Virtio(e) => write!(f, "Virtio: {e}"),
+            Self::AcpiTooLong => f.write_str("ACPI bytes exceed EBDA area"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<host::Error> for Error {
+    fn from(e: host::Error) -> Self {
+        Self::Hv(e)
+    }
+}
+
+impl From<mem::Error> for Error {
+    fn from(e: mem::Error) -> Self {
+        Self::Memory(e)
+    }
+}
+
+impl From<loader::Error> for Error {
+    fn from(e: loader::Error) -> Self {
+        Self::Loader(e)
+    }
+}
+
+impl From<hw::Error> for Error {
+    fn from(e: hw::Error) -> Self {
+        Self::Board(e)
+    }
+}
+
+impl From<pci::Error> for Error {
+    fn from(e: pci::Error) -> Self {
+        Self::PciBus(e)
+    }
+}
+
+impl From<virtio::Error> for Error {
+    fn from(e: virtio::Error) -> Self {
+        Self::Virtio(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 pub struct Machine {
     pub board: Arc<Board>,
-    event_rx: Receiver<u32>,
-    event_tx: Sender<u32>,
 }
 
 impl Machine {
@@ -81,22 +114,27 @@ impl Machine {
         let ioapic = (!hv.caps().contains(HostCaps::HW_IOAPIC))
             .then(|| Arc::new(IoApic::new(hv.clone())));
 
-        let comm_pages = (0..config.num_cpu.max(1))
+        let num_cpus_alloc = config.num_cpu.max(1) as usize;
+        let comm_pages = (0..num_cpus_alloc)
             .map(|_| VcpuCommSlot::new())
             .collect::<Vec<_>>()
             .into_boxed_slice();
+
+        // Disjoint 64 KiB stacks for `0..num_cpu` vCPUs plus 1 `bridge_rx` worker.
+        let num_worker_slots = num_cpus_alloc + 1;
+        let stack_units = num_worker_slots * (WORKER_STACK_SIZE / size_of::<StackAlign16>());
+        let worker_stacks = vec![StackAlign16([0u8; 16]); stack_units].into_boxed_slice();
 
         let board = Board {
             hv,
             bridge,
             memory,
+            comm_pages,
+            worker_stacks,
             arch,
             config,
             state: AtomicU8::new(STATE_CREATED),
             payload: RwLock::new(None),
-            vcpus: Arc::new(RwLock::new(Vec::new())),
-            comm_pages,
-            mp_sync: Arc::new((Mutex::new(0), Condvar::new())),
             ioapic,
             io_devs: RwLock::new(Vec::new()),
             com1: RwLock::new(None),
@@ -104,11 +142,8 @@ impl Machine {
             pci_devs: RwLock::new(Vec::new()),
         };
 
-        let (event_tx, event_rx) = mpsc::channel();
         Ok(Machine {
             board: Arc::new(board),
-            event_rx,
-            event_tx,
         })
     }
 
@@ -119,7 +154,7 @@ impl Machine {
             self.board.hv.clone(),
             self.board.ioapic.clone(),
             self.board.bridge.clone(),
-        )?);
+        ));
         *self.board.com1.write() = Some(com1.clone());
         self.board.io_devs.write().push((0x3f8, com1));
         Ok(())
@@ -153,66 +188,8 @@ impl Machine {
         *self.board.payload.write() = Some(payload)
     }
 
-    pub fn boot(&mut self) -> Result<(), Error> {
-        let mut vcpus = self.board.vcpus.write();
-        for vcpu_id in 0..self.board.config.num_cpu {
-            let (boot_tx, boot_rx) = mpsc::channel();
-            let event_tx = self.event_tx.clone();
-            let board = self.board.clone();
-            let handle = thread::Builder::new()
-                .name(format!("vcpu_{vcpu_id}"))
-                .spawn(move || board.run_vcpu(vcpu_id, event_tx, boot_rx))?;
-            self.event_rx.recv().unwrap();
-            vcpus.push((handle, boot_tx));
-        }
-
-        self.board.state.store(STATE_RUNNING, Ordering::Release);
-        for (_, boot_tx) in vcpus.iter() {
-            boot_tx.send(()).unwrap();
-        }
+    pub fn init_vm(&self) -> Result<(), Error> {
+        self.board.init_vm()?;
         Ok(())
-    }
-
-    pub fn wait(&mut self) -> Vec<Result<()>> {
-        if let Err(e) = self.board.run_serial_rx_loop() {
-            log::error!("serial rx loop error: {e}");
-        }
-
-        if self
-            .board
-            .state
-            .compare_exchange(
-                STATE_RUNNING,
-                STATE_SHUTDOWN,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            let vcpus = self.board.vcpus.read();
-            for vcpu_id in 0..vcpus.len() {
-                let _ = self.board.hv.vcpu_kick(vcpu_id as u32);
-            }
-        }
-
-        let num_vcpus = self.board.vcpus.read().len();
-        for _ in 0..num_vcpus {
-            let _ = self.event_rx.recv();
-        }
-
-        self.board.notify_shutdown();
-
-        let mut vcpus = self.board.vcpus.write();
-        vcpus
-            .drain(..)
-            .enumerate()
-            .map(|(id, (handle, _))| match handle.join() {
-                Err(e) => {
-                    log::error!("cannot join vcpu {id}: {e:?}");
-                    Ok(())
-                }
-                Ok(r) => r.map_err(Error::Board),
-            })
-            .collect()
     }
 }

@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::{Debug, Display, Formatter};
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
+use core::fmt::{self, Debug, Display, Formatter};
 
 use bitfield::bitfield;
-use crate::sync::RwLock;
-use thiserror::Error;
 
 use crate::mem;
 use crate::mem::{IoRegion, MemRegion, MemRegionCallback};
+use crate::sync::RwLock;
 
 pub mod bus;
 pub mod cap;
@@ -31,7 +32,7 @@ pub mod segment;
 use config::{HeaderData, PciConfig};
 
 bitfield! {
-    #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+    #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Bdf(u16);
     impl Debug;
     bus, _: 15, 8;
@@ -40,30 +41,41 @@ bitfield! {
 }
 
 impl Display for Bdf {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:02x}:{:02x}.{:x}", self.bus(), self.dev(), self.func())
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("memory: {0}")]
-    Memory(#[from] mem::Error),
-
-    #[error("{0:?} already exists")]
+    Memory(mem::Error),
     BdfExists(Bdf),
-
-    #[error("cannot find appropriate bdf")]
     NoBdfSlots,
-
-    #[error("invalid bar index {0}")]
     InvalidBar(usize),
-
-    #[error("reset failed")]
     ResetFailed,
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Memory(e) => write!(f, "memory: {e}"),
+            Self::BdfExists(bdf) => write!(f, "{bdf:?} already exists"),
+            Self::NoBdfSlots => f.write_str("cannot find appropriate bdf"),
+            Self::InvalidBar(idx) => write!(f, "invalid bar index {idx}"),
+            Self::ResetFailed => f.write_str("reset failed"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl From<mem::Error> for Error {
+    fn from(e: mem::Error) -> Self {
+        Self::Memory(e)
+    }
+}
+
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 pub trait Pci: Debug + Send + Sync + 'static {
     fn config(&self) -> Arc<dyn PciConfig>;

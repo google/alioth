@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::fmt::Debug;
 
 use crate::mem::Result;
 use crate::mem::addressable::{Addressable, SlotBackend};

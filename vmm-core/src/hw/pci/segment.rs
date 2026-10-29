@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
 use crate::sync::RwLock;
 
-use crate::mem;
-use crate::mem::mmio::Mmio;
 use crate::hw::pci::config::PciConfig;
 use crate::hw::pci::{Bdf, Error, Result};
+use crate::mem;
+use crate::mem::mmio::Mmio;
 
 #[derive(Debug)]
 pub struct PciSegment {
-    pub(super) configs: RwLock<HashMap<Bdf, Arc<dyn PciConfig>>>,
+    pub(super) configs: RwLock<BTreeMap<Bdf, Arc<dyn PciConfig>>>,
 }
 
 impl PciSegment {

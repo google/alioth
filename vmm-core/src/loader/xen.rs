@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::{Read, Seek, SeekFrom};
-use std::mem::{offset_of, size_of, size_of_val};
+use alloc::vec;
+use core::mem::{offset_of, size_of, size_of_val};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -28,7 +28,7 @@ use crate::loader::elf::{
     Elf64ProgramHeader, Elf64SectionHeader, PT_NOTE, SHT_NOTE,
 };
 use crate::loader::{Error, InitState, PayloadReader, Result, search_initramfs_address};
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{ByteRead, RamBus};
 use crate::mem::{MemRegionEntry, MemRegionType};
 
 pub const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
@@ -85,35 +85,33 @@ struct StartInfoPage {
     memory_map: [HvmMemmapTableEntry; 32],
 }
 
-fn search_pvh_note<F: Read + Seek>(
-    file: &mut F,
+fn search_pvh_note(
+    file: &mut PayloadReader<'_>,
     offset: u64,
     size: u64,
     align: u64,
 ) -> Result<Option<u64>> {
     let mut pos = 0;
     while pos < size {
-        file.seek(SeekFrom::Start(offset + pos))?;
+        file.seek_to(offset + pos);
         let mut header = Elf64Note::new_zeroed();
-        file.read_exact(header.as_bytes_mut())?;
+        file.read_exact_into(header.as_bytes_mut())?;
         pos += size_of::<Elf64Note>() as u64;
         pos += align_up!(header.desc_sz as u64, align);
         pos += align_up!(header.name_sz as u64, align);
         if header.type_ != XEN_ELFNOTE_PHYS32_ENTRY {
             continue;
         }
-        file.seek(SeekFrom::Current(
-            align_up!(header.name_sz as u64, align) as i64
-        ))?;
+        file.skip(align_up!(header.name_sz as u64, align));
         match header.desc_sz {
             4 => {
                 let mut entry_point = 0u32;
-                file.read_exact(entry_point.as_bytes_mut())?;
+                file.read_exact_into(entry_point.as_bytes_mut())?;
                 return Ok(Some(entry_point as u64));
             }
             8 => {
                 let mut entry_point = 0u64;
-                file.read_exact(entry_point.as_bytes_mut())?;
+                file.read_exact_into(entry_point.as_bytes_mut())?;
                 return Ok(Some(entry_point));
             }
             _ => {}
@@ -131,11 +129,11 @@ pub fn load(
     cmd_line: Option<&str>,
     initramfs: Option<&mut PayloadReader<'_>>,
 ) -> Result<InitState> {
-    kernel_file.seek(SeekFrom::Start(0))?;
+    kernel_file.seek_to(0);
 
     // load kernel
     let mut elf_header = Elf64Header::new_zeroed();
-    kernel_file.read_exact(elf_header.as_bytes_mut())?;
+    kernel_file.read_exact_into(elf_header.as_bytes_mut())?;
     if elf_header.ident_magic != ELF_HEADER_MAGIC {
         return Err(Error::MissingMagic {
             magic: u32::from_ne_bytes(ELF_HEADER_MAGIC) as u64,
@@ -147,9 +145,9 @@ pub fn load(
 
     let mut pvh_entry = None;
 
-    kernel_file.seek(SeekFrom::Start(elf_header.ph_off))?;
+    kernel_file.seek_to(elf_header.ph_off);
     let mut program_header = Elf64ProgramHeader::new_vec_zeroed(elf_header.ph_num as usize);
-    kernel_file.read_exact(program_header.as_bytes_mut())?;
+    kernel_file.read_exact_into(program_header.as_bytes_mut())?;
     for program_header in program_header.iter() {
         if program_header.type_ == PT_NOTE && pvh_entry.is_none() {
             pvh_entry = search_pvh_note(
@@ -162,16 +160,16 @@ pub fn load(
         if program_header.file_sz > 0 {
             let addr = program_header.paddr;
             let size = program_header.file_sz as usize;
-            kernel_file.seek(SeekFrom::Start(program_header.offset))?;
+            kernel_file.seek_to(program_header.offset);
             memory.write_range(addr, size, &mut *kernel_file)?;
             log::info!("loaded at {:#x?}-{:#x?}", addr, addr + size as u64);
         }
     }
 
     if pvh_entry.is_none() && elf_header.sh_num > 0 {
-        kernel_file.seek(SeekFrom::Start(elf_header.sh_off))?;
+        kernel_file.seek_to(elf_header.sh_off);
         let mut sections = Elf64SectionHeader::new_vec_zeroed(elf_header.sh_num as usize);
-        kernel_file.read_exact(sections.as_bytes_mut())?;
+        kernel_file.read_exact_into(sections.as_bytes_mut())?;
         for section in sections.iter() {
             if section.type_ != SHT_NOTE {
                 continue;
@@ -220,7 +218,7 @@ pub fn load(
     // load initramfs
     let initramfs_range;
     if let Some(initramfs) = initramfs {
-        initramfs.seek(SeekFrom::Start(0))?;
+        initramfs.seek_to(0);
         let initramfs_size = initramfs.size() as usize;
         let initramfs_gpa = search_initramfs_address(mem_regions, initramfs_size as u64, 2 << 30)?;
         let initramfs_end = initramfs_gpa + initramfs_size as u64;
@@ -333,7 +331,7 @@ pub fn load(
 
 #[cfg(test)]
 mod test {
-    use std::mem::size_of;
+    use core::mem::size_of;
 
     use super::{HvmMemmapTableEntry, HvmModlistEntry, HvmStartInfo};
 

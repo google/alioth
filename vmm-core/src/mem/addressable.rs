@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::RangeBounds;
+use alloc::vec::Vec;
+use core::ops::RangeBounds;
 
 use crate::align_up;
 use crate::mem::{Error, Result};
@@ -147,7 +148,7 @@ where
         } else {
             0
         };
-        prev_end = std::cmp::max(prev_end, start);
+        prev_end = core::cmp::max(prev_end, start);
         loop {
             let addr = align_up!(prev_end, align);
             if addr < prev_end {

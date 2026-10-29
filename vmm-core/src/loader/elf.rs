@@ -85,7 +85,7 @@ pub struct Elf64Note {
 
 #[cfg(test)]
 mod test {
-    use std::mem::size_of;
+    use core::mem::size_of;
 
     use super::{Elf64Header, Elf64ProgramHeader, Elf64SectionHeader};
 

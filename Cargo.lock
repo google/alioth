@@ -1454,7 +1454,6 @@ dependencies = [
  "bitflags",
  "derive-layout",
  "log",
- "thiserror 1.0.69",
  "zerocopy",
 ]
 
@@ -1469,7 +1468,6 @@ dependencies = [
  "parking_lot",
  "vmm-core",
  "wasmtime",
- "wasmtime-wasi",
  "zerocopy",
 ]
 

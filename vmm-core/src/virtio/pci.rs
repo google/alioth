@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::{self, Debug, Formatter};
-use std::marker::PhantomData;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug, Formatter};
+use core::marker::PhantomData;
+use core::mem::size_of;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use derive_layout::Layout;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
@@ -948,7 +952,9 @@ impl Pci for VirtioPciDevice {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::string::ToString;
+    use alloc::sync::Arc;
+    use alloc::vec;
 
     use super::*;
     use crate::host::abi::{IoToCoreEntry, ShmBootInfo, ShmVirtioDeviceSpec};
@@ -987,7 +993,7 @@ mod tests {
         fn send_io_cmd(&self, _entry: &CoreToIoEntry) -> HvResult<()> {
             Ok(())
         }
-        fn recv_io_cmd(&self, _blocking: bool, _out: &mut IoToCoreEntry) -> HvResult<bool> {
+        fn recv_io_cmd(&self, _out: &mut IoToCoreEntry) -> HvResult<bool> {
             Ok(false)
         }
     }

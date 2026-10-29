@@ -12,19 +12,74 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt::{self, Debug, Formatter};
-use std::io::{IoSlice, IoSliceMut, Read, Write};
-use std::mem::size_of;
-use std::ops::Deref;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug, Formatter};
+use core::mem::size_of;
+use core::ops::Deref;
 
 use zerocopy::{AsBytes, FromBytes};
 
-use crate::host::{MemObjId, MemProt, VmmHostCore};
+use crate::host::{HvError, HvResult, MemObjId, MemProt, VmmHostCore};
 use crate::sync::{RwLock, RwLockReadGuard};
 
 use super::addressable::{Addressable, SlotBackend};
 use super::{Error, Result};
+
+pub trait ByteRead {
+    fn read_bytes(&mut self, buf: &mut [u8]) -> HvResult<usize>;
+
+    fn read_exact_into(&mut self, mut buf: &mut [u8]) -> HvResult<()> {
+        while !buf.is_empty() {
+            let n = self.read_bytes(buf)?;
+            if n == 0 {
+                return Err(HvError::InvalidParam);
+            }
+            buf = &mut buf[n..];
+        }
+        Ok(())
+    }
+}
+
+impl ByteRead for &[u8] {
+    fn read_bytes(&mut self, buf: &mut [u8]) -> HvResult<usize> {
+        let n = core::cmp::min(self.len(), buf.len());
+        buf[..n].copy_from_slice(&self[..n]);
+        *self = &self[n..];
+        Ok(n)
+    }
+}
+
+impl<R: ByteRead + ?Sized> ByteRead for &mut R {
+    fn read_bytes(&mut self, buf: &mut [u8]) -> HvResult<usize> {
+        (**self).read_bytes(buf)
+    }
+}
+
+pub trait ByteWrite {
+    fn write_all_bytes(&mut self, buf: &[u8]) -> HvResult<()>;
+}
+
+impl ByteWrite for Vec<u8> {
+    fn write_all_bytes(&mut self, buf: &[u8]) -> HvResult<()> {
+        self.extend_from_slice(buf);
+        Ok(())
+    }
+}
+
+impl ByteWrite for &mut [u8] {
+    fn write_all_bytes(&mut self, buf: &[u8]) -> HvResult<()> {
+        if buf.len() > self.len() {
+            return Err(HvError::InvalidParam);
+        }
+        let n = buf.len();
+        let (head, tail) = core::mem::take(self).split_at_mut(n);
+        head.copy_from_slice(buf);
+        *self = tail;
+        Ok(())
+    }
+}
 
 struct MemObjHandle {
     id: MemObjId,
@@ -383,7 +438,7 @@ impl RamBus {
         inner.write(gpa, val)
     }
 
-    pub fn read_range(&self, gpa: u64, len: usize, dst: &mut impl Write) -> Result<()> {
+    pub fn read_range(&self, gpa: u64, len: usize, dst: &mut impl ByteWrite) -> Result<()> {
         const CHUNK: usize = 64 * 1024;
         let inner = self.inner.read();
         let ranges = inner.validate_range(gpa, len)?;
@@ -392,7 +447,7 @@ impl RamBus {
             while remain > 0 {
                 let n = remain.min(buf.len());
                 inner.read_exact_bytes(chunk_gpa, &mut buf[..n])?;
-                dst.write_all(&buf[..n])?;
+                dst.write_all_bytes(&buf[..n])?;
                 chunk_gpa += n as u64;
                 remain -= n;
             }
@@ -400,7 +455,7 @@ impl RamBus {
         Ok(())
     }
 
-    pub fn write_range(&self, gpa: u64, len: usize, mut src: impl Read) -> Result<()> {
+    pub fn write_range(&self, gpa: u64, len: usize, mut src: impl ByteRead) -> Result<()> {
         const CHUNK: usize = 64 * 1024;
         let inner = self.inner.read();
         let ranges = inner.validate_range(gpa, len)?;
@@ -408,7 +463,7 @@ impl RamBus {
         for (mut chunk_gpa, mut remain) in ranges {
             while remain > 0 {
                 let n = remain.min(buf.len());
-                src.read_exact(&mut buf[..n])?;
+                src.read_exact_into(&mut buf[..n])?;
                 inner.write_exact_bytes(chunk_gpa, &buf[..n])?;
                 chunk_gpa += n as u64;
                 remain -= n;
@@ -419,17 +474,17 @@ impl RamBus {
 
     pub fn read_vectored<T, F>(&self, bufs: &[(u64, usize)], callback: F) -> Result<T, Error>
     where
-        F: FnOnce(&[IoSlice<'_>]) -> T,
+        F: FnOnce(&[&[u8]]) -> T,
     {
         let inner = self.inner.read();
         let vecs = inner.translate_iov(bufs)?;
-        let iov: Vec<IoSlice<'_>> = vecs.iter().map(|v| IoSlice::new(v)).collect();
+        let iov: Vec<&[u8]> = vecs.iter().map(Vec::as_slice).collect();
         Ok(callback(&iov))
     }
 
     pub fn write_vectored<T, F>(&self, bufs: &[(u64, usize)], callback: F) -> Result<T, Error>
     where
-        F: FnOnce(&mut [IoSliceMut<'_>]) -> T,
+        F: FnOnce(&mut [&mut [u8]]) -> T,
     {
         let inner = self.inner.read();
         let mut chunks = Vec::new();
@@ -438,8 +493,7 @@ impl RamBus {
                 chunks.push((chunk_gpa, vec![0u8; chunk_len]));
             }
         }
-        let mut iov: Vec<IoSliceMut<'_>> =
-            chunks.iter_mut().map(|(_, v)| IoSliceMut::new(v)).collect();
+        let mut iov: Vec<&mut [u8]> = chunks.iter_mut().map(|(_, v)| v.as_mut_slice()).collect();
         let res = callback(&mut iov);
         drop(iov);
         for (chunk_gpa, buf) in chunks {
@@ -451,8 +505,8 @@ impl RamBus {
 
 #[cfg(test)]
 mod test {
-    use std::io::{Read, Write};
-    use std::mem::size_of;
+    use alloc::vec::Vec;
+    use core::mem::size_of;
 
     use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -521,15 +575,25 @@ mod test {
         ];
         let write_ret = bus.write_vectored(&guest_iov, |iov| {
             assert_eq!(iov.len(), 4);
-            (&*data).read_vectored(iov)
+            let mut off = 0usize;
+            for slice in iov.iter_mut() {
+                let n = slice.len();
+                slice.copy_from_slice(&data[off..off + n]);
+                off += n;
+            }
+            off
         });
-        assert_matches!(write_ret, Ok(Ok(64)));
+        assert_matches!(write_ret, Ok(64));
         let mut buf_read = Vec::new();
         let read_ret = bus.read_vectored(&guest_iov, |iov| {
             assert_eq!(iov.len(), 4);
-            buf_read.write_vectored(iov)
+            for slice in iov {
+                buf_read.extend_from_slice(slice);
+            }
+            buf_read.len()
         });
-        assert_matches!(read_ret, Ok(Ok(64)));
+        assert_matches!(read_ret, Ok(64));
+        assert_eq!(buf_read, data);
 
         let locked_bus = bus.lock_layout();
         let bufs = locked_bus.translate_iov(&guest_iov).unwrap();

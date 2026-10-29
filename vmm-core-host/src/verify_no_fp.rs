@@ -47,10 +47,289 @@ fn check_wasm_valtype(ty: u8, context: &str) -> Result<(), String> {
     }
 }
 
-/// Validates that a `.wasm` module binary contains no floating-point (`f32`/`f64`)
-/// or SIMD (`v128`) types in its Type, Global, or Code local declarations, and no
-/// raw `memory.copy` (`0xfc 0x0a 0x00 0x00`) opcodes that Cranelift would lower
-/// into `movdqu %xmm` instructions.
+fn skip_leb(buf: &[u8], mut pos: usize, max_bytes: usize) -> Result<usize, String> {
+    for _ in 0..max_bytes {
+        let b = *buf
+            .get(pos)
+            .ok_or_else(|| "unexpected EOF while skipping LEB128".to_string())?;
+        pos += 1;
+        if (b & 0x80) == 0 {
+            return Ok(pos);
+        }
+    }
+    Err("LEB128 exceeds maximum byte length".to_string())
+}
+
+/// Walks a single Wasm function's instruction slice (`[start..end)`), optionally rewriting
+/// `memory.copy` (`0xfc 0x0a 0x00 0x00`, 4B) -> `call __vmm_memcpy` (4B) and
+/// `memory.fill` (`0xfc 0x0b 0x00`, 3B) -> `call __vmm_memset` (3B), while rejecting any
+/// floating-point or SIMD instructions.
+fn scan_or_rewrite_wasm_insns(
+    wasm_bytes: &mut [u8],
+    mut pc: usize,
+    body_end: usize,
+    fn_idx: u32,
+    rewrite_targets: Option<([u8; 4], [u8; 3])>,
+) -> Result<(), String> {
+    while pc < body_end {
+        let op_pos = pc;
+        let op = wasm_bytes[pc];
+        pc += 1;
+
+        match op {
+            // Control & parametric no-immediate opcodes
+            0x00 | 0x01 | 0x05 | 0x0b | 0x0f | 0x1a | 0x1b => {}
+            // `block`, `loop`, `if` -> blocktype (1-byte empty/valtype or sleb128 typeidx)
+            0x02..=0x04 => {
+                let bt = *wasm_bytes
+                    .get(pc)
+                    .ok_or_else(|| format!("EOF in blocktype in fn[{fn_idx}]"))?;
+                if matches!(bt, 0x40 | 0x7f | 0x7e | 0x70 | 0x6f) {
+                    pc += 1;
+                } else if matches!(bt, 0x7d | 0x7c | 0x7b) {
+                    return Err(format!(
+                        "disallowed FP/SIMD blocktype 0x{bt:02x} in fn[{fn_idx}]"
+                    ));
+                } else {
+                    pc = skip_leb(wasm_bytes, pc, 5)?;
+                }
+            }
+            // Single uleb128 immediate
+            0x0c | 0x0d | 0x10 | 0x20..=0x26 | 0x3f | 0x40 => {
+                pc = skip_leb(wasm_bytes, pc, 5)?;
+            }
+            // `br_table`: vec(labelidx) + default labelidx
+            0x0e => {
+                let (cnt, mut next_pc) = read_uleb(wasm_bytes, pc)?;
+                for _ in 0..=cnt {
+                    next_pc = skip_leb(wasm_bytes, next_pc, 5)?;
+                }
+                pc = next_pc;
+            }
+            // `call_indirect`: typeidx + tableidx
+            0x11 => {
+                pc = skip_leb(wasm_bytes, pc, 5)?;
+                pc = skip_leb(wasm_bytes, pc, 5)?;
+            }
+            // `select t*`: vec(valtype)
+            0x1c => {
+                let (cnt, mut next_pc) = read_uleb(wasm_bytes, pc)?;
+                for _ in 0..cnt {
+                    check_wasm_valtype(wasm_bytes[next_pc], &format!("fn[{fn_idx}] select"))?;
+                    next_pc += 1;
+                }
+                pc = next_pc;
+            }
+            // Integer memory loads & stores (`memarg`: align uleb + offset uleb)
+            0x28 | 0x29 | 0x2c..=0x37 | 0x3a..=0x3e => {
+                pc = skip_leb(wasm_bytes, pc, 5)?;
+                pc = skip_leb(wasm_bytes, pc, 10)?;
+            }
+            // `i32.const`
+            0x41 => {
+                pc = skip_leb(wasm_bytes, pc, 5)?;
+            }
+            // `i64.const`
+            0x42 => {
+                pc = skip_leb(wasm_bytes, pc, 10)?;
+            }
+            // Integer comparisons, arithmetic, conversions, sign-extension
+            0x45..=0x5a | 0x67..=0x8a | 0xa7..=0xb1 | 0xc0..=0xc4 => {}
+            // Disallowed float loads/stores, constants, comparisons, arithmetic, conversions
+            0x2a | 0x2b | 0x38 | 0x39 | 0x43 | 0x44 | 0x5b..=0x66 | 0x8b..=0xa6
+            | 0xb2..=0xbf => {
+                return Err(format!(
+                    "disallowed FP opcode 0x{op:02x} in Code function[{fn_idx}] at +0x{op_pos:x}"
+                ));
+            }
+            // Disallowed 0xfd SIMD prefix
+            0xfd => {
+                return Err(format!(
+                    "disallowed SIMD 0xfd opcode in Code function[{fn_idx}] at +0x{op_pos:x}"
+                ));
+            }
+            // 0xfc misc / bulk-memory prefix
+            0xfc => {
+                let (subop, next_pc) = read_uleb(wasm_bytes, pc)?;
+                pc = next_pc;
+                match subop {
+                    0..=7 => {
+                        return Err(format!(
+                            "disallowed FP saturating trunc 0xfc {subop} in fn[{fn_idx}]"
+                        ));
+                    }
+                    8 => {
+                        // `memory.init dataidx 0x00`
+                        pc = skip_leb(wasm_bytes, pc, 5)?;
+                        pc += 1;
+                    }
+                    9 | 13 | 15..=17 => {
+                        pc = skip_leb(wasm_bytes, pc, 5)?;
+                    }
+                    10 => {
+                        // `memory.copy 0x00 0x00` (4 bytes total from `op_pos`)
+                        if pc + 2 > body_end || wasm_bytes[pc..pc + 2] != [0x00, 0x00] {
+                            return Err(format!("malformed memory.copy in fn[{fn_idx}]"));
+                        }
+                        pc += 2;
+                        if let Some((memcpy_call, _)) = rewrite_targets {
+                            if pc - op_pos != 4 {
+                                return Err("unexpected memory.copy encoding length".to_string());
+                            }
+                            wasm_bytes[op_pos..pc].copy_from_slice(&memcpy_call);
+                        } else {
+                            return Err(format!(
+                                "unrewritten memory.copy (0xfc 0x0a) in Code function[{fn_idx}]"
+                            ));
+                        }
+                    }
+                    11 => {
+                        // `memory.fill 0x00` (3 bytes total from `op_pos`)
+                        if pc + 1 > body_end || wasm_bytes[pc] != 0x00 {
+                            return Err(format!("malformed memory.fill in fn[{fn_idx}]"));
+                        }
+                        pc += 1;
+                        if let Some((_, memset_call)) = rewrite_targets {
+                            if pc - op_pos != 3 {
+                                return Err("unexpected memory.fill encoding length".to_string());
+                            }
+                            wasm_bytes[op_pos..pc].copy_from_slice(&memset_call);
+                        } else {
+                            return Err(format!(
+                                "unrewritten memory.fill (0xfc 0x0b) in Code function[{fn_idx}]"
+                            ));
+                        }
+                    }
+                    12 | 14 => {
+                        pc = skip_leb(wasm_bytes, pc, 5)?;
+                        pc = skip_leb(wasm_bytes, pc, 5)?;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unexpected 0xfc subopcode {other} in fn[{fn_idx}]"
+                        ));
+                    }
+                }
+            }
+            // 0xfe threads / atomics prefix
+            0xfe => {
+                let (subop, next_pc) = read_uleb(wasm_bytes, pc)?;
+                pc = next_pc;
+                if subop == 0x03 {
+                    // `atomic.fence 0x00`
+                    pc += 1;
+                } else {
+                    // `memarg`: align uleb + offset uleb
+                    pc = skip_leb(wasm_bytes, pc, 5)?;
+                    pc = skip_leb(wasm_bytes, pc, 10)?;
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unexpected Wasm opcode 0x{other:02x} in Code function[{fn_idx}] at +0x{op_pos:x}"
+                ));
+            }
+        }
+    }
+    if pc != body_end {
+        return Err(format!("Wasm instruction scan overran Code function[{fn_idx}]"));
+    }
+    Ok(())
+}
+
+/// Rewrites all `memory.copy` (`0xfc 0x0a 0x00 0x00`) and `memory.fill` (`0xfc 0x0b 0x00`)
+/// instructions in `wasm_bytes` into direct `call __vmm_memcpy` and `call __vmm_memset`
+/// instructions so Cranelift never lowers bulk-memory ops into inline `%xmm` SIMD stores.
+#[allow(dead_code)]
+pub fn rewrite_wasm_bulk_memory(wasm_bytes: &mut [u8]) -> Result<(), String> {
+    if wasm_bytes.len() < 8 || &wasm_bytes[0..4] != b"\0asm" || &wasm_bytes[4..8] != b"\x01\0\0\0" {
+        return Err("invalid WebAssembly module header".to_string());
+    }
+
+    let mut pos = 8;
+    let mut memcpy_idx: Option<u32> = None;
+    let mut memset_idx: Option<u32> = None;
+    let mut code_range: Option<(usize, usize)> = None;
+
+    while pos < wasm_bytes.len() {
+        let sec_id = wasm_bytes[pos];
+        pos += 1;
+        let (sec_len, next_pos) = read_uleb(wasm_bytes, pos)?;
+        pos = next_pos;
+        let sec_end = pos + sec_len as usize;
+
+        if sec_id == 7 {
+            let (count, mut p) = read_uleb(wasm_bytes, pos)?;
+            for _ in 0..count {
+                let (name_len, next_p) = read_uleb(wasm_bytes, p)?;
+                p = next_p;
+                let name = std::str::from_utf8(&wasm_bytes[p..p + name_len as usize]).unwrap_or("");
+                p += name_len as usize;
+                let kind = wasm_bytes[p];
+                p += 1;
+                let (idx, next_p) = read_uleb(wasm_bytes, p)?;
+                p = next_p;
+                if kind == 0 {
+                    if name == "__vmm_memcpy" {
+                        memcpy_idx = Some(idx);
+                    } else if name == "__vmm_memset" {
+                        memset_idx = Some(idx);
+                    }
+                }
+            }
+        } else if sec_id == 10 {
+            code_range = Some((pos, sec_end));
+        }
+
+        pos = sec_end;
+    }
+
+    let cpy_idx = memcpy_idx.ok_or("__vmm_memcpy export not found in vmm-core.wasm")?;
+    let set_idx = memset_idx.ok_or("__vmm_memset export not found in vmm-core.wasm")?;
+    if set_idx >= (1 << 14) {
+        return Err(format!(
+            "__vmm_memset function index {set_idx} exceeds 2-byte ULEB128 capacity"
+        ));
+    }
+
+    let memcpy_call = [
+        0x10u8,
+        0x80 | ((cpy_idx & 0x7f) as u8),
+        0x80 | (((cpy_idx >> 7) & 0x7f) as u8),
+        ((cpy_idx >> 14) & 0x7f) as u8,
+    ];
+    let memset_call = [
+        0x10u8,
+        0x80 | ((set_idx & 0x7f) as u8),
+        ((set_idx >> 7) & 0x7f) as u8,
+    ];
+
+    let (code_start, _code_end) = code_range.ok_or("Code section not found in vmm-core.wasm")?;
+    let (fn_count, mut p) = read_uleb(wasm_bytes, code_start)?;
+    for fn_idx in 0..fn_count {
+        let (body_size, next_p) = read_uleb(wasm_bytes, p)?;
+        p = next_p;
+        let body_end = p + body_size as usize;
+        let (local_decls, mut lp) = read_uleb(wasm_bytes, p)?;
+        for _ in 0..local_decls {
+            let (_cnt, next_lp) = read_uleb(wasm_bytes, lp)?;
+            lp = next_lp + 1;
+        }
+        scan_or_rewrite_wasm_insns(
+            wasm_bytes,
+            lp,
+            body_end,
+            fn_idx,
+            Some((memcpy_call, memset_call)),
+        )?;
+        p = body_end;
+    }
+    Ok(())
+}
+
+/// Validates that a `.wasm` module binary contains zero WASI imports, zero floating-point
+/// (`f32`/`f64`) or SIMD (`v128`) types/instructions, and zero raw `memory.copy` or
+/// `memory.fill` bulk-memory opcodes.
 pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
     if wasm_bytes.len() < 8 || &wasm_bytes[0..4] != b"\0asm" || &wasm_bytes[4..8] != b"\x01\0\0\0" {
         return Err("invalid WebAssembly module header".to_string());
@@ -90,6 +369,79 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
                     }
                 }
             }
+            2 => {
+                // Import section: ensure Ring-0 purity (only "env", "vmm", "vmm_bridge" allowed;
+                // zero WASI imports) and no FP/SIMD imported globals.
+                let (count, mut p) = read_uleb(wasm_bytes, pos)?;
+                for i in 0..count {
+                    let (mod_len, next_p) = read_uleb(wasm_bytes, p)?;
+                    p = next_p;
+                    let mod_end = p + mod_len as usize;
+                    let mod_name = std::str::from_utf8(
+                        wasm_bytes
+                            .get(p..mod_end)
+                            .ok_or_else(|| "Import module name out of bounds".to_string())?,
+                    )
+                    .map_err(|_| "invalid UTF-8 in Import module name".to_string())?;
+                    p = mod_end;
+
+                    let (field_len, next_p) = read_uleb(wasm_bytes, p)?;
+                    p = next_p;
+                    let field_end = p + field_len as usize;
+                    let field_name = std::str::from_utf8(
+                        wasm_bytes
+                            .get(p..field_end)
+                            .ok_or_else(|| "Import field name out of bounds".to_string())?,
+                    )
+                    .map_err(|_| "invalid UTF-8 in Import field name".to_string())?;
+                    p = field_end;
+
+                    if !matches!(mod_name, "env" | "vmm" | "vmm_bridge") {
+                        return Err(format!(
+                            "disallowed non-Ring-0 Wasm import {mod_name:?}::{field_name:?} at Import[{i}]"
+                        ));
+                    }
+
+                    let kind = *wasm_bytes
+                        .get(p)
+                        .ok_or_else(|| "unexpected EOF in Import kind".to_string())?;
+                    p += 1;
+                    match kind {
+                        0x00 => {
+                            let (_type_idx, next_p) = read_uleb(wasm_bytes, p)?;
+                            p = next_p;
+                        }
+                        0x01 => {
+                            p += 1; // elemtype
+                            let (flags, next_p) = read_uleb(wasm_bytes, p)?;
+                            let (_min, mut next_p) = read_uleb(wasm_bytes, next_p)?;
+                            if (flags & 0x01) != 0 {
+                                let (_max, np) = read_uleb(wasm_bytes, next_p)?;
+                                next_p = np;
+                            }
+                            p = next_p;
+                        }
+                        0x02 => {
+                            let (flags, next_p) = read_uleb(wasm_bytes, p)?;
+                            let (_min, mut next_p) = read_uleb(wasm_bytes, next_p)?;
+                            if (flags & 0x01) != 0 {
+                                let (_max, np) = read_uleb(wasm_bytes, next_p)?;
+                                next_p = np;
+                            }
+                            p = next_p;
+                        }
+                        0x03 => {
+                            check_wasm_valtype(wasm_bytes[p], &format!("Import[{i}] global"))?;
+                            p += 2; // valtype + mutability
+                        }
+                        other => {
+                            return Err(format!(
+                                "unexpected import kind 0x{other:02x} at Import[{i}]"
+                            ));
+                        }
+                    }
+                }
+            }
             6 => {
                 // Global section
                 let (count, mut p) = read_uleb(wasm_bytes, pos)?;
@@ -119,12 +471,9 @@ pub fn validate_wasm_no_fp(wasm_bytes: &[u8]) -> Result<(), String> {
                         )?;
                         lp += 1;
                     }
-                    let insns = &wasm_bytes[lp..body_end];
-                    if insns.windows(4).any(|w| w == [0xfc, 0x0a, 0x00, 0x00]) {
-                        return Err(format!(
-                            "unrewritten memory.copy (0xfc 0x0a) in Code function[{fn_idx}]"
-                        ));
-                    }
+                    let mut body_copy = wasm_bytes[lp..body_end].to_vec();
+                    let body_len = body_copy.len();
+                    scan_or_rewrite_wasm_insns(&mut body_copy, 0, body_len, fn_idx, None)?;
                     p = body_end;
                 }
             }

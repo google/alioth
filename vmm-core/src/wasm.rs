@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 use crate::host::abi::{
     CoreToIoEntry, IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawRegEntry, ShmBootInfo,
     ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
@@ -20,6 +23,7 @@ use crate::host::{
     DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, RegId,
     RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
 };
+use crate::hw::Board;
 
 #[link(wasm_import_module = "vmm")]
 unsafe extern "C" {
@@ -30,7 +34,6 @@ unsafe extern "C" {
     fn vcpu_get_regs(vcpu: u32, regs_ptr: u32, regs_len: u32) -> i32;
     fn vcpu_set_regs(vcpu: u32, regs_ptr: u32, regs_len: u32) -> i32;
     fn vcpu_kick(vcpu: u32) -> i32;
-    fn vcpu_run(vcpu: u32, comm_ptr: u32) -> i32;
 
     fn mem_alloc(size: u64) -> i32;
     fn mem_free(obj: u32) -> i32;
@@ -52,7 +55,7 @@ unsafe extern "C" {
     fn bridge_configure_queues(dev: u32, queues_ptr: u32, num_queues: u32) -> i32;
     fn bridge_update_irq_route(dev: u32, routing_ptr: u32) -> i32;
     fn bridge_send_cmd(entry_ptr: u32) -> i32;
-    fn bridge_recv_cmd(blocking: u32, entry_out_ptr: u32) -> i32;
+    fn bridge_recv_cmd(entry_out_ptr: u32) -> i32;
 }
 
 #[inline]
@@ -125,10 +128,6 @@ impl VmmHostCore for WasmHost {
 
     fn vcpu_kick(&self, vcpu: VcpuId) -> HvResult<()> {
         check_unit(unsafe { vcpu_kick(vcpu) })
-    }
-
-    fn vcpu_run(&self, vcpu: VcpuId, comm: &mut VcpuCommPage) -> HvResult<()> {
-        check_unit(unsafe { vcpu_run(vcpu, comm as *mut VcpuCommPage as u32) })
     }
 
     fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
@@ -226,25 +225,171 @@ impl VmmCoreBridge for WasmBridge {
         check_unit(unsafe { bridge_send_cmd(entry as *const CoreToIoEntry as u32) })
     }
 
-    fn recv_io_cmd(&self, blocking: bool, out: &mut IoToCoreEntry) -> HvResult<bool> {
-        let rc = check_rc(unsafe {
-            bridge_recv_cmd(u32::from(blocking), out as *mut IoToCoreEntry as u32)
-        })?;
+    fn recv_io_cmd(&self, out: &mut IoToCoreEntry) -> HvResult<bool> {
+        let rc = check_rc(unsafe { bridge_recv_cmd(out as *mut IoToCoreEntry as u32) })?;
         Ok(rc != 0)
     }
 }
 
-#[used]
-static mut DATA_PAD: [u64; 16] = [1; 16];
+// ============================================================================
+// Host-Driven Wasm Exports (`vmm-core` -> Host)
+// ============================================================================
 
-thread_local! {
-    static TLS_PAD: std::cell::Cell<[u64; 16]> = const { std::cell::Cell::new([1; 16]) };
+static GLOBAL_BOARD: AtomicPtr<Board> = AtomicPtr::new(core::ptr::null_mut());
+
+#[inline]
+fn global_board() -> Option<&'static Board> {
+    let ptr = GLOBAL_BOARD.load(Ordering::Acquire);
+    unsafe { ptr.as_ref() }
+}
+
+fn hw_err_to_code(e: &crate::hw::Error) -> i32 {
+    match e {
+        crate::hw::Error::Hv(h)
+        | crate::hw::Error::Memory(crate::mem::Error::Hv(h))
+        | crate::hw::Error::Loader(crate::loader::Error::Hv(h))
+        | crate::hw::Error::Virtio(crate::virtio::Error::Hv(h)) => h.code(),
+        crate::hw::Error::MemoryTooSmall
+        | crate::hw::Error::Memory(crate::mem::Error::CanotAllocate) => HvError::NoMemory.code(),
+        _ => HvError::InvalidParam.code(),
+    }
+}
+
+fn vm_err_to_code(e: &crate::vm::Error) -> i32 {
+    match e {
+        crate::vm::Error::Hv(h) => h.code(),
+        crate::vm::Error::Board(b) => hw_err_to_code(b),
+        crate::vm::Error::Memory(crate::mem::Error::Hv(h))
+        | crate::vm::Error::Loader(crate::loader::Error::Hv(h))
+        | crate::vm::Error::Virtio(crate::virtio::Error::Hv(h)) => h.code(),
+        _ => HvError::InvalidParam.code(),
+    }
+}
+
+/// Initialize the VM board, allocate & map Guest RAM, load kernel/ACPI, configure BSP/AP
+/// initial states, and return the Wasm linear memory offset of `[VcpuCommPage; num_cpus]`
+/// (or a negative [`HvError`] code on failure).
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_init() -> i32 {
+    let hv = Arc::new(WasmHost);
+    let bridge = Arc::new(WasmBridge);
+    let vm = match crate::init_machine(hv, bridge) {
+        Ok(vm) => vm,
+        Err(e) => return vm_err_to_code(&e),
+    };
+    let comm_ptr = vm.board.comm_pages_ptr() as usize;
+    let raw = Arc::into_raw(vm.board) as *mut Board;
+    let prev = GLOBAL_BOARD.swap(raw, Ordering::AcqRel);
+    if !prev.is_null() {
+        unsafe { drop(Arc::from_raw(prev)) };
+    }
+    comm_ptr as i32
+}
+
+/// Return the number of configured guest vCPUs (`0` if `vmm_init` has not completed).
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_num_cpus() -> u32 {
+    global_board().map_or(0, |b| b.config.num_cpu)
+}
+
+/// Return the 16-byte-aligned disjoint Wasm linear memory stack top for worker `slot_id`
+/// (`0..num_cpus` for vCPUs, `num_cpus` for the bridge RX worker), or `0` if out of range.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_stack_top(slot_id: u32) -> u32 {
+    global_board()
+        .and_then(|b| b.worker_stack_top(slot_id))
+        .unwrap_or(0) as u32
+}
+
+/// One-time per-vCPU binding hook called on worker `Instance[vcpu_id]` after its
+/// `__stack_pointer` global has been set to `stack_top`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_bind_vcpu(vcpu_id: u32, stack_top: u32) {
+    let Some(board) = global_board() else {
+        core::arch::wasm32::unreachable();
+    };
+    if vcpu_id >= board.config.num_cpu || stack_top == 0 || (stack_top & 15) != 0 {
+        core::arch::wasm32::unreachable();
+    }
+    let comm = unsafe { board.comm_page_mut(vcpu_id) };
+    *comm = VcpuCommPage::default();
+}
+
+/// Handle one synchronous slow-path VM exit for `vcpu_id` via `comm_page[vcpu_id]`.
+/// Strictly non-blocking; returns [`crate::host::VmAction`] (`0` = Continue, `1` = Shutdown,
+/// `2` = Reboot) or a negative [`HvError`] code on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_on_vcpu_exit(vcpu_id: u32) -> i32 {
+    let Some(board) = global_board() else {
+        return HvError::InvalidParam.code();
+    };
+    match board.on_vcpu_exit(vcpu_id) {
+        Ok(action) => action as i32,
+        Err(e) => hw_err_to_code(&e),
+    }
+}
+
+/// Drain pending control messages from `vmm-io` (`SerialRx`, `RequestShutdown`).
+/// Strictly non-blocking; returns [`crate::host::VmAction`] (`0` = Continue, `1` = Shutdown)
+/// or a negative [`HvError`] code on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_on_bridge_rx() -> i32 {
+    let Some(board) = global_board() else {
+        return HvError::InvalidParam.code();
+    };
+    match board.on_bridge_rx() {
+        Ok(action) => action as i32,
+        Err(e) => hw_err_to_code(&e),
+    }
+}
+
+/// Reset all hardware and Guest RAM/payload state for a guest reboot cycle.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_reset() -> i32 {
+    let Some(board) = global_board() else {
+        return HvError::InvalidParam.code();
+    };
+    match board.reset_vm() {
+        Ok(()) => 0,
+        Err(e) => hw_err_to_code(&e),
+    }
+}
+
+// Keep `.data` > 128 bytes (256B) so Cranelift lowers passive `memory.init` to a host
+// libcall instead of emitting inline 128-bit `%xmm` stores on Ring-0 targets.
+#[used]
+static mut DATA_PAD: [u64; 32] = [1; 32];
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __vmm_memset(mut dst: *mut u8, val: u32, mut n: usize) {
+    if n == 0 {
+        return;
+    }
+    let byte = (val & 0xff) as u8;
+    let word = (byte as u64).wrapping_mul(0x0101_0101_0101_0101);
+    while core::hint::black_box(n) >= 8 {
+        unsafe {
+            core::ptr::write_unaligned(dst as *mut u64, word);
+            dst = dst.add(8);
+        }
+        n -= 8;
+    }
+    while core::hint::black_box(n) > 0 {
+        unsafe {
+            *dst = byte;
+            dst = dst.add(1);
+        }
+        n -= 1;
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __vmm_memcpy(mut dst: *mut u8, mut src: *const u8, mut n: usize) {
     if n == usize::MAX {
-        TLS_PAD.with(|c| c.set(unsafe { DATA_PAD }));
+        unsafe {
+            let v = core::ptr::read_volatile(&raw const DATA_PAD[0]);
+            core::ptr::write_volatile(&raw mut DATA_PAD[0], v);
+        }
     }
     if dst as usize == src as usize || n == 0 {
         return;

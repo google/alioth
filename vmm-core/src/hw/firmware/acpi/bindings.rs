@@ -199,7 +199,7 @@ pub struct AcpiTableMcfg<const N: usize> {
 
 #[cfg(test)]
 mod test {
-    use std::mem::size_of;
+    use core::mem::size_of;
 
     use super::{
         AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation, AcpiTableFadt,
