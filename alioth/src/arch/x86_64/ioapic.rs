@@ -31,7 +31,7 @@ pub const IOAPIC_VER: u8 = 0x11;
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct RegId(u32);
+    pub struct RegId(pub u32);
     impl Debug;
     impl new;
     pub u8, id, set_id : 27, 24;
@@ -39,7 +39,7 @@ bitfield! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct RegVer(u32);
+    pub struct RegVer(pub u32);
     impl Debug;
     impl new;
     pub u8, version, set_version : 7, 0;
@@ -48,7 +48,7 @@ bitfield! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct RedirectEntry(u64);
+    pub struct RedirectEntry(pub u64);
     impl Debug;
     pub u8,	vector, set_vector : 7, 0;
     pub u8, from into DeliveryMode, delivery_mode, set_delivery_mode : 10, 8;

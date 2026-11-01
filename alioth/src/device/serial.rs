@@ -52,7 +52,7 @@ bitflags! {
 // offset 0x2, write, FIFO Control Register (FCR)
 bitfield! {
     #[derive(Copy, Clone, Default)]
-    pub struct FifoControl(u8);
+    pub struct FifoControl(pub u8);
     impl Debug;
     rx_trigger_size_bits, _: 7, 6;
     dma_mode, _: 3;
@@ -76,7 +76,7 @@ impl FifoControl {
 // offset 0x2, read, Interrupt Identification Register
 bitfield! {
     #[derive(Copy, Clone)]
-    pub struct InterruptIdentification(u8);
+    pub struct InterruptIdentification(pub u8);
     impl Debug;
     fifo_enabled, _: 7, 6;
     interrupt_id, set_interrupt_id: 3,1;
@@ -116,7 +116,7 @@ impl Default for InterruptIdentification {
 // offset 0x3, Line Control Register (LCR)
 bitfield! {
     #[derive(Copy, Clone)]
-    pub struct LineControl(u8);
+    pub struct LineControl(pub u8);
     impl Debug;
     divisor_latch_access, _: 7;
     break_, _: 6;
@@ -136,7 +136,7 @@ impl Default for LineControl {
 // offset 0x4, Modem Control Register
 bitfield! {
     #[derive(Copy, Clone, Default)]
-    pub struct ModemControl(u8);
+    pub struct ModemControl(pub u8);
     impl Debug;
     loop_back, _: 4;
     out_2, _: 3;

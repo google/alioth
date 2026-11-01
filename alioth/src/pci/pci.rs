@@ -33,7 +33,7 @@ use self::config::PciConfig;
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    pub struct Bdf(u16);
+    pub struct Bdf(pub u16);
     impl Debug;
     impl new;
     pub u8, bus, set_bus: 15, 8;

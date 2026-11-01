@@ -34,7 +34,7 @@ struct Desc {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct WrappedIndex(u16);
+    pub struct WrappedIndex(pub u16);
     impl Debug;
     pub u16, offset, set_offset : 14, 0;
     pub wrap_counter, set_warp_counter: 15;

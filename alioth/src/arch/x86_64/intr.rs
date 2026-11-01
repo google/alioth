@@ -44,7 +44,7 @@ consts! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct MsiAddrLo(u32);
+    pub struct MsiAddrLo(pub u32);
     impl Debug;
     pub u8, from into DestinationMode, mode, set_mode : 2, 2;
     pub redirection, set_redirection : 3;
@@ -56,14 +56,14 @@ bitfield! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct MsiAddrHi(u32);
+    pub struct MsiAddrHi(pub u32);
     impl Debug;
     pub dest_id_hi, set_dest_id_hi : 31, 8;
 }
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct MsiData(u32);
+    pub struct MsiData(pub u32);
     impl Debug;
     impl new;
     pub u8, vector, set_vector : 7, 0;

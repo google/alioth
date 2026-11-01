@@ -153,7 +153,7 @@ bitfield! {
     ///
     /// See Intel Architecture Software Developer's Manual, Vol.3, Table 24-2.
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct SegAccess(u32);
+    pub struct SegAccess(pub u32);
     impl Debug;
     pub seg_type, _ : 3, 0;
     pub s_code_data, _ : 4;

@@ -49,7 +49,7 @@ consts! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
-    pub struct VfioUserHeaderFlag(u32);
+    pub struct VfioUserHeaderFlag(pub u32);
     impl Debug;
     impl new;
     pub u8, from into VfioUserMessageType, ty, set_ty: 3, 0;

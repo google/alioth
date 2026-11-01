@@ -108,7 +108,7 @@ consts! {
 bitfield! {
     #[derive(Copy, Clone, Default, IntoBytes, FromBytes, Immutable)]
     #[repr(transparent)]
-    pub struct MessageFlag(u32);
+    pub struct MessageFlag(pub u32);
     impl Debug;
     pub need_reply, set_need_reply: 3;
     pub reply, set_reply: 2;

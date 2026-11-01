@@ -290,7 +290,7 @@ pub struct VfioDeviceFeatureDmaBuf<const N: usize> {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct VfioDeviceFeatureFlag(u32);
+    pub struct VfioDeviceFeatureFlag(pub u32);
     impl Debug;
     impl new;
     pub u16, from into DeviceFeature, index, set_index: 15, 0;

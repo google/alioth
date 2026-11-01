@@ -116,7 +116,7 @@ bitfield! {
     /// https://developer.arm.com/documentation/ddi0595/2020-12/AArch64-Registers/ESR-EL2--Exception-Syndrome-Register--EL2-
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct EsrEl2(u64);
+    pub struct EsrEl2(pub u64);
     impl Debug;
     pub iss2, _: 36, 32;
     pub u8, into EsrEl2Ec, ec, _: 31, 26;
@@ -135,7 +135,7 @@ consts! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct EsrEl2DataAbort(u32);
+    pub struct EsrEl2DataAbort(pub u32);
     impl Debug;
     pub isv, _: 24;
     pub sas, _: 23, 22;
@@ -155,7 +155,7 @@ bitfield! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-     pub struct EsrEl2SysReg(u32);
+     pub struct EsrEl2SysReg(pub u32);
      impl Debug;
      pub is_read, _: 0;
      pub u16, crm, _: 4, 1;
@@ -168,7 +168,7 @@ bitfield! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct MpidrEl1(u64);
+    pub struct MpidrEl1(pub u64);
     impl Debug;
     pub u8, aff3, set_aff3: 39, 32;
     pub u, set_u: 30;
