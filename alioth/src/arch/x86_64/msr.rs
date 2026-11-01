@@ -55,7 +55,7 @@ bitflags! {
 
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
-    pub struct ApicBase(u64);
+    pub struct ApicBase(pub u64);
     impl Debug;
     pub bsp, set_bsp : 8;
     pub x2apic, set_x2apic : 10;

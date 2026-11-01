@@ -642,7 +642,7 @@ consts! {
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct KvmVgicV3RedistRegion(u64);
+    pub struct KvmVgicV3RedistRegion(pub u64);
     impl Debug;
     pub count, set_count: 63, 52;
     pub base, set_base: 51, 16;

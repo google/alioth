@@ -61,7 +61,7 @@ bitflags! {
 }
 
 bitfield! {
-    pub struct CpuidExt1fEbx(u32);
+    pub struct CpuidExt1fEbx(pub u32);
     impl new;
     pub u8, cbit_pos, set_cbit_pos : 5, 0;
     pub u8, phys_addr_reduction, set_phys_addr_reduction : 11, 6;

@@ -48,7 +48,7 @@ pub struct PciCapHdr {
 bitfield! {
     #[derive(Copy, Clone, Default)]
     #[repr(C)]
-    pub struct PcieExtCapHdr(u32);
+    pub struct PcieExtCapHdr(pub u32);
     impl Debug;
     pub next, _: 31,20;
     pub version, _: 19,16;
@@ -58,7 +58,7 @@ bitfield! {
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
-    pub struct MsiMsgCtrl(u16);
+    pub struct MsiMsgCtrl(pub u16);
     impl Debug;
     pub enable, set_enable: 0;
     pub multi_msg_cap, set_multi_msg_cap: 3, 1;
@@ -261,7 +261,7 @@ where
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes, KnownLayout)]
     #[repr(C)]
-    pub struct MsixMsgCtrl(u16);
+    pub struct MsixMsgCtrl(pub u16);
     impl Debug;
     pub table_len, _ : 10, 0;
     pub masked, set_masked: 14;
@@ -277,7 +277,7 @@ impl MsixMsgCtrl {
 bitfield! {
     #[derive(Copy, Clone, Default, FromBytes, Immutable, IntoBytes)]
     #[repr(C)]
-    pub struct MsixCapOffset(u32);
+    pub struct MsixCapOffset(pub u32);
     impl Debug;
     pub bar, _: 2, 0;
 }
@@ -305,7 +305,7 @@ impl_mmio_for_zerocopy!(MsixCap);
 bitfield! {
     #[derive(Copy, Clone, Default)]
     #[repr(C)]
-    pub struct MsixVectorCtrl(u32);
+    pub struct MsixVectorCtrl(pub u32);
     impl Debug;
     pub masked, set_masked: 0;
 }

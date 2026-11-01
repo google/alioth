@@ -86,7 +86,7 @@ bitfield! {
     /// QCOW2 L1 Table Entry
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, KnownLayout, Immutable, FromBytes, IntoBytes)]
     #[repr(transparent)]
-    pub struct Qcow2L1(u64);
+    pub struct Qcow2L1(pub u64);
     impl Debug;
     pub rc1, _: 63;
     pub offset, _: 55, 9;
@@ -101,7 +101,7 @@ impl Qcow2L1 {
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, KnownLayout, Immutable, FromBytes, IntoBytes)]
     #[repr(transparent)]
-    pub struct Qcow2L2(u64);
+    pub struct Qcow2L2(pub u64);
     impl Debug;
     pub desc, _: 61, 0;
     pub compressed, _: 62;
@@ -111,7 +111,7 @@ bitfield! {
 bitfield! {
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash, KnownLayout, Immutable, FromBytes, IntoBytes)]
     #[repr(transparent)]
-    pub struct Qcow2StdDesc(u64);
+    pub struct Qcow2StdDesc(pub u64);
     impl Debug;
     pub offset, _: 55, 9;
     pub zero, _: 0;

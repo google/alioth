@@ -566,7 +566,7 @@ bitfield! {
     /// [Spec Table 4.19](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/04_ACPI_Hardware_Specification/ACPI_Hardware_Specification.html#sleep-control-and-status-registers)
     #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct FadtSleepControlReg(u8);
+    pub struct FadtSleepControlReg(pub u8);
     impl Debug;
     pub _reserved2, _:  7, 6;
     pub slp_en, _: 5;

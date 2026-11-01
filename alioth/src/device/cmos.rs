@@ -23,7 +23,7 @@ use crate::mem::emulated::{Action, Mmio};
 use crate::{bitflags, consts, mem};
 
 bitfield! {
-    pub struct CmosReg(u8);
+    pub struct CmosReg(pub u8);
     pub disable_nmi, set_disable_nmi: 7;
     pub reg, set_reg: 6, 0;
 }
@@ -41,7 +41,7 @@ consts! {
 }
 
 bitfield! {
-    pub struct CmosRegA(u8);
+    pub struct CmosRegA(pub u8);
     impl new;
     pub u8, from into CmosIntrFreq, intr_freq, set_intr_freq: 3, 0;
     pub u8, from into CmosTimeBase, time_base, set_time_base: 6, 4;
