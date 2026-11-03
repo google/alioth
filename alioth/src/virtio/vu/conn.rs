@@ -17,6 +17,7 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
+use parking_lot::Mutex;
 use snafu::ResultExt;
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes};
 
@@ -179,7 +180,15 @@ fn recv_config(mut conn: &UnixStream, buf: &mut [u8]) -> Result<DeviceConfig> {
 
 #[derive(Debug)]
 pub struct VuSession {
-    pub conn: UnixStream,
+    conn: Mutex<UnixStream>,
+}
+
+impl From<UnixStream> for VuSession {
+    fn from(conn: UnixStream) -> Self {
+        VuSession {
+            conn: Mutex::new(conn),
+        }
+    }
 }
 
 impl VuSession {
@@ -187,7 +196,7 @@ impl VuSession {
         let conn = UnixStream::connect(&path).context(error::AccessSocket {
             path: path.as_ref(),
         })?;
-        Ok(VuSession { conn })
+        Ok(Self::from(conn))
     }
 
     fn send<T, R>(&self, req: VuFrontMsg, payload: &T, fds: &[BorrowedFd]) -> Result<R>
@@ -195,22 +204,26 @@ impl VuSession {
         T: IntoBytes + Immutable,
         R: FromBytes + IntoBytes,
     {
-        send(&self.conn, req.raw(), payload, &[], &mut [], fds)
+        let conn = self.conn.lock();
+        send(&conn, req.raw(), payload, &[], &mut [], fds)
     }
 
     pub fn recv_payload<T>(&self) -> Result<T>
     where
         T: IntoBytes + Immutable + FromBytes,
     {
-        recv_with_fds(&self.conn, &mut [])
+        let conn = self.conn.lock();
+        recv_with_fds(&conn, &mut [])
     }
 
     pub fn recv_config(&self, buf: &mut [u8]) -> Result<DeviceConfig> {
-        recv_config(&self.conn, buf)
+        let conn = self.conn.lock();
+        recv_config(&conn, buf)
     }
 
     pub fn recv_msg(&self, fds: &mut [Option<OwnedFd>]) -> Result<Message> {
-        recv_with_fds(&self.conn, fds)
+        let conn = self.conn.lock();
+        recv_with_fds(&conn, fds)
     }
 
     pub fn reply<T: IntoBytes + Immutable>(
@@ -219,11 +232,13 @@ impl VuSession {
         payload: &T,
         fds: &[BorrowedFd],
     ) -> Result<()> {
-        reply(&self.conn, req.raw(), payload, fds)
+        let conn = self.conn.lock();
+        reply(&conn, req.raw(), payload, fds)
     }
 
     pub fn reply_config(&self, config: &DeviceConfig, buf: &[u8]) -> Result<()> {
-        reply_config(&self.conn, config, buf)
+        let conn = self.conn.lock();
+        reply_config(&conn, config, buf)
     }
 
     pub fn get_features(&self) -> Result<u64> {
@@ -262,7 +277,8 @@ impl VuSession {
         let in_ = [0; MAX_CONFIG_SIZE];
         let len = buf.len();
         let req = VuFrontMsg::GET_CONFIG.raw();
-        send(&self.conn, req, payload, &in_[..len], buf, &[])
+        let conn = self.conn.lock();
+        send(&conn, req, payload, &in_[..len], buf, &[])
     }
 
     pub fn set_config(&self, payload: &DeviceConfig, buf: &[u8]) -> Result<()>
@@ -270,7 +286,8 @@ impl VuSession {
         DeviceConfig: IntoBytes,
     {
         let req = VuFrontMsg::SET_CONFIG.raw();
-        send(&self.conn, req, payload, buf, &mut [], &[])
+        let conn = self.conn.lock();
+        send(&conn, req, payload, buf, &mut [], &[])
     }
 
     pub fn get_virtq_base(&self, payload: &VirtqState) -> Result<VirtqState> {
@@ -371,3 +388,7 @@ impl VuChannel {
         self.send(VuBackMsg::SHMEM_UNMAP, payload, &[])
     }
 }
+
+#[cfg(test)]
+#[path = "conn_test.rs"]
+mod tests;

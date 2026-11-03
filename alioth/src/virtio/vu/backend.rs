@@ -154,7 +154,7 @@ impl VuBackend {
         conn.set_nonblocking(false)?;
         let queue_num = dev.queue_regs.len();
         Ok(VuBackend {
-            session: VuSession { conn },
+            session: VuSession::from(conn),
             channel: None,
             dev,
             memory,
