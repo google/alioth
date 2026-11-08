@@ -410,6 +410,17 @@ impl VirtioMio for VuFrontend {
     fn reset(&mut self, registry: &Registry) {
         let name = &*self.name;
         for index in 0..self.num_queues {
+            // A disabled ring is still processed. Only GET_VRING_BASE stops
+            // it, and once all rings are stopped, the backend no longer
+            // touches guest memory or sends notifications.
+            let virtq_base = VirtqState {
+                index: index as _,
+                val: 0,
+            };
+            match self.session.get_virtq_base(&virtq_base) {
+                Ok(base) => log::trace!("{name}: queue-{index}: stopped at {}", base.val),
+                Err(e) => log::error!("{name}: failed to stop queue-{index}: {e:?}"),
+            }
             let disable = VirtqState {
                 index: index as _,
                 val: 0,
@@ -453,3 +464,7 @@ impl DevSpec for VuFrontendSpec {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "frontend_test.rs"]
+mod tests;
