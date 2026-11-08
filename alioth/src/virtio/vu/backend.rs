@@ -439,6 +439,10 @@ impl VuBackend {
                 }
             }
             (VuFrontMsg::GET_STATUS, 0) => {
+                if self.running && self.dev.ctl.failed() {
+                    // VirtIO spec 1.4, Sec 2.1.2
+                    self.status |= DevStatus::NEEDS_RESET;
+                }
                 let status = self.status.bits() as u64;
                 self.session.reply(req, &status, &[])?;
                 msg.flag.set_need_reply(false);

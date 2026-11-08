@@ -643,6 +643,10 @@ where
         if ret.is_err() && self.context.state == WorkerState::Running {
             self.context.state = WorkerState::Pending;
             self.context.report(WorkerReport::Failed);
+            // The transport sets DEVICE_NEEDS_RESET, after which a running
+            // device must notify the driver of a configuration change
+            // (VirtIO spec 1.4, Sec 2.1.2).
+            param.irq_sender.config_irq();
         }
         ret
     }

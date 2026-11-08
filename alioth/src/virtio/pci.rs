@@ -250,6 +250,16 @@ where
         true
     }
 
+    /// Tells the driver that the device needs a reset, after the worker of
+    /// the running device has failed (VirtIO spec 1.4, Sec 2.1.2).
+    fn set_needs_reset(&self) {
+        let status = DevStatus::from_bits_retain(self.reg.status.load(Ordering::Acquire));
+        if status.contains(DevStatus::DRIVER_OK) {
+            let status = status | DevStatus::NEEDS_RESET;
+            self.reg.status.store(status.bits(), Ordering::Release);
+        }
+    }
+
     /// Resets the device and waits for the worker to complete the reset.
     fn reset_sync(&self, timeout: Duration) -> Result<()> {
         let mut reset_seq = self.reset_seq.lock();
@@ -360,7 +370,9 @@ where
             VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
                 // The driver polls device_status until a reset completes.
                 let mut reset_seq = self.reset_seq.lock();
-                self.poll_reset(&mut reset_seq);
+                if self.poll_reset(&mut reset_seq) && self.ctl.failed() {
+                    self.set_needs_reset();
+                }
                 reg.status.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_CONFIG_GENERATION => {

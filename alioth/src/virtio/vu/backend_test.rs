@@ -15,9 +15,11 @@
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use flume::{Receiver, Sender};
 
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
@@ -25,7 +27,7 @@ use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{VirtioDevice, WakeEvent, WorkerCtl, WorkerReport};
 use crate::virtio::queue::QueueReg;
-use crate::virtio::vu::backend::VuBackend;
+use crate::virtio::vu::backend::{VuBackend, VuIrqSender};
 use crate::virtio::vu::bindings::VirtqState;
 use crate::virtio::vu::conn::VuSession;
 use crate::virtio::{DevStatus, DeviceId};
@@ -47,8 +49,16 @@ impl Mmio for TestDevConfig {
     }
 }
 
-#[test]
-fn test_vu_backend_stops_worker_before_reply() {
+type TestWakeReceiver = Receiver<WakeEvent<VuIrqSender>>;
+
+/// Serves a device with one queue, whose worker is `worker`, on a backend
+/// thread. Returns the frontend end of the connection and the thread.
+///
+/// The thread joins the worker after the frontend disconnects.
+fn spawn_backend<W>(worker: W) -> (VuSession, JoinHandle<()>)
+where
+    W: FnOnce(TestWakeReceiver, Sender<WorkerReport>) + Send + 'static,
+{
     let (event_tx, event_rx) = flume::unbounded();
     let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
@@ -67,15 +77,43 @@ fn test_vu_backend_stops_worker_before_reply() {
         )),
         worker_handle: None,
     };
+    let worker = thread::spawn(move || worker(event_rx, report_tx));
 
+    let (frontend_conn, backend_conn) = UnixStream::pair().unwrap();
+    let mut backend = VuBackend::new(backend_conn, dev, Arc::new(RamBus::new())).unwrap();
+    let backend_thread = thread::spawn(move || {
+        backend.run().unwrap();
+        // Dropping the backend disconnects the worker.
+        drop(backend);
+        worker.join().unwrap();
+    });
+    (VuSession::from(frontend_conn), backend_thread)
+}
+
+fn driver_ok() -> u64 {
+    let status = DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK;
+    status.bits() as u64
+}
+
+/// Starts the device. The backend takes the kick fd for each start.
+fn start(frontend: &VuSession) {
+    let kick = Notifier::new().unwrap();
+    frontend.set_virtq_kick(&0, kick.as_fd()).unwrap();
+    frontend.set_status(&driver_ok()).unwrap();
+}
+
+#[test]
+fn test_vu_backend_stops_worker_before_reply() {
     // A fake worker that takes a while to stop.
+    let starts = Arc::new(AtomicU32::new(0));
     let stopped = Arc::new(AtomicBool::new(false));
-    let worker_stopped = stopped.clone();
-    let worker = thread::spawn(move || {
-        let mut starts = 0;
+    let (worker_starts, worker_stopped) = (starts.clone(), stopped.clone());
+    let (frontend, backend_thread) = spawn_backend(move |event_rx, report_tx| {
         for event in event_rx.iter() {
             match event {
-                WakeEvent::Start { .. } => starts += 1,
+                WakeEvent::Start { .. } => {
+                    worker_starts.fetch_add(1, Ordering::AcqRel);
+                }
                 WakeEvent::Reset { seq } => {
                     thread::sleep(Duration::from_millis(50));
                     worker_stopped.store(true, Ordering::Release);
@@ -84,28 +122,15 @@ fn test_vu_backend_stops_worker_before_reply() {
                 event => panic!("unexpected event: {event:?}"),
             }
         }
-        starts
     });
 
-    let (frontend_conn, backend_conn) = UnixStream::pair().unwrap();
-    let mut backend = VuBackend::new(backend_conn, dev, Arc::new(RamBus::new())).unwrap();
-    let backend_thread = thread::spawn(move || backend.run().unwrap());
-
-    let frontend = VuSession::from(frontend_conn);
-    let kick = Notifier::new().unwrap();
-    let driver_ok =
-        DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK;
-    let driver_ok = driver_ok.bits() as u64;
-
     // The reply to SET_STATUS(0) means that the worker has stopped.
-    frontend.set_virtq_kick(&0, kick.as_fd()).unwrap();
-    frontend.set_status(&driver_ok).unwrap();
+    start(&frontend);
     frontend.set_status(&0).unwrap();
     assert!(stopped.swap(false, Ordering::AcqRel));
 
     // So does the reply to GET_VRING_BASE.
-    frontend.set_virtq_kick(&0, kick.as_fd()).unwrap();
-    frontend.set_status(&driver_ok).unwrap();
+    start(&frontend);
     let virtq_base = VirtqState { index: 0, val: 0 };
     assert_eq!(frontend.get_virtq_base(&virtq_base).unwrap().val, 0);
     assert!(stopped.swap(false, Ordering::AcqRel));
@@ -116,6 +141,35 @@ fn test_vu_backend_stops_worker_before_reply() {
 
     drop(frontend);
     backend_thread.join().unwrap();
-    // Dropping the backend disconnects the worker.
-    assert_eq!(worker.join().unwrap(), 2);
+    assert_eq!(starts.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn test_vu_backend_needs_reset_after_worker_failure() {
+    // A fake worker that fails as soon as it starts.
+    let (frontend, backend_thread) = spawn_backend(move |event_rx, report_tx| {
+        for event in event_rx.iter() {
+            let report = match event {
+                WakeEvent::Start { .. } => WorkerReport::Failed,
+                WakeEvent::Reset { seq } => WorkerReport::ResetDone { seq },
+                event => panic!("unexpected event: {event:?}"),
+            };
+            report_tx.send(report).unwrap();
+        }
+    });
+
+    start(&frontend);
+    let needs_reset = driver_ok() | DevStatus::NEEDS_RESET.bits() as u64;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while frontend.get_status().unwrap() != needs_reset {
+        assert!(Instant::now() < deadline, "no DEVICE_NEEDS_RESET");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    // Resetting the device brings it back into service.
+    frontend.set_status(&0).unwrap();
+    assert_eq!(frontend.get_status().unwrap(), 0);
+
+    drop(frontend);
+    backend_thread.join().unwrap();
 }
