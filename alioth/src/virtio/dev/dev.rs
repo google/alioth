@@ -114,8 +114,8 @@ pub struct WorkerParam<S>
 where
     S: IrqSender,
 {
-    /// Receiving end of the wake event channel. The sending end is
-    /// [`VirtioDevice::event_tx`].
+    /// Receiving end of the wake event channel. The sending end is in
+    /// [`WorkerCtl`].
     pub(crate) event_rx: Receiver<WakeEvent<S>>,
     /// Guest memory.
     pub(crate) memory: Arc<RamBus>,
@@ -158,6 +158,52 @@ where
     backend: B,
 }
 
+/// The handle a transport uses to drive the worker thread of a virtio
+/// device.
+#[derive(Debug)]
+pub struct WorkerCtl<S>
+where
+    S: IrqSender,
+{
+    name: Arc<str>,
+    event_tx: Sender<WakeEvent<S>>,
+    notifier: Arc<Notifier>,
+}
+
+impl<S> WorkerCtl<S>
+where
+    S: IrqSender,
+{
+    pub(crate) fn new(
+        name: Arc<str>,
+        event_tx: Sender<WakeEvent<S>>,
+        notifier: Arc<Notifier>,
+    ) -> Self {
+        WorkerCtl {
+            name,
+            event_tx,
+            notifier,
+        }
+    }
+
+    /// Sends `event` to the worker and wakes it up.
+    ///
+    /// Returns `false` if the worker has exited.
+    pub fn wake(&self, event: WakeEvent<S>) -> bool {
+        // A worker accepts `Start` only while it is pending, during which
+        // it waits on the channel instead of the notifier.
+        let is_start = matches!(event, WakeEvent::Start { .. });
+        if let Err(e) = self.event_tx.send(event) {
+            log::error!("{}: failed to send event: {e}", self.name);
+            return false;
+        }
+        if !is_start && let Err(e) = self.notifier.notify() {
+            log::error!("{}: failed to wake up device: {e}", self.name);
+        }
+        true
+    }
+}
+
 #[derive(Debug)]
 pub struct VirtioDevice<S>
 where
@@ -169,8 +215,7 @@ where
     pub device_feature: u128,
     pub queue_regs: Arc<[QueueReg]>,
     pub shared_mem_regions: Option<Arc<MemRegion>>,
-    pub notifier: Arc<Notifier>,
-    pub event_tx: Sender<WakeEvent<S>>,
+    pub ctl: Arc<WorkerCtl<S>>,
     pub(crate) worker_handle: Option<JoinHandle<()>>,
 }
 
@@ -178,16 +223,14 @@ impl<S> VirtioDevice<S>
 where
     S: IrqSender,
 {
-    fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn shutdown(&mut self) {
         let Some(handle) = self.worker_handle.take() else {
-            return Ok(());
+            return;
         };
-        self.event_tx.send(WakeEvent::Shutdown)?;
-        self.notifier.notify()?;
+        self.ctl.wake(WakeEvent::Shutdown);
         if let Err(e) = handle.join() {
             log::error!("{}: failed to join worker thread: {e:?}", self.name)
         }
-        Ok(())
     }
 
     pub fn new<D>(
@@ -228,14 +271,14 @@ where
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(device_feature)
         );
+        let ctl = Arc::new(WorkerCtl::new(name.clone(), event_tx, notifier));
         let virtio_dev = VirtioDevice {
             name,
             id,
             device_feature,
             queue_regs,
             worker_handle: Some(handle),
-            event_tx,
-            notifier,
+            ctl,
             device_config,
             shared_mem_regions,
         };
@@ -248,9 +291,7 @@ where
     S: IrqSender,
 {
     fn drop(&mut self) {
-        if let Err(e) = self.shutdown() {
-            log::error!("{}: failed to shutdown: {e}", self.name);
-        }
+        self.shutdown()
     }
 }
 
