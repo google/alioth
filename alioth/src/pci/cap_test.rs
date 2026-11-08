@@ -312,6 +312,47 @@ fn test_msix_table_mmio() {
 }
 
 #[test]
+fn test_msix_table_release_irqfds() {
+    let irqfd = TestIrqFd::default();
+    irqfd.set_addr_lo(0xfee0_0000).unwrap();
+    irqfd.set_addr_hi(0x1).unwrap();
+    irqfd.set_data(0x41).unwrap();
+    irqfd.set_masked(false).unwrap();
+    let entries = Box::new([
+        MsixTableMmioEntry::Entry(MsixTableEntry {
+            addr_lo: 0xfee0_1000,
+            addr_hi: 0,
+            data: 0x42,
+            control: MsixVectorCtrl(1),
+        }),
+        MsixTableMmioEntry::IrqFd(irqfd),
+    ]);
+    let table = MsixTableMmio {
+        entries: RwLock::new(entries),
+    };
+
+    // Irqfds are gone, but the guest programming stays.
+    table.release_irqfds();
+    assert_matches!(
+        **table.entries.read(),
+        [
+            MsixTableMmioEntry::Entry(MsixTableEntry {
+                addr_lo: 0xfee0_1000,
+                addr_hi: 0,
+                data: 0x42,
+                control: MsixVectorCtrl(1),
+            }),
+            MsixTableMmioEntry::Entry(MsixTableEntry {
+                addr_lo: 0xfee0_0000,
+                addr_hi: 0x1,
+                data: 0x41,
+                control: MsixVectorCtrl(0),
+            })
+        ]
+    );
+}
+
+#[test]
 fn test_pci_cap_list() {
     let caps: Vec<Box<dyn PciCap>> = vec![
         Box::new(MsixCapMmio::new(MsixCap {

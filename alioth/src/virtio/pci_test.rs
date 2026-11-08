@@ -24,6 +24,7 @@ use flume::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
 use rstest::rstest;
 
+use crate::hv::IrqFd;
 use crate::hv::tests::{RegisteredAddr, TestIrqFd, TestMsiSender, TestNotifierRegistry};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{self, MemRange, MemRegion, MemRegionEntry, MemRegionType};
@@ -960,6 +961,53 @@ fn test_device_status_reset_without_driver_ok() {
 }
 
 #[test]
+fn test_device_reset_keeps_msix_table() {
+    let queues = Arc::new([QueueReg::default()]);
+    let (mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+
+    let irqfd = TestIrqFd::default();
+    irqfd.set_addr_lo(0xfee0_0000).unwrap();
+    irqfd.set_data(0x41).unwrap();
+    irqfd.set_masked(false).unwrap();
+    *mmio.irq_sender.msix_table.entries.write() = vec![
+        MsixTableMmioEntry::Entry(MsixTableEntry {
+            addr_lo: 0xfee0_1000,
+            addr_hi: 0,
+            data: 0x42,
+            control: MsixVectorCtrl(0),
+        }),
+        MsixTableMmioEntry::IrqFd(irqfd),
+    ]
+    .into_boxed_slice();
+
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
+        Ok(Action::None)
+    );
+
+    // The device reset releases the irqfds, but keeps what the guest has
+    // programmed into the MSI-X table.
+    let entries = mmio.irq_sender.msix_table.entries.read();
+    assert_matches!(
+        **entries,
+        [
+            MsixTableMmioEntry::Entry(MsixTableEntry {
+                addr_lo: 0xfee0_1000,
+                data: 0x42,
+                ..
+            }),
+            MsixTableMmioEntry::Entry(MsixTableEntry {
+                addr_lo: 0xfee0_0000,
+                data: 0x41,
+                ..
+            })
+        ]
+    );
+    assert!(!entries[0].get_masked());
+    assert!(!entries[1].get_masked());
+}
+
+#[test]
 fn test_device_reset_queue_registers() {
     let queues = Arc::new([
         QueueReg {
@@ -1665,6 +1713,13 @@ fn test_virtio_pci_device_pci_reset() {
     registers.queues[0].enabled.store(true, Ordering::Release);
     let driver_ok = DevStatus::DRIVER_OK.bits();
     registers.reg.status.store(driver_ok, Ordering::Release);
+    registers.irq_sender.msix_table.entries.write()[0] =
+        MsixTableMmioEntry::Entry(MsixTableEntry {
+            addr_lo: 0xfee0_0000,
+            addr_hi: 0,
+            data: 0x41,
+            control: MsixVectorCtrl(0),
+        });
 
     // A fake worker checks that nothing is cleared before it completes the
     // reset.
@@ -1683,6 +1738,17 @@ fn test_virtio_pci_device_pci_reset() {
 
     assert_eq!(pci_dev.registers.reg.status.load(Ordering::Acquire), 0);
     assert!(!pci_dev.registers.queues[0].enabled.load(Ordering::Acquire));
+    // Unlike a device reset, a PCI reset also clears the MSI-X table.
+    let entries = pci_dev.registers.irq_sender.msix_table.entries.read();
+    assert_matches!(
+        &entries[0],
+        MsixTableMmioEntry::Entry(MsixTableEntry {
+            addr_lo: 0,
+            data: 0,
+            ..
+        })
+    );
+    assert!(entries[0].get_masked());
 }
 
 #[test]

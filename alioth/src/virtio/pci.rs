@@ -210,13 +210,16 @@ where
     ///
     /// The worker must not be using the queues, i.e. it either has not
     /// started or has completed the reset.
+    ///
+    /// The MSI-X table belongs to the PCI function, so a device reset keeps
+    /// what the guest has programmed into it.
     fn complete_reset(&self) {
         let config_msix = &self.irq_sender.msix_vector.config;
         config_msix.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         for q_vector in self.irq_sender.msix_vector.queues.iter() {
             q_vector.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         }
-        self.irq_sender.msix_table.reset();
+        self.irq_sender.msix_table.release_irqfds();
         for q in self.queues.iter() {
             // Disable the queue before clearing its ring addresses, so that
             // a reader that checks `enabled` after loading the addresses
@@ -1070,7 +1073,10 @@ where
 
     fn reset(&self) -> pci::Result<()> {
         let ret = self.registers.reset_sync(RESET_TIMEOUT);
-        ret.box_trace(pci::error::Reset)
+        ret.box_trace(pci::error::Reset)?;
+        // Unlike a device reset, a PCI reset also clears the MSI-X table.
+        self.registers.irq_sender.msix_table.reset();
+        Ok(())
     }
 }
 

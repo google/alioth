@@ -575,6 +575,25 @@ where
             *entry = MsixTableMmioEntry::default();
         }
     }
+
+    /// Replaces irqfds with plain entries that keep the address, data and
+    /// mask programmed by the guest.
+    pub fn release_irqfds(&self) {
+        let mut entries = self.entries.write();
+        for entry in entries.iter_mut() {
+            let MsixTableMmioEntry::IrqFd(fd) = entry else {
+                continue;
+            };
+            let mut control = MsixVectorCtrl(0);
+            control.set_masked(fd.get_masked());
+            *entry = MsixTableMmioEntry::Entry(MsixTableEntry {
+                addr_lo: fd.get_addr_lo(),
+                addr_hi: fd.get_addr_hi(),
+                data: fd.get_data(),
+                control,
+            });
+        }
+    }
 }
 
 impl<F> Mmio for MsixTableMmio<F>
