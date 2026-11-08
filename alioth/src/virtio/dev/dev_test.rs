@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
@@ -27,7 +28,7 @@ use crate::virtio::dev::{
     Register, StartParam, Virtio, WakeEvent, WorkerCtl, WorkerParam, WorkerReport,
 };
 use crate::virtio::queue::VirtQueue;
-use crate::virtio::tests::{FakeIrqSender, fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, Error, IrqSender, Result, VirtioFeature, error};
 
@@ -139,9 +140,38 @@ impl VirtioMio for FakeDev {
     }
 }
 
+/// Counts configuration interrupts.
+#[derive(Debug, Default)]
+struct TestIrqSender {
+    config_irqs: AtomicU32,
+}
+
+impl IrqSender for TestIrqSender {
+    fn queue_irq(&self, _idx: u16) {}
+
+    fn config_irq(&self) {
+        self.config_irqs.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn queue_irqfd<F, T>(&self, _idx: u16, _f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>,
+    {
+        unimplemented!()
+    }
+
+    fn config_irqfd<F, T>(&self, _f: F) -> Result<T>
+    where
+        F: FnOnce(BorrowedFd) -> Result<T>,
+    {
+        unimplemented!()
+    }
+}
+
 struct TestWorker {
-    ctl: WorkerCtl<FakeIrqSender>,
+    ctl: WorkerCtl<TestIrqSender>,
     handle: JoinHandle<()>,
+    irq_sender: Arc<TestIrqSender>,
     fail_activate: Arc<AtomicBool>,
     resets: Arc<AtomicU32>,
 }
@@ -163,16 +193,16 @@ impl TestWorker {
         TestWorker {
             ctl: WorkerCtl::new("fake".into(), event_tx, notifier, report_rx),
             handle,
+            irq_sender: Arc::default(),
             fail_activate,
             resets,
         }
     }
 
     fn start(&self) {
-        let (q_tx, _) = flume::unbounded();
         let param = StartParam {
             feature: VirtioFeature::VERSION_1.bits(),
-            irq_sender: Arc::new(FakeIrqSender { q_tx }),
+            irq_sender: self.irq_sender.clone(),
             notifiers: None,
         };
         assert!(self.ctl.wake(WakeEvent::Start { param }));
@@ -186,6 +216,10 @@ impl TestWorker {
 
     fn resets(&self) -> u32 {
         self.resets.load(Ordering::Acquire)
+    }
+
+    fn config_irqs(&self) -> u32 {
+        self.irq_sender.config_irqs.load(Ordering::Acquire)
     }
 
     /// Waits until the worker reports a failure.
@@ -224,6 +258,7 @@ fn test_worker_reset_after_start() {
     worker.reset();
     assert_eq!(worker.resets(), 2);
     assert!(!worker.ctl.failed());
+    assert_eq!(worker.config_irqs(), 0);
     worker.shutdown();
 }
 
@@ -241,6 +276,8 @@ fn test_worker_survives_activation_failure() {
     // back into service.
     worker.reset();
     assert!(!worker.ctl.failed());
+    // The worker has notified the driver of the failure.
+    assert_eq!(worker.config_irqs(), 1);
 
     worker.fail_activate.store(false, Ordering::Release);
     worker.start();
@@ -269,7 +306,7 @@ fn test_wait_reset_timeout() {
     let (event_tx, _event_rx) = flume::unbounded();
     let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
+    let ctl = WorkerCtl::<TestIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
 
     let seq1 = ctl.request_reset();
     let seq2 = ctl.request_reset();
@@ -292,7 +329,7 @@ fn test_reset_seq_wraps_around() {
     let (event_tx, event_rx) = flume::unbounded();
     let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
+    let ctl = WorkerCtl::<TestIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
     // Pretend that almost all sequence numbers have been used up.
     *ctl.reset_seq.lock() = u64::MAX - 1;
     ctl.reports.lock().reset_done = u64::MAX - 1;
@@ -323,7 +360,7 @@ fn test_request_reset_in_order() {
     let (event_tx, event_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
     let report_rx = flume::unbounded().1;
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
+    let ctl = WorkerCtl::<TestIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
     let ctl = Arc::new(ctl);
 
     let threads: Vec<_> = (0..4)
@@ -357,7 +394,7 @@ fn test_worker_failure_until_reset() {
     let (event_tx, _event_rx) = flume::unbounded();
     let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
+    let ctl = WorkerCtl::<TestIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
     assert!(!ctl.failed());
 
     // Reports arrive in order. A failure before a reset is gone with the

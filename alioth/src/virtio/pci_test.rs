@@ -741,6 +741,56 @@ fn test_device_reset_in_progress() {
 }
 
 #[test]
+fn test_device_needs_reset_after_worker_failure() {
+    let queues = Arc::new([QueueReg::default()]);
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues);
+    let driver_ok =
+        DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK;
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
+            1,
+            driver_ok.bits() as u64
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Start { .. }));
+
+    report_tx.send(WorkerReport::Failed).unwrap();
+    let needs_reset = driver_ok | DevStatus::NEEDS_RESET;
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
+        Ok(status) if status == needs_reset.bits() as u64
+    );
+
+    // Resetting the device brings it back into service.
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
+        Ok(Action::None)
+    );
+    let Ok(WakeEvent::Reset { seq }) = event_rx.try_recv() else {
+        panic!("expected a reset event");
+    };
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
+        Ok(0)
+    );
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
+            1,
+            DevStatus::ACK.bits() as u64
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
+        Ok(status) if status == DevStatus::ACK.bits() as u64
+    );
+}
+
+#[test]
 fn test_device_reset_worker_exited() {
     let queues = Arc::new([QueueReg::default()]);
     let (mmio, event_rx, report_tx) = create_test_mmio(queues.clone());
