@@ -70,7 +70,12 @@ fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver) {
         queues,
         irq_sender,
         notifiers: None,
-        ctl: Arc::new(WorkerCtl::new("test-virtio-pci".into(), event_tx, notifier)),
+        ctl: Arc::new(WorkerCtl::new(
+            "test-virtio-pci".into(),
+            event_tx,
+            notifier,
+            flume::unbounded().1,
+        )),
     };
     (mmio, event_rx)
 }
@@ -624,7 +629,7 @@ fn test_device_status_valid_transitions() {
         mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
         Ok(0)
     );
-    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset));
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset { .. }));
     assert!(event_rx.is_empty());
     assert!(!queues[0].enabled.load(Ordering::Acquire));
     assert_matches!(
@@ -903,7 +908,7 @@ fn test_device_reset_queue_registers() {
         mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
         Ok(Action::None)
     );
-    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset));
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset { .. }));
     assert!(event_rx.is_empty());
 
     // Verify all queue registers are reset
@@ -1020,6 +1025,7 @@ fn test_notify_with_notifiers() {
             "test-virtio-pci-notifier".into(),
             event_tx,
             notifier,
+            flume::unbounded().1,
         )),
     };
 
@@ -1114,7 +1120,12 @@ where
         device_feature: (VirtioFeature::VERSION_1 | VirtioFeature::RING_PACKED).bits(),
         queue_regs,
         shared_mem_regions: shared_mem,
-        ctl: Arc::new(WorkerCtl::new("test-dev".into(), event_tx, notifier)),
+        ctl: Arc::new(WorkerCtl::new(
+            "test-dev".into(),
+            event_tx,
+            notifier,
+            flume::unbounded().1,
+        )),
         worker_handle: None,
     };
     (dev, event_rx)
@@ -1541,7 +1552,7 @@ fn test_virtio_pci_device_pci_reset() {
     // Queue should be disabled
     assert!(!pci_dev.registers.queues[0].enabled.load(Ordering::Acquire));
     // Reset event sent
-    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset));
+    assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Reset { .. }));
 }
 
 #[test]

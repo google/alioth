@@ -421,13 +421,12 @@ impl VuBackend {
                 self.status = new;
                 log::debug!("{name}: set status: {old:x?} -> {new:x?}");
                 if (old ^ new).contains(DevStatus::DRIVER_OK) {
-                    let event = if new.contains(DevStatus::DRIVER_OK) {
+                    if new.contains(DevStatus::DRIVER_OK) {
                         let param = self.parse_init()?;
-                        WakeEvent::Start { param }
+                        self.dev.ctl.wake(WakeEvent::Start { param });
                     } else {
-                        WakeEvent::Reset
-                    };
-                    self.dev.ctl.wake(event);
+                        self.dev.ctl.request_reset();
+                    }
                 }
             }
             (VuFrontMsg::GET_CONFIG, 12..) => {

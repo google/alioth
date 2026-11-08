@@ -28,6 +28,8 @@ pub mod worker;
 use std::fmt::Debug;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use bitflags::Flags;
 use snafu::Snafu;
@@ -79,6 +81,8 @@ pub enum Error {
     InvalidMsixVector { vector: u16 },
     #[snafu(display("Invalid virtq buffer"))]
     InvalidBuffer,
+    #[snafu(display("{name}: device did not complete reset within {timeout:?}"))]
+    ResetTimeout { name: Arc<str>, timeout: Duration },
     #[cfg(target_os = "linux")]
     #[snafu(display("vhost-user error"), context(false))]
     Vu { source: Box<vu::Error> },

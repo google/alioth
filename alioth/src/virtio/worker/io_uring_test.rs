@@ -138,6 +138,7 @@ fn io_uring_drain_test() {
     let (handle, notifier) = dev
         .spawn_worker(WorkerParam {
             event_rx: rx,
+            reset_tx: flume::unbounded().0,
             memory: ram_bus.clone(),
             queue_regs: regs.clone(),
         })
