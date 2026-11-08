@@ -28,7 +28,7 @@ use zerocopy::IntoBytes;
 use crate::errors::DebugTrace;
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{StartParam, VirtioDevice, WakeEvent};
+use crate::virtio::dev::{RESET_TIMEOUT, StartParam, VirtioDevice, WakeEvent};
 use crate::virtio::vu::Error as VuError;
 use crate::virtio::vu::bindings::{
     MAX_CONFIG_SIZE, MemoryRegion, MemorySingleRegion, Message, VirtqAddr, VirtqState, VuFeature,
@@ -49,6 +49,8 @@ pub enum Error {
     Vu {
         source: Box<crate::virtio::vu::Error>,
     },
+    #[snafu(display("Virtio device error"), context(false))]
+    Virtio { source: Box<crate::virtio::Error> },
     #[snafu(display("failed to parse the payload of {req:?}"))]
     Parse { req: VuFrontMsg },
     #[snafu(display("frontend requested invalid queue index: {index}"))]
@@ -140,6 +142,11 @@ pub struct VuBackend {
     session: VuSession,
     channel: Option<Arc<VuChannel>>,
     status: DevStatus,
+    /// Whether the worker has started and not stopped since.
+    ///
+    /// The frontend can stop the worker with GET_VRING_BASE, which does not
+    /// change the device status.
+    running: bool,
     memory: Arc<RamBus>,
     dev: VirtioDevice<VuIrqSender>,
     init: VuInit,
@@ -159,6 +166,7 @@ impl VuBackend {
             dev,
             memory,
             status: DevStatus::empty(),
+            running: false,
             init: VuInit {
                 drv_feat: 0,
                 queues: (0..queue_num).map(|_| VuQueueInit::default()).collect(),
@@ -169,6 +177,21 @@ impl VuBackend {
 
     pub fn name(&self) -> &str {
         self.dev.name.as_ref()
+    }
+
+    /// Stops the worker and waits until it no longer uses the queues.
+    ///
+    /// The frontend takes the reply to its request as the completion of the
+    /// stop, so the backend has to wait before replying.
+    fn stop_worker(&mut self) -> Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        let ctl = &self.dev.ctl;
+        let seq = ctl.request_reset();
+        ctl.wait_reset(seq, RESET_TIMEOUT)?;
+        self.running = false;
+        Ok(())
     }
 
     fn convert_frontend_hva(&self, hva: u64) -> Result<u64> {
@@ -233,7 +256,7 @@ impl VuBackend {
     }
 
     fn handle_msg(&mut self, msg: &mut Message, fds: &mut [Option<OwnedFd>; 8]) -> Result<()> {
-        let name = &*self.dev.name;
+        let name = self.dev.name.clone();
         let (req, size) = (VuFrontMsg::from(msg.request), msg.size);
 
         match (req, size) {
@@ -346,6 +369,13 @@ impl VuBackend {
                 let Some(_q) = self.init.queues.get_mut(index as usize) else {
                     return error::InvalidQueue { index }.fail();
                 };
+                // GET_VRING_BASE stops the ring. One worker serves all the
+                // queues, so stop all of them. The frontend has no way to
+                // learn about a failure other than waiting forever for the
+                // reply, so reply anyway.
+                if let Err(e) = self.stop_worker() {
+                    log::error!("{name}: queue-{index}: failed to stop: {e:?}");
+                }
                 virtq_base.val = 0;
                 self.session.reply(req, &virtq_base, &[])?;
                 msg.flag.set_need_reply(false);
@@ -380,7 +410,7 @@ impl VuBackend {
                     return error::MissingFd { req: msg.request }.fail();
                 };
                 let region = &single.region;
-                if self.status.contains(DevStatus::DRIVER_OK) {
+                if self.running {
                     return error::ChangeMemoryLayout.fail();
                 }
                 log::debug!("{name}: add mem: {region:x?}, fd: {}", fd.as_raw_fd());
@@ -396,7 +426,7 @@ impl VuBackend {
             (VuFrontMsg::REM_MEM_REG, 40) => {
                 let single: MemorySingleRegion = self.session.recv_payload()?;
                 let region = &single.region;
-                if self.status.contains(DevStatus::DRIVER_OK) {
+                if self.running {
                     return error::ChangeMemoryLayout.fail();
                 }
                 for (index, r) in self.init.regions.iter().enumerate() {
@@ -417,17 +447,15 @@ impl VuBackend {
             (VuFrontMsg::SET_STATUS, 8) => {
                 let status: u64 = self.session.recv_payload()?;
                 let new = DevStatus::from_bits_retain(status as u8);
-                let old = self.status;
-                self.status = new;
-                log::debug!("{name}: set status: {old:x?} -> {new:x?}");
-                if (old ^ new).contains(DevStatus::DRIVER_OK) {
-                    if new.contains(DevStatus::DRIVER_OK) {
-                        let param = self.parse_init()?;
-                        self.dev.ctl.wake(WakeEvent::Start { param });
-                    } else {
-                        self.dev.ctl.request_reset();
-                    }
+                log::debug!("{name}: set status: {:x?} -> {new:x?}", self.status);
+                if !new.contains(DevStatus::DRIVER_OK) {
+                    self.stop_worker()?;
+                } else if !self.running {
+                    let param = self.parse_init()?;
+                    self.dev.ctl.wake(WakeEvent::Start { param });
+                    self.running = true;
                 }
+                self.status = new;
             }
             (VuFrontMsg::GET_CONFIG, 12..) => {
                 let mut region = [0u8; MAX_CONFIG_SIZE];
@@ -493,3 +521,7 @@ impl VuBackend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "backend_test.rs"]
+mod tests;
