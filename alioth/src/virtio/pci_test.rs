@@ -31,7 +31,7 @@ use crate::pci::cap::{
 use crate::pci::config::{BAR_MEM32, BAR_MEM64, BAR_PREFETCHABLE, PciConfigArea};
 use crate::pci::{Pci, PciBar};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{Register, VirtioDevice, WakeEvent};
+use crate::virtio::dev::{Register, VirtioDevice, WakeEvent, WorkerCtl};
 use crate::virtio::pci::{
     PciIrqSender, VIRTIO_MSI_NO_VECTOR, VirtioCommonCfg, VirtioPciCap, VirtioPciCap64,
     VirtioPciDevice, VirtioPciMsixVector, VirtioPciNotifyCap, VirtioPciRegister,
@@ -70,8 +70,7 @@ fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver) {
         queues,
         irq_sender,
         notifiers: None,
-        event_tx,
-        notifier,
+        ctl: Arc::new(WorkerCtl::new("test-virtio-pci".into(), event_tx, notifier)),
     };
     (mmio, event_rx)
 }
@@ -1017,8 +1016,11 @@ fn test_notify_with_notifiers() {
         queues,
         irq_sender,
         notifiers: Some(Arc::new([Notifier::new().unwrap()])),
-        event_tx,
-        notifier,
+        ctl: Arc::new(WorkerCtl::new(
+            "test-virtio-pci-notifier".into(),
+            event_tx,
+            notifier,
+        )),
     };
 
     assert_matches!(
@@ -1112,8 +1114,7 @@ where
         device_feature: (VirtioFeature::VERSION_1 | VirtioFeature::RING_PACKED).bits(),
         queue_regs,
         shared_mem_regions: shared_mem,
-        notifier,
-        event_tx,
+        ctl: Arc::new(WorkerCtl::new("test-dev".into(), event_tx, notifier)),
         worker_handle: None,
     };
     (dev, event_rx)

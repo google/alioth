@@ -171,20 +171,6 @@ impl VuBackend {
         self.dev.name.as_ref()
     }
 
-    fn wake_up_dev(&self, event: WakeEvent<VuIrqSender>) {
-        let is_start = matches!(event, WakeEvent::Start { .. });
-        if let Err(e) = self.dev.event_tx.send(event) {
-            log::error!("{}: failed to send event: {e}", self.dev.name);
-            return;
-        }
-        if is_start {
-            return;
-        }
-        if let Err(e) = self.dev.notifier.notify() {
-            log::error!("{}: failed to wake up device: {e}", self.dev.name);
-        }
-    }
-
     fn convert_frontend_hva(&self, hva: u64) -> Result<u64> {
         for r in &self.init.regions {
             if hva >= r.hva && hva < r.hva + r.size {
@@ -296,10 +282,10 @@ impl VuBackend {
                 let channel = Arc::new(VuChannel {
                     conn: UnixStream::from(fd),
                 });
-                let r = self.dev.event_tx.send(WakeEvent::VuChannel {
+                let event = WakeEvent::VuChannel {
                     channel: channel.clone(),
-                });
-                if r.is_err() {
+                };
+                if !self.dev.ctl.wake(event) {
                     return error::SendChannel.fail();
                 }
                 self.channel = Some(channel);
@@ -441,7 +427,7 @@ impl VuBackend {
                     } else {
                         WakeEvent::Reset
                     };
-                    self.wake_up_dev(event);
+                    self.dev.ctl.wake(event);
                 }
             }
             (VuFrontMsg::GET_CONFIG, 12..) => {

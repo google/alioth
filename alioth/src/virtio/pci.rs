@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use alioth_macros::Layout;
-use flume::Sender;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
@@ -39,7 +38,7 @@ use crate::pci::config::{
 use crate::pci::{self, Pci, PciBar};
 use crate::sync::notifier::Notifier;
 use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
-use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent};
+use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent, WorkerCtl};
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
 use crate::{consts, impl_mmio_for_zerocopy, mem};
@@ -193,28 +192,13 @@ where
     queues: Arc<[QueueReg]>,
     irq_sender: Arc<PciIrqSender<M>>,
     notifiers: Option<Arc<[Notifier]>>,
-    event_tx: Sender<WakeEvent<PciIrqSender<M>>>,
-    notifier: Arc<Notifier>,
+    ctl: Arc<WorkerCtl<PciIrqSender<M>>>,
 }
 
 impl<M> VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
 {
-    fn wake_up_dev(&self, event: WakeEvent<PciIrqSender<M>>) {
-        let is_start = matches!(event, WakeEvent::Start { .. });
-        if let Err(e) = self.event_tx.send(event) {
-            log::error!("{}: failed to send event: {e}", self.name);
-            return;
-        }
-        if is_start {
-            return;
-        }
-        if let Err(e) = self.notifier.notify() {
-            log::error!("{}: failed to wake up device: {e}", self.name);
-        }
-    }
-
     fn reset(&self) {
         let config_msix = &self.irq_sender.msix_vector.config;
         config_msix.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
@@ -460,7 +444,7 @@ where
                 if status.is_empty() {
                     self.reset();
                     if old.contains(DevStatus::DRIVER_OK) {
-                        self.wake_up_dev(WakeEvent::Reset);
+                        self.ctl.wake(WakeEvent::Reset);
                     }
                 } else if !old.contains(DevStatus::DRIVER_OK)
                     && status.contains(DevStatus::DRIVER_OK)
@@ -470,7 +454,7 @@ where
                         irq_sender: self.irq_sender.clone(),
                         notifiers: self.notifiers.clone(),
                     };
-                    self.wake_up_dev(WakeEvent::Start { param });
+                    self.ctl.wake(WakeEvent::Start { param });
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SELECT => {
@@ -602,7 +586,7 @@ where
                     log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
                 }
                 let event = WakeEvent::Notify { q_index };
-                self.wake_up_dev(event)
+                self.ctl.wake(event);
             }
             _ => {
                 log::error!(
@@ -947,8 +931,7 @@ where
                 device_feature,
                 ..Default::default()
             },
-            event_tx: dev.event_tx.clone(),
-            notifier: dev.notifier.clone(),
+            ctl: dev.ctl.clone(),
             queues: dev.queue_regs.clone(),
             irq_sender: Arc::new(PciIrqSender {
                 msix_vector,
@@ -1015,7 +998,7 @@ where
     }
 
     fn reset(&self) -> pci::Result<()> {
-        self.registers.wake_up_dev(WakeEvent::Reset);
+        self.registers.ctl.wake(WakeEvent::Reset);
         self.registers.reset();
         self.registers.reg.status.store(0, Ordering::Release);
         Ok(())
