@@ -18,12 +18,14 @@ use std::mem::size_of;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
 
 use alioth_macros::Layout;
 use parking_lot::{Mutex, RwLock};
 use zerocopy::{FromZeros, Immutable, IntoBytes};
 
 use crate::device::Pause;
+use crate::errors::BoxTrace;
 use crate::hv::{IrqFd, MsiSender, NotifierRegistry};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::{MemRange, MemRegion, MemRegionCallback, MemRegionEntry};
@@ -38,7 +40,7 @@ use crate::pci::config::{
 use crate::pci::{self, Pci, PciBar};
 use crate::sync::notifier::Notifier;
 use crate::utils::{get_atomic_high32, get_atomic_low32, set_atomic_high32, set_atomic_low32};
-use crate::virtio::dev::{Register, StartParam, VirtioDevice, WakeEvent, WorkerCtl};
+use crate::virtio::dev::{RESET_TIMEOUT, Register, StartParam, VirtioDevice, WakeEvent, WorkerCtl};
 use crate::virtio::queue::{QUEUE_SIZE_MAX, QueueReg};
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
 use crate::{consts, impl_mmio_for_zerocopy, mem};
@@ -193,13 +195,22 @@ where
     irq_sender: Arc<PciIrqSender<M>>,
     notifiers: Option<Arc<[Notifier]>>,
     ctl: Arc<WorkerCtl<PciIrqSender<M>>>,
+    /// Sequence number of the device reset in progress, if any.
+    ///
+    /// Writes to the common configuration hold the lock, so that they never
+    /// interleave with a reset.
+    reset_seq: Mutex<Option<u64>>,
 }
 
 impl<M> VirtioPciRegisterMmio<M>
 where
     M: MsiSender,
 {
-    fn reset(&self) {
+    /// Returns the registers to their initial values.
+    ///
+    /// The worker must not be using the queues, i.e. it either has not
+    /// started or has completed the reset.
+    fn complete_reset(&self) {
         let config_msix = &self.irq_sender.msix_vector.config;
         config_msix.store(VIRTIO_MSI_NO_VECTOR, Ordering::Release);
         for q_vector in self.irq_sender.msix_vector.queues.iter() {
@@ -216,6 +227,55 @@ where
             q.driver.store(0, Ordering::Release);
             q.device.store(0, Ordering::Release);
         }
+        // Clear the status last, since it tells the driver that the reset
+        // has completed.
+        self.reg.status.store(0, Ordering::Release);
+    }
+
+    /// Polls a pending reset and completes it once the worker stops.
+    ///
+    /// Returns `true` if no reset is in progress.
+    fn poll_reset(&self, reset_seq: &mut Option<u64>) -> bool {
+        let Some(seq) = *reset_seq else {
+            return true;
+        };
+        if !self.ctl.poll_reset(seq) {
+            return false;
+        }
+        self.complete_reset();
+        *reset_seq = None;
+        true
+    }
+
+    /// Resets the device and waits for the worker to complete the reset.
+    fn reset_sync(&self, timeout: Duration) -> Result<()> {
+        let mut reset_seq = self.reset_seq.lock();
+        let seq = self.ctl.request_reset();
+        self.ctl.wait_reset(seq, timeout)?;
+        self.complete_reset();
+        *reset_seq = None;
+        Ok(())
+    }
+
+    fn notify_queue(&self, offset: usize, size: u8, val: u64) {
+        let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) / size_of::<u32>();
+        if q_index >= self.queues.len() {
+            self.log_invalid_write(offset, size, val);
+            return;
+        }
+        if self.notifiers.is_some() {
+            log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
+        }
+        let q_index = q_index as u16;
+        self.ctl.wake(WakeEvent::Notify { q_index });
+    }
+
+    fn log_invalid_write(&self, offset: usize, size: u8, val: u64) {
+        log::error!(
+            "{}: write 0x{val:0width$x} to invalid register offset = {offset:#x}",
+            self.name,
+            width = 2 * size as usize
+        );
     }
 
     /// Returns the queue `q_sel` if the driver may still change its ring
@@ -294,7 +354,12 @@ where
                 self.irq_sender.msix_vector.config.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_NUM_QUEUES => self.queues.len() as u64,
-            VirtioCommonCfg::LAYOUT_DEVICE_STATUS => reg.status.load(Ordering::Acquire) as u64,
+            VirtioCommonCfg::LAYOUT_DEVICE_STATUS => {
+                // The driver polls device_status until a reset completes.
+                let mut reset_seq = self.reset_seq.lock();
+                self.poll_reset(&mut reset_seq);
+                reg.status.load(Ordering::Acquire) as u64
+            }
             VirtioCommonCfg::LAYOUT_CONFIG_GENERATION => {
                 0 // TODO: support device config change at runtime
             }
@@ -391,8 +456,27 @@ where
     }
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
+        let offset = offset as usize;
+        // Queue notifications change no registers, so they skip the reset
+        // lock and stay fast.
+        if offset >= VirtioPciRegister::OFFSET_QUEUE_NOTIFY {
+            self.notify_queue(offset, size, val);
+            return Ok(Action::None);
+        }
+        let mut reset_seq = self.reset_seq.lock();
+        if !self.poll_reset(&mut reset_seq) {
+            // The driver must wait for device_status to read 0 before it
+            // reinitializes the device (VirtIO spec 1.4, Sec 4.1.4.3.2).
+            if offset != VirtioCommonCfg::OFFSET_DEVICE_STATUS || val != 0 {
+                log::warn!(
+                    "{}: ignored write {val:#x} to {offset:#x} during reset",
+                    self.name
+                );
+            }
+            return Ok(Action::None);
+        }
         let reg = &self.reg;
-        match (offset as usize, size as usize) {
+        match (offset, size as usize) {
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT => {
                 reg.device_feature_sel.store(val as u32, Ordering::Release);
             }
@@ -440,21 +524,26 @@ where
                     log::warn!("{}: invalid status change: {old:#x} -> {val:#x}", self.name);
                     return Ok(Action::None);
                 }
-                reg.status.store(status.bits(), Ordering::Release);
                 if status.is_empty() {
-                    self.reset();
                     if old.contains(DevStatus::DRIVER_OK) {
-                        self.ctl.request_reset();
+                        // The worker might still be using the queues. Keep
+                        // all registers, including the non-zero status, until
+                        // it completes the reset.
+                        *reset_seq = Some(self.ctl.request_reset());
+                    } else {
+                        self.complete_reset();
                     }
-                } else if !old.contains(DevStatus::DRIVER_OK)
-                    && status.contains(DevStatus::DRIVER_OK)
-                {
-                    let param = StartParam {
-                        feature: reg.get_driver_feature(),
-                        irq_sender: self.irq_sender.clone(),
-                        notifiers: self.notifiers.clone(),
-                    };
-                    self.ctl.wake(WakeEvent::Start { param });
+                } else {
+                    reg.status.store(status.bits(), Ordering::Release);
+                    if !old.contains(DevStatus::DRIVER_OK) && status.contains(DevStatus::DRIVER_OK)
+                    {
+                        let param = StartParam {
+                            feature: reg.get_driver_feature(),
+                            irq_sender: self.irq_sender.clone(),
+                            notifiers: self.notifiers.clone(),
+                        };
+                        self.ctl.wake(WakeEvent::Start { param });
+                    }
                 }
             }
             VirtioCommonCfg::LAYOUT_QUEUE_SELECT => {
@@ -575,26 +664,7 @@ where
                     log::warn!("{}: queue reset requested but not supported", self.name);
                 }
             }
-            (offset, _)
-                if offset >= VirtioPciRegister::OFFSET_QUEUE_NOTIFY
-                    && offset
-                        < VirtioPciRegister::OFFSET_QUEUE_NOTIFY
-                            + size_of::<u32>() * self.queues.len() =>
-            {
-                let q_index = (offset - VirtioPciRegister::OFFSET_QUEUE_NOTIFY) as u16 / 4;
-                if self.notifiers.is_some() {
-                    log::warn!("{}: notifying queue-{q_index} by vm exit!", self.name);
-                }
-                let event = WakeEvent::Notify { q_index };
-                self.ctl.wake(event);
-            }
-            _ => {
-                log::error!(
-                    "{}: write 0x{val:0width$x} to invalid register offset = {offset:#x}",
-                    self.name,
-                    width = 2 * size as usize
-                );
-            }
+            _ => self.log_invalid_write(offset, size, val),
         }
         Ok(Action::None)
     }
@@ -932,6 +1002,7 @@ where
                 ..Default::default()
             },
             ctl: dev.ctl.clone(),
+            reset_seq: Mutex::new(None),
             queues: dev.queue_regs.clone(),
             irq_sender: Arc::new(PciIrqSender {
                 msix_vector,
@@ -998,10 +1069,8 @@ where
     }
 
     fn reset(&self) -> pci::Result<()> {
-        self.registers.ctl.request_reset();
-        self.registers.reset();
-        self.registers.reg.status.store(0, Ordering::Release);
-        Ok(())
+        let ret = self.registers.reset_sync(RESET_TIMEOUT);
+        ret.box_trace(pci::error::Reset)
     }
 }
 

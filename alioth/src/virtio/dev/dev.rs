@@ -95,6 +95,13 @@ impl Register {
 
 const TOKEN_WARKER: u64 = 1 << 63;
 
+/// How long a transport waits for the worker to reset a device when it
+/// cannot leave the waiting to the driver.
+///
+/// It is longer than the time the io_uring worker waits for in-flight
+/// requests when it leaves its event loop.
+pub(crate) const RESET_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub struct StartParam<S>
 where
