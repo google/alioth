@@ -34,7 +34,7 @@ use crate::pci::cap::{
 use crate::pci::config::{BAR_MEM32, BAR_MEM64, BAR_PREFETCHABLE, PciConfigArea};
 use crate::pci::{Pci, PciBar};
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{Register, VirtioDevice, WakeEvent, WorkerCtl};
+use crate::virtio::dev::{Register, VirtioDevice, WakeEvent, WorkerCtl, WorkerReport};
 use crate::virtio::pci::{
     PciIrqSender, VIRTIO_MSI_NO_VECTOR, VirtioCommonCfg, VirtioPciCap, VirtioPciCap64,
     VirtioPciDevice, VirtioPciMsixVector, VirtioPciNotifyCap, VirtioPciRegister,
@@ -48,9 +48,9 @@ type TestWakeReceiver = flume::Receiver<WakeEvent<PciIrqSender<TestMsiSender>>>;
 
 /// Creates the registers of a device, together with the worker ends of the
 /// wake event channel and the reset completion channel.
-fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver, Sender<u64>) {
+fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver, Sender<WorkerReport>) {
     let (event_tx, event_rx) = flume::unbounded();
-    let (reset_tx, reset_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
     let msi_sender = TestMsiSender::default();
     let msix_table = Arc::new(MsixTableMmio {
@@ -80,11 +80,11 @@ fn create_test_mmio(queues: Arc<[QueueReg]>) -> (TestMmio, TestWakeReceiver, Sen
             "test-virtio-pci".into(),
             event_tx,
             notifier,
-            reset_rx,
+            report_rx,
         )),
         reset_seq: Mutex::new(None),
     };
-    (mmio, event_rx, reset_tx)
+    (mmio, event_rx, report_tx)
 }
 
 #[rstest]
@@ -101,7 +101,7 @@ fn test_queue_address_reads(#[case] offset: usize, #[case] expected: u64) {
         device: AtomicU64::new(0x0123_4567_89ab_cdef),
         ..Default::default()
     }]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
     assert_matches!(mmio.read(offset as u64, 4), Ok(val) if val == expected);
 }
 
@@ -130,7 +130,7 @@ fn test_queue_alignment(
         device: AtomicU64::new(0x3000_0000),
         ..Default::default()
     }]);
-    let (mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _event_rx, _report_tx) = create_test_mmio(queues);
     if packed {
         assert_matches!(
             mmio.write(VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64, 4, 1),
@@ -157,7 +157,7 @@ fn test_queue_alignment(
 #[case(VirtioCommonCfg::OFFSET_QUEUE_ENABLE, 2, 1)]
 fn test_queue_registers_write_read(#[case] offset: usize, #[case] size: u8, #[case] val: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
 
     assert_matches!(
         mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, 0),
@@ -177,7 +177,7 @@ fn test_queue_size_write_read(#[case] packed: bool, #[case] input: u64, #[case] 
         size: AtomicU16::new(128),
         ..Default::default()
     }]);
-    let (mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _event_rx, _report_tx) = create_test_mmio(queues);
     if packed {
         assert_matches!(
             mmio.write(VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64, 4, 1),
@@ -202,7 +202,7 @@ fn test_queue_size_write_read(#[case] packed: bool, #[case] input: u64, #[case] 
 #[test]
 fn test_queue_size_locked_when_enabled() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
 
     assert_matches!(
         mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, 0),
@@ -226,7 +226,7 @@ fn test_queue_size_locked_when_enabled() {
 #[test]
 fn test_queue_addrs_locked_when_enabled() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, _, _report_tx) = create_test_mmio(queues.clone());
 
     let offsets = [
         VirtioCommonCfg::OFFSET_QUEUE_DESC_LO,
@@ -281,7 +281,7 @@ fn test_queue_addrs_locked_when_enabled() {
 #[case(VirtioCommonCfg::OFFSET_QUEUE_ENABLE, 2, 1)]
 fn test_out_of_bounds_queue_writes(#[case] offset: usize, #[case] size: u8, #[case] val: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
 
     assert_matches!(
         mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, 99),
@@ -330,7 +330,7 @@ fn test_common_cfg_queue_reads(
             ..Default::default()
         },
     ]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
 
     assert_matches!(
         mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, q_sel),
@@ -347,7 +347,7 @@ fn test_common_cfg_queue_reads(
 #[case(VirtioCommonCfg::OFFSET_QUEUE_RESET, 2, 0)]
 fn test_common_cfg_misc_reads(#[case] offset: usize, #[case] size: u8, #[case] expected: u64) {
     let queues = Arc::new([QueueReg::default(), QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
     assert_matches!(mmio.read(offset as u64, size), Ok(val) if val == expected);
 }
 
@@ -357,7 +357,7 @@ fn test_common_cfg_misc_reads(#[case] offset: usize, #[case] size: u8, #[case] e
 #[case(10, 0)]
 fn test_device_feature_reads(#[case] sel: u64, #[case] expected_feature: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mut mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mut mmio, _, _report_tx) = create_test_mmio(queues);
     mmio.reg.device_feature = [0x1111_2222, 0x3333_4444, 0, 0];
 
     assert_matches!(
@@ -385,7 +385,7 @@ fn test_device_feature_reads(#[case] sel: u64, #[case] expected_feature: u64) {
 #[case(10, 0x1234, 0)]
 fn test_driver_features(#[case] bank: u64, #[case] write_val: u64, #[case] expected: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mut mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mut mmio, _event_rx, _report_tx) = create_test_mmio(queues);
     mmio.reg.device_feature = [0x1234_5678, 0x0000_0005, 0, 0];
 
     assert_matches!(
@@ -413,7 +413,7 @@ fn test_driver_features(#[case] bank: u64, #[case] write_val: u64, #[case] expec
 #[test]
 fn test_driver_features_locked_after_features_ok() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mut mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mut mmio, _event_rx, _report_tx) = create_test_mmio(queues);
     mmio.reg.device_feature = [0x1234_5678, 0x0000_0005, 0, 0];
 
     assert_matches!(
@@ -458,7 +458,7 @@ fn test_driver_features_locked_after_features_ok() {
 #[test]
 fn test_device_status_valid_transitions() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues.clone());
 
     // Initially status is 0 (empty)
     assert_matches!(
@@ -649,7 +649,7 @@ fn test_device_status_valid_transitions() {
         Ok(0)
     );
 
-    reset_tx.send(seq).unwrap();
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
     assert_matches!(
         mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
         Ok(0)
@@ -688,7 +688,7 @@ fn start_then_reset(mmio: &TestMmio, event_rx: &TestWakeReceiver) -> u64 {
 #[test]
 fn test_device_reset_in_progress() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues.clone());
     let seq = start_then_reset(&mmio, &event_rx);
 
     // The driver must leave the device alone until the reset completes, so
@@ -724,7 +724,7 @@ fn test_device_reset_in_progress() {
 
     // Once the worker has completed the reset, the driver can set up the
     // device again.
-    reset_tx.send(seq).unwrap();
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
     assert_matches!(
         mmio.write(
             VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
@@ -743,11 +743,11 @@ fn test_device_reset_in_progress() {
 #[test]
 fn test_device_reset_worker_exited() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues.clone());
     start_then_reset(&mmio, &event_rx);
 
     // A worker that has exited no longer uses the queues.
-    drop(reset_tx);
+    drop(report_tx);
     assert_matches!(
         mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
         Ok(0)
@@ -789,7 +789,7 @@ fn test_device_reset_worker_exited() {
 )]
 fn test_device_status_invalid_transitions(#[case] initial: DevStatus, #[case] invalid_write: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, event_rx, _report_tx) = create_test_mmio(queues);
 
     if !initial.is_empty() {
         assert_matches!(
@@ -843,7 +843,7 @@ fn test_device_status_multistep_transition(
     #[case] expect_start: bool,
 ) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, event_rx, _report_tx) = create_test_mmio(queues);
 
     // Set driver features
     assert_matches!(
@@ -909,7 +909,7 @@ fn test_device_status_multistep_transition(
 #[test]
 fn test_device_status_reset_without_driver_ok() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, _reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, event_rx, _report_tx) = create_test_mmio(queues.clone());
 
     // Set status to ACK | DRIVER
     let ack_driver = DevStatus::ACK | DevStatus::DRIVER;
@@ -963,7 +963,7 @@ fn test_device_status_reset_without_driver_ok() {
 #[test]
 fn test_device_reset_keeps_msix_table() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _event_rx, _report_tx) = create_test_mmio(queues);
 
     let irqfd = TestIrqFd::default();
     irqfd.set_addr_lo(0xfee0_0000).unwrap();
@@ -1019,7 +1019,7 @@ fn test_device_reset_queue_registers() {
             ..Default::default()
         },
     ]);
-    let (mmio, event_rx, reset_tx) = create_test_mmio(queues.clone());
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues.clone());
 
     // Initialize MSI-X table with 2 Entry slots
     *mmio.irq_sender.msix_table.entries.write() = vec![
@@ -1076,7 +1076,7 @@ fn test_device_reset_queue_registers() {
         panic!("expected a reset event");
     };
     assert!(event_rx.is_empty());
-    reset_tx.send(seq).unwrap();
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
     assert_matches!(
         mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
         Ok(0)
@@ -1120,7 +1120,7 @@ fn test_device_reset_queue_registers() {
 #[case(VirtioCommonCfg::OFFSET_QUEUE_MSIX_VECTOR, Some(0))]
 fn test_msix_vector_configuration(#[case] offset: usize, #[case] queue_sel: Option<u16>) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
 
     // Initialize MSI-X table with 2 Entry slots
     *mmio.irq_sender.msix_table.entries.write() = vec![
@@ -1157,7 +1157,7 @@ fn test_msix_vector_configuration(#[case] offset: usize, #[case] queue_sel: Opti
 #[case(VirtioPciRegister::OFFSET_QUEUE_NOTIFY + size_of::<u32>(), false)]
 fn test_queue_notify(#[case] offset: usize, #[case] expect_wake: bool) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, event_rx, _report_tx) = create_test_mmio(queues);
 
     assert_matches!(mmio.write(offset as u64, 2, 0), Ok(Action::None));
     if expect_wake {
@@ -1211,7 +1211,7 @@ fn test_notify_with_notifiers() {
 #[test]
 fn test_wake_up_dev_channel_error() {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, event_rx, _reset_tx) = create_test_mmio(queues);
+    let (mmio, event_rx, _report_tx) = create_test_mmio(queues);
 
     // Drop receiver so send will fail
     drop(event_rx);
@@ -1230,7 +1230,7 @@ fn test_wake_up_dev_channel_error() {
 #[case(0xdead_beef, 4, 0x1234)]
 fn test_invalid_register_writes(#[case] offset: u64, #[case] size: u8, #[case] val: u64) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
     assert_matches!(mmio.write(offset, size, val), Ok(Action::None));
 }
 
@@ -1239,7 +1239,7 @@ fn test_invalid_register_writes(#[case] offset: u64, #[case] size: u8, #[case] v
 #[case(0, 3)]
 fn test_invalid_register_reads(#[case] offset: u64, #[case] size: u8) {
     let queues = Arc::new([QueueReg::default()]);
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
     assert_matches!(mmio.read(offset, size), Ok(0));
 }
 
@@ -1248,7 +1248,7 @@ fn test_invalid_register_reads(#[case] offset: u64, #[case] size: u8) {
 #[case(3, (size_of::<VirtioPciRegister>() + size_of::<u32>() * 4) as u64)]
 fn test_mmio_size(#[case] num_queues: usize, #[case] expected_size: u64) {
     let queues = (0..num_queues).map(|_| QueueReg::default()).collect();
-    let (mmio, _, _reset_tx) = create_test_mmio(queues);
+    let (mmio, _, _report_tx) = create_test_mmio(queues);
     assert_eq!(mmio.size(), expected_size);
 }
 
@@ -1276,12 +1276,16 @@ fn create_test_virtio_device<S>(
     config_size: u64,
     shared_mem: Option<Arc<MemRegion>>,
     num_queues: usize,
-) -> (VirtioDevice<S>, Receiver<WakeEvent<S>>, Sender<u64>)
+) -> (
+    VirtioDevice<S>,
+    Receiver<WakeEvent<S>>,
+    Sender<WorkerReport>,
+)
 where
     S: IrqSender,
 {
     let (event_tx, event_rx) = flume::unbounded();
-    let (reset_tx, reset_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
     let queue_regs = (0..num_queues)
         .map(|_| QueueReg::default())
@@ -1297,11 +1301,11 @@ where
             "test-dev".into(),
             event_tx,
             notifier,
-            reset_rx,
+            report_rx,
         )),
         worker_handle: None,
     };
-    (dev, event_rx, reset_tx)
+    (dev, event_rx, report_tx)
 }
 
 #[test]
@@ -1509,7 +1513,7 @@ fn test_virtio_pci_device_classes(
     #[case] expected_subclass: u8,
     #[case] expected_dev_id: u16,
 ) {
-    let (dev, _rx, _reset_tx) =
+    let (dev, _rx, _report_tx) =
         create_test_virtio_device::<PciIrqSender<TestMsiSender>>(id, 0, None, 2);
     let pci_dev = VirtioPciDevice::new(
         dev,
@@ -1563,7 +1567,7 @@ fn test_virtio_pci_device_with_config_and_shared_memory_prefetchable() {
         ],
         callbacks: Mutex::new(vec![]),
     });
-    let (dev, _rx, _reset_tx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
+    let (dev, _rx, _report_tx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
         DeviceId::FILE_SYSTEM,
         32,
         Some(shared_mem),
@@ -1615,7 +1619,7 @@ fn test_virtio_pci_device_shared_memory_non_prefetchable() {
         }],
         callbacks: Mutex::new(vec![]),
     });
-    let (dev, _rx, _reset_tx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
+    let (dev, _rx, _report_tx) = create_test_virtio_device::<PciIrqSender<TestMsiSender>>(
         DeviceId::FILE_SYSTEM,
         0,
         Some(shared_mem),
@@ -1634,7 +1638,7 @@ fn test_virtio_pci_device_shared_memory_non_prefetchable() {
 
 #[test]
 fn test_virtio_pci_device_notifier_callback() {
-    let (dev, _rx, _reset_tx) =
+    let (dev, _rx, _report_tx) =
         create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 2);
     let registry = TestNotifierRegistry::default();
     let registered = registry.registered.clone();
@@ -1679,7 +1683,7 @@ fn test_virtio_pci_device_notifier_callback() {
 
 #[test]
 fn test_virtio_pci_device_notifier_fallback() {
-    let (dev, _rx, _reset_tx) =
+    let (dev, _rx, _report_tx) =
         create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 1);
     let pci_dev = VirtioPciDevice::new(
         dev,
@@ -1699,7 +1703,7 @@ fn test_virtio_pci_device_notifier_fallback() {
 
 #[test]
 fn test_virtio_pci_device_pci_reset() {
-    let (dev, event_rx, reset_tx) =
+    let (dev, event_rx, report_tx) =
         create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 1);
     let pci_dev = VirtioPciDevice::new(
         dev,
@@ -1729,7 +1733,7 @@ fn test_virtio_pci_device_pci_reset() {
         };
         assert_eq!(registers.reg.status.load(Ordering::Acquire), driver_ok);
         assert!(registers.queues[0].enabled.load(Ordering::Acquire));
-        reset_tx.send(seq).unwrap();
+        report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
     });
 
     // Pci::reset returns only after the worker has completed the reset.
@@ -1753,7 +1757,7 @@ fn test_virtio_pci_device_pci_reset() {
 
 #[test]
 fn test_virtio_pci_device_pci_reset_timeout() {
-    let (dev, event_rx, _reset_tx) =
+    let (dev, event_rx, _report_tx) =
         create_test_virtio_device::<PciIrqSender<TestMsiSender>>(DeviceId::NET, 0, None, 1);
     let pci_dev = VirtioPciDevice::new(
         dev,
