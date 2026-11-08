@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use assert_matches::assert_matches;
 use mio::Registry;
@@ -23,7 +23,9 @@ use mio::event::Event;
 
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
-use crate::virtio::dev::{Register, StartParam, Virtio, WakeEvent, WorkerCtl, WorkerParam};
+use crate::virtio::dev::{
+    Register, StartParam, Virtio, WakeEvent, WorkerCtl, WorkerParam, WorkerReport,
+};
 use crate::virtio::queue::VirtQueue;
 use crate::virtio::tests::{FakeIrqSender, fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -150,16 +152,16 @@ impl TestWorker {
         let fail_activate = dev.fail_activate.clone();
         let resets = dev.resets.clone();
         let (event_tx, event_rx) = flume::unbounded();
-        let (reset_tx, reset_rx) = flume::unbounded();
+        let (report_tx, report_rx) = flume::unbounded();
         let param = WorkerParam {
             event_rx,
-            reset_tx,
+            report_tx,
             memory: Arc::new(fixture_ram_bus()),
             queue_regs: Arc::from(fixture_queues(1)),
         };
         let (handle, notifier) = dev.spawn_worker(param).unwrap();
         TestWorker {
-            ctl: WorkerCtl::new("fake".into(), event_tx, notifier, reset_rx),
+            ctl: WorkerCtl::new("fake".into(), event_tx, notifier, report_rx),
             handle,
             fail_activate,
             resets,
@@ -184,6 +186,15 @@ impl TestWorker {
 
     fn resets(&self) -> u32 {
         self.resets.load(Ordering::Acquire)
+    }
+
+    /// Waits until the worker reports a failure.
+    fn wait_failed(&self) {
+        let deadline = Instant::now() + TIMEOUT;
+        while !self.ctl.failed() {
+            assert!(Instant::now() < deadline, "no failure reported");
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn shutdown(self) {
@@ -212,6 +223,7 @@ fn test_worker_reset_after_start() {
     worker.start();
     worker.reset();
     assert_eq!(worker.resets(), 2);
+    assert!(!worker.ctl.failed());
     worker.shutdown();
 }
 
@@ -220,15 +232,21 @@ fn test_worker_survives_activation_failure() {
     let worker = TestWorker::spawn();
     worker.fail_activate.store(true, Ordering::Release);
     worker.start();
-    // The worker cleans up the partially activated device, and stays alive
-    // to complete the reset.
-    worker.reset();
+    // The worker cleans up the partially activated device before reporting
+    // the failure.
+    worker.wait_failed();
     assert_eq!(worker.resets(), 1);
+
+    // The worker stays alive to complete the reset, which brings the device
+    // back into service.
+    worker.reset();
+    assert!(!worker.ctl.failed());
 
     worker.fail_activate.store(false, Ordering::Release);
     worker.start();
     worker.reset();
     assert_eq!(worker.resets(), 2);
+    assert!(!worker.ctl.failed());
     worker.shutdown();
 }
 
@@ -249,9 +267,9 @@ fn test_worker_exit_completes_reset() {
 #[test]
 fn test_wait_reset_timeout() {
     let (event_tx, _event_rx) = flume::unbounded();
-    let (reset_tx, reset_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, reset_rx);
+    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
 
     let seq1 = ctl.request_reset();
     let seq2 = ctl.request_reset();
@@ -262,7 +280,9 @@ fn test_wait_reset_timeout() {
     );
 
     // Completing a reset also completes the earlier ones.
-    reset_tx.send(seq2).unwrap();
+    report_tx
+        .send(WorkerReport::ResetDone { seq: seq2 })
+        .unwrap();
     assert!(ctl.poll_reset(seq1));
     assert_matches!(ctl.wait_reset(seq2, Duration::ZERO), Ok(()));
 }
@@ -270,12 +290,12 @@ fn test_wait_reset_timeout() {
 #[test]
 fn test_reset_seq_wraps_around() {
     let (event_tx, event_rx) = flume::unbounded();
-    let (reset_tx, reset_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, reset_rx);
+    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
     // Pretend that almost all sequence numbers have been used up.
     *ctl.reset_seq.lock() = u64::MAX - 1;
-    ctl.reset_acks.lock().done = u64::MAX - 1;
+    ctl.reports.lock().reset_done = u64::MAX - 1;
 
     let seq1 = ctl.request_reset();
     let seq2 = ctl.request_reset();
@@ -285,11 +305,15 @@ fn test_reset_seq_wraps_around() {
     }
     assert!(!ctl.poll_reset(seq1));
 
-    reset_tx.send(seq1).unwrap();
+    report_tx
+        .send(WorkerReport::ResetDone { seq: seq1 })
+        .unwrap();
     assert!(ctl.poll_reset(seq1));
     assert!(!ctl.poll_reset(seq2));
 
-    reset_tx.send(seq2).unwrap();
+    report_tx
+        .send(WorkerReport::ResetDone { seq: seq2 })
+        .unwrap();
     assert!(ctl.poll_reset(seq1));
     assert_matches!(ctl.wait_reset(seq2, Duration::ZERO), Ok(()));
 }
@@ -298,8 +322,8 @@ fn test_reset_seq_wraps_around() {
 fn test_request_reset_in_order() {
     let (event_tx, event_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
-    let reset_rx = flume::unbounded().1;
-    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, reset_rx);
+    let report_rx = flume::unbounded().1;
+    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
     let ctl = Arc::new(ctl);
 
     let threads: Vec<_> = (0..4)
@@ -326,4 +350,30 @@ fn test_request_reset_in_order() {
         })
         .collect();
     assert_eq!(seqs, (1..=400).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_worker_failure_until_reset() {
+    let (event_tx, _event_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
+    let notifier = Arc::new(Notifier::new().unwrap());
+    let ctl = WorkerCtl::<FakeIrqSender>::new("fake".into(), event_tx, notifier, report_rx);
+    assert!(!ctl.failed());
+
+    // Reports arrive in order. A failure before a reset is gone with the
+    // reset, while a failure after it is not.
+    let seq = ctl.request_reset();
+    for report in [
+        WorkerReport::Failed,
+        WorkerReport::ResetDone { seq },
+        WorkerReport::Failed,
+    ] {
+        report_tx.send(report).unwrap();
+    }
+    assert!(ctl.failed());
+    assert!(ctl.poll_reset(seq));
+
+    let seq = ctl.request_reset();
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
+    assert!(!ctl.failed());
 }

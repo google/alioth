@@ -131,7 +131,7 @@ impl<'m> VsockTest<'m> {
         let (handle, notifier) = dev
             .spawn_worker(WorkerParam {
                 event_rx: rx,
-                reset_tx: flume::unbounded().0,
+                report_tx: flume::unbounded().0,
                 memory: ram_bus.clone(),
                 queue_regs: regs,
             })

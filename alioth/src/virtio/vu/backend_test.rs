@@ -23,7 +23,7 @@ use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
-use crate::virtio::dev::{VirtioDevice, WakeEvent, WorkerCtl};
+use crate::virtio::dev::{VirtioDevice, WakeEvent, WorkerCtl, WorkerReport};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::vu::backend::VuBackend;
 use crate::virtio::vu::bindings::VirtqState;
@@ -50,7 +50,7 @@ impl Mmio for TestDevConfig {
 #[test]
 fn test_vu_backend_stops_worker_before_reply() {
     let (event_tx, event_rx) = flume::unbounded();
-    let (reset_tx, reset_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
     let notifier = Arc::new(Notifier::new().unwrap());
     let dev = VirtioDevice {
         name: "vu-backend".into(),
@@ -63,7 +63,7 @@ fn test_vu_backend_stops_worker_before_reply() {
             "vu-backend".into(),
             event_tx,
             notifier,
-            reset_rx,
+            report_rx,
         )),
         worker_handle: None,
     };
@@ -79,7 +79,7 @@ fn test_vu_backend_stops_worker_before_reply() {
                 WakeEvent::Reset { seq } => {
                     thread::sleep(Duration::from_millis(50));
                     worker_stopped.store(true, Ordering::Release);
-                    reset_tx.send(seq).unwrap();
+                    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
                 }
                 event => panic!("unexpected event: {event:?}"),
             }
