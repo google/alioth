@@ -444,7 +444,7 @@ where
                 if status.is_empty() {
                     self.reset();
                     if old.contains(DevStatus::DRIVER_OK) {
-                        self.ctl.wake(WakeEvent::Reset);
+                        self.ctl.request_reset();
                     }
                 } else if !old.contains(DevStatus::DRIVER_OK)
                     && status.contains(DevStatus::DRIVER_OK)
@@ -998,7 +998,7 @@ where
     }
 
     fn reset(&self) -> pci::Result<()> {
-        self.registers.ctl.wake(WakeEvent::Reset);
+        self.registers.ctl.request_reset();
         self.registers.reset();
         self.registers.reg.status.store(0, Ordering::Release);
         Ok(())

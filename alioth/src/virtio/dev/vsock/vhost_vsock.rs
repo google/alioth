@@ -209,20 +209,24 @@ impl VirtioMio for VhostVsock {
     }
 
     fn reset(&mut self, registry: &Registry) {
-        self.vhost_dev.vsock_set_running(false).unwrap();
+        let name = &*self.name;
+        if let Err(e) = self.vhost_dev.vsock_set_running(false) {
+            log::error!("{name}: failed to stop vhost-vsock: {e:?}");
+        }
         for (index, error_fd) in self.error_fds.iter_mut().enumerate() {
             let Some(err_fd) = error_fd else {
                 continue;
             };
-            self.vhost_dev
-                .set_virtq_err(&VirtqFile {
-                    index: index as _,
-                    fd: VHOST_FILE_UNBIND,
-                })
-                .unwrap();
-            registry
-                .deregister(&mut SourceFd(&err_fd.as_raw_fd()))
-                .unwrap();
+            let unbind = VirtqFile {
+                index: index as _,
+                fd: VHOST_FILE_UNBIND,
+            };
+            if let Err(e) = self.vhost_dev.set_virtq_err(&unbind) {
+                log::error!("{name}: queue-{index}: failed to unbind error fd: {e:?}");
+            }
+            if let Err(e) = registry.deregister(&mut SourceFd(&err_fd.as_raw_fd())) {
+                log::error!("{name}: queue-{index}: failed to deregister error fd: {e:?}");
+            }
             *error_fd = None;
         }
     }

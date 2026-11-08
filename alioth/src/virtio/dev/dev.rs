@@ -26,9 +26,11 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use bitflags::Flags;
-use flume::{Receiver, Sender};
+use flume::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::mem::emulated::Mmio;
@@ -117,6 +119,12 @@ where
     /// Receiving end of the wake event channel. The sending end is in
     /// [`WorkerCtl`].
     pub(crate) event_rx: Receiver<WakeEvent<S>>,
+    /// Sending end of the reset completion channel. The receiving end is in
+    /// [`WorkerCtl`].
+    ///
+    /// Only the worker holds it, so the channel disconnects once the worker
+    /// exits, which completes all pending resets.
+    pub(crate) reset_tx: Sender<u64>,
     /// Guest memory.
     pub(crate) memory: Arc<RamBus>,
     /// Queue registers, shared with the transport.
@@ -139,7 +147,11 @@ where
     Start {
         param: StartParam<S>,
     },
-    Reset,
+    /// Resets the device. Once the worker no longer uses the queues, it
+    /// sends `seq` back through [`WorkerParam::reset_tx`].
+    Reset {
+        seq: u64,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -168,6 +180,37 @@ where
     name: Arc<str>,
     event_tx: Sender<WakeEvent<S>>,
     notifier: Arc<Notifier>,
+    /// Sequence number of the last requested reset.
+    ///
+    /// The lock is held while sending the reset event, so that the worker
+    /// sees resets in the order of their sequence numbers.
+    reset_seq: Mutex<u64>,
+    reset_acks: Mutex<ResetAcks>,
+}
+
+/// Returns `true` if reset `seq` is not later than reset `done`.
+///
+/// Sequence numbers are compared in serial number arithmetic, which stays
+/// correct after the counter wraps around, as long as the two are less than
+/// 2^63 resets apart.
+fn reset_completed(done: u64, seq: u64) -> bool {
+    (done.wrapping_sub(seq) as i64) >= 0
+}
+
+/// Resets the worker has reported as completed.
+#[derive(Debug)]
+struct ResetAcks {
+    rx: Receiver<u64>,
+    /// Sequence number of the last completed reset.
+    done: u64,
+}
+
+impl ResetAcks {
+    fn complete(&mut self, seq: u64) {
+        if !reset_completed(self.done, seq) {
+            self.done = seq;
+        }
+    }
 }
 
 impl<S> WorkerCtl<S>
@@ -178,11 +221,17 @@ where
         name: Arc<str>,
         event_tx: Sender<WakeEvent<S>>,
         notifier: Arc<Notifier>,
+        reset_rx: Receiver<u64>,
     ) -> Self {
         WorkerCtl {
             name,
             event_tx,
             notifier,
+            reset_seq: Mutex::new(0),
+            reset_acks: Mutex::new(ResetAcks {
+                rx: reset_rx,
+                done: 0,
+            }),
         }
     }
 
@@ -201,6 +250,52 @@ where
             log::error!("{}: failed to wake up device: {e}", self.name);
         }
         true
+    }
+
+    /// Asks the worker to reset the device.
+    ///
+    /// Returns the sequence number of this reset, which
+    /// [`poll_reset`](Self::poll_reset) and [`wait_reset`](Self::wait_reset)
+    /// take.
+    pub fn request_reset(&self) -> u64 {
+        let mut reset_seq = self.reset_seq.lock();
+        let seq = reset_seq.wrapping_add(1);
+        *reset_seq = seq;
+        self.wake(WakeEvent::Reset { seq });
+        seq
+    }
+
+    /// Returns `true` if the worker has completed reset `seq`.
+    ///
+    /// The worker handles resets in order, so this also means that all
+    /// earlier resets have completed.
+    pub fn poll_reset(&self, seq: u64) -> bool {
+        let mut acks = self.reset_acks.lock();
+        loop {
+            match acks.rx.try_recv() {
+                Ok(done) => acks.complete(done),
+                Err(TryRecvError::Empty) => break reset_completed(acks.done, seq),
+                // The worker has exited, so it no longer uses the queues.
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        }
+    }
+
+    /// Waits until the worker has completed reset `seq`.
+    pub fn wait_reset(&self, seq: u64, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        let mut acks = self.reset_acks.lock();
+        while !reset_completed(acks.done, seq) {
+            match acks.rx.recv_deadline(deadline) {
+                Ok(done) => acks.complete(done),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    let name = self.name.clone();
+                    return error::ResetTimeout { name, timeout }.fail();
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -260,8 +355,10 @@ where
 
         let shared_mem_regions = dev.shared_mem_regions();
         let (event_tx, event_rx) = flume::unbounded();
+        let (reset_tx, reset_rx) = flume::unbounded();
         let param = WorkerParam {
             event_rx,
+            reset_tx,
             memory,
             queue_regs: queue_regs.clone(),
         };
@@ -271,14 +368,14 @@ where
             VirtioFeature::from_bits_retain(device_feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(device_feature)
         );
-        let ctl = Arc::new(WorkerCtl::new(name.clone(), event_tx, notifier));
+        let ctl = WorkerCtl::new(name.clone(), event_tx, notifier, reset_rx);
         let virtio_dev = VirtioDevice {
             name,
             id,
             device_feature,
             queue_regs,
             worker_handle: Some(handle),
-            ctl,
+            ctl: Arc::new(ctl),
             device_config,
             shared_mem_regions,
         };
@@ -328,6 +425,9 @@ where
     pub dev: D,
     param: WorkerParam<S>,
     pub state: WorkerState,
+    /// The reset being handled, acknowledged once the worker no longer uses
+    /// the queues.
+    reset_seq: Option<u64>,
 }
 
 impl<D, S> Context<D, S>
@@ -335,6 +435,12 @@ where
     D: Virtio,
     S: IrqSender,
 {
+    fn ack_reset(&self, seq: u64) {
+        log::debug!("{}: reset {seq} completed", self.dev.name());
+        // The transport might be gone, e.g. at VMM shutdown.
+        let _ = self.param.reset_tx.send(seq);
+    }
+
     fn handle_wake_events<B>(&mut self, backend: &mut B) -> Result<()>
     where
         B: ActiveBackend<D>,
@@ -351,9 +457,10 @@ where
                 }
                 #[cfg(target_os = "linux")]
                 WakeEvent::VuChannel { channel } => self.dev.set_vu_channel(channel),
-                WakeEvent::Reset => {
-                    log::info!("{}: guest requested reset", self.dev.name());
+                WakeEvent::Reset { seq } => {
+                    log::info!("{}: reset requested", self.dev.name());
                     self.state = WorkerState::Pending;
+                    self.reset_seq = Some(seq);
                     break;
                 }
             }
@@ -364,7 +471,8 @@ where
     fn wait_start(&mut self) -> Option<StartParam<S>> {
         for wake_event in self.param.event_rx.iter() {
             match wake_event {
-                WakeEvent::Reset => {}
+                // The device has not started, so there is nothing to reset.
+                WakeEvent::Reset { seq } => self.ack_reset(seq),
                 WakeEvent::Start { param } => {
                     self.state = WorkerState::Running;
                     return Some(param);
@@ -413,6 +521,7 @@ where
                 dev,
                 param,
                 state: WorkerState::Pending,
+                reset_seq: None,
             },
             backend,
         };
@@ -439,8 +548,13 @@ where
             VirtioFeature::from_bits_retain(param.feature & !D::Feature::all().bits()),
             D::Feature::from_bits_truncate(param.feature)
         );
-        self.backend
-            .event_loop(ram, &mut self.context, queues, param)
+        let ret = self
+            .backend
+            .event_loop(ram, &mut self.context, queues, param);
+        // Clean up even if the event loop failed, since the device might
+        // have been partially activated.
+        let reset = self.backend.reset(&mut self.context.dev);
+        ret.and(reset)
     }
 
     fn loop_until_reset(&mut self) -> Result<()> {
@@ -461,7 +575,7 @@ where
                 Ok(Some(Queue::new(split_queue, reg, &ram)))
             };
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
-            self.event_loop(&mut (queues?), &ram, &param)?;
+            self.event_loop(&mut (queues?), &ram, &param)
         } else {
             let new_queue = |reg| {
                 let Some(split_queue) = SplitQueue::new(reg, &ram, event_idx)? else {
@@ -470,17 +584,23 @@ where
                 Ok(Some(Queue::new(split_queue, reg, &ram)))
             };
             let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
-            self.event_loop(&mut (queues?), &ram, &param)?;
-        };
-        self.backend.reset(&mut self.context.dev)?;
-        Ok(())
+            self.event_loop(&mut (queues?), &ram, &param)
+        }
     }
 
     fn do_work(mut self) {
         while self.context.state != WorkerState::Shutdown {
             if let Err(e) = self.loop_until_reset() {
-                log::error!("worker {}: {e:?}", self.context.dev.name(),);
-                return;
+                log::error!("worker {}: {e:?}", self.context.dev.name());
+                // Keep the worker alive, so that the driver can still reset
+                // and restart the device.
+                if self.context.state == WorkerState::Running {
+                    self.context.state = WorkerState::Pending;
+                }
+            }
+            // The memory layout lock is released by now.
+            if let Some(seq) = self.context.reset_seq.take() {
+                self.context.ack_reset(seq);
             }
         }
         log::debug!("worker {}: done", self.context.dev.name())
