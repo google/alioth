@@ -14,9 +14,9 @@
 
 use std::fs::File;
 use std::io::ErrorKind;
-use std::mem::size_of_val;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::Path;
+use std::slice;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -39,7 +39,7 @@ use crate::virtio::dev::fs::{DAX_SHMEM_ID, FsConfig, FsFeature};
 use crate::virtio::dev::{DevSpec, Virtio, WorkerParam};
 use crate::virtio::queue::VirtQueue;
 use crate::virtio::vu::bindings::{
-    DeviceConfig, VhostUserMmap, VhostUserMmapFlag, VuBackMsg, VuFeature,
+    DeviceConfig, Message, VhostUserMmap, VhostUserMmapFlag, VuBackMsg, VuFeature,
 };
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::vu::frontend::VuFrontend;
@@ -225,51 +225,13 @@ impl VirtioMio for VuFs {
             .fail()?;
         };
         loop {
-            let mut fds = [None];
-            let msg = channel.recv_msg(&mut fds);
-            let (request, size) = match msg {
-                Ok(m) => (m.request, m.size),
+            let mut fd = None;
+            let msg = match channel.recv_msg(slice::from_mut(&mut fd)) {
+                Ok(msg) => msg,
                 Err(Error::System { error, .. }) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e)?,
             };
-            let payload: VhostUserMmap = channel.recv_payload()?;
-
-            if size as usize != size_of_val(&payload) {
-                return vu_error::PayloadSize {
-                    want: size_of_val(&payload),
-                    got: size,
-                }
-                .fail()?;
-            }
-            match VuBackMsg::from(request) {
-                VuBackMsg::SHMEM_MAP => {
-                    let [Some(fd)] = fds else {
-                        return vu_error::MissingFd { req: request }.fail()?;
-                    };
-                    let mut flag = FuseSetupmappingFlag::READ;
-                    if payload.flags.contains(VhostUserMmapFlag::RW) {
-                        flag |= FuseSetupmappingFlag::WRITE;
-                    }
-                    let (offset, len) = (payload.shm_offset, payload.len);
-                    log::trace!(
-                        "{}: mapping fd {} to offset {offset:#x}, size {len:#x}",
-                        self.name(),
-                        fd.as_raw_fd(),
-                    );
-                    let file = File::from(fd);
-                    dax_region.map(offset, &file, payload.fd_offset, len, flag)?;
-                }
-                VuBackMsg::SHMEM_UNMAP => {
-                    let (offset, len) = (payload.shm_offset, payload.len);
-                    log::trace!(
-                        "{}: unmapping offset {offset:#x}, size {len:#x}",
-                        self.name(),
-                    );
-                    dax_region.unmap(offset, len)?;
-                }
-                _ => unimplemented!("{}: unknown request {request:#x}", self.name()),
-            }
-            channel.reply(VuBackMsg::from(request), &0u64, &[])?;
+            handle_backend_req(self.name(), channel, dax_region, &msg, fd)?;
         }
         Ok(())
     }
@@ -289,6 +251,59 @@ impl VirtioMio for VuFs {
     fn reset(&mut self, registry: &Registry) {
         self.frontend.reset(registry)
     }
+}
+
+/// Handles a request from the backend, given its header and file
+/// descriptor.
+fn handle_backend_req(
+    name: &str,
+    channel: &VuChannel,
+    dax_region: &ArcMemPages,
+    msg: &Message,
+    fd: Option<OwnedFd>,
+) -> Result<()> {
+    let req = VuBackMsg::from(msg.request);
+    // The frontend negotiates only the SHMEM requests. The payload of
+    // another request is unknown, so the channel cannot go on.
+    if !matches!(req, VuBackMsg::SHMEM_MAP | VuBackMsg::SHMEM_UNMAP) {
+        return vu_error::UnsupportedReq { req: msg.request }.fail()?;
+    }
+    let want = size_of::<VhostUserMmap>();
+    if msg.size as usize != want {
+        return vu_error::PayloadSize {
+            want,
+            got: msg.size,
+        }
+        .fail()?;
+    }
+    let payload: VhostUserMmap = channel.recv_payload()?;
+    let (offset, len) = (payload.shm_offset, payload.len);
+    let ret = if req == VuBackMsg::SHMEM_MAP {
+        let Some(fd) = fd else {
+            return vu_error::MissingFd { req: msg.request }.fail()?;
+        };
+        let mut flag = FuseSetupmappingFlag::READ;
+        if payload.flags.contains(VhostUserMmapFlag::RW) {
+            flag |= FuseSetupmappingFlag::WRITE;
+        }
+        let file = File::from(fd);
+        log::trace!(
+            "{name}: mapping fd {} to offset {offset:#x}, size {len:#x}",
+            file.as_raw_fd()
+        );
+        dax_region.map(offset, &file, payload.fd_offset, len, flag)
+    } else {
+        log::trace!("{name}: unmapping offset {offset:#x}, size {len:#x}");
+        dax_region.unmap(offset, len)
+    };
+    if let Err(e) = &ret {
+        log::error!("{name}: failed to handle {req:?}: {e:?}");
+    }
+    if msg.flag.need_reply() {
+        let code = if ret.is_ok() { 0 } else { u64::MAX };
+        channel.reply(req, &code, &[])?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -336,3 +351,7 @@ impl DaxRegion for VuDaxRegion {
             .box_trace(fuse::error::DaxMapping)
     }
 }
+
+#[cfg(test)]
+#[path = "vu_test.rs"]
+mod tests;
