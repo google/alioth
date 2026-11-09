@@ -69,6 +69,8 @@ pub enum Error {
     InvalidDescriptor { id: u16 },
     #[snafu(display("Descriptor chain is longer than the queue size {size}"))]
     DescChainTooLong { size: u16 },
+    #[snafu(display("Unexpected indirect descriptor"))]
+    UnexpectedIndirectDesc,
     #[snafu(display("Invalid queue index {index}"))]
     InvalidQueueIndex { index: u16 },
     #[snafu(display("Invalid queue size {size}"))]
