@@ -254,3 +254,48 @@ fn event_idx_enabled() {
         12
     );
 }
+
+const TABLE_ADDR: u64 = DATA_ADDR + 0x1000;
+
+fn desc(addr: u64, len: u32, flag: DescFlag, next: u16) -> Desc {
+    Desc {
+        addr,
+        len,
+        flag: flag.bits(),
+        next,
+    }
+}
+
+/// Places `descs` at the start of the descriptor table and makes the chain
+/// starting at descriptor 0 available.
+fn add_chain(q: &SplitQueue, descs: &[Desc]) {
+    for (id, desc) in descs.iter().enumerate() {
+        *unsafe { &mut *q.desc.add(id) } = *desc;
+    }
+    *unsafe { &mut *q.avail_ring } = 0;
+    unsafe { &*q.avail_hdr }.idx.store(1, Ordering::Release);
+}
+
+#[rstest]
+#[case::with_next(DescFlag::INDIRECT | DescFlag::NEXT, DescFlag::empty())]
+#[case::in_indirect_table(DescFlag::INDIRECT, DescFlag::INDIRECT)]
+fn unexpected_indirect_desc(#[case] flag: DescFlag, #[case] table_flag: DescFlag) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    let table = [desc(DATA_ADDR, 1, table_flag, 0)];
+    ram.write_t(TABLE_ADDR, &table).unwrap();
+    add_chain(
+        &q,
+        &[
+            desc(TABLE_ADDR, size_of_val(&table) as u32, flag, 1),
+            desc(DATA_ADDR, 1, DescFlag::empty(), 0),
+        ],
+    );
+    assert_matches!(
+        q.get_avail(0, &ram),
+        Err(Error::UnexpectedIndirectDesc { .. })
+    );
+}

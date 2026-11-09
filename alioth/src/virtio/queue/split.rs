@@ -195,12 +195,20 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
             let desc = self.get_desc(id)?;
             let flag = DescFlag::from_bits_retain(desc.flag);
             if flag.contains(DescFlag::INDIRECT) {
+                // An indirect descriptor ends a chain in the descriptor
+                // table (VirtIO spec 1.4, Sec 2.7.5.3.1).
+                if flag.contains(DescFlag::NEXT) {
+                    return error::UnexpectedIndirectDesc.fail();
+                }
                 let mut id = 0;
                 loop {
                     let addr = desc.addr + id as u64 * size_of::<Desc>() as u64;
                     let desc: Desc = ram.read_t(addr)?;
                     let flag = DescFlag::from_bits_retain(desc.flag);
-                    assert!(!flag.contains(DescFlag::INDIRECT));
+                    // An indirect table cannot refer to another one.
+                    if flag.contains(DescFlag::INDIRECT) {
+                        return error::UnexpectedIndirectDesc.fail();
+                    }
                     if flag.contains(DescFlag::WRITE) {
                         writable.push((desc.addr, desc.len as u64));
                     } else {
