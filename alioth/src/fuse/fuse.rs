@@ -57,6 +57,8 @@ pub enum Error {
     DaxMapping {
         source: Box<dyn DebugTrace + Send + Sync + 'static>,
     },
+    #[snafu(display("Invalid DAX range: offset {offset:#x}, size {len:#x}"))]
+    InvalidDaxRange { offset: u64, len: u64 },
 }
 
 impl From<&IoError> for Error {
@@ -78,6 +80,7 @@ impl Error {
             Error::FileNotOpened { .. } => libc::EBADF,
             Error::InvalidFileHandle { .. } => libc::EBADF,
             Error::DaxMapping { .. } => libc::EINVAL,
+            Error::InvalidDaxRange { .. } => libc::EINVAL,
         }
     }
 }
