@@ -152,15 +152,17 @@ impl<'m> SplitQueue<'m> {
         let used_hdr = ram.get_ptr::<UsedHeader>(used)?;
         let avail_ring_gpa = avail + size_of::<AvailHeader>() as u64;
         let used_ring_gpa = used + size_of::<UsedHeader>() as u64;
+        // The queue accesses entries up to the queue size through the ring
+        // pointers, so the whole rings must be in guest memory.
         Ok(Some(SplitQueue {
             size: size as u16,
             avail_hdr: ram.get_ptr(avail)?,
-            avail_ring: ram.get_ptr(avail_ring_gpa)?,
+            avail_ring: ram.get_array_ptr(avail_ring_gpa, size)?,
             used_event,
             used_hdr,
-            used_ring: ram.get_ptr(used_ring_gpa)?,
+            used_ring: ram.get_array_ptr(used_ring_gpa, size)?,
             avail_event,
-            desc: ram.get_ptr(desc)?,
+            desc: ram.get_array_ptr(desc, size)?,
             _phantom: PhantomData,
         }))
     }
