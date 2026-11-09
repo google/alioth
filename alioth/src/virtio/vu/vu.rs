@@ -37,6 +37,8 @@ pub enum Error {
     System { error: std::io::Error },
     #[snafu(display("vhost-user message ({req:#x}) missing fd"))]
     MissingFd { req: u32 },
+    #[snafu(display("Unsupported vhost-user request {req:#x}"))]
+    UnsupportedReq { req: u32 },
     #[snafu(display("Unexpected vhost-user response, want {want}, got {got}"))]
     Response { want: u32, got: u32 },
     #[snafu(display("Unexpected vhost-user message size, want {want}, get {got}"))]
