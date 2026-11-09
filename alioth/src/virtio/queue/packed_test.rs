@@ -20,6 +20,7 @@ use assert_matches::assert_matches;
 use rstest::rstest;
 
 use crate::mem;
+use crate::mem::mapped::Ram;
 use crate::virtio::Error;
 use crate::virtio::queue::packed::{Desc, DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
@@ -216,6 +217,78 @@ fn chain_longer_than_ring() {
         q.get_avail(WrappedIndex::INIT, &ram),
         Err(Error::DescChainTooLong { size: 4, .. })
     );
+}
+
+const TABLE_ADDR: u64 = DATA_ADDR + 0x1000;
+
+/// Makes descriptor `offset` of the ring available.
+fn set_avail_desc(q: &PackedQueue, offset: u16, addr: u64, len: u32, flag: DescFlag) {
+    let desc = unsafe { &mut *q.desc.offset(offset as isize) };
+    desc.addr = addr;
+    desc.len = len;
+    desc.flag
+        .store((flag | DescFlag::AVAIL).bits(), Ordering::Release);
+}
+
+/// Writes an indirect table of `num` readable descriptors.
+fn write_indirect_table(ram: &Ram, num: u16) {
+    let table = ram.get_array_ptr::<Desc>(TABLE_ADDR, num as u64).unwrap();
+    for i in 0..num as usize {
+        let desc = Desc {
+            addr: DATA_ADDR,
+            len: 1,
+            ..Default::default()
+        };
+        unsafe { table.add(i).write(desc) };
+    }
+}
+
+#[rstest]
+#[case::with_next(DescFlag::INDIRECT | DescFlag::NEXT, DescFlag::empty())]
+#[case::after_next(DescFlag::NEXT, DescFlag::INDIRECT)]
+fn unexpected_indirect_desc(#[case] flag_0: DescFlag, #[case] flag_1: DescFlag) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let q = PackedQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    write_indirect_table(&ram, 1);
+    // Descriptors 0 and 1 form a list, which has an indirect descriptor.
+    for (offset, flag) in [(0, flag_0), (1, flag_1)] {
+        let (addr, len) = if flag.contains(DescFlag::INDIRECT) {
+            (TABLE_ADDR, size_of::<Desc>() as u32)
+        } else {
+            (DATA_ADDR, 1)
+        };
+        set_avail_desc(&q, offset, addr, len, flag);
+    }
+    assert_matches!(
+        q.get_avail(WrappedIndex::INIT, &ram),
+        Err(Error::UnexpectedIndirectDesc { .. })
+    );
+}
+
+#[rstest]
+#[case(4, true)]
+#[case(5, false)]
+#[case(u32::MAX / size_of::<Desc>() as u32, false)]
+fn indirect_table_len(#[case] num: u32, #[case] valid: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    reg.size.store(4, Ordering::Relaxed);
+    let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
+
+    write_indirect_table(&ram, 5);
+    let len = num * size_of::<Desc>() as u32;
+    set_avail_desc(&q, 0, TABLE_ADDR, len, DescFlag::INDIRECT);
+    let chain = q.get_avail(WrappedIndex::INIT, &ram);
+    if valid {
+        assert_matches!(chain, Ok(Some(c)) if c.readable.len() == num as usize);
+    } else {
+        assert_matches!(chain, Err(Error::DescChainTooLong { size: 4, .. }));
+    }
 }
 
 #[test]

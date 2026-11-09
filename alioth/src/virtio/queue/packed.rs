@@ -166,7 +166,19 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
             let desc = unsafe { self.desc.offset(offset as isize).read_volatile() };
             let flag = DescFlag::from_bits_retain(desc.flag.into_inner());
             if flag.contains(DescFlag::INDIRECT) {
-                for i in 0..(desc.len as usize / size_of::<Desc>()) {
+                // An indirect descriptor cannot be in a list (VirtIO spec
+                // 1.4, Sec 2.8.19).
+                if delta > 0 || flag.contains(DescFlag::NEXT) {
+                    return error::UnexpectedIndirectDesc.fail();
+                }
+                let num = desc.len as usize / size_of::<Desc>();
+                // A driver cannot create a chain longer than allowed by the
+                // device (VirtIO spec 1.4, Sec 2.8.19). Like a split queue,
+                // allow up to the queue size.
+                if num > self.size as usize {
+                    return error::DescChainTooLong { size: self.size }.fail();
+                }
+                for i in 0..num {
                     let addr = desc.addr + (i * size_of::<Desc>()) as u64;
                     let desc: Desc = ram.read_t(addr)?;
                     let flag = DescFlag::from_bits_retain(desc.flag.into_inner());
