@@ -44,6 +44,17 @@ use crate::{bitflags, ffi, impl_mmio_for_zerocopy};
 
 pub const DAX_SHMEM_ID: u8 = 0;
 
+/// Returns the address of `len` bytes at `offset` of a DAX window.
+///
+/// The bytes must be within the window, so that mapping them does not
+/// replace other mappings of the process.
+fn dax_addr(window: &ArcMemPages, offset: u64, len: u64) -> fuse::Result<usize> {
+    match offset.checked_add(len) {
+        Some(end) if end <= window.size() => Ok(window.addr() + offset as usize),
+        _ => fuse::error::InvalidDaxRange { offset, len }.fail(),
+    }
+}
+
 impl DaxRegion for ArcMemPages {
     fn map(
         &self,
@@ -55,7 +66,7 @@ impl DaxRegion for ArcMemPages {
     ) -> fuse::Result<()> {
         let fd = fd.as_raw_fd();
 
-        let map_addr = self.addr() + m_offset as usize;
+        let map_addr = dax_addr(self, m_offset, len)?;
 
         let mut prot = 0;
         if flag.contains(FuseSetupmappingFlag::READ) {
@@ -83,7 +94,7 @@ impl DaxRegion for ArcMemPages {
     }
 
     fn unmap(&self, m_offset: u64, len: u64) -> fuse::Result<()> {
-        let map_addr = self.addr() + m_offset as usize;
+        let map_addr = dax_addr(self, m_offset, len)?;
         let flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED;
         ffi!(
             unsafe { libc::mmap(map_addr as _, len as _, libc::PROT_NONE, flags, -1, 0) },
@@ -431,3 +442,7 @@ where
         self.fuse.set_dax_region(Box::new(vu_dax_region));
     }
 }
+
+#[cfg(test)]
+#[path = "fs_test.rs"]
+mod tests;
