@@ -13,15 +13,18 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
+use rstest::rstest;
 
+use crate::mem;
 use crate::virtio::Error;
 use crate::virtio::queue::VirtQueue;
-use crate::virtio::queue::split::{Desc, DescFlag, SplitQueue};
+use crate::virtio::queue::split::{AvailHeader, Desc, DescFlag, SplitQueue, UsedElem, UsedHeader};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
-use crate::virtio::tests::{DATA_ADDR, fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{DATA_ADDR, MEM_SIZE, QUEUE_SIZE, fixture_queues, fixture_ram_bus};
 
 impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
     fn add_desc(
@@ -121,6 +124,63 @@ fn invalid_queue_size() {
     reg.size.store(3, Ordering::Relaxed);
     let split_queue = SplitQueue::new(reg, &ram, false);
     assert_matches!(split_queue, Err(Error::InvalidQueueSize { size: 3, .. }));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Ring {
+    Desc,
+    Avail,
+    Used,
+}
+
+#[rstest]
+#[case(Ring::Desc, QUEUE_SIZE, true)]
+#[case(Ring::Desc, QUEUE_SIZE - 1, false)]
+#[case(Ring::Desc, 1, false)]
+#[case(Ring::Avail, QUEUE_SIZE, true)]
+#[case(Ring::Avail, QUEUE_SIZE - 1, false)]
+#[case(Ring::Avail, 1, false)]
+#[case(Ring::Used, QUEUE_SIZE, true)]
+#[case(Ring::Used, QUEUE_SIZE - 1, false)]
+#[case(Ring::Used, 1, false)]
+fn ring_at_end_of_memory(#[case] ring: Ring, #[case] entries: u16, #[case] valid: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+
+    // Place the ring so that only its first `entries` entries are in guest
+    // memory.
+    let end = MEM_SIZE as u64;
+    let entries = entries as u64;
+    let (field, gpa) = match ring {
+        Ring::Desc => (&reg.desc, end - entries * size_of::<Desc>() as u64),
+        Ring::Avail => {
+            let ring_size = entries * size_of::<u16>() as u64;
+            (
+                &reg.driver,
+                end - ring_size - size_of::<AvailHeader>() as u64,
+            )
+        }
+        Ring::Used => {
+            let ring_size = entries * size_of::<UsedElem>() as u64;
+            (
+                &reg.device,
+                end - ring_size - size_of::<UsedHeader>() as u64,
+            )
+        }
+    };
+    field.store(gpa, Ordering::Relaxed);
+
+    let split_queue = SplitQueue::new(reg, &ram, false);
+    if valid {
+        assert_matches!(split_queue, Ok(Some(_)));
+    } else {
+        assert_matches!(
+            split_queue,
+            Err(Error::Memory { source, .. }) if matches!(*source, mem::Error::NotContinuous { .. })
+        );
+    }
 }
 
 #[test]
