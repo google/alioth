@@ -287,14 +287,19 @@ impl Ram {
     }
 
     pub fn get_ptr<T>(&self, gpa: u64) -> Result<*mut T, Error> {
-        let host_ref = self.get_partial_slice_mut(gpa, size_of::<T>() as u64)?;
-        let ptr = host_ref.as_mut_ptr();
-        if host_ref.len() != size_of::<T>() {
-            error::NotContinuous {
-                addr: gpa,
-                size: size_of::<T>() as u64,
-            }
-            .fail()
+        self.get_array_ptr(gpa, 1)
+    }
+
+    /// Returns a pointer to `len` consecutive values of type `T` at `gpa`.
+    ///
+    /// All the values must be in one contiguous host mapping, so that the
+    /// pointer stays valid when offset by up to `len - 1` elements.
+    pub fn get_array_ptr<T>(&self, gpa: u64, len: u64) -> Result<*mut T, Error> {
+        let size = len.saturating_mul(size_of::<T>() as u64);
+        let host_ref = self.get_partial_slice_mut(gpa, size)?;
+        let ptr = host_ref.as_mut_ptr() as *mut T;
+        if host_ref.len() as u64 != size {
+            error::NotContinuous { addr: gpa, size }.fail()
         } else if !ptr.is_aligned() {
             error::NotAligned {
                 addr: ptr as u64,
@@ -302,7 +307,7 @@ impl Ram {
             }
             .fail()
         } else {
-            Ok(ptr as *mut T)
+            Ok(ptr)
         }
     }
 

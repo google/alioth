@@ -20,6 +20,7 @@ use libc::{PROT_READ, PROT_WRITE};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use super::{ArcMemPages, RamBus};
+use crate::mem::Error;
 
 #[derive(Debug, IntoBytes, FromBytes, Immutable, PartialEq, Eq)]
 #[repr(C)]
@@ -87,4 +88,48 @@ fn test_ram_bus_read() {
     drop(iov);
     drop(locked_bus);
     bus.remove(0x0).unwrap();
+}
+
+#[test]
+fn test_ram_get_array_ptr() {
+    let bus = RamBus::new();
+    let prot = PROT_READ | PROT_WRITE;
+    // Two adjacent guest pages, backed by separate host mappings.
+    for gpa in [0, PAGE_SIZE] {
+        let pages = ArcMemPages::from_anonymous(PAGE_SIZE as usize, Some(prot), None).unwrap();
+        bus.add(gpa, pages).unwrap();
+    }
+    let ram = bus.lock_layout();
+
+    let ptr = ram.get_array_ptr::<u64>(PAGE_SIZE - 16, 2).unwrap();
+    assert_eq!(ptr, ram.get_ptr::<u64>(PAGE_SIZE - 16).unwrap());
+
+    // The last element is in the other host mapping.
+    assert_matches!(
+        ram.get_array_ptr::<u64>(PAGE_SIZE - 8, 2),
+        Err(Error::NotContinuous { addr, size: 16, .. }) if addr == PAGE_SIZE - 8
+    );
+    // The last element is beyond the end of guest memory.
+    assert_matches!(
+        ram.get_array_ptr::<u64>(2 * PAGE_SIZE - 8, 2),
+        Err(Error::NotContinuous { .. })
+    );
+    assert_matches!(
+        ram.get_array_ptr::<u64>(2 * PAGE_SIZE, 1),
+        Err(Error::NotMapped { .. })
+    );
+    assert_matches!(
+        ram.get_array_ptr::<u64>(0, u64::MAX),
+        Err(Error::NotContinuous { .. })
+    );
+
+    // Pointers must be aligned for the type.
+    assert_matches!(
+        ram.get_array_ptr::<u64>(4, 2),
+        Err(Error::NotAligned { align: 8, .. })
+    );
+    assert_matches!(
+        ram.get_ptr::<u64>(4),
+        Err(Error::NotAligned { align: 8, .. })
+    );
 }
