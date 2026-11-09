@@ -67,6 +67,8 @@ pub enum Error {
     WorkerThread { error: std::io::Error },
     #[snafu(display("Invalid descriptor id {id}"))]
     InvalidDescriptor { id: u16 },
+    #[snafu(display("Descriptor chain is longer than the queue size {size}"))]
+    DescChainTooLong { size: u16 },
     #[snafu(display("Invalid queue index {index}"))]
     InvalidQueueIndex { index: u16 },
     #[snafu(display("Invalid queue size {size}"))]

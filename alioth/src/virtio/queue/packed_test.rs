@@ -13,16 +13,18 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use assert_matches::assert_matches;
 use rstest::rstest;
 
+use crate::mem;
 use crate::virtio::Error;
-use crate::virtio::queue::packed::{DescEvent, EventFlag, PackedQueue, WrappedIndex};
+use crate::virtio::queue::packed::{Desc, DescEvent, EventFlag, PackedQueue, WrappedIndex};
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
 use crate::virtio::queue::{DescFlag, VirtQueue};
-use crate::virtio::tests::{DATA_ADDR, QUEUE_SIZE, fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{DATA_ADDR, MEM_SIZE, QUEUE_SIZE, fixture_queues, fixture_ram_bus};
 
 const WRAP_COUNTER: u16 = 1 << 15;
 
@@ -147,16 +149,73 @@ fn disabled_queue() {
     assert_matches!(split_queue, Ok(None));
 }
 
-#[test]
-fn invalid_queue_size() {
+#[rstest]
+#[case(0, false)]
+#[case(1 << 15, true)]
+#[case((1 << 15) + 1, false)]
+#[case(u16::MAX, false)]
+fn queue_size(#[case] size: u16, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
     let ram = ram_bus.lock_layout();
     let reg = &queues[0];
 
-    reg.size.store(0, Ordering::Relaxed);
-    let split_queue = PackedQueue::new(reg, &ram, false);
-    assert_matches!(split_queue, Err(Error::InvalidQueueSize { size: 0, .. }));
+    reg.size.store(size, Ordering::Relaxed);
+    let packed_queue = PackedQueue::new(reg, &ram, false);
+    if valid {
+        assert_matches!(packed_queue, Ok(Some(_)));
+    } else {
+        assert_matches!(packed_queue, Err(Error::InvalidQueueSize { size: s, .. }) if s == size);
+    }
+}
+
+#[rstest]
+#[case(QUEUE_SIZE, true)]
+#[case(QUEUE_SIZE - 1, false)]
+#[case(1, false)]
+fn ring_at_end_of_memory(#[case] entries: u16, #[case] valid: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+
+    // Place the ring so that only its first `entries` descriptors are in
+    // guest memory.
+    let ring_size = entries as u64 * size_of::<Desc>() as u64;
+    reg.desc
+        .store(MEM_SIZE as u64 - ring_size, Ordering::Relaxed);
+
+    let packed_queue = PackedQueue::new(reg, &ram, false);
+    if valid {
+        assert_matches!(packed_queue, Ok(Some(_)));
+    } else {
+        assert_matches!(
+            packed_queue,
+            Err(Error::Memory { source, .. }) if matches!(*source, mem::Error::NotContinuous { .. })
+        );
+    }
+}
+
+#[test]
+fn chain_longer_than_ring() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    reg.size.store(4, Ordering::Relaxed);
+    let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
+
+    // Every descriptor is available and links to the next one, so the chain
+    // never ends.
+    for offset in 0..4 {
+        let desc = unsafe { &*q.desc.offset(offset) };
+        let flag = DescFlag::AVAIL | DescFlag::NEXT;
+        desc.flag.store(flag.bits(), Ordering::Release);
+    }
+    assert_matches!(
+        q.get_avail(WrappedIndex::INIT, &ram),
+        Err(Error::DescChainTooLong { size: 4, .. })
+    );
 }
 
 #[test]
