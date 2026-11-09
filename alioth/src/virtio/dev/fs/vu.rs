@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_NONE, mmap};
+use libc::PROT_NONE;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -28,6 +28,7 @@ use serde::Deserialize;
 use serde_aco::Help;
 use zerocopy::{FromZeros, IntoBytes};
 
+use crate::align_up;
 use crate::errors::BoxTrace;
 use crate::fuse::bindings::FuseSetupmappingFlag;
 use crate::fuse::{self, DaxRegion};
@@ -45,7 +46,6 @@ use crate::virtio::vu::frontend::VuFrontend;
 use crate::virtio::vu::{Error, error as vu_error};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, IrqSender, Result};
-use crate::{align_up, ffi};
 
 #[derive(Debug)]
 pub struct VuFs {
@@ -246,46 +246,26 @@ impl VirtioMio for VuFs {
                     let [Some(fd)] = fds else {
                         return vu_error::MissingFd { req: request }.fail()?;
                     };
-                    let shm_offset = payload.shm_offset;
-                    let map_addr = dax_region.addr() + shm_offset as usize;
-                    let prot = if payload.flags.contains(VhostUserMmapFlag::RW) {
-                        libc::PROT_READ | libc::PROT_WRITE
-                    } else {
-                        libc::PROT_READ
-                    };
+                    let mut flag = FuseSetupmappingFlag::READ;
+                    if payload.flags.contains(VhostUserMmapFlag::RW) {
+                        flag |= FuseSetupmappingFlag::WRITE;
+                    }
+                    let (offset, len) = (payload.shm_offset, payload.len);
                     log::trace!(
-                        "{}: mapping fd {} to offset {shm_offset:#x}, size {:#x}",
+                        "{}: mapping fd {} to offset {offset:#x}, size {len:#x}",
                         self.name(),
                         fd.as_raw_fd(),
-                        payload.len,
                     );
-                    ffi!(
-                        unsafe {
-                            mmap(
-                                map_addr as _,
-                                payload.len as _,
-                                prot,
-                                MAP_SHARED | MAP_FIXED,
-                                fd.as_raw_fd(),
-                                payload.fd_offset as _,
-                            )
-                        },
-                        MAP_FAILED
-                    )?;
+                    let file = File::from(fd);
+                    dax_region.map(offset, &file, payload.fd_offset, len, flag)?;
                 }
                 VuBackMsg::SHMEM_UNMAP => {
-                    let shm_offset = payload.shm_offset;
-                    let len = payload.len;
+                    let (offset, len) = (payload.shm_offset, payload.len);
                     log::trace!(
-                        "{}: unmapping offset {shm_offset:#x}, size {len:#x}",
+                        "{}: unmapping offset {offset:#x}, size {len:#x}",
                         self.name(),
                     );
-                    let map_addr = dax_region.addr() + shm_offset as usize;
-                    let flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED;
-                    ffi!(
-                        unsafe { mmap(map_addr as _, len as _, PROT_NONE, flags, -1, 0) },
-                        MAP_FAILED
-                    )?;
+                    dax_region.unmap(offset, len)?;
                 }
                 _ => unimplemented!("{}: unknown request {request:#x}", self.name()),
             }
