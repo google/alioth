@@ -23,6 +23,11 @@ use crate::mem::mapped::Ram;
 use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
 use crate::virtio::{Result, error};
 
+/// The maximum size of a packed virtqueue (VirtIO spec 1.4, Sec 2.8).
+///
+/// [`WrappedIndex`] has 15 bits for the offset into the ring.
+const PACKED_QUEUE_SIZE_MAX: u16 = 1 << 15;
+
 #[repr(C, align(16))]
 #[derive(Debug, Default, FromBytes, IntoBytes)]
 struct Desc {
@@ -108,13 +113,15 @@ impl<'m> PackedQueue<'m> {
         if !reg.enabled.load(Ordering::Acquire) {
             return Ok(None);
         }
-        if size == 0 {
+        if size == 0 || size > PACKED_QUEUE_SIZE_MAX {
             return error::InvalidQueueSize { size }.fail();
         }
         let notification: *mut DescEvent = ram.get_ptr(device)?;
         Ok(Some(PackedQueue {
             size,
-            desc: ram.get_ptr(desc)?,
+            // The queue accesses descriptors up to the queue size, so the
+            // whole ring must be in guest memory.
+            desc: ram.get_array_ptr(desc, size as u64)?,
             enable_event_idx: event_idx,
             notification,
             interrupt: ram.get_ptr(driver)?,
@@ -177,6 +184,12 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
             delta += 1;
             if !flag.contains(DescFlag::NEXT) {
                 break desc.id;
+            }
+            // A chain takes consecutive descriptors, so it cannot be longer
+            // than the ring. Stopping there also keeps the offset of the
+            // next chain within the ring.
+            if delta == self.size {
+                return error::DescChainTooLong { size: self.size }.fail();
             }
             offset = (offset + 1) % self.size;
         };
