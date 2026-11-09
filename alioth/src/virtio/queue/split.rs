@@ -120,6 +120,16 @@ impl SplitQueue<'_> {
             error::InvalidDescriptor { id }.fail()
         }
     }
+
+    /// Returns descriptor `id` in the table that `indirect` refers to.
+    fn get_indirect_desc(ram: &Ram, indirect: &Desc, id: u16) -> Result<Desc> {
+        if (id as u32) < indirect.len / size_of::<Desc>() as u32 {
+            let addr = indirect.addr + id as u64 * size_of::<Desc>() as u64;
+            Ok(ram.read_t(addr)?)
+        } else {
+            error::InvalidDescriptor { id }.fail()
+        }
+    }
 }
 
 impl<'m> SplitQueue<'m> {
@@ -191,45 +201,40 @@ impl<'m> VirtQueue<'m> for SplitQueue<'m> {
                 .read_volatile()
         };
         let mut id = head_id;
+        // After an indirect descriptor, `id` indexes the table it refers to.
+        let mut indirect: Option<Desc> = None;
         loop {
-            let desc = self.get_desc(id)?;
+            let desc = match &indirect {
+                None => self.get_desc(id)?,
+                Some(indirect) => Self::get_indirect_desc(ram, indirect, id)?,
+            };
             let flag = DescFlag::from_bits_retain(desc.flag);
             if flag.contains(DescFlag::INDIRECT) {
                 // An indirect descriptor ends a chain in the descriptor
-                // table (VirtIO spec 1.4, Sec 2.7.5.3.1).
-                if flag.contains(DescFlag::NEXT) {
+                // table, and an indirect table cannot refer to another one
+                // (VirtIO spec 1.4, Sec 2.7.5.3.1).
+                if flag.contains(DescFlag::NEXT) || indirect.is_some() {
                     return error::UnexpectedIndirectDesc.fail();
                 }
-                let mut id = 0;
-                loop {
-                    let addr = desc.addr + id as u64 * size_of::<Desc>() as u64;
-                    let desc: Desc = ram.read_t(addr)?;
-                    let flag = DescFlag::from_bits_retain(desc.flag);
-                    // An indirect table cannot refer to another one.
-                    if flag.contains(DescFlag::INDIRECT) {
-                        return error::UnexpectedIndirectDesc.fail();
-                    }
-                    if flag.contains(DescFlag::WRITE) {
-                        writable.push((desc.addr, desc.len as u64));
-                    } else {
-                        readable.push((desc.addr, desc.len as u64));
-                    }
-                    if flag.contains(DescFlag::NEXT) {
-                        id = desc.next;
-                    } else {
-                        break;
-                    }
-                }
-            } else if flag.contains(DescFlag::WRITE) {
+                indirect = Some(desc);
+                id = 0;
+                continue;
+            }
+            // A chain cannot be longer than the queue size, counting the
+            // descriptors in an indirect table (VirtIO spec 1.4, Sec
+            // 2.7.5.3.1). This also catches loops in the chain.
+            if readable.len() + writable.len() >= self.size as usize {
+                return error::DescChainTooLong { size: self.size }.fail();
+            }
+            if flag.contains(DescFlag::WRITE) {
                 writable.push((desc.addr, desc.len as u64));
             } else {
                 readable.push((desc.addr, desc.len as u64));
             }
-            if flag.contains(DescFlag::NEXT) {
-                id = desc.next;
-            } else {
+            if !flag.contains(DescFlag::NEXT) {
                 break;
             }
+            id = desc.next;
         }
         let readable = ram.translate_iov(&readable)?;
         let writable = ram.translate_iov_mut(&writable)?;

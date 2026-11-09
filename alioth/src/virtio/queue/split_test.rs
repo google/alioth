@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 use rstest::rstest;
+use zerocopy::IntoBytes;
 
 use crate::mem;
 use crate::virtio::Error;
@@ -297,5 +298,137 @@ fn unexpected_indirect_desc(#[case] flag: DescFlag, #[case] table_flag: DescFlag
     assert_matches!(
         q.get_avail(0, &ram),
         Err(Error::UnexpectedIndirectDesc { .. })
+    );
+}
+
+/// Returns `n` readable descriptors linked in order.
+fn linked_descs(n: u16) -> Vec<Desc> {
+    (0..n)
+        .map(|id| {
+            let flag = if id + 1 < n {
+                DescFlag::NEXT
+            } else {
+                DescFlag::empty()
+            };
+            desc(DATA_ADDR, 1, flag, id + 1)
+        })
+        .collect()
+}
+
+#[test]
+fn indirect_chain() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    ram.write(DATA_ADDR, b"abcdefg").unwrap();
+    // A readable descriptor in the descriptor table, followed by an
+    // indirect table of a readable and a writable descriptor.
+    let table = [
+        desc(DATA_ADDR + 1, 2, DescFlag::NEXT, 1),
+        desc(DATA_ADDR + 3, 4, DescFlag::WRITE, 0),
+    ];
+    ram.write_t(TABLE_ADDR, &table).unwrap();
+    add_chain(
+        &q,
+        &[
+            desc(DATA_ADDR, 1, DescFlag::NEXT, 1),
+            desc(
+                TABLE_ADDR,
+                size_of_val(&table) as u32,
+                DescFlag::INDIRECT,
+                0,
+            ),
+        ],
+    );
+    let chain = q.get_avail(0, &ram).unwrap().unwrap();
+    assert_eq!(chain.id, 0);
+    assert_eq!(chain.readable.len(), 2);
+    assert_eq!(&*chain.readable[0], b"a");
+    assert_eq!(&*chain.readable[1], b"bc");
+    assert_eq!(chain.writable.len(), 1);
+    assert_eq!(&*chain.writable[0], b"defg");
+}
+
+#[rstest]
+#[case(4, 0, true)]
+#[case(2, 2, true)]
+#[case(0, 4, true)]
+#[case(2, 3, false)]
+#[case(0, 5, false)]
+fn chain_len(#[case] direct: u16, #[case] indirect: u16, #[case] valid: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let reg = &queues[0];
+    reg.size.store(4, Ordering::Relaxed);
+    let q = SplitQueue::new(reg, &ram, false).unwrap().unwrap();
+
+    // `direct` descriptors in the descriptor table, followed by an indirect
+    // descriptor referring to a table of `indirect` descriptors.
+    let mut descs = linked_descs(direct + (indirect > 0) as u16);
+    if indirect > 0 {
+        let table = linked_descs(indirect);
+        ram.write(TABLE_ADDR, table.as_bytes()).unwrap();
+        let len = (table.len() * size_of::<Desc>()) as u32;
+        *descs.last_mut().unwrap() = desc(TABLE_ADDR, len, DescFlag::INDIRECT, 0);
+    }
+    add_chain(&q, &descs);
+
+    let chain = q.get_avail(0, &ram);
+    if valid {
+        let len = (direct + indirect) as usize;
+        assert_matches!(chain, Ok(Some(c)) if c.readable.len() == len);
+    } else {
+        assert_matches!(chain, Err(Error::DescChainTooLong { size: 4, .. }));
+    }
+}
+
+#[rstest]
+#[case::in_desc_table(false)]
+#[case::in_indirect_table(true)]
+fn chain_with_loop(#[case] indirect: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    // Descriptors 0 and 1 link to each other, so the chain never ends.
+    let descs = [
+        desc(DATA_ADDR, 1, DescFlag::NEXT, 1),
+        desc(DATA_ADDR, 1, DescFlag::NEXT, 0),
+    ];
+    if indirect {
+        ram.write_t(TABLE_ADDR, &descs).unwrap();
+        let len = size_of_val(&descs) as u32;
+        add_chain(&q, &[desc(TABLE_ADDR, len, DescFlag::INDIRECT, 0)]);
+    } else {
+        add_chain(&q, &descs);
+    }
+    assert_matches!(
+        q.get_avail(0, &ram),
+        Err(Error::DescChainTooLong {
+            size: QUEUE_SIZE,
+            ..
+        })
+    );
+}
+
+#[test]
+fn desc_out_of_indirect_table() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.lock_layout();
+    let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    // The indirect table has only descriptor 0, which links to descriptor 1.
+    let table = linked_descs(2);
+    ram.write(TABLE_ADDR, table.as_bytes()).unwrap();
+    let len = size_of::<Desc>() as u32;
+    add_chain(&q, &[desc(TABLE_ADDR, len, DescFlag::INDIRECT, 0)]);
+    assert_matches!(
+        q.get_avail(0, &ram),
+        Err(Error::InvalidDescriptor { id: 1, .. })
     );
 }
