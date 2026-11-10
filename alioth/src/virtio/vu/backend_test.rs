@@ -20,6 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
+use mio::{Events, Interest, Poll, Token};
 
 use crate::mem;
 use crate::mem::emulated::{Action, Mmio};
@@ -28,7 +29,7 @@ use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{VirtioDevice, WakeEvent, WorkerCtl, WorkerReport};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::vu::backend::{VuBackend, VuIrqSender};
-use crate::virtio::vu::bindings::VirtqState;
+use crate::virtio::vu::bindings::{MemoryRegion, MemorySingleRegion, VirtqState};
 use crate::virtio::vu::conn::VuSession;
 use crate::virtio::{DevStatus, DeviceId};
 
@@ -59,9 +60,22 @@ fn spawn_backend<W>(worker: W) -> (VuSession, JoinHandle<()>)
 where
     W: FnOnce(TestWakeReceiver, Sender<WorkerReport>) + Send + 'static,
 {
+    let notifier = Arc::new(Notifier::new().unwrap());
+    spawn_backend_on(Arc::default(), notifier, worker)
+}
+
+/// Like [`spawn_backend`], with the guest memory of the backend and the
+/// notifier of the worker.
+fn spawn_backend_on<W>(
+    memory: Arc<RamBus>,
+    notifier: Arc<Notifier>,
+    worker: W,
+) -> (VuSession, JoinHandle<()>)
+where
+    W: FnOnce(TestWakeReceiver, Sender<WorkerReport>) + Send + 'static,
+{
     let (event_tx, event_rx) = flume::unbounded();
     let (report_tx, report_rx) = flume::unbounded();
-    let notifier = Arc::new(Notifier::new().unwrap());
     let dev = VirtioDevice {
         name: "vu-backend".into(),
         id: DeviceId::NET,
@@ -80,7 +94,7 @@ where
     let worker = thread::spawn(move || worker(event_rx, report_tx));
 
     let (frontend_conn, backend_conn) = UnixStream::pair().unwrap();
-    let mut backend = VuBackend::new(backend_conn, dev, Arc::new(RamBus::new())).unwrap();
+    let mut backend = VuBackend::new(backend_conn, dev, memory).unwrap();
     let backend_thread = thread::spawn(move || {
         backend.run().unwrap();
         // Dropping the backend disconnects the worker.
@@ -169,6 +183,61 @@ fn test_vu_backend_needs_reset_after_worker_failure() {
     // Resetting the device brings it back into service.
     frontend.set_status(&0).unwrap();
     assert_eq!(frontend.get_status().unwrap(), 0);
+
+    drop(frontend);
+    backend_thread.join().unwrap();
+}
+
+#[test]
+fn test_vu_backend_changes_memory_while_running() {
+    let memory = Arc::new(RamBus::new());
+    let mut poll = Poll::new().unwrap();
+    let mut notifier = Notifier::new().unwrap();
+    let registry = poll.registry();
+    registry
+        .register(&mut notifier, Token(0), Interest::READABLE)
+        .unwrap();
+    // A fake worker that does nothing but complete resets.
+    let worker = |event_rx: TestWakeReceiver, report_tx: Sender<WorkerReport>| {
+        for event in event_rx.iter() {
+            match event {
+                WakeEvent::Start { .. } => {}
+                WakeEvent::Reset { seq } => {
+                    report_tx.send(WorkerReport::ResetDone { seq }).unwrap()
+                }
+                event => panic!("unexpected event: {event:?}"),
+            }
+        }
+    };
+    let (frontend, backend_thread) = spawn_backend_on(memory.clone(), Arc::new(notifier), worker);
+    start(&frontend);
+
+    let gpa = 0x2_0000;
+    let file = tempfile::tempfile().unwrap();
+    file.set_len(0x1000).unwrap();
+    let region = MemorySingleRegion {
+        _padding: 0,
+        region: MemoryRegion {
+            gpa,
+            size: 0x1000,
+            hva: 0x5_0000,
+            mmap_offset: 0,
+        },
+    };
+    // The backend changes the layout while the worker runs, and kicks the
+    // worker after each change.
+    let mut events = Events::with_capacity(1);
+    frontend.add_mem_region(&region, file.as_fd()).unwrap();
+    assert!(memory.load().translate(gpa).is_ok());
+    poll.poll(&mut events, Some(Duration::from_secs(5)))
+        .unwrap();
+    assert!(!events.is_empty());
+
+    frontend.remove_mem_region(&region).unwrap();
+    assert!(memory.load().translate(gpa).is_err());
+    poll.poll(&mut events, Some(Duration::from_secs(5)))
+        .unwrap();
+    assert!(!events.is_empty());
 
     drop(frontend);
     backend_thread.join().unwrap();
