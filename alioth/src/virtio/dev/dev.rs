@@ -23,8 +23,8 @@ pub mod net;
 pub mod vsock;
 
 use std::fmt::Debug;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -34,8 +34,8 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::mem::emulated::Mmio;
-use crate::mem::mapped::RamBus;
-use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
+use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::{self, LayoutChanged, LayoutUpdated, MemRegion};
 use crate::sync::notifier::Notifier;
 use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
@@ -292,6 +292,16 @@ where
         true
     }
 
+    /// Wakes up the worker without an event.
+    ///
+    /// The worker moves its queues to the latest guest memory layout before
+    /// it handles any event, so a kick makes an idle worker drop old layouts.
+    pub fn kick(&self) {
+        if let Err(e) = self.notifier.notify() {
+            log::error!("{}: failed to kick worker: {e}", self.name);
+        }
+    }
+
     /// Asks the worker to reset the device.
     ///
     /// Returns the sequence number of this reset, which
@@ -339,6 +349,29 @@ where
         let mut reports = self.reports.lock();
         reports.drain();
         reports.failed
+    }
+}
+
+/// Kicks a worker after each guest memory update, so that an idle worker
+/// does not keep the old layout, and the memory removed from it, alive.
+#[derive(Debug)]
+struct KickWorker<S>
+where
+    S: IrqSender,
+{
+    ctl: Weak<WorkerCtl<S>>,
+}
+
+impl<S> LayoutUpdated for KickWorker<S>
+where
+    S: IrqSender,
+{
+    fn ram_updated(&self, _: &Ram) -> mem::Result<()> {
+        // The kick neither waits for the worker nor fails the update.
+        if let Some(ctl) = self.ctl.upgrade() {
+            ctl.kick();
+        }
+        Ok(())
     }
 }
 
@@ -423,6 +456,14 @@ where
             shared_mem_regions,
         };
         Ok(virtio_dev)
+    }
+
+    /// Returns a callback that kicks the worker after each guest memory
+    /// update.
+    pub fn mem_update_kick(&self) -> Box<dyn LayoutUpdated> {
+        Box::new(KickWorker {
+            ctl: Arc::downgrade(&self.ctl),
+        })
     }
 }
 

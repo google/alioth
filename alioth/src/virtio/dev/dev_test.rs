@@ -22,16 +22,17 @@ use assert_matches::assert_matches;
 use mio::Registry;
 use mio::event::Event;
 
-use crate::mem::mapped::RamBus;
+use crate::mem::mapped::{ArcMemPages, RamBus};
+use crate::mem::{MemRegion, MemRegionType, Memory};
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
 use crate::virtio::dev::{
-    ActiveBackend, BackendEvent, Context, Register, StartParam, Virtio, WakeEvent, WorkerCtl,
-    WorkerParam, WorkerReport, WorkerState,
+    ActiveBackend, BackendEvent, Context, KickWorker, Register, StartParam, Virtio, WakeEvent,
+    WorkerCtl, WorkerParam, WorkerReport, WorkerState,
 };
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue};
-use crate::virtio::tests::{fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{MEM_SIZE, fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, Error, IrqSender, Result, VirtioFeature, error};
 
@@ -175,7 +176,7 @@ impl IrqSender for TestIrqSender {
 }
 
 struct TestWorker {
-    ctl: WorkerCtl<TestIrqSender>,
+    ctl: Arc<WorkerCtl<TestIrqSender>>,
     handle: JoinHandle<()>,
     irq_sender: Arc<TestIrqSender>,
     ram_bus: Arc<RamBus>,
@@ -186,11 +187,15 @@ struct TestWorker {
 
 impl TestWorker {
     fn spawn() -> Self {
+        Self::spawn_on(Arc::new(fixture_ram_bus()))
+    }
+
+    /// Spawns a worker whose queue is in the fixture memory of `ram_bus`.
+    fn spawn_on(ram_bus: Arc<RamBus>) -> Self {
         let dev = FakeDev::default();
         let fail_activate = dev.fail_activate.clone();
         let activations = dev.activations.clone();
         let resets = dev.resets.clone();
-        let ram_bus = Arc::new(fixture_ram_bus());
         let (event_tx, event_rx) = flume::unbounded();
         let (report_tx, report_rx) = flume::unbounded();
         let param = WorkerParam {
@@ -201,7 +206,7 @@ impl TestWorker {
         };
         let (handle, notifier) = dev.spawn_worker(param).unwrap();
         TestWorker {
-            ctl: WorkerCtl::new("fake".into(), event_tx, notifier, report_rx),
+            ctl: Arc::new(WorkerCtl::new("fake".into(), event_tx, notifier, report_rx)),
             handle,
             irq_sender: Arc::default(),
             ram_bus,
@@ -334,6 +339,38 @@ fn test_worker_fails_without_rings() {
     assert_eq!(worker.resets(), 2);
     assert!(!worker.ctl.failed());
     worker.shutdown();
+}
+
+#[test]
+fn test_worker_kicked_after_mem_update() {
+    let memory = Memory::new();
+    let add_ram = |gpa, size| {
+        let pages = ArcMemPages::from_anonymous(size, None, None).unwrap();
+        let region = MemRegion::with_ram(pages, MemRegionType::Ram);
+        memory.add_region(gpa, Arc::new(region)).unwrap();
+    };
+    add_ram(0, MEM_SIZE);
+    let worker = TestWorker::spawn_on(memory.ram_bus());
+    let kick = KickWorker {
+        ctl: Arc::downgrade(&worker.ctl),
+    };
+    memory.register_update_callback(Box::new(kick)).unwrap();
+    worker.start();
+    worker.wait_activations(1);
+
+    // The worker is idle, but drops the layout it started with once memory
+    // is plugged.
+    let old_ram = Arc::downgrade(&memory.ram_bus().load());
+    add_ram(4 << 20, 1 << 20);
+    let deadline = Instant::now() + TIMEOUT;
+    while old_ram.strong_count() > 0 {
+        assert!(Instant::now() < deadline, "old layout still in use");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    // Memory updates do not fail once the worker is gone.
+    worker.shutdown();
+    assert_matches!(memory.remove_region(4 << 20), Ok(_));
 }
 
 /// An event that does not come from the worker notifier.

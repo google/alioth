@@ -316,6 +316,8 @@ where
             self.ctx.board.memory.ram_bus(),
             self.ctx.board.spec.coco.is_some(),
         )?;
+        let kick = virtio_dev.mem_update_kick();
+        self.ctx.board.memory.register_update_callback(kick)?;
         let msi_sender = self.ctx.board.vm.create_msi_sender(
             #[cfg(target_arch = "aarch64")]
             u32::from(bdf.0),
