@@ -441,7 +441,7 @@ fn create<H: Hypervisor>(hypervisor: &H, spec: VmSpec) -> Result<Machine<H>, ali
                     id: DeviceId::BLOCK,
                     socket: s.socket,
                 };
-                vm.add_virtio_dev(format!("vu-net-{index}"), vu_spec)
+                vm.add_virtio_dev(format!("vu-blk-{index}"), vu_spec)
             }
         }?;
     }
