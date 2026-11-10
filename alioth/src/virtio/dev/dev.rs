@@ -39,7 +39,7 @@ use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::sync::notifier::Notifier;
 use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
-use crate::virtio::queue::{QUEUE_SIZE_MAX, Queue, QueueReg, VirtQueue};
+use crate::virtio::queue::{self, QUEUE_SIZE_MAX, Queue, QueueReg, VirtQueue};
 #[cfg(target_os = "linux")]
 use crate::virtio::vu::conn::VuChannel;
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature, error};
@@ -455,6 +455,9 @@ pub trait BackendEvent {
 
 pub trait ActiveBackend<D: Virtio> {
     type Event: BackendEvent;
+    type Q: VirtQueue;
+    /// Returns the queues of the event loop.
+    fn queues(&mut self) -> &mut [Option<Queue<Self::Q>>];
     fn handle_event(&mut self, dev: &mut D, event: &Self::Event) -> Result<()>;
     fn handle_queue(&mut self, dev: &mut D, index: u16) -> Result<()>;
 }
@@ -470,6 +473,9 @@ where
     /// The reset being handled, acknowledged once the worker no longer uses
     /// the queues.
     reset_seq: Option<u64>,
+    /// The guest memory generation the queues were last moved to, or `None`
+    /// at the start of an event loop.
+    ram_generation: Option<u64>,
 }
 
 impl<D, S> Context<D, S>
@@ -521,6 +527,7 @@ where
                 WakeEvent::Reset { seq } => self.ack_reset(seq),
                 WakeEvent::Start { param } => {
                     self.state = WorkerState::Running;
+                    self.ram_generation = None;
                     return Some(param);
                 }
                 #[cfg(target_os = "linux")]
@@ -542,6 +549,17 @@ where
     where
         B: ActiveBackend<D>,
     {
+        // Between events, the worker accesses guest memory only through the
+        // queues, so it moves them to the latest layout here. A layout
+        // published while they move is caught at the next event.
+        let generation = self.param.memory.generation();
+        if self.ram_generation != Some(generation) {
+            if queue::sync_queues(backend.queues())? {
+                let name = self.dev.name();
+                log::debug!("{name}: moved to guest memory generation {generation}");
+            }
+            self.ram_generation = Some(generation);
+        }
         if event.token() == TOKEN_WARKER {
             self.handle_wake_events(backend)
         } else {
@@ -568,6 +586,7 @@ where
                 param,
                 state: WorkerState::Pending,
                 reset_seq: None,
+                ram_generation: None,
             },
             backend,
         };
@@ -583,8 +602,8 @@ where
     where
         Q: VirtQueue,
     {
-        let ram = self.context.param.memory.load();
-        let new_queue = |reg| Queue::<Q>::new(reg, &ram, event_idx);
+        let ram_bus = &self.context.param.memory;
+        let new_queue = |reg| Queue::<Q>::new(reg, ram_bus.clone(), event_idx);
         let queue_regs = self.context.param.queue_regs.iter();
         let mut queues = queue_regs.map(new_queue).collect::<Result<Box<_>>>()?;
         log::debug!(

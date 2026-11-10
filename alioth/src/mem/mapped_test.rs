@@ -94,12 +94,14 @@ fn test_ram_bus_read() {
 fn test_ram_bus_snapshot() {
     let bus = RamBus::new();
     let empty = bus.load();
+    assert_eq!((bus.generation(), empty.generation()), (0, 0));
 
     // Holding a snapshot does not block updates.
     let mem = ArcMemPages::from_anonymous(PAGE_SIZE as usize, None, None).unwrap();
     bus.update(|ram| ram.add(0x0, mem.clone())).unwrap();
     assert_matches!(empty.read_t::<u32>(0x0), Err(_));
     let snapshot = bus.load();
+    assert_eq!((bus.generation(), snapshot.generation()), (1, 1));
     snapshot.write_t(0x0, &0xdeadbeef_u32).unwrap();
 
     // A failed update publishes nothing.
@@ -109,9 +111,11 @@ fn test_ram_bus_snapshot() {
     });
     assert_matches!(ret, Err(_));
     assert_matches!(bus.read_t::<u32>(PAGE_SIZE), Err(_));
+    assert_eq!(bus.generation(), 1);
 
     // A removed slot stays accessible through older snapshots.
     bus.update(|ram| ram.remove(0x0)).unwrap();
+    assert_eq!((bus.generation(), bus.load().generation()), (2, 2));
     assert_matches!(bus.read_t::<u32>(0x0), Err(_));
     assert_matches!(snapshot.read_t::<u32>(0x0), Ok(0xdeadbeef));
 }
