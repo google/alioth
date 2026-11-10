@@ -24,8 +24,10 @@ mod vmexit;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::CpuidResult;
+use std::cell::Cell;
 #[cfg(target_arch = "x86_64")]
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::ptr::null_mut;
@@ -110,19 +112,47 @@ pub struct KvmVcpu {
     arch: VcpuArch,
     #[allow(dead_code)]
     vm: Arc<VmInner>,
+    // A vCPU stays on the thread that created it, see `IMMEDIATE_EXIT`.
+    _not_send: PhantomData<*const ()>,
+}
+
+thread_local! {
+    // `immediate_exit` of the vCPU created on this thread.
+    static IMMEDIATE_EXIT: Cell<*mut u8> = const { Cell::new(null_mut()) };
+}
+
+/// Makes the vCPU of the current thread return from KVM_RUN, or from the next
+/// KVM_RUN if it is not in KVM_RUN yet.
+///
+/// It is async-signal-safe.
+pub(super) fn kick_current_vcpu() {
+    let immediate_exit = IMMEDIATE_EXIT.get();
+    if !immediate_exit.is_null() {
+        unsafe { immediate_exit.write_volatile(1) };
+    }
 }
 
 impl KvmVcpu {
     pub fn new(vm: &KvmVm, index: u16, identity: u64) -> Result<Self> {
         let vcpu_fd = Self::create_vcpu(vm, index, identity)?;
-        let kvm_run = unsafe { KvmRunBlock::new(&vcpu_fd, vm.vm.vcpu_mmap_size) }?;
+        let mut kvm_run = unsafe { KvmRunBlock::new(&vcpu_fd, vm.vm.vcpu_mmap_size) }?;
+        IMMEDIATE_EXIT.set(&mut kvm_run.immediate_exit);
         let arch = VcpuArch::new(identity);
         Ok(KvmVcpu {
             fd: vcpu_fd,
             kvm_run,
             vm: vm.vm.clone(),
             arch,
+            _not_send: PhantomData,
         })
+    }
+}
+
+impl Drop for KvmVcpu {
+    fn drop(&mut self) {
+        if IMMEDIATE_EXIT.get() == &raw mut self.kvm_run.immediate_exit {
+            IMMEDIATE_EXIT.set(null_mut());
+        }
     }
 }
 
@@ -184,26 +214,24 @@ impl Vcpu for KvmVcpu {
         };
         let ret = unsafe { kvm_run(&self.fd) };
         match ret {
-            Err(e) => match (e.raw_os_error(), entry) {
-                (Some(libc::EAGAIN), _) => Ok(VmExit::Interrupted),
-                (Some(libc::EINTR), VmEntry::Shutdown) => {
+            Err(e) => match e.raw_os_error() {
+                Some(libc::EAGAIN) => Ok(VmExit::Interrupted),
+                Some(libc::EINTR) => {
                     self.set_immediate_exit(false);
-                    Ok(VmExit::Shutdown)
-                }
-                (Some(libc::EINTR), VmEntry::Reboot) => {
-                    self.set_immediate_exit(false);
-                    Ok(VmExit::Reboot)
-                }
-                (Some(libc::EINTR), VmEntry::Pause) => {
-                    #[cfg(target_arch = "x86_64")]
-                    if let Err(e) = self.kvmclock_ctrl() {
-                        log::error!("Failed to control kvmclock: {e:?}");
+                    match entry {
+                        VmEntry::Shutdown => Ok(VmExit::Shutdown),
+                        VmEntry::Reboot => Ok(VmExit::Reboot),
+                        VmEntry::Pause => {
+                            #[cfg(target_arch = "x86_64")]
+                            if let Err(e) = self.kvmclock_ctrl() {
+                                log::error!("Failed to control kvmclock: {e:?}");
+                            }
+                            Ok(VmExit::Paused)
+                        }
+                        _ => Ok(VmExit::Interrupted),
                     }
-                    self.set_immediate_exit(false);
-                    Ok(VmExit::Paused)
                 }
-                (Some(libc::EINTR), _) => Ok(VmExit::Interrupted),
-                (Some(libc::EFAULT), _) if self.kvm_run.exit_reason == KvmExit::MEMORY_FAULT => {
+                Some(libc::EFAULT) if self.kvm_run.exit_reason == KvmExit::MEMORY_FAULT => {
                     Ok(self.handle_memory_fault())
                 }
                 _ => Err(e).context(error::RunVcpu),

@@ -175,6 +175,60 @@ fn test_vcpu_regs() {
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
+fn test_kick_before_kvm_run() {
+    use crate::hv::VmSpec;
+    use crate::hv::kvm::KvmSpec;
+
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let vm = kvm.create_vm(&VmSpec { coco: None }).unwrap();
+
+    let prot = PROT_WRITE | PROT_EXEC | PROT_READ;
+    let flag = MAP_ANONYMOUS | MAP_SHARED;
+    let user_mem = ffi!(
+        unsafe { mmap(null_mut(), 0x1000, prot, flag, -1, 0) },
+        MAP_FAILED
+    )
+    .unwrap();
+    let mmap_option = MemMapOption {
+        read: true,
+        write: true,
+        exec: true,
+        ..Default::default()
+    };
+    vm.map(0, 0x1000, user_mem as usize, mmap_option).unwrap();
+    // out 0x80, al
+    unsafe { (user_mem as *mut [u8; 2]).write([0xe6, 0x80]) };
+
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
+    let cs = SegRegVal {
+        selector: 0,
+        base: 0,
+        limit: 0xffff,
+        access: SegAccess(0x9b),
+    };
+    vcpu.set_sregs(&[], &[(SegReg::Cs, cs)], &[]).unwrap();
+    vcpu.set_regs(&[(Reg::Rip, 0), (Reg::Rflags, 0x2)]).unwrap();
+
+    // A kick before KVM_RUN makes KVM_RUN return immediately.
+    assert_eq!(
+        unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGRTMIN()) },
+        0
+    );
+    assert_matches!(vcpu.run(VmEntry::None), Ok(VmExit::Interrupted));
+
+    // The next KVM_RUN runs the guest.
+    assert_matches!(
+        vcpu.run(VmEntry::None),
+        Ok(VmExit::Io {
+            port: 0x80,
+            size: 1,
+            ..
+        })
+    );
+}
+
+#[test]
+#[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_kvm_run() {
     use crate::hv::VmSpec;
     use crate::hv::kvm::KvmSpec;
