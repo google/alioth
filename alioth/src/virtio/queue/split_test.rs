@@ -104,7 +104,7 @@ impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
 fn disabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.enabled.store(false, Ordering::Relaxed);
     let split_queue = SplitQueue::new(reg, &ram, false);
@@ -115,7 +115,7 @@ fn disabled_queue() {
 fn invalid_queue_size() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
 
     reg.size.store(0, Ordering::Relaxed);
@@ -147,7 +147,7 @@ enum Ring {
 fn ring_at_end_of_memory(#[case] ring: Ring, #[case] entries: u16, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
 
     // Place the ring so that only its first `entries` entries are in guest
@@ -188,7 +188,7 @@ fn ring_at_end_of_memory(#[case] ring: Ring, #[case] entries: u16, #[case] valid
 fn enabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = SplitQueue::new(reg, &ram, false).unwrap().unwrap();
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
@@ -243,7 +243,7 @@ fn enabled_queue() {
 fn event_idx_enabled() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = SplitQueue::new(reg, &ram, true).unwrap().unwrap();
     unsafe { &*q.used_event.unwrap() }.store(1, Ordering::Release);
@@ -283,7 +283,7 @@ fn add_chain(q: &SplitQueue, descs: &[Desc]) {
 fn unexpected_indirect_desc(#[case] flag: DescFlag, #[case] table_flag: DescFlag) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
 
     let table = [desc(DATA_ADDR, 1, table_flag, 0)];
@@ -319,7 +319,7 @@ fn linked_descs(n: u16) -> Vec<Desc> {
 fn indirect_chain() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
 
     ram.write(DATA_ADDR, b"abcdefg").unwrap();
@@ -360,7 +360,7 @@ fn indirect_chain() {
 fn chain_len(#[case] direct: u16, #[case] indirect: u16, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.size.store(4, Ordering::Relaxed);
     let q = SplitQueue::new(reg, &ram, false).unwrap().unwrap();
@@ -391,7 +391,7 @@ fn chain_len(#[case] direct: u16, #[case] indirect: u16, #[case] valid: bool) {
 fn chain_with_loop(#[case] indirect: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
 
     // Descriptors 0 and 1 link to each other, so the chain never ends.
@@ -419,7 +419,7 @@ fn chain_with_loop(#[case] indirect: bool) {
 fn desc_out_of_indirect_table() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let q = SplitQueue::new(&queues[0], &ram, false).unwrap().unwrap();
 
     // The indirect table has only descriptor 0, which links to descriptor 1.

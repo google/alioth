@@ -31,7 +31,7 @@ use libc::{
     MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, MS_ASYNC, PROT_READ, PROT_WRITE, c_void,
     madvise, mmap, msync, munmap,
 };
-use parking_lot::{RwLock, RwLockReadGuard};
+use parking_lot::RwLock;
 use snafu::ResultExt;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
@@ -180,14 +180,24 @@ impl ArcMemPages {
     }
 }
 
-#[derive(Debug)]
+/// A snapshot of the guest RAM layout.
+///
+/// A `Ram` does not change once a [`RamBus`] publishes it. Its slots hold
+/// reference-counted [`ArcMemPages`], so a snapshot keeps the host mappings
+/// it refers to alive, even after they are removed from the bus.
+#[derive(Debug, Clone, Default)]
 pub struct Ram {
     inner: Addressable<ArcMemPages>,
 }
 
-#[derive(Debug)]
+/// The guest RAM layout, updated in the read-copy-update (RCU) way.
+///
+/// A reader takes a snapshot with [`RamBus::load`] and keeps it as long as
+/// it needs, while a writer publishes a new layout with [`RamBus::update`]
+/// without waiting for readers.
+#[derive(Debug, Default)]
 pub struct RamBus {
-    ram: RwLock<Ram>,
+    ram: RwLock<Arc<Ram>>,
 }
 
 struct Iter<'m> {
@@ -397,66 +407,66 @@ impl Ram {
         }
         Ok(())
     }
-}
 
-impl Default for RamBus {
-    fn default() -> Self {
-        Self::new()
+    pub(crate) fn add(&mut self, gpa: u64, user_mem: ArcMemPages) -> Result<()> {
+        self.inner.add(gpa, user_mem)?;
+        Ok(())
+    }
+
+    pub(crate) fn remove(&mut self, gpa: u64) -> Result<ArcMemPages> {
+        self.inner.remove(gpa)
     }
 }
 
 impl RamBus {
-    pub fn lock_layout(&self) -> RwLockReadGuard<'_, Ram> {
-        self.ram.read()
-    }
-
     pub fn new() -> Self {
-        Self {
-            ram: RwLock::new(Ram {
-                inner: Addressable::default(),
-            }),
-        }
+        Self::default()
     }
 
-    pub(crate) fn add(&self, gpa: u64, user_mem: ArcMemPages) -> Result<(), Error> {
-        let mut ram = self.ram.write();
-        ram.inner.add(gpa, user_mem)?;
-        Ok(())
+    /// Returns a snapshot of the current layout.
+    ///
+    /// The snapshot stays valid for as long as the caller holds it, but does
+    /// not see later updates.
+    pub fn load(&self) -> Arc<Ram> {
+        self.ram.read().clone()
     }
 
-    pub(crate) fn remove(&self, gpa: u64) -> Result<ArcMemPages, Error> {
-        let mut ram = self.ram.write();
-        ram.inner.remove(gpa)
+    /// Copies the current layout, changes the copy with `f` and publishes it.
+    ///
+    /// If `f` fails, nothing is published, so a change of several slots is
+    /// either fully visible or not visible at all.
+    pub(crate) fn update<T>(&self, f: impl FnOnce(&mut Ram) -> Result<T>) -> Result<T> {
+        let mut current = self.ram.write();
+        let mut ram = Ram::clone(&current);
+        let ret = f(&mut ram)?;
+        *current = Arc::new(ram);
+        Ok(ret)
     }
 
     pub fn read(&self, gpa: u64, buf: &mut [u8]) -> Result<()> {
-        let ram = self.ram.read();
-        ram.read(gpa, buf)
+        self.load().read(gpa, buf)
     }
 
     pub fn write(&self, gpa: u64, buf: &[u8]) -> Result<()> {
-        let ram = self.ram.read();
-        ram.write(gpa, buf)
+        self.load().write(gpa, buf)
     }
 
     pub fn read_t<T>(&self, gpa: u64) -> Result<T, Error>
     where
         T: FromBytes + IntoBytes,
     {
-        let ram = self.ram.read();
-        ram.read_t(gpa)
+        self.load().read_t(gpa)
     }
 
     pub fn write_t<T>(&self, gpa: u64, val: &T) -> Result<(), Error>
     where
         T: IntoBytes + Immutable,
     {
-        let ram = self.ram.read();
-        ram.write_t(gpa, val)
+        self.load().write_t(gpa, val)
     }
 
     pub fn read_range(&self, gpa: u64, len: u64, dst: &mut impl Write) -> Result<()> {
-        let ram = self.ram.read();
+        let ram = self.load();
         for r in ram.slice_iter(gpa, len) {
             dst.write_all(r?).context(error::Write)?;
         }
@@ -464,7 +474,7 @@ impl RamBus {
     }
 
     pub fn write_range(&self, gpa: u64, len: u64, mut src: impl Read) -> Result<()> {
-        let ram = self.ram.read();
+        let ram = self.load();
         for r in ram.slice_iter_mut(gpa, len) {
             src.read_exact(r?).context(error::Read)?;
         }
