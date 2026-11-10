@@ -22,12 +22,15 @@ use assert_matches::assert_matches;
 use mio::Registry;
 use mio::event::Event;
 
+use crate::mem::mapped::RamBus;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
 use crate::virtio::dev::{
-    Register, StartParam, Virtio, WakeEvent, WorkerCtl, WorkerParam, WorkerReport,
+    ActiveBackend, BackendEvent, Context, Register, StartParam, Virtio, WakeEvent, WorkerCtl,
+    WorkerParam, WorkerReport, WorkerState,
 };
-use crate::virtio::queue::VirtQueue;
+use crate::virtio::queue::split::SplitQueue;
+use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::tests::{fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DeviceId, Error, IrqSender, Result, VirtioFeature, error};
@@ -59,6 +62,8 @@ fn test_virtio_register_get_driver_feature() {
 struct FakeDev {
     /// Makes activation fail, like a backend rejecting the driver setup.
     fail_activate: Arc<AtomicBool>,
+    /// Counts successful activations.
+    activations: Arc<AtomicU32>,
     /// Counts the calls to [`VirtioMio::reset`].
     resets: Arc<AtomicU32>,
 }
@@ -108,6 +113,7 @@ impl VirtioMio for FakeDev {
         if self.fail_activate.load(Ordering::Acquire) {
             return error::InvalidBuffer.fail();
         }
+        self.activations.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -172,7 +178,9 @@ struct TestWorker {
     ctl: WorkerCtl<TestIrqSender>,
     handle: JoinHandle<()>,
     irq_sender: Arc<TestIrqSender>,
+    ram_bus: Arc<RamBus>,
     fail_activate: Arc<AtomicBool>,
+    activations: Arc<AtomicU32>,
     resets: Arc<AtomicU32>,
 }
 
@@ -180,13 +188,15 @@ impl TestWorker {
     fn spawn() -> Self {
         let dev = FakeDev::default();
         let fail_activate = dev.fail_activate.clone();
+        let activations = dev.activations.clone();
         let resets = dev.resets.clone();
+        let ram_bus = Arc::new(fixture_ram_bus());
         let (event_tx, event_rx) = flume::unbounded();
         let (report_tx, report_rx) = flume::unbounded();
         let param = WorkerParam {
             event_rx,
             report_tx,
-            memory: Arc::new(fixture_ram_bus()),
+            memory: ram_bus.clone(),
             queue_regs: Arc::from(fixture_queues(1)),
         };
         let (handle, notifier) = dev.spawn_worker(param).unwrap();
@@ -194,7 +204,9 @@ impl TestWorker {
             ctl: WorkerCtl::new("fake".into(), event_tx, notifier, report_rx),
             handle,
             irq_sender: Arc::default(),
+            ram_bus,
             fail_activate,
+            activations,
             resets,
         }
     }
@@ -220,6 +232,15 @@ impl TestWorker {
 
     fn config_irqs(&self) -> u32 {
         self.irq_sender.config_irqs.load(Ordering::Acquire)
+    }
+
+    /// Waits until the device has been activated `count` times.
+    fn wait_activations(&self, count: u32) {
+        let deadline = Instant::now() + TIMEOUT;
+        while self.activations.load(Ordering::Acquire) < count {
+            assert!(Instant::now() < deadline, "device not activated");
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Waits until the worker reports a failure.
@@ -285,6 +306,112 @@ fn test_worker_survives_activation_failure() {
     assert_eq!(worker.resets(), 2);
     assert!(!worker.ctl.failed());
     worker.shutdown();
+}
+
+#[test]
+fn test_worker_fails_without_rings() {
+    let worker = TestWorker::spawn();
+    worker.start();
+    worker.wait_activations(1);
+
+    // The driver takes away the memory of the rings while the device runs.
+    // Before the next event, the worker tries to move the queue to the new
+    // layout, and fails.
+    let pages = worker.ram_bus.update(|ram| ram.remove(0)).unwrap();
+    assert!(worker.ctl.wake(WakeEvent::Notify { q_index: 0 }));
+    worker.wait_failed();
+    assert_eq!(worker.resets(), 1);
+
+    // A reset brings the device back into service.
+    worker.reset();
+    assert!(!worker.ctl.failed());
+    assert_eq!(worker.config_irqs(), 1);
+
+    worker.ram_bus.update(|ram| ram.add(0, pages)).unwrap();
+    worker.start();
+    worker.wait_activations(2);
+    worker.reset();
+    assert_eq!(worker.resets(), 2);
+    assert!(!worker.ctl.failed());
+    worker.shutdown();
+}
+
+/// An event that does not come from the worker notifier.
+struct DeviceEvent;
+
+impl BackendEvent for DeviceEvent {
+    fn token(&self) -> u64 {
+        0
+    }
+}
+
+/// Counts how often the worker takes the queues to move them to the
+/// latest guest memory layout.
+#[derive(Debug, Default)]
+struct SyncCounter {
+    syncs: u32,
+}
+
+impl ActiveBackend<FakeDev> for SyncCounter {
+    type Event = DeviceEvent;
+    type Q = SplitQueue;
+
+    fn queues(&mut self) -> &mut [Option<Queue<SplitQueue>>] {
+        self.syncs += 1;
+        &mut []
+    }
+
+    fn handle_event(&mut self, _: &mut FakeDev, _: &DeviceEvent) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_queue(&mut self, _: &mut FakeDev, _: u16) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn test_handle_event_syncs_ram_once_per_layout() {
+    let (event_tx, event_rx) = flume::unbounded();
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let mut context = Context {
+        dev: FakeDev::default(),
+        param: WorkerParam {
+            event_rx,
+            report_tx: flume::unbounded().0,
+            memory: ram_bus.clone(),
+            queue_regs: Arc::new([]),
+        },
+        state: WorkerState::Running,
+        reset_seq: None,
+        ram_generation: None,
+    };
+    let mut backend = SyncCounter::default();
+
+    // The first event of an event loop syncs, later ones do not while the
+    // layout stays the same.
+    for _ in 0..2 {
+        context.handle_event(&DeviceEvent, &mut backend).unwrap();
+    }
+    assert_eq!(backend.syncs, 1);
+
+    // A layout change is picked up by the next event, and only by it.
+    ram_bus.update(|ram| ram.remove(0)).unwrap();
+    for _ in 0..2 {
+        context.handle_event(&DeviceEvent, &mut backend).unwrap();
+    }
+    assert_eq!(backend.syncs, 2);
+
+    // A new event loop starts with a sync, even if the layout is unchanged.
+    let param = StartParam {
+        feature: 0,
+        irq_sender: Arc::new(TestIrqSender::default()),
+        notifiers: None,
+    };
+    event_tx.send(WakeEvent::Start { param }).unwrap();
+    assert!(context.wait_start().is_some());
+    context.handle_event(&DeviceEvent, &mut backend).unwrap();
+    assert_eq!(backend.syncs, 3);
 }
 
 #[test]

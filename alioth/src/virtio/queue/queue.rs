@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
 
 use crate::bitflags;
-use crate::mem::mapped::Ram;
+use crate::mem::mapped::{Ram, RamBus};
 use crate::virtio::{IrqSender, Result, error};
 
 pub const QUEUE_SIZE_MAX: u16 = 256;
@@ -150,6 +150,9 @@ pub enum Status {
 }
 
 /// The device side of a virtqueue.
+///
+/// The queue can move to a newer guest memory snapshot, see
+/// [`Queue::sync_ram`].
 pub struct Queue<Q>
 where
     Q: VirtQueue,
@@ -158,26 +161,31 @@ where
     avail: Q::Index,
     used: Q::Index,
     addrs: RingAddrs,
+    event_idx: bool,
     deferred: HashMap<u16, DeferredChain>,
+    ram_bus: Arc<RamBus>,
 }
 
 impl<Q> Queue<Q>
 where
     Q: VirtQueue,
 {
-    /// Creates the queue from its registers on the snapshot `ram`, or
-    /// returns `None` if the queue is disabled.
-    pub fn new(reg: &QueueReg, ram: &Arc<Ram>, event_idx: bool) -> Result<Option<Self>> {
+    /// Creates the queue from its registers on the latest snapshot of
+    /// `ram_bus`, or returns `None` if the queue is disabled.
+    pub fn new(reg: &QueueReg, ram_bus: Arc<RamBus>, event_idx: bool) -> Result<Option<Self>> {
         let Some(addrs) = RingAddrs::load(reg) else {
             return Ok(None);
         };
-        let q = Q::new(&addrs, ram, event_idx)?;
+        let ram = ram_bus.load();
+        let q = Q::new(&addrs, &ram, event_idx)?;
         Ok(Some(Queue {
             q,
             avail: Q::INIT_INDEX,
             used: Q::INIT_INDEX,
             addrs,
+            event_idx,
             deferred: HashMap::new(),
+            ram_bus,
         }))
     }
 
@@ -189,6 +197,20 @@ where
     /// Returns the guest memory snapshot the queue works on.
     pub fn ram(&self) -> &Ram {
         self.q.ram()
+    }
+
+    /// Moves the queue to the latest snapshot of its [`RamBus`], keeping the
+    /// ring indices and the deferred chains. Returns `true` if it moved.
+    ///
+    /// It fails if the rings are not accessible in the latest snapshot, and
+    /// the queue stays where it is.
+    pub fn sync_ram(&mut self) -> Result<bool> {
+        if self.q.ram().generation() == self.ram_bus.generation() {
+            return Ok(false);
+        }
+        let ram = self.ram_bus.load();
+        self.q = Q::new(&self.addrs, &ram, self.event_idx)?;
+        Ok(true)
     }
 
     /// Forgets the chains the device has not completed, and leaks the
@@ -239,13 +261,33 @@ where
     ) -> Result<()> {
         let mut send_irq = false;
         let mut ret = Ok(());
-        let ram = self.q.ram().clone();
+        let mut ram = self.q.ram().clone();
         'out: loop {
             if !self.q.desc_avail(self.avail) {
                 break;
             }
             self.q.enable_notification(false);
-            while let Some(mut chain) = self.q.get_avail(self.avail, &ram)? {
+            loop {
+                let mut chain = match self.q.get_avail(self.avail, &ram) {
+                    Ok(Some(chain)) => chain,
+                    Ok(None) => break,
+                    Err(e) => {
+                        // The chain may be in memory published after the
+                        // queue moved to its snapshot, e.g. while the worker
+                        // was handling an earlier event. Catch up and retry.
+                        match self.sync_ram() {
+                            Ok(true) => {
+                                ram = self.q.ram().clone();
+                                continue;
+                            }
+                            Ok(false) => ret = Err(e),
+                            Err(sync_err) => ret = Err(sync_err),
+                        }
+                        // Chains completed so far still need the interrupt.
+                        self.q.enable_notification(true);
+                        break 'out;
+                    }
+                };
                 // A driver cannot make a chain available again before the
                 // device has used it. Replacing the deferred chain would
                 // release its snapshot while the device may still access the
@@ -289,6 +331,19 @@ where
         }
         ret
     }
+}
+
+/// Moves `queues` to the latest guest memory snapshot, see
+/// [`Queue::sync_ram`]. Returns `true` if any queue moved.
+pub fn sync_queues<Q>(queues: &mut [Option<Queue<Q>>]) -> Result<bool>
+where
+    Q: VirtQueue,
+{
+    let mut moved = false;
+    for queue in queues.iter_mut().flatten() {
+        moved |= queue.sync_ram()?;
+    }
+    Ok(moved)
 }
 
 pub fn copy_from_reader(mut reader: impl Read) -> impl FnMut(&mut DescChain) -> Result<Status> {

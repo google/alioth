@@ -24,6 +24,7 @@ use std::os::fd::FromRawFd;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
 use libc::{MADV_HUGEPAGE, MFD_CLOEXEC};
@@ -188,6 +189,7 @@ impl ArcMemPages {
 #[derive(Debug, Clone, Default)]
 pub struct Ram {
     inner: Addressable<ArcMemPages>,
+    generation: u64,
 }
 
 /// The guest RAM layout, updated in the read-copy-update (RCU) way.
@@ -198,6 +200,7 @@ pub struct Ram {
 #[derive(Debug, Default)]
 pub struct RamBus {
     ram: RwLock<Arc<Ram>>,
+    generation: AtomicU64,
 }
 
 struct Iter<'m> {
@@ -416,6 +419,11 @@ impl Ram {
     pub(crate) fn remove(&mut self, gpa: u64) -> Result<ArcMemPages> {
         self.inner.remove(gpa)
     }
+
+    /// Returns the generation of the layout, see [`RamBus::generation`].
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 impl RamBus {
@@ -431,6 +439,14 @@ impl RamBus {
         self.ram.read().clone()
     }
 
+    /// Returns the generation of the current layout.
+    ///
+    /// Every update increments it, so a reader can tell whether its snapshot
+    /// is the latest one without taking the lock.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
     /// Copies the current layout, changes the copy with `f` and publishes it.
     ///
     /// If `f` fails, nothing is published, so a change of several slots is
@@ -439,6 +455,10 @@ impl RamBus {
         let mut current = self.ram.write();
         let mut ram = Ram::clone(&current);
         let ret = f(&mut ram)?;
+        ram.generation = current.generation + 1;
+        // A reader that sees the new generation before the new layout is
+        // published waits for it in load().
+        self.generation.store(ram.generation, Ordering::Release);
         *current = Arc::new(ram);
         Ok(ret)
     }

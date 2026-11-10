@@ -307,6 +307,11 @@ where
     S: IrqSender,
 {
     type Event = Cqe;
+    type Q = Q;
+
+    fn queues(&mut self) -> &mut [Option<Queue<Q>>] {
+        self.queues
+    }
 
     fn handle_event(&mut self, dev: &mut D, event: &Self::Event) -> Result<()> {
         let token = event.user_data();

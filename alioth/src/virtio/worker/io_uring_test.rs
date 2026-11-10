@@ -26,12 +26,13 @@ use io_uring::opcode;
 use io_uring::types::Fd;
 
 use crate::ffi;
+use crate::mem::mapped::ArcMemPages;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
-use crate::virtio::dev::{StartParam, Virtio, WakeEvent, WorkerParam};
+use crate::virtio::dev::{ActiveBackend, StartParam, Virtio, WakeEvent, WorkerParam};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
-use crate::virtio::queue::{DescChain, Queue, QueueReg, VirtQueue};
+use crate::virtio::queue::{self, DescChain, Queue, QueueReg, VirtQueue};
 use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::io_uring::{
     ActiveIoUring, BufferAction, IoUring, RING_SIZE, VirtioIoUring,
@@ -187,7 +188,7 @@ fn io_uring_drain_test() {
 
 #[test]
 fn io_uring_drain_cancels_pending_reads() {
-    let ram_bus = fixture_ram_bus();
+    let ram_bus = Arc::new(fixture_ram_bus());
     let ram = ram_bus.load();
     let regs = fixture_queues(1);
     let mut guest_q = GuestQueue::new(
@@ -209,7 +210,7 @@ fn io_uring_drain_cancels_pending_reads() {
 
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
-    let mut queues = [Queue::<SplitQueue>::new(&regs[0], &ram, false).unwrap()];
+    let mut queues = [Queue::<SplitQueue>::new(&regs[0], ram_bus.clone(), false).unwrap()];
     let mut active = ActiveIoUring {
         ring: io_uring::IoUring::new(RING_SIZE as u32).unwrap(),
         queues: &mut queues,
@@ -238,4 +239,68 @@ fn io_uring_drain_cancels_pending_reads() {
     assert_eq!(completed.load(Ordering::Relaxed), 0);
     assert!(irq_rx.try_recv().is_err());
     drop(active);
+}
+
+#[test]
+fn io_uring_request_in_flight_across_layout_change() {
+    const EXTRA_GPA: u64 = 4 << 20;
+
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let regs = fixture_queues(1);
+    let mut guest_q = GuestQueue::new(
+        SplitQueue::new(&regs[0], &ram_bus.load(), false)
+            .unwrap()
+            .unwrap(),
+        &regs[0],
+    );
+    let pages = ArcMemPages::from_anonymous(1 << 20, None, None).unwrap();
+    ram_bus.update(|ram| ram.add(EXTRA_GPA, pages)).unwrap();
+    let ram = ram_bus.load();
+    let id = guest_q.add_desc(&[], &[(EXTRA_GPA, 4 << 10)]);
+
+    let (reader, mut writer) = pipe();
+    let (submitted_tx, submitted_rx) = flume::unbounded();
+    let mut dev = PipeReader {
+        reader,
+        config: Arc::new(EntropyConfig),
+        submitted: submitted_tx,
+        completed: Arc::default(),
+    };
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = FakeIrqSender { q_tx: irq_tx };
+    let mut queues = [Queue::<SplitQueue>::new(&regs[0], ram_bus.clone(), false).unwrap()];
+    let mut active = ActiveIoUring {
+        ring: io_uring::IoUring::new(RING_SIZE as u32).unwrap(),
+        queues: &mut queues,
+        irq_sender: &irq_sender,
+        notifiers: &[],
+        shared_count: RING_SIZE - 1,
+        submit_counts: Box::new([0]),
+    };
+    active.submit_buffers(&mut dev, 0).unwrap();
+    active.ring.submit().unwrap();
+    assert_eq!(submitted_rx.try_recv(), Ok(id));
+
+    // The memory of the buffer is unplugged while the read is in flight,
+    // and the queue moves to the new layout. The chain keeps the old one.
+    let old_ram = Arc::downgrade(&ram);
+    drop(ram);
+    ram_bus.update(|ram| ram.remove(EXTRA_GPA)).unwrap();
+    let queues = ActiveBackend::<PipeReader>::queues(&mut active);
+    assert!(queue::sync_queues(queues).unwrap());
+    let queue = active.queues[0].as_ref().unwrap();
+    assert_eq!(queue.ram().generation(), ram_bus.generation());
+    assert!(old_ram.upgrade().is_some());
+
+    // The kernel still writes into the buffer, and completing the chain
+    // releases the old layout.
+    let s = b"written after unplug";
+    writer.write_all(s).unwrap();
+    active.ring.submit_and_wait(1).unwrap();
+    let cqe = active.ring.completion().next().unwrap();
+    active.handle_event(&mut dev, &cqe).unwrap();
+    assert_eq!(irq_rx.try_recv(), Ok(0));
+    let used = guest_q.get_used().unwrap();
+    assert_eq!((used.id, used.len), (id, s.len() as u32));
+    assert!(old_ram.upgrade().is_none());
 }
