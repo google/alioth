@@ -1,18 +1,29 @@
-[workspace]
-members = ["alioth", "alioth-cli", "macros", "serde-aco"]
-resolver = "2"
-
-[workspace.package]
-authors = ["Changyuan Lyu <changyuan.lv@gmail.com>"]
+[package]
+name = "puff"
+version = "0.0.1"
+edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/google/alioth"
 
-[workspace.dependencies]
-parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
-serde = { version = "1.0", features = ["derive"] }
+[dependencies]
+# Internal dependencies.
+derive-layout = { path = "derive-layout" }
+
+# External dependencies.
+bitfield = "0.15.0"
+bitflags = "2.4.0"
+libc = "0.2.150"
+log = "0.4"
+mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
+parking_lot = { version = "0.12" }
+serde = { version = "1.0.*", features = ["derive"] }
+simplelog = "0.12.2"
+thiserror = "1"
+toml = "0.9"
+zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 
 [profile.release]
-lto = true
+panic = "abort"
+lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = true

@@ -1,34 +1,20 @@
-# Alioth
+# Puff
 
-Alioth is a toy virtual machine monitor based on KVM. Complementary to the
-official tutorial [Using the KVM API](https://lwn.net/Articles/658511/), it demonstrates
-detailed steps for building a type-2 hypervisor and booting a Linux guest kernel.
+Puff is a fork of v0.2.0 of Lencerf's
+[Alioth](https://github.com/google/alioth), further simplified.
 
-## Get started
+Used for experiments.
 
-* Build Alioth from source,
+## Building
 
-    ```sh
-    cargo build --release --target x86_64-unknown-linux-gnu
-    ```
+Install Musl target:
 
-* Make an initramfs with [u-root](https://github.com/u-root/u-root?tab=readme-ov-file#examples),
+```
+rustup target add x86_64-unknown-linux-musl
+```
 
-* Boot a Linux kernel with 2 CPUs and 4 GiB memory:
+Build:
 
-  ```sh
-  cargo run --release --target x86_64-unknown-linux-gnu -- \
-      -l info \
-      --log-to-file \
-      run \
-      --kernel /path/to/vmlinuz \
-      --cmd-line "console=ttyS0" \
-      --initramfs /path/to/initramfs \
-      --mem-size 4G \
-      --num-cpu=2
-  ```
-
-
-## Disclaimer
-
-Disclaimer: Alioth is not an officially supported Google product.
+```
+cargo build --release --target=x86_64-unknown-linux-musl
+```
