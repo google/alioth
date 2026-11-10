@@ -67,8 +67,6 @@ pub enum Error {
     Convert { hva: u64 },
     #[snafu(display("invalid message {req:?} with payload size {size}"))]
     InvalidMsg { req: VuFrontMsg, size: u32 },
-    #[snafu(display("Cannot change memory layout at runtime"))]
-    ChangeMemoryLayout,
     #[snafu(display("Failed to send backend request channel to device"))]
     SendChannel,
 }
@@ -192,6 +190,14 @@ impl VuBackend {
         ctl.wait_reset(seq, RESET_TIMEOUT)?;
         self.running = false;
         Ok(())
+    }
+
+    /// Kicks a running worker, so that it moves to the latest memory layout
+    /// and drops the old one.
+    fn kick_worker(&self) {
+        if self.running {
+            self.dev.ctl.kick();
+        }
     }
 
     fn convert_frontend_hva(&self, hva: u64) -> Result<u64> {
@@ -410,9 +416,6 @@ impl VuBackend {
                     return error::MissingFd { req: msg.request }.fail();
                 };
                 let region = &single.region;
-                if self.running {
-                    return error::ChangeMemoryLayout.fail();
-                }
                 log::debug!("{name}: add mem: {region:x?}, fd: {}", fd.as_raw_fd());
                 let user_mem = ArcMemPages::from_file(
                     File::from(fd),
@@ -422,18 +425,17 @@ impl VuBackend {
                 )?;
                 self.memory.update(|ram| ram.add(region.gpa, user_mem))?;
                 self.init.regions.push(single.region);
+                self.kick_worker();
             }
             (VuFrontMsg::REM_MEM_REG, 40) => {
                 let single: MemorySingleRegion = self.session.recv_payload()?;
                 let region = &single.region;
-                if self.running {
-                    return error::ChangeMemoryLayout.fail();
-                }
                 for (index, r) in self.init.regions.iter().enumerate() {
                     if r.gpa == region.gpa && r.hva == region.hva && r.size == region.size {
                         log::info!("{name}: remove mem: {r:x?}");
                         self.init.regions.remove(index);
                         let _ = self.memory.update(|ram| ram.remove(region.gpa));
+                        self.kick_worker();
                         break;
                     }
                 }
