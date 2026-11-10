@@ -606,7 +606,7 @@ where
 
     fn run(&mut self, param: &StartParam<S>) -> Result<()> {
         let memory = self.context.param.memory.clone();
-        let ram = memory.lock_layout();
+        let ram = memory.load();
         let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
         let queue_regs = self.context.param.queue_regs.clone();
         let feature = VirtioFeature::from_bits_retain(feature);
@@ -656,7 +656,8 @@ where
             if let Err(e) = self.loop_until_reset() {
                 log::error!("worker {}: {e:?}", self.context.dev.name());
             }
-            // The memory layout lock is released by now.
+            // The worker has dropped the queues and its guest memory
+            // snapshot by now.
             if let Some(seq) = self.context.reset_seq.take() {
                 self.context.ack_reset(seq);
             }

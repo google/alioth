@@ -143,7 +143,7 @@ impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
 fn disabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.enabled.store(false, Ordering::Relaxed);
     let split_queue = PackedQueue::new(reg, &ram, false);
@@ -158,7 +158,7 @@ fn disabled_queue() {
 fn queue_size(#[case] size: u16, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
 
     reg.size.store(size, Ordering::Relaxed);
@@ -177,7 +177,7 @@ fn queue_size(#[case] size: u16, #[case] valid: bool) {
 fn ring_at_end_of_memory(#[case] entries: u16, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
 
     // Place the ring so that only its first `entries` descriptors are in
@@ -201,7 +201,7 @@ fn ring_at_end_of_memory(#[case] entries: u16, #[case] valid: bool) {
 fn chain_longer_than_ring() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.size.store(4, Ordering::Relaxed);
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
@@ -249,7 +249,7 @@ fn write_indirect_table(ram: &Ram, num: u16) {
 fn unexpected_indirect_desc(#[case] flag_0: DescFlag, #[case] flag_1: DescFlag) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let q = PackedQueue::new(&queues[0], &ram, false).unwrap().unwrap();
 
     write_indirect_table(&ram, 1);
@@ -275,7 +275,7 @@ fn unexpected_indirect_desc(#[case] flag_0: DescFlag, #[case] flag_1: DescFlag) 
 fn indirect_table_len(#[case] num: u32, #[case] valid: bool) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     reg.size.store(4, Ordering::Relaxed);
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
@@ -295,7 +295,7 @@ fn indirect_table_len(#[case] num: u32, #[case] valid: bool) {
 fn enabled_queue() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
     let mut guest_q = GuestQueue::new(PackedQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
@@ -356,7 +356,7 @@ fn enabled_queue() {
 fn enable_notification() {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, false).unwrap().unwrap();
 
@@ -396,7 +396,7 @@ fn is_interrupt_enabled(
 ) {
     let ram_bus = fixture_ram_bus();
     let queues = fixture_queues(1);
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let reg = &queues[0];
     let q = PackedQueue::new(reg, &ram, enable_event_idx)
         .unwrap()

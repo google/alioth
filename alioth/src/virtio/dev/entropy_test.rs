@@ -17,6 +17,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use assert_matches::assert_matches;
@@ -25,13 +26,14 @@ use tempfile::TempDir;
 
 use crate::ffi;
 use crate::mem::emulated::{Action, Mmio};
+use crate::mem::mapped::ArcMemPages;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropySpec};
 use crate::virtio::dev::{DevSpec, StartParam, Virtio, WakeEvent, WorkerParam};
 use crate::virtio::queue::QueueReg;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
-use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, MEM_SIZE, fixture_queues, fixture_ram_bus};
 use crate::virtio::{DeviceId, FEATURE_BUILT_IN, VirtioFeature};
 
 #[test]
@@ -46,7 +48,7 @@ fn entry_config_test() {
 #[test]
 fn entropy_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
-    let ram = ram_bus.lock_layout();
+    let ram = ram_bus.load();
     let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(1));
 
     let mut guest_q = GuestQueue::new(
@@ -113,6 +115,17 @@ fn entropy_test() {
     let used0 = guest_q.get_used().unwrap();
     assert_eq!(used0.id, id0);
     assert_eq!(used0.len, s0.len() as u32);
+
+    // The guest memory layout can change while the device is running.
+    let pages = ArcMemPages::from_anonymous(4 << 10, None, None).unwrap();
+    let (done_tx, done_rx) = flume::bounded(1);
+    let bus = ram_bus.clone();
+    thread::spawn(move || {
+        let ret = bus.update(|ram| ram.add(MEM_SIZE as u64, pages));
+        done_tx.send(ret).unwrap();
+    });
+    let ret = done_rx.recv_timeout(Duration::from_secs(5));
+    assert_matches!(ret, Ok(Ok(())));
 
     writer.write_all(s1.as_bytes()).unwrap();
     writer.flush().unwrap();

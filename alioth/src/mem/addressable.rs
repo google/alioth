@@ -20,7 +20,7 @@ pub trait SlotBackend {
     fn size(&self) -> u64;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Slot<B>
 where
     B: SlotBackend,
@@ -52,7 +52,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Addressable<B>
 where
     B: SlotBackend,
