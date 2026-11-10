@@ -174,13 +174,9 @@ impl Virtio for VuFs {
 }
 
 impl VirtioMio for VuFs {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         self.frontend.activate(feature, active_mio)?;
@@ -195,13 +191,13 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q, S>(
+    fn handle_event<'a, Q, S>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         let q_index = event.token().0;
@@ -236,13 +232,9 @@ impl VirtioMio for VuFs {
         Ok(())
     }
 
-    fn handle_queue<'m, Q, S>(
-        &mut self,
-        index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         self.frontend.handle_queue(index, active_mio)

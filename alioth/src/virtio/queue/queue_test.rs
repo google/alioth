@@ -15,27 +15,30 @@
 use std::collections::HashMap;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::ptr::eq as ptr_eq;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use assert_matches::assert_matches;
 use flume::TryRecvError;
 use rstest::rstest;
 
+use crate::mem::mapped::Ram;
 use crate::virtio::Error;
 use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{
-    DescChain, Queue, QueueReg, Status, VirtQueue, copy_from_reader, copy_to_writer,
+    DescChain, Queue, QueueReg, RingAddrs, Status, VirtQueue, copy_from_reader, copy_to_writer,
 };
 use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
 
+#[derive(Debug)]
 pub struct UsedDesc {
     pub id: u16,
     pub delta: u16,
     pub len: u32,
 }
 
-pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
+pub trait VirtQueueGuest: VirtQueue {
     fn add_desc(
         &mut self,
         index: Self::Index,
@@ -52,9 +55,9 @@ pub trait VirtQueueGuest<'m>: VirtQueue<'m> {
     fn enable_interrupt(&mut self, enabled: bool, index: Self::Index);
 }
 
-pub struct GuestQueue<'m, Q>
+pub struct GuestQueue<Q>
 where
-    Q: VirtQueueGuest<'m>,
+    Q: VirtQueueGuest,
 {
     q: Q,
     avail: Q::Index,
@@ -64,9 +67,9 @@ where
     next_id: u16,
 }
 
-impl<'m, Q> GuestQueue<'m, Q>
+impl<Q> GuestQueue<Q>
 where
-    Q: VirtQueueGuest<'m>,
+    Q: VirtQueueGuest,
 {
     pub fn new(q: Q, reg: &QueueReg) -> Self {
         let size = reg.size.load(Ordering::Acquire);
@@ -81,9 +84,9 @@ where
     }
 }
 
-impl<'m, Q> GuestQueue<'m, Q>
+impl<Q> GuestQueue<Q>
 where
-    Q: VirtQueueGuest<'m>,
+    Q: VirtQueueGuest,
 {
     pub fn add_desc(&mut self, readable: &[(u64, u32)], writable: &[(u64, u32)]) -> u16 {
         let mut ids = vec![];
@@ -186,13 +189,10 @@ fn test_copy_from_reader() {
     let queues = fixture_queues(1);
     let ram = ram_bus.load();
     let reg = &queues[0];
-    let mut host_q = Queue::new(
-        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
-        reg,
-        &ram,
-    );
+    let mut host_q = Queue::<SplitQueue>::new(reg, &ram, false).unwrap().unwrap();
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
-    assert!(ptr_eq(host_q.reg(), reg));
+    assert_eq!(host_q.addrs(), &RingAddrs::load(reg).unwrap());
+    assert!(ptr_eq(host_q.ram(), &*ram));
 
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -345,11 +345,7 @@ fn test_copy_to_writer() {
     let queues = fixture_queues(1);
     let ram = ram_bus.load();
     let reg = &queues[0];
-    let mut host_q = Queue::new(
-        SplitQueue::new(reg, &ram, false).unwrap().unwrap(),
-        reg,
-        &ram,
-    );
+    let mut host_q = Queue::<SplitQueue>::new(reg, &ram, false).unwrap().unwrap();
     let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -446,12 +442,14 @@ fn test_written_bytes() {
     let str_0 = "Hello, World!";
     let str_1 = "Goodbye, World!";
 
+    let ram = Ram::default();
     let mut buf = vec![0u8; str_0.len()];
     let mut chain = DescChain {
         id: 0,
         delta: 1,
         readable: vec![],
         writable: vec![IoSliceMut::new(buf.as_mut_slice())],
+        ram: &ram,
     };
     let reader = str_0.as_bytes();
     assert_matches!(
@@ -466,6 +464,7 @@ fn test_written_bytes() {
         delta: 1,
         readable: vec![IoSlice::new(str_1.as_bytes())],
         writable: vec![],
+        ram: &ram,
     };
     assert_matches!(
         copy_to_writer(&mut buf)(&mut chain),
@@ -474,12 +473,9 @@ fn test_written_bytes() {
     assert_eq!(buf.as_slice(), str_1.as_bytes());
 }
 
-fn check_handle_deferred<'m, Q>(
-    mut host_q: Queue<'_, 'm, Q>,
-    mut guest_q: GuestQueue<'m, Q>,
-    ram: &'m crate::mem::mapped::Ram,
-) where
-    Q: VirtQueueGuest<'m>,
+fn check_handle_deferred<Q>(mut host_q: Queue<Q>, mut guest_q: GuestQueue<Q>, ram: &Ram)
+where
+    Q: VirtQueueGuest,
 {
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -565,23 +561,92 @@ fn test_handle_deferred(#[case] packed: bool, #[case] event_idx: bool) {
     let ram = ram_bus.load();
     let reg = &queues[0];
     if packed {
-        let host_q = Queue::new(
-            PackedQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
-            reg,
-            &ram,
-        );
+        let host_q = Queue::<PackedQueue>::new(reg, &ram, event_idx)
+            .unwrap()
+            .unwrap();
         let guest_q = GuestQueue::new(
             PackedQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
             reg,
         );
         check_handle_deferred(host_q, guest_q, &ram);
     } else {
-        let host_q = Queue::new(
-            SplitQueue::new(reg, &ram, event_idx).unwrap().unwrap(),
-            reg,
-            &ram,
-        );
+        let host_q = Queue::<SplitQueue>::new(reg, &ram, event_idx)
+            .unwrap()
+            .unwrap();
         let guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, event_idx).unwrap().unwrap(), reg);
         check_handle_deferred(host_q, guest_q, &ram);
     }
+}
+
+#[test]
+fn test_handle_desc_chain_in_flight() {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.load();
+    let reg = &queues[0];
+    let mut host_q = Queue::<SplitQueue>::new(reg, &ram, false).unwrap().unwrap();
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
+    let (irq_tx, irq_rx) = flume::unbounded();
+    let irq_sender = FakeIrqSender { q_tx: irq_tx };
+
+    let id = guest_q.add_desc(&[], &[(DATA_ADDR, 16)]);
+    host_q
+        .handle_desc(0, &irq_sender, |_| Ok(Status::Deferred))
+        .unwrap();
+
+    // A buggy driver makes the chain available again while it is in flight.
+    let delta = guest_q
+        .q
+        .add_desc(guest_q.avail, &[id], &[], &[(DATA_ADDR, 16)]);
+    guest_q.avail = guest_q.q.index_add(guest_q.avail, delta);
+    let mut seen = false;
+    let ret = host_q.handle_desc(0, &irq_sender, |_| {
+        seen = true;
+        Ok(Status::Deferred)
+    });
+    assert_matches!(ret, Err(Error::InvalidDescriptor { id: i, .. }) if i == id);
+
+    // The device never sees the chain, and the one in flight is kept.
+    assert!(!seen);
+    host_q
+        .handle_deferred(id, 0, &irq_sender, |chain| {
+            Ok(chain.writable[0].len() as u32)
+        })
+        .unwrap();
+    assert_eq!(irq_rx.try_recv(), Ok(0));
+    assert_matches!(guest_q.get_used(), Some(UsedDesc { id: i, len: 16, .. }) if i == id);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn test_leak_deferred(#[case] leak: bool) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.load();
+    let reg = &queues[0];
+    let mut host_q = Queue::<SplitQueue>::new(reg, &ram, false).unwrap().unwrap();
+    let mut guest_q = GuestQueue::new(SplitQueue::new(reg, &ram, false).unwrap().unwrap(), reg);
+    let (irq_tx, _irq_rx) = flume::unbounded();
+    let irq_sender = FakeIrqSender { q_tx: irq_tx };
+
+    // The chain stays in flight, e.g. as an io_uring request.
+    guest_q.add_desc(&[], &[(DATA_ADDR, 16)]);
+    host_q
+        .handle_desc(0, &irq_sender, |_| Ok(Status::Deferred))
+        .unwrap();
+    assert_eq!(host_q.deferred.len(), 1);
+
+    let snapshot = Arc::downgrade(&ram);
+    drop(ram);
+    drop(guest_q);
+    if leak {
+        host_q.leak_deferred();
+        assert!(host_q.deferred.is_empty());
+    }
+    drop(host_q);
+    drop(ram_bus);
+    // Only a leaked chain keeps its snapshot after the queues and the bus
+    // are gone.
+    assert_eq!(snapshot.upgrade().is_some(), leak);
 }

@@ -15,7 +15,6 @@
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 
 use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
@@ -142,13 +141,9 @@ impl Virtio for VhostVsock {
 }
 
 impl VirtioMio for VhostVsock {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         self.vhost_dev.set_features(&(feature as u64))?;
@@ -163,7 +158,7 @@ impl VirtioMio for VhostVsock {
             let Some(queue) = queue else {
                 continue;
             };
-            let reg = queue.reg();
+            let addrs = queue.addrs();
             let index = index as u32;
             active_mio.irq_sender.queue_irqfd(index as _, |fd| {
                 self.vhost_dev.set_virtq_call(&VirtqFile {
@@ -175,17 +170,17 @@ impl VirtioMio for VhostVsock {
 
             self.vhost_dev.set_virtq_num(&VirtqState {
                 index,
-                val: reg.size.load(Ordering::Acquire) as _,
+                val: addrs.size as _,
             })?;
             self.vhost_dev
                 .set_virtq_base(&VirtqState { index, val: 0 })?;
-            let mem = active_mio.mem;
+            let mem = queue.ram();
             let virtq_addr = VirtqAddr {
                 index,
                 flags: 0,
-                desc_hva: mem.translate(reg.desc.load(Ordering::Acquire))? as _,
-                used_hva: mem.translate(reg.device.load(Ordering::Acquire))? as _,
-                avail_hva: mem.translate(reg.driver.load(Ordering::Acquire))? as _,
+                desc_hva: mem.translate(addrs.desc)? as _,
+                used_hva: mem.translate(addrs.device)? as _,
+                avail_hva: mem.translate(addrs.driver)? as _,
                 log_guest_addr: 0,
             };
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
@@ -231,13 +226,13 @@ impl VirtioMio for VhostVsock {
         }
     }
 
-    fn handle_event<'a, 'm, Q, S>(
+    fn handle_event<'a, Q, S>(
         &mut self,
         event: &Event,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         let q_index = event.token();
@@ -249,13 +244,13 @@ impl VirtioMio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue<'m, Q, S>(
+    fn handle_queue<Q, S>(
         &mut self,
         index: u16,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         match index {

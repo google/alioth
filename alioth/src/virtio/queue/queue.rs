@@ -18,6 +18,7 @@ pub mod split;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Read, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering, fence};
 
 use crate::bitflags;
@@ -45,25 +46,96 @@ pub struct QueueReg {
     pub enabled: AtomicBool,
 }
 
+/// The ring addresses of a queue, copied from its [`QueueReg`].
+///
+/// Transports do not let the driver change the registers of an enabled
+/// queue, so the copy stays valid until the device is reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RingAddrs {
+    pub size: u16,
+    pub desc: u64,
+    pub driver: u64,
+    pub device: u64,
+}
+
+impl RingAddrs {
+    /// Reads the ring addresses, or returns `None` if the queue is disabled.
+    pub fn load(reg: &QueueReg) -> Option<Self> {
+        if !reg.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let addrs = RingAddrs {
+            size: reg.size.load(Ordering::Acquire),
+            desc: reg.desc.load(Ordering::Acquire),
+            driver: reg.driver.load(Ordering::Acquire),
+            device: reg.device.load(Ordering::Acquire),
+        };
+        // The registers may be cleared by a concurrent reset, which disables
+        // the queue first.
+        if !reg.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(addrs)
+    }
+}
+
 #[derive(Debug)]
 pub struct DescChain<'m> {
     id: u16,
     delta: u16,
     pub readable: Vec<IoSlice<'m>>,
     pub writable: Vec<IoSliceMut<'m>>,
+    ram: &'m Ram,
 }
 
-impl DescChain<'_> {
+impl<'m> DescChain<'m> {
     pub fn id(&self) -> u16 {
         self.id
     }
+
+    /// Returns the guest memory snapshot the buffers were translated with.
+    ///
+    /// A device accessing guest memory at addresses found in the buffers
+    /// should use it.
+    pub fn ram(&self) -> &Ram {
+        self.ram
+    }
+
+    /// Erases the lifetime of the guest memory the chain points to.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep the snapshot the chain was translated with alive
+    /// until the returned chain is dropped.
+    ///
+    /// Device code must only see the returned chain through a callback that
+    /// takes `&mut DescChain` of any lifetime, like the `op` of
+    /// [`Queue::handle_deferred`], so that it cannot keep the buffers.
+    unsafe fn into_static(self) -> DescChain<'static> {
+        unsafe { std::mem::transmute::<DescChain<'m>, DescChain<'static>>(self) }
+    }
 }
 
-pub trait VirtQueue<'m> {
+/// A descriptor chain the device has not completed yet.
+///
+/// It holds the snapshot the chain was translated with, so that the buffers
+/// stay valid until the device completes the chain.
+struct DeferredChain {
+    chain: DescChain<'static>,
+    // Dropped after `chain`, since fields are dropped in declaration order.
+    _ram: Arc<Ram>,
+}
+
+pub trait VirtQueue: Sized {
     type Index: Clone + Copy;
     const INIT_INDEX: Self::Index;
+    /// Creates the queue on the rings at `addrs` in the snapshot `ram`,
+    /// which the queue holds on to.
+    fn new(addrs: &RingAddrs, ram: &Arc<Ram>, event_idx: bool) -> Result<Self>;
+    /// Returns the guest memory snapshot the rings are in.
+    fn ram(&self) -> &Arc<Ram>;
     fn desc_avail(&self, index: Self::Index) -> bool;
-    fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>>;
+    fn get_avail<'m>(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>>;
     fn set_used(&self, index: Self::Index, id: u16, len: u32);
     fn enable_notification(&self, enabled: bool);
     fn interrupt_enabled(&self, index: Self::Index, delta: u16) -> bool;
@@ -77,35 +149,57 @@ pub enum Status {
     Break,
 }
 
-pub struct Queue<'r, 'm, Q>
+/// The device side of a virtqueue.
+pub struct Queue<Q>
 where
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
 {
     q: Q,
     avail: Q::Index,
     used: Q::Index,
-    reg: &'r QueueReg,
-    ram: &'m Ram,
-    deferred: HashMap<u16, DescChain<'m>>,
+    addrs: RingAddrs,
+    deferred: HashMap<u16, DeferredChain>,
 }
 
-impl<'r, 'm, Q> Queue<'r, 'm, Q>
+impl<Q> Queue<Q>
 where
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
 {
-    pub fn new(q: Q, reg: &'r QueueReg, ram: &'m Ram) -> Self {
-        Self {
+    /// Creates the queue from its registers on the snapshot `ram`, or
+    /// returns `None` if the queue is disabled.
+    pub fn new(reg: &QueueReg, ram: &Arc<Ram>, event_idx: bool) -> Result<Option<Self>> {
+        let Some(addrs) = RingAddrs::load(reg) else {
+            return Ok(None);
+        };
+        let q = Q::new(&addrs, ram, event_idx)?;
+        Ok(Some(Queue {
             q,
             avail: Q::INIT_INDEX,
             used: Q::INIT_INDEX,
-            reg,
-            ram,
+            addrs,
             deferred: HashMap::new(),
-        }
+        }))
     }
 
-    pub fn reg(&self) -> &QueueReg {
-        self.reg
+    /// Returns the ring addresses.
+    pub fn addrs(&self) -> &RingAddrs {
+        &self.addrs
+    }
+
+    /// Returns the guest memory snapshot the queue works on.
+    pub fn ram(&self) -> &Ram {
+        self.q.ram()
+    }
+
+    /// Forgets the chains the device has not completed, and leaks the
+    /// snapshots they hold.
+    ///
+    /// This is the last resort for buffers that might still be accessed,
+    /// e.g. by the kernel, but cannot be waited for.
+    pub fn leak_deferred(&mut self) {
+        for (_, deferred) in self.deferred.drain() {
+            std::mem::forget(deferred);
+        }
     }
 
     pub fn desc_avail(&self) -> bool {
@@ -124,12 +218,12 @@ where
         irq_sender: &impl IrqSender,
         mut op: impl FnMut(&mut DescChain) -> Result<u32>,
     ) -> Result<()> {
-        let Some(mut chain) = self.deferred.remove(&id) else {
+        let Some(mut deferred) = self.deferred.remove(&id) else {
             return error::InvalidDescriptor { id }.fail();
         };
-        let len = op(&mut chain)?;
-        let delta = chain.delta;
-        self.push_used(chain, len);
+        let len = op(&mut deferred.chain)?;
+        let delta = deferred.chain.delta;
+        self.push_used(deferred.chain, len);
         fence(Ordering::SeqCst);
         if self.q.interrupt_enabled(self.used, delta) {
             irq_sender.queue_irq(q_index);
@@ -145,12 +239,22 @@ where
     ) -> Result<()> {
         let mut send_irq = false;
         let mut ret = Ok(());
+        let ram = self.q.ram().clone();
         'out: loop {
             if !self.q.desc_avail(self.avail) {
                 break;
             }
             self.q.enable_notification(false);
-            while let Some(mut chain) = self.q.get_avail(self.avail, self.ram)? {
+            while let Some(mut chain) = self.q.get_avail(self.avail, &ram)? {
+                // A driver cannot make a chain available again before the
+                // device has used it. Replacing the deferred chain would
+                // release its snapshot while the device may still access the
+                // buffers.
+                if self.deferred.contains_key(&chain.id) {
+                    ret = error::InvalidDescriptor { id: chain.id }.fail();
+                    self.q.enable_notification(true);
+                    break 'out;
+                }
                 let delta = chain.delta;
                 match op(&mut chain) {
                     Err(e) => {
@@ -167,7 +271,12 @@ where
                         }
                     }
                     Ok(Status::Deferred) => {
-                        self.deferred.insert(chain.id, chain);
+                        let id = chain.id;
+                        // SAFETY: the deferred chain holds the snapshot the
+                        // chain was translated with.
+                        let chain = unsafe { chain.into_static() };
+                        let _ram = ram.clone();
+                        self.deferred.insert(id, DeferredChain { chain, _ram });
                     }
                 }
                 self.avail = self.q.index_add(self.avail, delta);
