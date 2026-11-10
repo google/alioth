@@ -15,7 +15,6 @@
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 
 use mio::event::Event;
@@ -296,13 +295,9 @@ impl Virtio for VuFrontend {
 }
 
 impl VirtioMio for VuFrontend {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         let name = &*self.name;
@@ -322,7 +317,7 @@ impl VirtioMio for VuFrontend {
                 log::trace!("{name}: queue-{index} is disabled");
                 continue;
             };
-            let reg = queue.reg();
+            let addrs = queue.addrs();
 
             let _ = active_mio.irq_sender.queue_irqfd(index as _, |fd| {
                 self.session.set_virtq_call(&(index as u64), fd)?;
@@ -332,7 +327,7 @@ impl VirtioMio for VuFrontend {
 
             let virtq_num = VirtqState {
                 index: index as _,
-                val: reg.size.load(Ordering::Acquire) as _,
+                val: addrs.size as _,
             };
             self.session.set_virtq_num(&virtq_num)?;
             log::trace!("{name}: queue-{index}: set size: {}", virtq_num.val);
@@ -344,13 +339,13 @@ impl VirtioMio for VuFrontend {
             self.session.set_virtq_base(&virtq_base)?;
             log::trace!("{name}: queue-{index}: set base: {}", virtq_base.val);
 
-            let mem = active_mio.mem;
+            let mem = queue.ram();
             let virtq_addr = VirtqAddr {
                 index: index as _,
                 flags: 0,
-                desc_hva: mem.translate(reg.desc.load(Ordering::Acquire) as _)? as _,
-                used_hva: mem.translate(reg.device.load(Ordering::Acquire) as _)? as _,
-                avail_hva: mem.translate(reg.driver.load(Ordering::Acquire) as _)? as _,
+                desc_hva: mem.translate(addrs.desc)? as _,
+                used_hva: mem.translate(addrs.device)? as _,
+                avail_hva: mem.translate(addrs.driver)? as _,
                 log_guest_addr: 0,
             };
             self.session.set_virtq_addr(&virtq_addr)?;
@@ -380,25 +375,17 @@ impl VirtioMio for VuFrontend {
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q, S>(
-        &mut self,
-        _: &Event,
-        _: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn handle_event<'a, Q, S>(&mut self, _: &Event, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         unreachable!()
     }
 
-    fn handle_queue<'m, Q, S>(
-        &mut self,
-        index: u16,
-        _: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         unreachable!(

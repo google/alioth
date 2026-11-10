@@ -96,13 +96,13 @@ impl Virtio for FakeDev {
 }
 
 impl VirtioMio for FakeDev {
-    fn activate<'m, Q, S>(
+    fn activate<Q, S>(
         &mut self,
         _feature: u128,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         if self.fail_activate.load(Ordering::Acquire) {
@@ -111,25 +111,25 @@ impl VirtioMio for FakeDev {
         Ok(())
     }
 
-    fn handle_queue<'m, Q, S>(
+    fn handle_queue<Q, S>(
         &mut self,
         _index: u16,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         Ok(())
     }
 
-    fn handle_event<'m, Q, S>(
+    fn handle_event<Q, S>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         Ok(())

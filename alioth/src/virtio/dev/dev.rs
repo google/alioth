@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use snafu::ResultExt;
 
 use crate::mem::emulated::Mmio;
-use crate::mem::mapped::{Ram, RamBus};
+use crate::mem::mapped::RamBus;
 use crate::mem::{LayoutChanged, LayoutUpdated, MemRegion};
 use crate::sync::notifier::Notifier;
 use crate::virtio::queue::packed::PackedQueue;
@@ -438,16 +438,15 @@ where
 pub trait Backend<D: Virtio>: Send + 'static {
     fn register_notifier(&mut self, token: u64) -> Result<Arc<Notifier>>;
     fn reset(&self, dev: &mut D) -> Result<()>;
-    fn event_loop<'m, S, Q>(
+    fn event_loop<S, Q>(
         &mut self,
-        memory: &'m Ram,
         context: &mut Context<D, S>,
-        queues: &mut [Option<Queue<'_, 'm, Q>>],
+        queues: &mut [Option<Queue<Q>>],
         param: &StartParam<S>,
     ) -> Result<()>
     where
         S: IrqSender,
-        Q: VirtQueue<'m>;
+        Q: VirtQueue;
 }
 
 pub trait BackendEvent {
@@ -580,15 +579,14 @@ where
         Ok((handle, notifier))
     }
 
-    fn event_loop<'m, Q>(
-        &mut self,
-        queues: &mut [Option<Queue<'_, 'm, Q>>],
-        ram: &'m Ram,
-        param: &StartParam<S>,
-    ) -> Result<()>
+    fn event_loop<Q>(&mut self, param: &StartParam<S>, event_idx: bool) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
     {
+        let ram = self.context.param.memory.load();
+        let new_queue = |reg| Queue::<Q>::new(reg, &ram, event_idx);
+        let queue_regs = self.context.param.queue_regs.iter();
+        let mut queues = queue_regs.map(new_queue).collect::<Result<Box<_>>>()?;
         log::debug!(
             "{}: activated with {:x?}, {:x?}",
             self.context.dev.name(),
@@ -597,7 +595,7 @@ where
         );
         let ret = self
             .backend
-            .event_loop(ram, &mut self.context, queues, param);
+            .event_loop(&mut self.context, &mut queues, param);
         // Clean up even if the event loop failed, since the device might
         // have been partially activated.
         let reset = self.backend.reset(&mut self.context.dev);
@@ -605,30 +603,13 @@ where
     }
 
     fn run(&mut self, param: &StartParam<S>) -> Result<()> {
-        let memory = self.context.param.memory.clone();
-        let ram = memory.load();
         let feature = param.feature & !VirtioFeature::ACCESS_PLATFORM.bits();
-        let queue_regs = self.context.param.queue_regs.clone();
         let feature = VirtioFeature::from_bits_retain(feature);
         let event_idx = feature.contains(VirtioFeature::EVENT_IDX);
         if feature.contains(VirtioFeature::RING_PACKED) {
-            let new_queue = |reg| {
-                let Some(split_queue) = PackedQueue::new(reg, &ram, event_idx)? else {
-                    return Ok(None);
-                };
-                Ok(Some(Queue::new(split_queue, reg, &ram)))
-            };
-            let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
-            self.event_loop(&mut (queues?), &ram, param)
+            self.event_loop::<PackedQueue>(param, event_idx)
         } else {
-            let new_queue = |reg| {
-                let Some(split_queue) = SplitQueue::new(reg, &ram, event_idx)? else {
-                    return Ok(None);
-                };
-                Ok(Some(Queue::new(split_queue, reg, &ram)))
-            };
-            let queues: Result<Box<_>> = queue_regs.iter().map(new_queue).collect();
-            self.event_loop(&mut (queues?), &ram, param)
+            self.event_loop::<SplitQueue>(param, event_idx)
         }
     }
 

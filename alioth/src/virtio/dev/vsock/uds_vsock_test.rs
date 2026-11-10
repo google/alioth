@@ -95,8 +95,8 @@ fn guest_hdr(op: VsockOp, guest_port: u32, host_port: u32) -> VsockHeader {
 struct VsockTest<'m> {
     ram: &'m Ram,
     sock_path: PathBuf,
-    rx_q: GuestQueue<'m, SplitQueue<'m>>,
-    tx_q: GuestQueue<'m, SplitQueue<'m>>,
+    rx_q: GuestQueue<SplitQueue>,
+    tx_q: GuestQueue<SplitQueue>,
     tx: Sender<WakeEvent<FakeIrqSender>>,
     irq_rx: Receiver<u16>,
     notifier: Arc<Notifier>,
@@ -106,7 +106,7 @@ struct VsockTest<'m> {
 
 impl<'m> VsockTest<'m> {
     /// Starts a device worker listening on a socket in a temporary directory.
-    fn new(ram_bus: &Arc<RamBus>, ram: &'m Ram) -> Self {
+    fn new(ram_bus: &Arc<RamBus>, ram: &'m Arc<Ram>) -> Self {
         let regs: Arc<[QueueReg]> = Arc::from(fixture_queues(3));
         let reg_rx = &regs[VsockVirtq::RX.raw() as usize];
         let reg_tx = &regs[VsockVirtq::TX.raw() as usize];

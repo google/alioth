@@ -338,38 +338,30 @@ impl<F> VirtioMio for Fs<F>
 where
     F: Fuse + Debug + Send + Sync + 'static,
 {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, _active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         self.driver_feature = FsFeature::from_bits_retain(feature);
         Ok(())
     }
 
-    fn handle_event<'a, 'm, Q, S>(
+    fn handle_event<'a, Q, S>(
         &mut self,
         _event: &Event,
-        _active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        _active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         unreachable!()
     }
 
-    fn handle_queue<'m, Q, S>(
-        &mut self,
-        index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         let Some(Some(queue)) = active_mio.queues.get_mut(index as usize) else {

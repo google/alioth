@@ -80,13 +80,9 @@ impl Virtio for PipeReader {
 }
 
 impl VirtioIoUring for PipeReader {
-    fn activate<'m, Q, S>(
-        &mut self,
-        _feature: u128,
-        _ring: &mut ActiveIoUring<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, _feature: u128, _ring: &mut ActiveIoUring<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender,
     {
         Ok(())
@@ -213,14 +209,12 @@ fn io_uring_drain_cancels_pending_reads() {
 
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
-    let split_q = SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap();
-    let mut queues = [Some(Queue::new(split_q, &regs[0], &ram))];
+    let mut queues = [Queue::<SplitQueue>::new(&regs[0], &ram, false).unwrap()];
     let mut active = ActiveIoUring {
         ring: io_uring::IoUring::new(RING_SIZE as u32).unwrap(),
         queues: &mut queues,
         irq_sender: &irq_sender,
         notifiers: &[],
-        mem: &ram,
         shared_count: RING_SIZE - 1,
         submit_counts: Box::new([0]),
     };

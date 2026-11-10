@@ -27,7 +27,7 @@ use crate::virtio::queue::split::{AvailHeader, Desc, DescFlag, SplitQueue, UsedE
 use crate::virtio::queue::tests::{GuestQueue, UsedDesc, VirtQueueGuest};
 use crate::virtio::tests::{DATA_ADDR, MEM_SIZE, QUEUE_SIZE, fixture_queues, fixture_ram_bus};
 
-impl<'m> VirtQueueGuest<'m> for SplitQueue<'m> {
+impl VirtQueueGuest for SplitQueue {
     fn add_desc(
         &mut self,
         index: u16,

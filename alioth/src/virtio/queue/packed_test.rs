@@ -63,14 +63,14 @@ fn index_wrapping_sub(
     );
 }
 
-impl<'m> PackedQueue<'m> {
+impl PackedQueue {
     fn flag_is_used(&self, flag: DescFlag, wrap_counter: bool) -> bool {
         flag.contains(DescFlag::AVAIL) == wrap_counter
             && flag.contains(DescFlag::USED) == wrap_counter
     }
 }
 
-impl<'m> VirtQueueGuest<'m> for PackedQueue<'m> {
+impl VirtQueueGuest for PackedQueue {
     fn add_desc(
         &mut self,
         index: WrappedIndex,

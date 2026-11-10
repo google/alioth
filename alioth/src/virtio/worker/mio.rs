@@ -23,7 +23,6 @@ use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
 use snafu::ResultExt;
 
-use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, Worker, WorkerParam,
@@ -33,31 +32,27 @@ use crate::virtio::queue::{Queue, VirtQueue};
 use crate::virtio::{IrqSender, Result, error};
 
 pub trait VirtioMio: Virtio {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender;
 
-    fn handle_queue<'m, Q, S>(
+    fn handle_queue<Q, S>(
         &mut self,
         index: u16,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender;
 
-    fn handle_event<'m, Q, S>(
+    fn handle_event<Q, S>(
         &mut self,
         event: &Event,
-        active_mio: &mut ActiveMio<'_, '_, 'm, Q, S>,
+        active_mio: &mut ActiveMio<'_, Q, S>,
     ) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender;
 
     fn reset(&mut self, registry: &Registry);
@@ -106,16 +101,15 @@ where
         Ok(())
     }
 
-    fn event_loop<'m, S, Q>(
+    fn event_loop<S, Q>(
         &mut self,
-        memory: &'m Ram,
         context: &mut Context<D, S>,
-        queues: &mut [Option<Queue<'_, 'm, Q>>],
+        queues: &mut [Option<Queue<Q>>],
         param: &StartParam<S>,
     ) -> Result<()>
     where
         S: IrqSender,
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
     {
         let mut events = Events::with_capacity(128);
         let mut active_mio = ActiveMio {
@@ -123,7 +117,6 @@ where
             irq_sender: &*param.irq_sender,
             notifiers: param.notifiers.as_deref().unwrap_or(&[]),
             poll: &mut self.poll,
-            mem: memory,
         };
         context.dev.activate(param.feature, &mut active_mio)?;
         // Only KVM offers ioeventfds, see [`crate::hv::NotifierRegistry`].
@@ -168,21 +161,20 @@ where
     }
 }
 
-pub struct ActiveMio<'a, 'r, 'm, Q, S>
+pub struct ActiveMio<'a, Q, S>
 where
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
 {
-    pub queues: &'a mut [Option<Queue<'r, 'm, Q>>],
+    pub queues: &'a mut [Option<Queue<Q>>],
     pub irq_sender: &'a S,
     pub notifiers: &'a [Notifier],
     pub poll: &'a mut Poll,
-    pub mem: &'m Ram,
 }
 
-impl<'m, D, Q, S> ActiveBackend<D> for ActiveMio<'_, '_, 'm, Q, S>
+impl<D, Q, S> ActiveBackend<D> for ActiveMio<'_, Q, S>
 where
     D: VirtioMio,
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
     S: IrqSender,
 {
     type Event = Event;

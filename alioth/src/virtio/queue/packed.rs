@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use bitfield::bitfield;
@@ -20,7 +20,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::consts;
 use crate::mem::mapped::Ram;
-use crate::virtio::queue::{DescChain, DescFlag, QueueReg, VirtQueue};
+use crate::virtio::queue::{DescChain, DescFlag, QueueReg, RingAddrs, VirtQueue};
 use crate::virtio::{Result, error};
 
 /// The maximum size of a packed virtqueue (VirtIO spec 1.4, Sec 2.8).
@@ -90,43 +90,24 @@ struct DescEvent {
 }
 
 #[derive(Debug)]
-pub struct PackedQueue<'m> {
+pub struct PackedQueue {
     size: u16,
     desc: *mut Desc,
     enable_event_idx: bool,
     notification: *mut DescEvent,
     interrupt: *mut DescEvent,
-    _phantom: PhantomData<&'m ()>,
+    /// The snapshot the pointers above point into.
+    ram: Arc<Ram>,
 }
 
-impl<'m> PackedQueue<'m> {
-    pub fn new(reg: &QueueReg, ram: &'m Ram, event_idx: bool) -> Result<Option<PackedQueue<'m>>> {
-        if !reg.enabled.load(Ordering::Acquire) {
+impl PackedQueue {
+    /// Creates the queue from its registers, or returns `None` if the queue
+    /// is disabled.
+    pub fn new(reg: &QueueReg, ram: &Arc<Ram>, event_idx: bool) -> Result<Option<PackedQueue>> {
+        let Some(addrs) = RingAddrs::load(reg) else {
             return Ok(None);
-        }
-        let size = reg.size.load(Ordering::Acquire);
-        let desc = reg.desc.load(Ordering::Acquire);
-        let device = reg.device.load(Ordering::Acquire);
-        let driver = reg.driver.load(Ordering::Acquire);
-        // The registers may be cleared by a concurrent reset, which disables
-        // the queue first.
-        if !reg.enabled.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        if size == 0 || size > PACKED_QUEUE_SIZE_MAX {
-            return error::InvalidQueueSize { size }.fail();
-        }
-        let notification: *mut DescEvent = ram.get_ptr(device)?;
-        Ok(Some(PackedQueue {
-            size,
-            // The queue accesses descriptors up to the queue size, so the
-            // whole ring must be in guest memory.
-            desc: ram.get_array_ptr(desc, size as u64)?,
-            enable_event_idx: event_idx,
-            notification,
-            interrupt: ram.get_ptr(driver)?,
-            _phantom: PhantomData,
-        }))
+        };
+        <PackedQueue as VirtQueue>::new(&addrs, ram, event_idx).map(Some)
     }
 
     fn flag_is_avail(&self, flag: DescFlag, wrap_counter: bool) -> bool {
@@ -143,10 +124,32 @@ impl<'m> PackedQueue<'m> {
     }
 }
 
-impl<'m> VirtQueue<'m> for PackedQueue<'m> {
+impl VirtQueue for PackedQueue {
     type Index = WrappedIndex;
 
     const INIT_INDEX: WrappedIndex = WrappedIndex::INIT;
+
+    fn new(addrs: &RingAddrs, ram: &Arc<Ram>, event_idx: bool) -> Result<Self> {
+        let size = addrs.size;
+        if size == 0 || size > PACKED_QUEUE_SIZE_MAX {
+            return error::InvalidQueueSize { size }.fail();
+        }
+        let notification: *mut DescEvent = ram.get_ptr(addrs.device)?;
+        Ok(PackedQueue {
+            size,
+            // The queue accesses descriptors up to the queue size, so the
+            // whole ring must be in guest memory.
+            desc: ram.get_array_ptr(addrs.desc, size as u64)?,
+            enable_event_idx: event_idx,
+            notification,
+            interrupt: ram.get_ptr(addrs.driver)?,
+            ram: ram.clone(),
+        })
+    }
+
+    fn ram(&self) -> &Arc<Ram> {
+        &self.ram
+    }
 
     fn desc_avail(&self, index: WrappedIndex) -> bool {
         let flag =
@@ -154,7 +157,7 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
         self.flag_is_avail(DescFlag::from_bits_retain(flag), index.wrap_counter())
     }
 
-    fn get_avail(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>> {
+    fn get_avail<'m>(&self, index: Self::Index, ram: &'m Ram) -> Result<Option<DescChain<'m>>> {
         if !self.desc_avail(index) {
             return Ok(None);
         }
@@ -210,6 +213,7 @@ impl<'m> VirtQueue<'m> for PackedQueue<'m> {
             delta,
             readable: ram.translate_iov(&readable)?,
             writable: ram.translate_iov_mut(&writeable)?,
+            ram,
         }))
     }
 

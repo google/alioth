@@ -22,7 +22,6 @@ use io_uring::cqueue::Entry as Cqe;
 use io_uring::squeue::Entry as Sqe;
 use io_uring::{SubmissionQueue, opcode, types};
 
-use crate::mem::mapped::Ram;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::{
     ActiveBackend, Backend, BackendEvent, Context, StartParam, Virtio, Worker, WorkerParam,
@@ -37,13 +36,9 @@ pub enum BufferAction {
 }
 
 pub trait VirtioIoUring: Virtio {
-    fn activate<'m, Q, S>(
-        &mut self,
-        feature: u128,
-        ring: &mut ActiveIoUring<'_, '_, 'm, Q, S>,
-    ) -> Result<()>
+    fn activate<Q, S>(&mut self, feature: u128, ring: &mut ActiveIoUring<'_, Q, S>) -> Result<()>
     where
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
         S: IrqSender;
 
     fn handle_desc(&mut self, q_index: u16, chain: &mut DescChain) -> Result<BufferAction>;
@@ -111,16 +106,15 @@ where
         Ok(())
     }
 
-    fn event_loop<'m, S, Q>(
+    fn event_loop<S, Q>(
         &mut self,
-        memory: &'m Ram,
         context: &mut Context<D, S>,
-        queues: &mut [Option<Queue<'_, 'm, Q>>],
+        queues: &mut [Option<Queue<Q>>],
         param: &StartParam<S>,
     ) -> Result<()>
     where
         S: IrqSender,
-        Q: VirtQueue<'m>,
+        Q: VirtQueue,
     {
         let submit_counts = iter::repeat_n(0, queues.len()).collect();
         // One entry for the worker notifier, and a reserve for each queue
@@ -131,7 +125,6 @@ where
             shared_count: RING_SIZE - 1 - num_queues * QUEUE_RESERVE_SIZE,
             irq_sender: &*param.irq_sender,
             notifiers: param.notifiers.as_deref().unwrap_or(&[]),
-            mem: memory,
             queues,
             submit_counts,
         };
@@ -155,15 +148,14 @@ where
     }
 }
 
-pub struct ActiveIoUring<'a, 'r, 'm, Q, S>
+pub struct ActiveIoUring<'a, Q, S>
 where
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
 {
     ring: io_uring::IoUring,
-    pub queues: &'a mut [Option<Queue<'r, 'm, Q>>],
+    pub queues: &'a mut [Option<Queue<Q>>],
     pub irq_sender: &'a S,
     pub notifiers: &'a [Notifier],
-    pub mem: &'m Ram,
     shared_count: u16,
     submit_counts: Box<[u16]>,
 }
@@ -178,9 +170,9 @@ fn submit_queue_notifier(index: u16, notifier: &Notifier, sq: &mut SubmissionQue
     Ok(())
 }
 
-impl<'m, Q, S> ActiveIoUring<'_, '_, 'm, Q, S>
+impl<Q, S> ActiveIoUring<'_, Q, S>
 where
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
     S: IrqSender,
 {
     fn run<D>(&mut self, context: &mut Context<D, S>) -> Result<()>
@@ -207,8 +199,8 @@ where
     /// Requests like reading from a tap device may never complete by
     /// themselves, and closing the ring does not wait for the kernel to
     /// finish them. Without draining, the kernel could still write into
-    /// guest memory after the worker releases the memory layout, i.e.
-    /// after the memory may be unmapped and reused.
+    /// guest memory after the worker drops the chains and the snapshots they
+    /// hold, i.e. after the memory may be unmapped and reused.
     ///
     /// The results are discarded. The device is being reset or shut down,
     /// so the guest does not expect the chains back.
@@ -216,8 +208,9 @@ where
     /// Some requests cannot be cancelled, e.g. block I/O on a hung NFS
     /// mount. Waiting is bounded by [`DRAIN_TIMEOUT`] so that a reset or a
     /// VM shutdown does not hang forever. If requests are still in flight
-    /// after that, or draining fails, guest memory is leaked instead: it
-    /// stays mapped even after it is removed from the guest.
+    /// after that, or draining fails, the chains and their snapshots are
+    /// leaked instead: the memory stays mapped even after it is removed from
+    /// the guest.
     fn drain(&mut self) -> Result<()> {
         let ret = self.try_drain();
         match &ret {
@@ -230,8 +223,8 @@ where
             }
         }
         if !matches!(ret, Ok(0)) {
-            for (_, pages) in self.mem.iter() {
-                std::mem::forget(pages.clone());
+            for queue in self.queues.iter_mut().flatten() {
+                queue.leak_deferred();
             }
         }
         self.submit_counts.fill(0);
@@ -307,10 +300,10 @@ where
     }
 }
 
-impl<'m, D, Q, S> ActiveBackend<D> for ActiveIoUring<'_, '_, 'm, Q, S>
+impl<D, Q, S> ActiveBackend<D> for ActiveIoUring<'_, Q, S>
 where
     D: VirtioIoUring,
-    Q: VirtQueue<'m>,
+    Q: VirtQueue,
     S: IrqSender,
 {
     type Event = Cqe;
