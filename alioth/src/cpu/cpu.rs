@@ -73,6 +73,8 @@ pub(crate) struct MpSync {
     pub(crate) state: State,
     fatal: bool,
     count: u16,
+    // Incremented every time all vCPUs arrive at the barrier.
+    generation: u32,
 }
 
 pub struct VcpuHandle {
@@ -96,6 +98,7 @@ impl<V: Vm> Context<V> {
                 state: State::Paused,
                 fatal: false,
                 count: 0,
+                generation: 0,
             }),
             cond: Condvar::new(),
         }
@@ -117,6 +120,31 @@ fn notify_vmm(event_tx: &Sender<u16>, index: u16) -> Result<()> {
     }
 }
 
+/// Blocks until `count` vCPUs arrive, or a vCPU fails.
+fn barrier(sync: &Mutex<MpSync>, cond: &Condvar, count: u16) -> Result<()> {
+    let mut sync = sync.lock();
+    if sync.fatal {
+        return error::PeerFailure.fail();
+    }
+
+    sync.count += 1;
+    if sync.count == count {
+        sync.count = 0;
+        sync.generation = sync.generation.wrapping_add(1);
+        cond.notify_all();
+    } else {
+        // The condition variable also signals state changes.
+        let generation = sync.generation;
+        cond.wait_while(&mut sync, |s| s.generation == generation && !s.fatal);
+    }
+
+    if sync.fatal {
+        return error::PeerFailure.fail();
+    }
+
+    Ok(())
+}
+
 impl<V: Vm> VcpuThread<V> {
     pub fn new(index: u16, ctx: Arc<Context<V>>, event_tx: Sender<u16>) -> Result<Self> {
         let identity = ctx.board.encode_cpu_identity(index);
@@ -135,24 +163,7 @@ impl<V: Vm> VcpuThread<V> {
     }
 
     fn sync_vcpus(&self, vcpus: &[VcpuHandle]) -> Result<()> {
-        let mut sync = self.ctx.sync.lock();
-        if sync.fatal {
-            return error::PeerFailure.fail();
-        }
-
-        sync.count += 1;
-        if sync.count == vcpus.len() as u16 {
-            sync.count = 0;
-            self.ctx.cond.notify_all();
-        } else {
-            self.ctx.cond.wait(&mut sync)
-        }
-
-        if sync.fatal {
-            return error::PeerFailure.fail();
-        }
-
-        Ok(())
+        barrier(&self.ctx.sync, &self.ctx.cond, vcpus.len() as u16)
     }
 
     fn load_payload(&self) -> Result<InitState> {
@@ -331,3 +342,7 @@ pub fn stop_vcpus<V: Vm>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "cpu_test.rs"]
+mod tests;
