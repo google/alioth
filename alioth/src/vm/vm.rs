@@ -36,7 +36,7 @@ use crate::device::MmioDev;
 use crate::device::clock::SystemClock;
 #[cfg(target_arch = "x86_64")]
 use crate::device::cmos::Cmos;
-use crate::device::console::{ConsoleSpec, LogConsole, StdioConsole};
+use crate::device::console::{ConsoleSpec, LogConsole, PtyConsole, StdioConsole};
 #[cfg(target_arch = "x86_64")]
 use crate::device::fw_cfg::{FwCfg, FwCfgItemSpec};
 #[cfg(target_arch = "x86_64")]
@@ -191,6 +191,10 @@ where
                 let console = LogConsole::new(spec).context(error::CreateConsole)?;
                 Arc::new(Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?)
             }
+            ConsoleSpec::Pty(spec) => {
+                let console = PtyConsole::new(spec).context(error::CreateConsole)?;
+                Arc::new(Serial::new(PORT_COM1, io_apic, 4, console).context(error::CreateConsole)?)
+            }
         };
         let mut io_devs = self.ctx.board.io_devs.write();
         io_devs.push((PORT_COM1, com1));
@@ -221,6 +225,10 @@ where
             }
             ConsoleSpec::Log(spec) => {
                 let console = LogConsole::new(spec).context(error::CreateConsole)?;
+                Arc::new(Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?)
+            }
+            ConsoleSpec::Pty(spec) => {
+                let console = PtyConsole::new(spec).context(error::CreateConsole)?;
                 Arc::new(Pl011::new(PL011_START, irq_line, console).context(error::CreateConsole)?)
             }
         };
