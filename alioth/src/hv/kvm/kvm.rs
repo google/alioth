@@ -108,7 +108,9 @@ pub struct KvmSpec {
     pub dev_sev: Option<Box<Path>>,
 }
 
-extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {}
+extern "C" fn sigrtmin_handler(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    vcpu::kick_current_vcpu();
+}
 
 impl Kvm {
     pub fn new(spec: KvmSpec) -> Result<Self> {
