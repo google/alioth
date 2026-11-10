@@ -12,20 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::VecDeque;
+use std::ffi::{CStr, OsStr};
 use std::fmt::Debug;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::mem::MaybeUninit;
+use std::os::fd::AsRawFd;
+use std::os::unix;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use libc::{
-    F_GETFL, F_SETFL, O_NONBLOCK, OPOST, STDIN_FILENO, STDOUT_FILENO, TCSANOW, cfmakeraw, fcntl,
-    tcgetattr, tcsetattr, termios,
+    F_GETFL, F_SETFL, O_NOCTTY, O_NONBLOCK, OPOST, STDIN_FILENO, STDOUT_FILENO, TCIFLUSH, TCSANOW,
+    cfmakeraw, fcntl, tcgetattr, tcsetattr, termios,
 };
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_aco::Help;
 
@@ -190,6 +197,149 @@ impl Console for StdioConsole {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Help)]
+pub struct PtyConsoleSpec {
+    /// Path to a symbolic link to the PTY. An existing symbolic link is replaced.
+    pub link: Option<Box<Path>>,
+}
+
+/// Size of the newest output that a PTY console keeps when it discards the
+/// output nobody has read. It fits in the PTY buffer on Linux and macOS.
+const PTY_TAIL_SIZE: usize = 512;
+
+/// Connects the guest console to a pseudo-terminal (PTY).
+///
+/// Writes never block. When the PTY buffer is full, the oldest output that
+/// nobody has read is discarded, so a client attaching late sees the newest
+/// output.
+#[derive(Debug)]
+pub struct PtyConsole {
+    master: File,
+    // Held open, so the master does not hang up when the last client closes
+    // the slave.
+    slave: File,
+    // The newest output, written again after discarding the unread output.
+    tail: Mutex<VecDeque<u8>>,
+    path: Box<Path>,
+    link: Option<Box<Path>>,
+}
+
+/// Returns the path of the slave of PTY `master`.
+fn slave_path(master: &File) -> io::Result<Box<Path>> {
+    let fd = master.as_raw_fd();
+    let mut buf = [0u8; 128];
+    #[cfg(target_os = "linux")]
+    {
+        let err = unsafe { libc::ptsname_r(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if err != 0 {
+            return Err(io::Error::from_raw_os_error(err));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    ffi!(unsafe { libc::ioctl(fd, libc::TIOCPTYGNAME.into(), buf.as_mut_ptr()) })?;
+    let name = CStr::from_bytes_until_nul(&buf).map_err(|_| ErrorKind::InvalidData)?;
+    Ok(Path::new(OsStr::from_bytes(name.to_bytes())).into())
+}
+
+impl PtyConsole {
+    pub fn new(spec: &PtyConsoleSpec) -> Result<Self> {
+        let master = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NOCTTY | O_NONBLOCK)
+            .open("/dev/ptmx")?;
+        ffi!(unsafe { libc::grantpt(master.as_raw_fd()) })?;
+        ffi!(unsafe { libc::unlockpt(master.as_raw_fd()) })?;
+        let path = slave_path(&master)?;
+        let slave = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NOCTTY)
+            .open(&path)?;
+        let mut attr = MaybeUninit::uninit();
+        ffi!(unsafe { libc::tcgetattr(slave.as_raw_fd(), attr.as_mut_ptr()) })?;
+        unsafe { libc::cfmakeraw(attr.as_mut_ptr()) };
+        ffi!(unsafe { libc::tcsetattr(slave.as_raw_fd(), TCSANOW, attr.as_ptr()) })?;
+        if let Some(link) = &spec.link {
+            if link.is_symlink() {
+                fs::remove_file(link)?;
+            }
+            unix::fs::symlink(&path, link)?;
+        }
+        log::info!("PTY console: {}", path.display());
+        Ok(PtyConsole {
+            master,
+            slave,
+            tail: Mutex::new(VecDeque::new()),
+            path,
+            link: spec.link.clone(),
+        })
+    }
+
+    /// Returns the path of the PTY slave, e.g. `/dev/pts/7`.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PtyConsole {
+    fn drop(&mut self) {
+        if let Some(link) = &self.link
+            && let Err(e) = fs::remove_file(link)
+        {
+            log::error!("Removing {}: {e:?}", link.display());
+        }
+    }
+}
+
+impl Read for &PtyConsole {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut master = &self.master;
+        master.read(buf)
+    }
+}
+
+impl Write for &PtyConsole {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut master = &self.master;
+        let mut tail = self.tail.lock();
+        let (len, full) = match master.write(buf) {
+            Ok(len) => (len, false),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => (buf.len(), true),
+            Err(e) => return Err(e),
+        };
+        tail.extend(&buf[..len]);
+        let excess = tail.len().saturating_sub(PTY_TAIL_SIZE);
+        tail.drain(..excess);
+        if full {
+            // Replace the output that nobody has read with the newest output.
+            ffi!(unsafe { libc::tcflush(self.slave.as_raw_fd(), TCIFLUSH) })?;
+            master.write_all(tail.make_contiguous())?;
+        }
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Console for PtyConsole {
+    const TOKEN_INPUT: Token = Token(0);
+
+    fn activate(&self, registry: &Registry) -> io::Result<()> {
+        registry.register(
+            &mut SourceFd(&self.master.as_raw_fd()),
+            Self::TOKEN_INPUT,
+            Interest::READABLE,
+        )
+    }
+
+    fn deactivate(&self, registry: &Registry) -> io::Result<()> {
+        registry.deregister(&mut SourceFd(&self.master.as_raw_fd()))
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Help)]
 pub enum ConsoleSpec {
     /// Redirect guest console to host stdio (requires TTY).
@@ -199,6 +349,9 @@ pub enum ConsoleSpec {
     /// Redirect guest console to a log file.
     #[serde(alias = "log")]
     Log(LogConsoleSpec),
+    /// Redirect guest console to a pseudo-terminal (PTY).
+    #[serde(alias = "pty")]
+    Pty(PtyConsoleSpec),
 }
 
 pub trait UartRecv: Send + 'static {
