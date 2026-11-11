@@ -78,24 +78,35 @@ guest artifacts via [`vmm-core-host/build.rs`](vmm-core-host/build.rs) and
 cargo build --release --target=x86_64-unknown-linux-musl
 ```
 
-To run workspace unit tests:
+To run workspace unit and end-to-end VM boot tests (full Linux, Linux `initrd`,
+and full Motor OS in both `--cwasm` and `--wasm` modes):
 ```sh
-cargo test --workspace
+cargo test
 ```
 
-## Running Local Tests
+## Running VMs Interactively (`vm_scripts/`)
 
-- **Boot Alpine Linux (`virtio-blk` + `virtio-net`)**:
+Guest image blobs live outside this repository in `../linux-blobs/` and
+`../motor-dev/motor-os/vm_images/release/` (see the
+[Motor OS build guide](https://github.com/moturus/motor-os/blob/main/docs/build.md)).
+
+- **Boot Full Alpine Linux (`virtio-blk` + `virtio-net` on `puff-tap`)**:
   ```sh
-  ./local_test/run-vm.sh --cwasm
+  ./vm_scripts/run-linux.sh --cwasm
   # or with JIT compilation:
-  ./local_test/run-vm.sh --wasm
+  ./vm_scripts/run-linux.sh --wasm
   ```
-- **Boot Linux Kernel + BusyBox `initramfs` (`../busybox-*/`)**:
+- **Boot Linux Kernel + BusyBox `initramfs`**:
   ```sh
-  ./local_test/run-vm-initrd.sh --cwasm
+  ./vm_scripts/run-linux-initrd.sh --cwasm
   # or with JIT compilation:
-  ./local_test/run-vm-initrd.sh --wasm
+  ./vm_scripts/run-linux-initrd.sh --wasm
+  ```
+- **Boot Full Motor OS (`kloader` + `initrd` + `motor-os.qcow2` + `moto-tap`)**:
+  ```sh
+  ./vm_scripts/run-motor-os.sh --cwasm
+  # or with JIT compilation:
+  ./vm_scripts/run-motor-os.sh --wasm
   ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
   VM and exit.

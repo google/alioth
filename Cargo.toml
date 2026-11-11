@@ -6,6 +6,7 @@ members = [
     "vmm-io",
     "vmm-core-host",
     "vmm-io-host",
+    "tests",
 ]
 
 [workspace.package]
