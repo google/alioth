@@ -240,19 +240,28 @@ impl VirtioMio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue<Q, S>(
-        &mut self,
-        index: u16,
-        _active_mio: &mut ActiveMio<'_, Q, S>,
-    ) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
         match index {
-            0 | 1 => unreachable!("{}: queue 0 and 1 are offloaded to kernel", self.name),
+            0 | 1 => {
+                if let Some(notifier) = active_mio.notifiers.get(index as usize) {
+                    log::warn!(
+                        "{}: forwarding queue {index} notification to kernel",
+                        self.name
+                    );
+                    notifier.notify()?;
+                } else {
+                    log::error!(
+                        "{}: unexpected queue {index} notification without kick notifier",
+                        self.name
+                    );
+                }
+            }
             2 => log::info!("{}: event queue buffer available", self.name),
-            _ => unreachable!(),
+            _ => log::error!("{}: invalid queue index {index}", self.name),
         }
         Ok(())
     }
@@ -266,3 +275,7 @@ impl Drop for VhostVsock {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "vhost_vsock_test.rs"]
+mod tests;
