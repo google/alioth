@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
-use std::io::{IoSlice, IoSliceMut, Read, Write};
+use std::io::{IoSlice, IoSliceMut, Read};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
@@ -26,7 +26,7 @@ use io_uring::cqueue::Entry as Cqe;
 #[cfg(target_os = "linux")]
 use io_uring::opcode;
 #[cfg(target_os = "linux")]
-use io_uring::types::Fd;
+use io_uring::types::{Fd, FsyncFlags};
 use mio::Registry;
 use mio::event::Event;
 use serde::Deserialize;
@@ -347,7 +347,6 @@ impl VirtioMio for Block {
             log::error!("{}: invalid queue index {index}", self.name);
             return Ok(());
         };
-        let mut disk = &self.disk;
         queue.handle_desc(index, active_mio.irq_sender, |chain| {
             let written_len = match Block::handle_desc(self, chain) {
                 Err(e) => {
@@ -359,7 +358,7 @@ impl VirtioMio for Block {
                     data,
                     offset,
                     status,
-                }) => match disk.read_exact_at(data, offset) {
+                }) => match self.disk.read_exact_at(data, offset) {
                     Ok(_) => {
                         *status = Status::OK.into();
                         data.len() as u32 + 1
@@ -375,7 +374,7 @@ impl VirtioMio for Block {
                     offset,
                     status,
                 }) => {
-                    match disk.write_all_at(data, offset) {
+                    match self.disk.write_all_at(data, offset) {
                         Ok(_) => *status = Status::OK.into(),
                         Err(e) => {
                             log::error!("{}: write: {e}", self.name);
@@ -385,7 +384,7 @@ impl VirtioMio for Block {
                     1
                 }
                 Ok(BlkRequest::Flush { status }) => {
-                    match disk.flush() {
+                    match self.disk.sync_data() {
                         Ok(_) => *status = Status::OK.into(),
                         Err(e) => {
                             log::error!("{}: flush: {e}", self.name);
@@ -427,7 +426,7 @@ impl VirtioIoUring for Block {
                 BufferAction::Sqe(write)
             }
             BlkRequest::Flush { .. } => {
-                let flush = opcode::Fsync::new(fd).build();
+                let flush = opcode::Fsync::new(fd).flags(FsyncFlags::DATASYNC).build();
                 BufferAction::Sqe(flush)
             }
         };
