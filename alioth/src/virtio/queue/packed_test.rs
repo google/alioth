@@ -113,9 +113,15 @@ impl VirtQueueGuest for PackedQueue {
         if !self.flag_is_used(flag, index.wrap_counter()) {
             return None;
         }
+        assert!(!flag.intersects(DescFlag::NEXT | DescFlag::INDIRECT));
+        let len = if flag.contains(DescFlag::WRITE) {
+            desc.len
+        } else {
+            0
+        };
         Some(UsedDesc {
             id: desc.id,
-            len: desc.len,
+            len,
             delta: chains[&desc.id].len() as u16,
         })
     }
@@ -350,6 +356,62 @@ fn enabled_queue() {
     let mut b = vec![0u8; str_2.len()];
     ram.read(addr_2, b.as_mut()).unwrap();
     assert_eq!(&b, str_2.as_bytes());
+    used_index = q.index_add(used_index, chain.delta);
+    avail_index = q.index_add(avail_index, chain.delta);
+
+    // Mixed chain: readable header (WRITE=0, NEXT=1) followed by writable buffer (WRITE=1).
+    let id = guest_q.add_desc(&[(addr_0, str_0.len() as u32)], &[(addr_2, 16)]);
+    let mut chain = q.get_avail(avail_index, &ram).unwrap().unwrap();
+    assert_eq!(chain.readable.len(), 1);
+    assert_eq!(chain.writable.len(), 1);
+    chain.writable[0].as_mut()[..5].copy_from_slice(b"reply");
+    q.set_used(used_index, chain.id, 5);
+
+    let used = guest_q.get_used().unwrap();
+    assert_eq!(used.id, id);
+    assert_eq!(used.delta, 2);
+    assert_eq!(used.len, 5);
+}
+
+#[rstest]
+#[case::readable_head(true, DescFlag::NEXT, 16, DescFlag::AVAIL | DescFlag::USED | DescFlag::WRITE)]
+#[case::indirect(true, DescFlag::INDIRECT, 8, DescFlag::AVAIL | DescFlag::USED | DescFlag::WRITE)]
+#[case::nothing_written(true, DescFlag::WRITE, 0, DescFlag::AVAIL | DescFlag::USED)]
+#[case::wrapped_readable_head(false, DescFlag::NEXT, 32, DescFlag::WRITE)]
+#[case::wrapped_nothing_written(false, DescFlag::WRITE, 0, DescFlag::empty())]
+fn set_used_flags(
+    #[case] wrap_counter: bool,
+    #[case] desc_flag: DescFlag,
+    #[case] len: u32,
+    #[case] expected_flag: DescFlag,
+) {
+    let ram_bus = fixture_ram_bus();
+    let queues = fixture_queues(1);
+    let ram = ram_bus.load();
+    let q = PackedQueue::new(&queues[0], &ram, false).unwrap().unwrap();
+
+    // An available descriptor has AVAIL equal to, and USED different from,
+    // the wrap counter.
+    let avail_flag = if wrap_counter {
+        DescFlag::AVAIL
+    } else {
+        DescFlag::USED
+    };
+    unsafe { &*q.desc }
+        .flag
+        .store((desc_flag | avail_flag).bits(), Ordering::Release);
+
+    let mut index = WrappedIndex(0);
+    index.set_warp_counter(wrap_counter);
+    q.set_used(index, 7, len);
+
+    let desc = unsafe { &*q.desc };
+    assert_eq!(desc.id, 7);
+    assert_eq!(desc.len, len);
+    assert_eq!(
+        DescFlag::from_bits_retain(desc.flag.load(Ordering::Acquire)),
+        expected_flag
+    );
 }
 
 #[test]
