@@ -74,8 +74,9 @@ impl VhostVsock {
             vhost_dev.set_backend_features(&backend_feature)?;
         }
         let dev_feat = vhost_dev.get_features()? as u128;
-        let known_feat = VirtioFeature::from_bits_truncate(dev_feat).bits()
-            | VsockFeature::from_bits_truncate(dev_feat).bits();
+        let known_feat =
+            (VirtioFeature::from_bits_truncate(dev_feat) & !VirtioFeature::VHOST_PROTOCOL).bits()
+                | VsockFeature::from_bits_truncate(dev_feat).bits();
         if !VirtioFeature::from_bits_retain(known_feat).contains(VirtioFeature::VERSION_1) {
             return error::VhostMissingDeviceFeature {
                 feature: VirtioFeature::VERSION_1.bits(),
@@ -256,19 +257,28 @@ impl VirtioMio for VhostVsock {
         Ok(())
     }
 
-    fn handle_queue<Q, S>(
-        &mut self,
-        index: u16,
-        _active_mio: &mut ActiveMio<'_, Q, S>,
-    ) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
         match index {
-            0 | 1 => unreachable!("{}: queue 0 and 1 are offloaded to kernel", self.name),
+            0 | 1 => {
+                if let Some(notifier) = active_mio.notifiers.get(index as usize) {
+                    log::warn!(
+                        "{}: forwarding queue {index} notification to kernel",
+                        self.name
+                    );
+                    notifier.notify()?;
+                } else {
+                    log::error!(
+                        "{}: unexpected queue {index} notification without kick notifier",
+                        self.name
+                    );
+                }
+            }
             2 => log::info!("{}: event queue buffer available", self.name),
-            _ => unreachable!(),
+            _ => log::error!("{}: invalid queue index {index}", self.name),
         }
         Ok(())
     }
