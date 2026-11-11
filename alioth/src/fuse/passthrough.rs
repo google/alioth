@@ -74,8 +74,22 @@ fn convert_o_flags(flags: i32) -> Result<OpenOptions> {
     opts.create(flags & libc::O_CREAT == libc::O_CREAT);
     opts.create_new(flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL);
     let all = libc::O_ACCMODE | libc::O_APPEND | libc::O_TRUNC | libc::O_CREAT | libc::O_EXCL;
-    opts.custom_flags(flags & !all);
+    // A symbolic link could point to a file outside of the shared directory.
+    opts.custom_flags((flags & !all) | libc::O_NOFOLLOW);
     Ok(opts)
+}
+
+/// Returns the name of a directory entry in a FUSE request.
+///
+/// The name must be a single path component. Otherwise, e.g. `/etc/passwd`
+/// or `../file`, it could refer to a file outside of the directory.
+fn entry_name(buf: &[u8]) -> Result<&OsStr> {
+    let name = OsStr::from_bytes(CStr::from_bytes_until_nul(buf)?.to_bytes());
+    let bytes = name.as_bytes();
+    if matches!(bytes, b"" | b"." | b"..") || bytes.contains(&b'/') {
+        return error::InvalidFileName { name }.fail();
+    }
+    Ok(name)
 }
 
 #[derive(Debug)]
@@ -136,8 +150,8 @@ impl Passthrough {
 
     fn join_path(&self, parent: u64, name: &[u8]) -> Result<Box<Path>> {
         let parent = self.get_node(parent)?;
-        let p = OsStr::from_bytes(CStr::from_bytes_until_nul(name)?.to_bytes());
-        Ok(parent.path.join(p).into_boxed_path())
+        let name = entry_name(name)?;
+        Ok(parent.path.join(name).into_boxed_path())
     }
 
     fn convert_meta(&self, meta: &Metadata) -> FuseAttr {
