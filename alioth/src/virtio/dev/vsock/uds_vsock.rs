@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, IoSlice, IoSliceMut, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, IoSlice, IoSliceMut, Read, Write};
 use std::mem::size_of_val;
 use std::num::Wrapping;
 use std::os::fd::AsRawFd;
@@ -311,7 +311,7 @@ impl UdsVsock {
             return Ok(());
         };
         conn.update_peer_credit(hdr);
-        let acked = writeln!(conn.writer, "OK {host_port}").and_then(|_| conn.writer.flush());
+        let acked = writeln!(conn.writer, "OK {host_port}");
         match acked {
             Ok(()) => {}
             // The host hung up before the guest accepted the connection.
@@ -870,6 +870,40 @@ impl UdsVsock {
         Ok(())
     }
 
+    fn flush_conn_tx_pending(
+        &mut self,
+        host_port: u32,
+        guest_port: u32,
+        registry: &Registry,
+    ) -> Result<()> {
+        let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
+            return Ok(());
+        };
+        match conn.flush_tx_pending() {
+            Ok(_) => {
+                conn.update_writable_interest(registry, false)?;
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) if is_conn_lost(&e) => {
+                log::debug!(
+                    "{}: vm:{guest_port} -> host:{host_port}: host closed while flushing: {e:?}",
+                    self.name
+                );
+                conn.tx_pending.clear();
+                conn.update_writable_interest(registry, false)?;
+                conn.eof = true;
+            }
+            Err(e) => {
+                conn.update_writable_interest(registry, false)?;
+                return Err(e.into());
+            }
+        }
+        if !conn.eof && conn.needs_credit_update() {
+            conn.credit_update_pending = true;
+        }
+        Ok(())
+    }
+
     fn transfer_tx_data<Q, S>(
         &mut self,
         hdr: &VsockHeader,
@@ -883,43 +917,6 @@ impl UdsVsock {
         Q: VirtQueue,
         S: IrqSender,
     {
-        fn copy_to_conn(
-            buf: &[u8],
-            conn: &mut BufWriter<UnixStream>,
-            remain: &mut usize,
-        ) -> io::Result<()> {
-            if let Some(b) = buf.get(..*remain) {
-                conn.write_all(b)?;
-                *remain = 0;
-            } else {
-                conn.write_all(buf)?;
-                *remain -= buf.len();
-            }
-            Ok(())
-        }
-
-        /// Writes up to `len` bytes of `body` and `buffers` to `conn`,
-        /// returning the number of bytes that were not covered by the input.
-        fn write_to_conn(
-            conn: &mut BufWriter<UnixStream>,
-            body: &[u8],
-            buffers: &[IoSlice],
-            len: usize,
-        ) -> io::Result<usize> {
-            let mut remain = len;
-            if !body.is_empty() {
-                copy_to_conn(body, conn, &mut remain)?;
-            }
-            for buf in buffers {
-                if remain == 0 {
-                    break;
-                }
-                copy_to_conn(buf, conn, &mut remain)?;
-            }
-            conn.flush()?;
-            Ok(remain)
-        }
-
         let host_port = hdr.dst_port;
         let guest_port = hdr.src_port;
         let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
@@ -934,11 +931,22 @@ impl UdsVsock {
             return Ok(());
         }
         conn.update_peer_credit(hdr);
-        match write_to_conn(&mut conn.writer, body, buffers, hdr.len as usize) {
-            Ok(0) => {}
-            Ok(remain) => {
-                log::error!("{}: missing {remain} bytes", self.name);
-                return error::InvalidBuffer.fail();
+
+        let total_avail = body.len() + buffers.iter().map(|b| b.len()).sum::<usize>();
+        let len = hdr.len as usize;
+        if total_avail < len {
+            let remain = len - total_avail;
+            log::error!("{}: missing {remain} bytes", self.name);
+            return error::InvalidBuffer.fail();
+        }
+
+        let res = conn.write_tx_data(body, buffers, len);
+        match res {
+            Ok(()) => {
+                conn.update_writable_interest(registry, false)?;
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                conn.update_writable_interest(registry, true)?;
             }
             // The host hung up. Reset this connection only, the rest of the
             // device keeps running.
@@ -947,12 +955,16 @@ impl UdsVsock {
                     "{}: vm:{guest_port} -> host:{host_port}: host closed",
                     self.name
                 );
+                conn.tx_pending.clear();
+                conn.update_writable_interest(registry, false)?;
                 conn.eof = true;
                 return self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender);
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                conn.update_writable_interest(registry, false)?;
+                return Err(e.into());
+            }
         }
-        conn.fwd_cnt += hdr.len;
         if conn.needs_credit_update() {
             conn.credit_update_pending = true;
         }
@@ -990,7 +1002,7 @@ pub enum ConnState {
 pub struct Connection {
     state: ConnState,
     reader: BufReader<UnixStream>,
-    writer: BufWriter<UnixStream>,
+    writer: UnixStream,
     buf_alloc: u32,
     fwd_cnt: Wrapping<u32>,
     last_fwd_cnt: Wrapping<u32>,
@@ -998,6 +1010,8 @@ pub struct Connection {
     peer_buf_alloc: u32,
     peer_fwd_cnt: Wrapping<u32>,
     credit_update_pending: bool,
+    tx_pending: VecDeque<u8>,
+    writable_registered: bool,
     eof: bool,
 }
 
@@ -1011,7 +1025,7 @@ impl Connection {
         Connection {
             state,
             reader,
-            writer: BufWriter::new(writer),
+            writer,
             buf_alloc,
             fwd_cnt: Wrapping(0),
             last_fwd_cnt: Wrapping(0),
@@ -1019,6 +1033,8 @@ impl Connection {
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
             credit_update_pending: false,
+            tx_pending: VecDeque::new(),
+            writable_registered: false,
             eof: false,
         }
     }
@@ -1036,6 +1052,100 @@ impl Connection {
     fn needs_credit_update(&self) -> bool {
         let unacked = (self.fwd_cnt - self.last_fwd_cnt).0;
         unacked > 0 && self.buf_alloc.saturating_sub(unacked) <= self.buf_alloc / 2
+    }
+
+    fn update_writable_interest(
+        &mut self,
+        registry: &Registry,
+        want_writable: bool,
+    ) -> io::Result<()> {
+        if want_writable == self.writable_registered {
+            return Ok(());
+        }
+        let fd = self.reader.get_ref().as_raw_fd();
+        let interest = if want_writable {
+            Interest::READABLE | Interest::WRITABLE
+        } else {
+            Interest::READABLE
+        };
+        registry.reregister(&mut SourceFd(&fd), Token(fd as usize), interest)?;
+        self.writable_registered = want_writable;
+        Ok(())
+    }
+
+    /// Writes `tx_pending` bytes to the non-blocking host socket, advancing
+    /// `fwd_cnt` only for bytes actually accepted by the kernel.
+    fn flush_tx_pending(&mut self) -> io::Result<()> {
+        while !self.tx_pending.is_empty() {
+            let (front, _) = self.tx_pending.as_slices();
+            match self.writer.write(front) {
+                Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    self.tx_pending.drain(..n);
+                    self.fwd_cnt += n as u32;
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes `len` bytes from `body` and `buffers` to the host socket.
+    ///
+    /// On the fast path (`tx_pending` is empty), writes directly to the socket
+    /// without copying; any unwritten tail after `WouldBlock` is queued into
+    /// `tx_pending` without advancing `fwd_cnt` so guest TX credit stalls until
+    /// the host drains.
+    fn write_tx_data(&mut self, body: &[u8], buffers: &[IoSlice], len: usize) -> io::Result<()> {
+        let mut remain = len;
+        let slices = std::iter::once(body).chain(buffers.iter().map(|b| b.as_ref()));
+
+        if !self.tx_pending.is_empty() {
+            for slice in slices {
+                if remain == 0 {
+                    break;
+                }
+                let n = remain.min(slice.len());
+                self.tx_pending.extend(&slice[..n]);
+                remain -= n;
+            }
+            return self.flush_tx_pending();
+        }
+
+        let mut blocked: Option<io::Error> = None;
+        for slice in slices {
+            if remain == 0 {
+                break;
+            }
+            let n = remain.min(slice.len());
+            let mut chunk = &slice[..n];
+            remain -= n;
+            if blocked.is_some() {
+                self.tx_pending.extend(chunk);
+                continue;
+            }
+            while !chunk.is_empty() {
+                match self.writer.write(chunk) {
+                    Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                    Ok(written) => {
+                        self.fwd_cnt += written as u32;
+                        chunk = &chunk[written..];
+                    }
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        self.tx_pending.extend(chunk);
+                        blocked = Some(e);
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        match blocked {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1130,6 +1240,9 @@ impl VirtioMio for UdsVsock {
             self.handle_conn_request(token, pending, registry, rx_q, irq_sender)
         } else if let Some(port_pair) = self.ports.get(&token) {
             let (host_port, guest_port) = port_pair.to_owned();
+            if event.is_writable() {
+                self.flush_conn_tx_pending(host_port, guest_port, registry)?;
+            }
             self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
         } else {
             log::error!("{}: invalid token: {token:#x?}", self.name);

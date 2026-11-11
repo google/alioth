@@ -243,13 +243,18 @@ impl<'m> VsockTest<'m> {
             })
             .unwrap();
         self.notifier.notify().unwrap();
-        if expect_rx {
-            self.wait_rx_irq();
+        let mut got_rx = false;
+        let mut got_tx = false;
+        while !got_tx || (expect_rx && !got_rx) {
+            let irq = self.irq_rx.recv_timeout(TIMEOUT).unwrap();
+            if irq == VsockVirtq::RX.raw() {
+                got_rx = true;
+            } else if irq == VsockVirtq::TX.raw() {
+                got_tx = true;
+            } else {
+                panic!("unexpected irq for queue {irq}");
+            }
         }
-        assert_eq!(
-            self.irq_rx.recv_timeout(TIMEOUT).unwrap(),
-            VsockVirtq::TX.raw()
-        );
         let used = self.tx_q.get_used().unwrap();
         assert_eq!(used.id, buf_id);
         assert_eq!(used.len, 0);
@@ -906,4 +911,120 @@ fn vsock_credit_wrapping_test() {
     assert!(!conn.needs_credit_update());
     conn.fwd_cnt = Wrapping(412); // 512 bytes unacked == 1024 / 2
     assert!(conn.needs_credit_update());
+}
+
+#[test]
+fn vsock_tx_slow_host_backpressure_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.load();
+    let mut t = VsockTest::new(&ram_bus, &ram);
+
+    const HOST_PORT: u32 = 8820;
+    const GUEST_PORT: u32 = 8821;
+    let listener_path = format!("{}_{HOST_PORT}", t.sock_path.to_string_lossy());
+    let listener = UnixListener::bind(&listener_path).unwrap();
+    let rx_buf_id = t.add_rx_desc();
+    let req_hdr = guest_hdr(VsockOp::REQUEST, GUEST_PORT, HOST_PORT);
+    t.send_to_tx(&req_hdr, &[], true);
+    let resp_hdr = t.take_rx_hdr(rx_buf_id);
+    assert_eq!(resp_hdr.op, VsockOp::RESPONSE);
+    let host_buf_alloc = resp_hdr.buf_alloc;
+    assert!(host_buf_alloc > 0);
+    let (mut host_stream, _) = listener.accept().unwrap();
+
+    // Post RX buffers for CREDIT_UPDATE replies.
+    const RX_RING_BASE: u64 = DATA_ADDR + 0x4000;
+    let rx_addrs: [u64; 8] = [0, 1, 2, 3, 4, 5, 6, 7].map(|i| RX_RING_BASE + i * 256);
+    let mut rx_ids = rx_addrs.map(|addr| t.add_rx_desc_at(addr, 256));
+    t.notify_rx();
+
+    // Fill the non-blocking host UDS send buffer without reading from `host_stream`.
+    // Because kernel skb overhead counts against SO_SNDBUF (`host_buf_alloc`),
+    // sending `host_buf_alloc` bytes in 4 KiB chunks is guaranteed to hit WouldBlock
+    // and queue the overflow into `Connection::tx_pending`.
+    let total_bytes = host_buf_alloc as usize;
+    let expected: Vec<u8> = (0..total_bytes).map(|i| (i % 251) as u8).collect();
+    let mut sent = 0usize;
+    let mut last_fwd_cnt = Wrapping(0u32);
+    let data_addr = TX_ADDR + HDR_SIZE as u64;
+
+    while sent < total_bytes {
+        let chunk_len = (total_bytes - sent).min(4096);
+        let hdr = VsockHeader {
+            len: chunk_len as u32,
+            ..guest_hdr(VsockOp::RW, GUEST_PORT, HOST_PORT)
+        };
+        t.ram.write(TX_ADDR, hdr.as_bytes()).unwrap();
+        t.ram
+            .write(data_addr, &expected[sent..sent + chunk_len])
+            .unwrap();
+        let tx_id = t.tx_q.add_desc(
+            &[(TX_ADDR, HDR_SIZE as u32), (data_addr, chunk_len as u32)],
+            &[],
+        );
+        t.tx.send(WakeEvent::Notify {
+            q_index: VsockVirtq::TX.raw(),
+        })
+        .unwrap();
+        t.notifier.notify().unwrap();
+        let used = loop {
+            if let Some(used) = t.tx_q.get_used() {
+                break used;
+            }
+            t.irq_rx.recv_timeout(TIMEOUT).unwrap();
+        };
+        assert_eq!(used.id, tx_id);
+        assert_eq!(used.len, 0);
+        while t.irq_rx.try_recv().is_ok() {}
+        sent += chunk_len;
+
+        let mut replenished = false;
+        while let Some(used) = t.rx_q.get_used() {
+            let slot = rx_ids.iter().position(|id| *id == used.id).unwrap();
+            let cu_hdr = t.read_hdr(rx_addrs[slot]);
+            assert_eq!(cu_hdr.op, VsockOp::CREDIT_UPDATE);
+            last_fwd_cnt = cu_hdr.fwd_cnt;
+            rx_ids[slot] = t.add_rx_desc_at(rx_addrs[slot], 256);
+            replenished = true;
+        }
+        if replenished {
+            t.notify_rx();
+        }
+    }
+
+    // Query current `fwd_cnt` while the host still hasn't read: bytes queued in
+    // `tx_pending` must NOT have been credited yet.
+    let credit_req = guest_hdr(VsockOp::CREDIT_REQUEST, GUEST_PORT, HOST_PORT);
+    t.send_to_tx(&credit_req, &[], true);
+    while let Some(used) = t.rx_q.get_used() {
+        let slot = rx_ids.iter().position(|id| *id == used.id).unwrap();
+        let cu_hdr = t.read_hdr(rx_addrs[slot]);
+        assert_eq!(cu_hdr.op, VsockOp::CREDIT_UPDATE);
+        last_fwd_cnt = cu_hdr.fwd_cnt;
+        rx_ids[slot] = t.add_rx_desc_at(rx_addrs[slot], 256);
+    }
+    t.notify_rx();
+    assert!(
+        (last_fwd_cnt.0 as usize) < total_bytes,
+        "expected WouldBlock backpressure to withhold credit (fwd_cnt={last_fwd_cnt}, total={total_bytes})"
+    );
+
+    // Now drain the host socket; the mio WRITABLE event must flush `tx_pending`
+    // in order and advance `fwd_cnt` to `total_bytes`.
+    let mut received = vec![0u8; total_bytes];
+    host_stream.read_exact(&mut received).unwrap();
+    assert_eq!(received, expected);
+
+    // Confirm `fwd_cnt` catches up to `total_bytes`.
+    t.send_to_tx(&credit_req, &[], true);
+    while let Some(used) = t.rx_q.get_used() {
+        let slot = rx_ids.iter().position(|id| *id == used.id).unwrap();
+        let cu_hdr = t.read_hdr(rx_addrs[slot]);
+        assert_eq!(cu_hdr.op, VsockOp::CREDIT_UPDATE);
+        last_fwd_cnt = cu_hdr.fwd_cnt;
+        rx_ids[slot] = t.add_rx_desc_at(rx_addrs[slot], 256);
+    }
+    assert_eq!(last_fwd_cnt, Wrapping(total_bytes as u32));
+
+    t.shutdown();
 }
