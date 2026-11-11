@@ -120,6 +120,11 @@ impl VirtQueue for PackedQueue {
     type Index = WrappedIndex;
 
     const INIT_INDEX: WrappedIndex = WrappedIndex::INIT;
+    // VirtIO spec 1.4, Sec 2.8.1: both driver and device ring wrap counters
+    // are initialized to 1. For packed rings, vhost and vhost-user
+    // SET_VRING_BASE encode the avail index in bits 0..16 and the used
+    // index in bits 16..32, each laid out like `WrappedIndex`.
+    const INIT_VHOST_BASE: u32 = (WrappedIndex::INIT.0 as u32) << 16 | WrappedIndex::INIT.0 as u32;
 
     fn new(addrs: &RingAddrs, ram: &Arc<Ram>, event_idx: bool) -> Result<Self> {
         let size = addrs.size;

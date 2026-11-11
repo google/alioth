@@ -334,10 +334,10 @@ impl VirtioMio for VuFrontend {
 
             let virtq_base = VirtqState {
                 index: index as _,
-                val: 0,
+                val: Q::INIT_VHOST_BASE,
             };
             self.session.set_virtq_base(&virtq_base)?;
-            log::trace!("{name}: queue-{index}: set base: {}", virtq_base.val);
+            log::trace!("{name}: queue-{index}: set base: {:#x}", virtq_base.val);
 
             let mem = queue.ram();
             let virtq_addr = VirtqAddr {

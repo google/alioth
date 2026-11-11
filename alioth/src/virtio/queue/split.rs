@@ -148,6 +148,7 @@ impl VirtQueue for SplitQueue {
     type Index = u16;
 
     const INIT_INDEX: u16 = 0;
+    const INIT_VHOST_BASE: u32 = 0;
 
     fn new(addrs: &RingAddrs, ram: &Arc<Ram>, event_idx: bool) -> Result<Self> {
         let size = addrs.size as u64;

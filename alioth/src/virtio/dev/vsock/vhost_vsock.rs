@@ -172,8 +172,10 @@ impl VirtioMio for VhostVsock {
                 index,
                 val: addrs.size as _,
             })?;
-            self.vhost_dev
-                .set_virtq_base(&VirtqState { index, val: 0 })?;
+            self.vhost_dev.set_virtq_base(&VirtqState {
+                index,
+                val: Q::INIT_VHOST_BASE,
+            })?;
             let mem = queue.ram();
             let virtq_addr = VirtqAddr {
                 index,
