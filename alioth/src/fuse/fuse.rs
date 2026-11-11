@@ -15,7 +15,7 @@
 pub mod bindings;
 pub mod passthrough;
 
-use std::ffi::FromBytesUntilNulError;
+use std::ffi::{FromBytesUntilNulError, OsStr};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{Error as IoError, IoSlice, IoSliceMut};
@@ -43,6 +43,8 @@ pub enum Error {
     NodeId { id: u64 },
     #[snafu(display("Invalid C String "), context(false))]
     InvalidCString { error: FromBytesUntilNulError },
+    #[snafu(display("Invalid file name {name:?}"))]
+    InvalidFileName { name: Box<OsStr> },
     #[snafu(display("Unsupported flag {flag:#x} of {op:?}"))]
     Unsupported { op: FuseOpcode, flag: u32 },
     #[snafu(display("Directory was not opened"))]
@@ -74,6 +76,7 @@ impl Error {
             Error::System { error, .. } => error.raw_os_error().unwrap_or(libc::EINVAL),
             Error::NodeId { .. } => libc::ENOENT,
             Error::InvalidCString { .. } => libc::EINVAL,
+            Error::InvalidFileName { .. } => libc::EINVAL,
             Error::Unsupported { .. } => libc::EOPNOTSUPP,
             Error::DirNotOpened { .. } => libc::EBADF,
             Error::InvalidAccMode { .. } => libc::EINVAL,
