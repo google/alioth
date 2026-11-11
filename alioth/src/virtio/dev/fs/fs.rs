@@ -406,7 +406,7 @@ where
         if self.feature.contains(FsFeature::NOTIFICATION) {
             count += 1;
         }
-        count + self.config.num_request_queues as u16 * 2
+        count + self.config.num_request_queues as u16
     }
 
     fn config(&self) -> Arc<FsConfig> {
