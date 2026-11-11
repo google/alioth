@@ -129,6 +129,9 @@ struct DeferredChain {
 pub trait VirtQueue: Sized {
     type Index: Clone + Copy;
     const INIT_INDEX: Self::Index;
+    /// The vring base of a queue in its initial state, as taken by the
+    /// vhost and vhost-user SET_VRING_BASE requests.
+    const INIT_VHOST_BASE: u32;
     /// Creates the queue on the rings at `addrs` in the snapshot `ram`,
     /// which the queue holds on to.
     fn new(addrs: &RingAddrs, ram: &Arc<Ram>, event_idx: bool) -> Result<Self>;
