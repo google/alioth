@@ -114,14 +114,6 @@ impl PackedQueue {
         flag.contains(DescFlag::AVAIL) == wrap_counter
             && flag.contains(DescFlag::USED) != wrap_counter
     }
-
-    fn set_flag_used(&self, flag: &mut DescFlag, wrap_counter: bool) {
-        if wrap_counter {
-            flag.insert(DescFlag::USED | DescFlag::AVAIL);
-        } else {
-            flag.remove(DescFlag::USED | DescFlag::AVAIL);
-        }
-    }
 }
 
 impl VirtQueue for PackedQueue {
@@ -218,14 +210,18 @@ impl VirtQueue for PackedQueue {
     }
 
     fn set_used(&self, index: Self::Index, id: u16, len: u32) {
+        let mut flag = DescFlag::empty();
+        if index.wrap_counter() {
+            flag |= DescFlag::USED | DescFlag::AVAIL;
+        }
+        if len > 0 {
+            flag |= DescFlag::WRITE;
+        }
         unsafe {
             let first = self.desc.offset(index.offset() as isize);
             (&raw mut (*first).id).write_volatile(id);
             (&raw mut (*first).len).write_volatile(len);
-            let flag_ref = &(*first).flag;
-            let mut flag = DescFlag::from_bits_retain(flag_ref.load(Ordering::Relaxed));
-            self.set_flag_used(&mut flag, index.wrap_counter());
-            flag_ref.store(flag.bits(), Ordering::Release);
+            (*first).flag.store(flag.bits(), Ordering::Release);
         }
     }
 
