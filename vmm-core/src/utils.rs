@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[macro_export]
 macro_rules! align_up {
     ($num:expr, $align:expr) => {{
-        debug_assert_eq!(($align as u64).count_ones(), 1);
+        assert!(($align as u64).is_power_of_two());
         let mask = $align - 1;
         ($num.wrapping_add(mask)) & !mask
     }};
