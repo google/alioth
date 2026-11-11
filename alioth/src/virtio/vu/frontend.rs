@@ -42,6 +42,17 @@ bitflags! {
     pub struct VuDevFeature(u128) { }
 }
 
+// VirtIO spec 1.4, Sec 2.8.1: both driver and device ring wrap counters
+// are initialized to 1. For packed rings, vhost-user SET_VRING_BASE encodes
+// the avail wrap counter in bit 15 and the used wrap counter in bit 31.
+fn vring_base_init(feature: u128) -> u32 {
+    if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+        (1 << 15) | (1 << 31)
+    } else {
+        0
+    }
+}
+
 #[derive(Debug)]
 pub struct UpdateVuMem {
     pub name: Arc<str>,
@@ -312,6 +323,7 @@ impl VirtioMio for VuFrontend {
             log::trace!("{name}: queue-{index}: set kick fd: {raw_fd}");
         }
 
+        let base = vring_base_init(feature);
         for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
                 log::trace!("{name}: queue-{index} is disabled");
@@ -334,10 +346,10 @@ impl VirtioMio for VuFrontend {
 
             let virtq_base = VirtqState {
                 index: index as _,
-                val: 0,
+                val: base,
             };
             self.session.set_virtq_base(&virtq_base)?;
-            log::trace!("{name}: queue-{index}: set base: {}", virtq_base.val);
+            log::trace!("{name}: queue-{index}: set base: {:#x}", virtq_base.val);
 
             let mem = queue.ram();
             let virtq_addr = VirtqAddr {

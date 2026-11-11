@@ -140,6 +140,17 @@ impl Virtio for VhostVsock {
     }
 }
 
+// VirtIO spec 1.4, Sec 2.8.1: both driver and device ring wrap counters
+// are initialized to 1. For packed rings, VHOST_SET_VRING_BASE encodes
+// the avail wrap counter in bit 15 and the used wrap counter in bit 31.
+fn vring_base_init(feature: u128) -> u32 {
+    if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+        (1 << 15) | (1 << 31)
+    } else {
+        0
+    }
+}
+
 impl VirtioMio for VhostVsock {
     fn activate<Q, S>(&mut self, feature: u128, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
@@ -147,6 +158,7 @@ impl VirtioMio for VhostVsock {
         S: IrqSender,
     {
         self.vhost_dev.set_features(&(feature as u64))?;
+        let base = vring_base_init(feature);
         for (index, notifier) in active_mio.notifiers.iter().take(2).enumerate() {
             let kick = VirtqFile {
                 index: index as u32,
@@ -173,7 +185,7 @@ impl VirtioMio for VhostVsock {
                 val: addrs.size as _,
             })?;
             self.vhost_dev
-                .set_virtq_base(&VirtqState { index, val: 0 })?;
+                .set_virtq_base(&VirtqState { index, val: base })?;
             let mem = queue.ram();
             let virtq_addr = VirtqAddr {
                 index,
@@ -270,3 +282,7 @@ impl Drop for VhostVsock {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "vhost_vsock_test.rs"]
+mod tests;
