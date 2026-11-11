@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use std::fs::{File, OpenOptions};
-use std::io::{IoSlice, IoSliceMut, Read, Write};
+use std::io::{Error as IoError, ErrorKind, IoSlice, IoSliceMut, Read, Result as IoResult, Write};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::slice;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -66,7 +67,7 @@ consts! {
 }
 
 #[repr(C)]
-#[derive(Debug, FromBytes)]
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes)]
 pub struct Request {
     type_: RequestType,
     reserved: u32,
@@ -151,23 +152,105 @@ impl DevSpec for BlkFileSpec {
     }
 }
 
+#[derive(Debug)]
 enum BlkRequest<'d, 'm> {
     Done {
         written: u32,
     },
     In {
-        data: &'d mut IoSliceMut<'m>,
+        data: &'d mut [IoSliceMut<'m>],
         offset: u64,
         status: &'d mut u8,
     },
     Out {
-        data: &'d IoSlice<'m>,
+        data: &'d [IoSlice<'m>],
         offset: u64,
         status: &'d mut u8,
     },
     Flush {
         status: &'d mut u8,
     },
+}
+
+fn consume_header(readable: &mut Vec<IoSlice<'_>>) -> Result<Request> {
+    let mut hdr_bytes = [0u8; size_of::<Request>()];
+    let mut filled = 0;
+    let mut drain_count = 0;
+    for buf in readable.iter_mut() {
+        let need = hdr_bytes.len() - filled;
+        if buf.len() <= need {
+            hdr_bytes[filled..filled + buf.len()].copy_from_slice(buf);
+            filled += buf.len();
+            drain_count += 1;
+            if filled == hdr_bytes.len() {
+                break;
+            }
+        } else {
+            hdr_bytes[filled..].copy_from_slice(&buf[..need]);
+            buf.advance(need);
+            filled = hdr_bytes.len();
+            break;
+        }
+    }
+    if filled < hdr_bytes.len() {
+        return error::InvalidBuffer.fail();
+    }
+    readable.drain(..drain_count);
+    readable.retain(|buf| !buf.is_empty());
+    Request::read_from_bytes(&hdr_bytes).map_err(|_| error::InvalidBuffer.build())
+}
+
+/// Moves the 1-byte status at the end of the device-writable buffers into a
+/// slice of its own.
+fn isolate_status<'m>(writable: &mut Vec<IoSliceMut<'m>>) -> Result<()> {
+    writable.retain(|buf| !buf.is_empty());
+    let Some(last_len) = writable.last().map(|buf| buf.len()) else {
+        return error::InvalidBuffer.fail();
+    };
+    if last_len > 1 {
+        let mut last = writable.pop().unwrap();
+        let ptr = last.as_mut_ptr();
+        // SAFETY: `last` uniquely borrows `last_len` valid mutable bytes for `'m`
+        // at `ptr`, and `last_len >= 2`. Consuming `last` and splitting at
+        // `last_len - 1` yields two disjoint mutable slices in the same buffer.
+        let (data_tail, status_slice) = unsafe {
+            (
+                IoSliceMut::new(slice::from_raw_parts_mut(ptr, last_len - 1)),
+                IoSliceMut::new(slice::from_raw_parts_mut(ptr.add(last_len - 1), 1)),
+            )
+        };
+        writable.push(data_tail);
+        writable.push(status_slice);
+    }
+    Ok(())
+}
+
+/// Splits the device-writable buffers, after [`isolate_status`], into the data
+/// and the status byte.
+fn split_status<'d, 'm>(
+    writable: &'d mut [IoSliceMut<'m>],
+) -> Result<(&'d mut [IoSliceMut<'m>], &'d mut u8)> {
+    let [data_in @ .., status_buf] = writable else {
+        return error::InvalidBuffer.fail();
+    };
+    let [status] = &mut status_buf[..] else {
+        return error::InvalidBuffer.fail();
+    };
+    Ok((data_in, status))
+}
+
+/// Returns the disk offset of `sector`, if the `data_len` bytes from there are
+/// within `capacity` sectors.
+fn sector_offset(sector: u64, data_len: usize, capacity: u64) -> Option<u64> {
+    let offset = sector.checked_mul(SECTOR_SIZE as u64)?;
+    let end = offset.checked_add(data_len as u64)?;
+    // A driver MUST NOT read or write beyond the capacity (VirtIO spec 1.4,
+    // Sec 5.2.6.1). Checking it also keeps a guest from extending the disk
+    // image file.
+    if end > capacity.saturating_mul(SECTOR_SIZE as u64) {
+        return None;
+    }
+    Some(offset)
 }
 
 #[derive(Debug)]
@@ -220,49 +303,95 @@ impl Block {
     }
 
     fn handle_desc<'d, 'm>(&self, desc: &'d mut DescChain<'m>) -> Result<BlkRequest<'d, 'm>> {
-        let [hdr, data_out @ ..] = &desc.readable[..] else {
-            return error::InvalidBuffer.fail();
-        };
-        let Ok(request) = Request::read_from_bytes(hdr) else {
-            return error::InvalidBuffer.fail();
-        };
-        let [data_in @ .., status_buf] = &mut desc.writable[..] else {
-            return error::InvalidBuffer.fail();
-        };
-        let [status] = &mut status_buf[..] else {
-            return error::InvalidBuffer.fail();
-        };
-        let offset = request.sector * SECTOR_SIZE as u64;
+        let request = consume_header(&mut desc.readable)?;
+        isolate_status(&mut desc.writable)?;
+        if request.type_ == RequestType::FLUSH {
+            // A driver SHOULD NOT include any data in a FLUSH request (VirtIO
+            // spec 1.4, Sec 5.2.6.1). Drop it, so that it is neither checked
+            // nor taken as transferred when the flush completes.
+            desc.readable.clear();
+            let status_index = desc.writable.len() - 1;
+            desc.writable.drain(..status_index);
+        }
+        let (data_in, status) = split_status(&mut desc.writable)?;
+        let data_out = &desc.readable[..];
         match request.type_ {
             RequestType::IN => {
-                let [data] = data_in else {
+                if !data_out.is_empty() {
+                    return error::InvalidBuffer.fail();
+                }
+                let Some(total_len) = data_in
+                    .iter()
+                    .try_fold(0usize, |acc, buf| acc.checked_add(buf.len()))
+                    .filter(|&len| len <= i32::MAX as usize)
+                else {
                     return error::InvalidBuffer.fail();
                 };
+                let Some(offset) = sector_offset(request.sector, total_len, self.config.capacity)
+                else {
+                    log::error!(
+                        "{}: invalid read sector {:#x}, len {total_len}",
+                        self.name,
+                        request.sector
+                    );
+                    *status = Status::IOERR.into();
+                    return Ok(BlkRequest::Done { written: 1 });
+                };
+                if data_in.is_empty() {
+                    *status = Status::OK.into();
+                    return Ok(BlkRequest::Done { written: 1 });
+                }
                 Ok(BlkRequest::In {
-                    data,
+                    data: data_in,
                     offset,
                     status,
                 })
             }
             RequestType::OUT => {
+                if !data_in.is_empty() {
+                    return error::InvalidBuffer.fail();
+                }
+                let Some(total_len) = data_out
+                    .iter()
+                    .try_fold(0usize, |acc, buf| acc.checked_add(buf.len()))
+                    .filter(|&len| len <= i32::MAX as usize)
+                else {
+                    return error::InvalidBuffer.fail();
+                };
                 if self.feature.contains(BlockFeature::RO) {
                     log::error!("{}: attempt to write to a read-only device", self.name);
                     *status = Status::IOERR.into();
                     return Ok(BlkRequest::Done { written: 1 });
                 }
-                let [data] = data_out else {
-                    return error::InvalidBuffer.fail();
+                let Some(offset) = sector_offset(request.sector, total_len, self.config.capacity)
+                else {
+                    log::error!(
+                        "{}: invalid write sector {:#x}, len {total_len}",
+                        self.name,
+                        request.sector
+                    );
+                    *status = Status::IOERR.into();
+                    return Ok(BlkRequest::Done { written: 1 });
                 };
+                if data_out.is_empty() {
+                    *status = Status::OK.into();
+                    return Ok(BlkRequest::Done { written: 1 });
+                }
                 Ok(BlkRequest::Out {
-                    data,
+                    data: data_out,
                     offset,
                     status,
                 })
             }
             RequestType::FLUSH => Ok(BlkRequest::Flush { status }),
             RequestType::GET_ID => {
-                let mut name_bytes = self.name.as_bytes();
-                let count = name_bytes.read_vectored(data_in)? as u32;
+                if !data_out.is_empty() {
+                    return error::InvalidBuffer.fail();
+                }
+                let mut id = [0u8; VIRTIO_BLK_ID_SIZE];
+                let len = self.name.len().min(VIRTIO_BLK_ID_SIZE);
+                id[..len].copy_from_slice(&self.name.as_bytes()[..len]);
+                let count = (&id[..]).read_vectored(data_in)? as u32;
                 *status = Status::OK.into();
                 Ok(BlkRequest::Done { written: 1 + count })
             }
@@ -271,6 +400,69 @@ impl Block {
                 *status = Status::UNSUPP.into();
                 Ok(BlkRequest::Done { written: 1 })
             }
+        }
+    }
+
+    fn read_at(&self, data: &mut [IoSliceMut<'_>], mut offset: u64) -> IoResult<u32> {
+        let mut total = 0u32;
+        for buf in data {
+            self.disk.read_exact_at(buf, offset)?;
+            offset = offset
+                .checked_add(buf.len() as u64)
+                .ok_or_else(|| IoError::from(ErrorKind::InvalidInput))?;
+            total += buf.len() as u32;
+        }
+        Ok(total)
+    }
+
+    fn write_at(&self, data: &[IoSlice<'_>], mut offset: u64) -> IoResult<()> {
+        for buf in data {
+            self.disk.write_all_at(buf, offset)?;
+            offset = offset
+                .checked_add(buf.len() as u64)
+                .ok_or_else(|| IoError::from(ErrorKind::InvalidInput))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn complete_io(&self, q_index: u16, chain: &mut DescChain, result: i32) -> Result<u32> {
+        let (data_in, status) = split_status(&mut chain.writable)?;
+        if result < 0 {
+            let err = IoError::from_raw_os_error(result.saturating_neg());
+            log::error!("{}: queue-{q_index} io error: {err}", self.name);
+            *status = Status::IOERR.into();
+            return Ok(1);
+        }
+        let transferred = result as usize;
+        let in_len: usize = data_in.iter().map(|buf| buf.len()).sum();
+        let out_len: usize = chain.readable.iter().map(|buf| buf.len()).sum();
+        if in_len > 0 {
+            if transferred != in_len {
+                log::error!(
+                    "{}: queue-{q_index} short read: {transferred} of {in_len} bytes",
+                    self.name
+                );
+                *status = Status::IOERR.into();
+                Ok(1)
+            } else {
+                *status = Status::OK.into();
+                Ok(in_len as u32 + 1)
+            }
+        } else if out_len > 0 {
+            if transferred != out_len {
+                log::error!(
+                    "{}: queue-{q_index} short write: {transferred} of {out_len} bytes",
+                    self.name
+                );
+                *status = Status::IOERR.into();
+            } else {
+                *status = Status::OK.into();
+            }
+            Ok(1)
+        } else {
+            *status = Status::OK.into();
+            Ok(1)
         }
     }
 }
@@ -349,20 +541,16 @@ impl VirtioMio for Block {
         };
         let mut disk = &self.disk;
         queue.handle_desc(index, active_mio.irq_sender, |chain| {
-            let written_len = match Block::handle_desc(self, chain) {
-                Err(e) => {
-                    log::error!("{}: handle descriptor: {e}", self.name);
-                    0
-                }
-                Ok(BlkRequest::Done { written }) => written,
-                Ok(BlkRequest::In {
+            let written_len = match Block::handle_desc(self, chain)? {
+                BlkRequest::Done { written } => written,
+                BlkRequest::In {
                     data,
                     offset,
                     status,
-                }) => match disk.read_exact_at(data, offset) {
-                    Ok(_) => {
+                } => match self.read_at(data, offset) {
+                    Ok(total) => {
                         *status = Status::OK.into();
-                        data.len() as u32 + 1
+                        total + 1
                     }
                     Err(e) => {
                         log::error!("{}: read: {e}", self.name);
@@ -370,13 +558,13 @@ impl VirtioMio for Block {
                         1
                     }
                 },
-                Ok(BlkRequest::Out {
+                BlkRequest::Out {
                     data,
                     offset,
                     status,
-                }) => {
-                    match disk.write_all_at(data, offset) {
-                        Ok(_) => *status = Status::OK.into(),
+                } => {
+                    match self.write_at(data, offset) {
+                        Ok(()) => *status = Status::OK.into(),
                         Err(e) => {
                             log::error!("{}: write: {e}", self.name);
                             *status = Status::IOERR.into();
@@ -384,7 +572,7 @@ impl VirtioMio for Block {
                     }
                     1
                 }
-                Ok(BlkRequest::Flush { status }) => {
+                BlkRequest::Flush { status } => {
                     match disk.flush() {
                         Ok(_) => *status = Status::OK.into(),
                         Err(e) => {
@@ -415,13 +603,13 @@ impl VirtioIoUring for Block {
         let action = match Block::handle_desc(self, chain)? {
             BlkRequest::Done { written } => BufferAction::Written(written),
             BlkRequest::In { data, offset, .. } => {
-                let read = opcode::Read::new(fd, data.as_mut_ptr(), data.len() as u32)
+                let read = opcode::Readv::new(fd, data.as_ptr().cast(), data.len() as u32)
                     .offset(offset)
                     .build();
                 BufferAction::Sqe(read)
             }
             BlkRequest::Out { data, offset, .. } => {
-                let write = opcode::Write::new(fd, data.as_ptr(), data.len() as u32)
+                let write = opcode::Writev::new(fd, data.as_ptr().cast(), data.len() as u32)
                     .offset(offset)
                     .build();
                 BufferAction::Sqe(write)
@@ -435,28 +623,10 @@ impl VirtioIoUring for Block {
     }
 
     fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32> {
-        let result = cqe.result();
-        let status_code = if result >= 0 {
-            Status::OK
-        } else {
-            let err = std::io::Error::from_raw_os_error(-result);
-            log::error!("{}: queue-{q_index} io error: {err}", self.name,);
-            Status::IOERR
-        };
-        match Block::handle_desc(self, chain)? {
-            BlkRequest::Done { .. } => unreachable!(),
-            BlkRequest::Flush { status } => {
-                *status = status_code.into();
-                Ok(1)
-            }
-            BlkRequest::In { data, status, .. } => {
-                *status = status_code.into();
-                Ok(data.len() as u32 + 1)
-            }
-            BlkRequest::Out { status, .. } => {
-                *status = status_code.into();
-                Ok(1)
-            }
-        }
+        self.complete_io(q_index, chain, cqe.result())
     }
 }
+
+#[cfg(test)]
+#[path = "blk_test.rs"]
+mod tests;
