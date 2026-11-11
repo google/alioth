@@ -19,8 +19,10 @@ use libc::{_SC_PAGESIZE, PROT_NONE, sysconf};
 use rstest::rstest;
 
 use crate::fuse::bindings::FuseSetupmappingFlag;
-use crate::fuse::{DaxRegion, Error};
+use crate::fuse::{DaxRegion, Error, Fuse};
 use crate::mem::mapped::ArcMemPages;
+use crate::virtio::dev::Virtio;
+use crate::virtio::dev::fs::{Fs, FsConfig};
 
 fn page_size() -> u64 {
     unsafe { sysconf(_SC_PAGESIZE) as u64 }
@@ -65,4 +67,30 @@ fn dax_range_overflow() {
         window.unmap(u64::MAX, page),
         Err(Error::InvalidDaxRange { .. })
     );
+}
+
+#[derive(Debug)]
+struct DummyFuse;
+
+impl Fuse for DummyFuse {
+    fn set_dax_region(&mut self, _dax_region: Box<dyn DaxRegion>) {}
+}
+
+#[rstest]
+#[case(1, 0, 2)]
+#[case(4, 0, 5)]
+#[case(1, 64, 3)]
+#[case(4, 64, 6)]
+fn num_queues(
+    #[case] num_request_queues: u32,
+    #[case] notify_buf_size: u32,
+    #[case] expected: u16,
+) {
+    let config = FsConfig {
+        tag: [0; 36],
+        num_request_queues,
+        notify_buf_size,
+    };
+    let fs = Fs::new("test", DummyFuse, config, 0).unwrap();
+    assert_eq!(fs.num_queues(), expected);
 }
