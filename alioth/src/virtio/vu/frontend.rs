@@ -163,7 +163,9 @@ pub struct VuFrontend {
     vu_feature: VuFeature,
     device_feature: u64,
     num_queues: u16,
-    err_fds: Box<[Notifier]>,
+    /// Error fds of the enabled queues with their queue indexes, alive
+    /// from activation to reset.
+    err_fds: Vec<(usize, Notifier)>,
 }
 
 impl VuFrontend {
@@ -217,15 +219,6 @@ impl VuFrontend {
             None
         };
 
-        let mut err_fds = vec![];
-        for index in 0..num_queues {
-            let fd = Notifier::new()?;
-            session.set_virtq_err(&(index as u64), fd.as_fd())?;
-            let raw_fd = fd.as_fd().as_raw_fd();
-            log::trace!("{name}: queue-{index}: set error fd: {raw_fd}");
-            err_fds.push(fd);
-        }
-
         session.set_owner()?;
         log::trace!("{name}: set owner");
 
@@ -237,7 +230,7 @@ impl VuFrontend {
             vu_feature,
             device_feature,
             num_queues,
-            err_fds: err_fds.into(),
+            err_fds: Vec::new(),
         })
     }
 
@@ -335,6 +328,17 @@ impl VirtioMio for VuFrontend {
                 Ok(())
             });
 
+            // Each activation gets new error fds: an eventfd that has
+            // signaled an error stays readable, and registering it again
+            // would fail the device right away.
+            let mut fd = Notifier::new()?;
+            self.session.set_virtq_err(&(index as u64), fd.as_fd())?;
+            let raw_fd = fd.as_fd().as_raw_fd();
+            log::trace!("{name}: queue-{index}: set error fd: {raw_fd}");
+            let registry = active_mio.poll.registry();
+            registry.register(&mut fd, Token(index), Interest::READABLE)?;
+            self.err_fds.push((index, fd));
+
             let virtq_num = VirtqState {
                 index: index as _,
                 val: addrs.size as _,
@@ -369,11 +373,6 @@ impl VirtioMio for VuFrontend {
             log::trace!("{name}: queue-{index}: set enabled: {}", virtq_enable.val);
         }
 
-        let registry = active_mio.poll.registry();
-        for (index, fd) in self.err_fds.iter_mut().enumerate() {
-            registry.register(fd, Token(index), Interest::READABLE)?;
-        }
-
         if self.vu_feature.contains(VuFeature::STATUS) {
             let dev_status = DevStatus::from_bits_retain(0xf);
             self.session.set_status(&(dev_status.bits() as u64))?;
@@ -382,23 +381,36 @@ impl VirtioMio for VuFrontend {
         Ok(())
     }
 
-    fn handle_event<'a, Q, S>(&mut self, _: &Event, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
+    fn handle_event<'a, Q, S>(&mut self, event: &Event, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
-        unreachable!()
+        let q_index = event.token().0;
+        vu_error::QueueErr {
+            index: q_index as u16,
+        }
+        .fail()?
     }
 
-    fn handle_queue<Q, S>(&mut self, index: u16, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
-        unreachable!(
-            "{}: queue {index} notification should go to vhost-user backend",
-            self.name
-        )
+        if let Some(notifier) = active_mio.notifiers.get(index as usize) {
+            log::warn!(
+                "{}: forwarding queue {index} notification to vhost-user backend",
+                self.name
+            );
+            notifier.notify()?;
+        } else {
+            log::error!(
+                "{}: unexpected queue {index} notification without kick notifier",
+                self.name
+            );
+        }
+        Ok(())
     }
 
     fn reset(&mut self, registry: &Registry) {
@@ -428,8 +440,8 @@ impl VirtioMio for VuFrontend {
         {
             log::error!("{name}: failed to reset device status: {e:?}");
         }
-        for (index, fd) in self.err_fds.iter_mut().enumerate() {
-            if let Err(e) = registry.deregister(fd) {
+        for (index, mut fd) in self.err_fds.drain(..) {
+            if let Err(e) = registry.deregister(&mut fd) {
                 log::error!("{name}: queue-{index}: failed to deregister error fd: {e:?}");
             }
         }
