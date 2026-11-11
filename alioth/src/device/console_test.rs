@@ -147,22 +147,17 @@ fn test_pty_console() {
 fn test_pty_console_full() {
     let console = PtyConsole::new(&PtyConsoleSpec::default()).unwrap();
 
-    // Far more output than the PTY buffer holds, with nobody reading.
-    for _ in 0..256 {
-        (&console).write_all(&[b'.'; 4096]).unwrap();
-    }
-    (&console).write_all(b"~ # ").unwrap();
-    // Fill the PTY buffer, so the next byte discards the unread output.
-    let mut master = &console.master;
-    let err = (0..1024).find_map(|_| master.write(&[b'x'; 4096]).err());
-    assert_matches!(err, Some(e) if e.kind() == ErrorKind::WouldBlock);
-    (&console).write_all(b"l").unwrap();
+    // Far more output than the PTY buffer holds, with nobody reading. The PTY
+    // cannot take all of it, so the last write finds the buffer full and
+    // replaces the unread output with the newest output.
+    let mut output = vec![b'.'; 1 << 20];
+    output.extend(b"~ # l");
+    (&console).write_all(&output).unwrap();
 
     // A client connecting late sees the newest output.
     let client = open_slave(console.path());
-    let output = read_until(&client, b"~ # l");
-    assert_eq!(output.len(), PTY_TAIL_SIZE);
-    assert!(!output.contains(&b'x'));
+    let tail = &output[output.len() - PTY_TAIL_SIZE..];
+    assert_eq!(read_until(&client, b"~ # l"), tail);
 }
 
 #[test]
