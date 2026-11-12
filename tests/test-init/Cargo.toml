@@ -1,0 +1,28 @@
+[package]
+name = "test-init"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+# Referenced read-only from ../motor-dev/motor-os;
+# see https://github.com/moturus/motor-os/blob/main/docs/build.md
+[dependencies]
+elfloader = { path = "../../../motor-dev/motor-os/src/third_party/elfloader" }
+moto-rt   = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
+moto-sys  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+
+[patch.crates-io]
+moto-rt  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
+moto-sys = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+strip = true
+codegen-units = 1

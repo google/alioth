@@ -11,6 +11,7 @@ members = [
 exclude = [
     "tests/kernel",
     "tests/kloader",
+    "tests/test-init",
 ]
 
 [workspace.package]

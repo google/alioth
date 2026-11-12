@@ -88,6 +88,153 @@ pub fn motor_os_release_dir() -> PathBuf {
     })
 }
 
+/// Magic constant at offset 0 of Motor OS's 512-byte `InitrdHeader`.
+pub const INITRD_HEADER_MAGIC: u32 = 0xf402_100f;
+
+/// 4 KiB page-aligned start offset of the `sys-io` (`test-init`) ELF inside `initrd-test-guest`.
+///
+/// Satisfies `kernel/src/init.rs`: `initrd.len() > 4096` and 4 KiB alignment for zero-copy
+/// `place_sys_io` (`vmem_map_reserved_pages`).
+pub const INITRD_SYS_IO_START: u32 = 4096;
+
+/// Packs a stripped Motor OS PID 2 (`test-init`) ELF into a standalone `initrd-test-guest` image.
+pub fn pack_test_guest_initrd(test_init_elf: &[u8]) -> Vec<u8> {
+    assert!(
+        !test_init_elf.is_empty(),
+        "test-init ELF payload must not be empty"
+    );
+    let total_len = (INITRD_SYS_IO_START as usize)
+        .checked_add(test_init_elf.len())
+        .expect("initrd size overflow");
+    let sys_io_end: u32 = total_len
+        .try_into()
+        .expect("initrd-test-guest exceeds u32::MAX bytes");
+
+    let mut buf = vec![0u8; total_len];
+    buf[0..4].copy_from_slice(&INITRD_HEADER_MAGIC.to_le_bytes());
+    // Offsets [4..20] (`kloader_start`, `kloader_end`, `kernel_start`, `kernel_end`) stay 0:
+    // PVH boot loads `kloader` (and its embedded `.kernel_image`) directly from the `kloader` ELF.
+    buf[20..24].copy_from_slice(&INITRD_SYS_IO_START.to_le_bytes());
+    buf[24..28].copy_from_slice(&sys_io_end.to_le_bytes());
+    buf[INITRD_SYS_IO_START as usize..].copy_from_slice(test_init_elf);
+    buf
+}
+
+pub fn write_test_guest_initrd(test_init_path: &Path, output_path: &Path) {
+    let elf_bytes = fs::read(test_init_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read test-init ELF '{}': {e}",
+            test_init_path.display()
+        )
+    });
+    let initrd = pack_test_guest_initrd(&elf_bytes);
+    fs::write(output_path, &initrd).unwrap_or_else(|e| {
+        panic!(
+            "failed to write initrd-test-guest '{}': {e}",
+            output_path.display()
+        )
+    });
+}
+
+#[derive(Debug, Clone)]
+pub struct TestGuestArtifacts {
+    pub dir: PathBuf,
+    pub kernel: PathBuf,
+    pub kloader: PathBuf,
+    pub test_init: PathBuf,
+    pub initrd: PathBuf,
+}
+
+fn clear_host_rustup_env(cmd: &mut Command) {
+    // Allow `tests/{kernel,kloader,test-init}/rust-toolchain.toml` to select the Motor OS
+    // toolchain even when invoked from a host `stable` `cargo test` or `cargo run` process.
+    cmd.env_remove("CARGO")
+        .env_remove("RUSTC")
+        .env_remove("RUSTDOC")
+        .env_remove("RUSTUP_TOOLCHAIN");
+}
+
+/// Builds `tests/kernel`, `tests/kloader`, `tests/test-init`, and packs `initrd-test-guest`
+/// under `target/test-guest/`.
+pub fn build_test_guest() -> TestGuestArtifacts {
+    let root = repo_root();
+    let tests_dir = root.join("tests");
+    let out_dir = root.join("target/test-guest");
+    let obj_dir = out_dir.join("obj");
+    fs::create_dir_all(&obj_dir).expect("failed to create target/test-guest/obj");
+
+    let mut kernel_cmd = Command::new(tests_dir.join("kernel/build.sh"));
+    clear_host_rustup_env(&mut kernel_cmd);
+    let status = kernel_cmd
+        .arg("--release")
+        .env("CARGO_TARGET_DIR", obj_dir.join("kernel"))
+        .env("MOTO_BIN", &out_dir)
+        .status()
+        .expect("failed to execute tests/kernel/build.sh");
+    assert!(status.success(), "tests/kernel/build.sh --release failed");
+
+    let mut kloader_cmd = Command::new(tests_dir.join("kloader/build.sh"));
+    clear_host_rustup_env(&mut kloader_cmd);
+    let status = kloader_cmd
+        .arg("--release")
+        .env("CARGO_TARGET_DIR", obj_dir.join("kloader"))
+        .env("MOTO_BIN", &out_dir)
+        .status()
+        .expect("failed to execute tests/kloader/build.sh");
+    assert!(status.success(), "tests/kloader/build.sh --release failed");
+
+    let test_init_dir = tests_dir.join("test-init");
+    let test_init_obj = obj_dir.join("test-init");
+    let mut init_cmd = Command::new("cargo");
+    clear_host_rustup_env(&mut init_cmd);
+    let status = init_cmd
+        .current_dir(&test_init_dir)
+        .arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg("x86_64-unknown-motor")
+        .env("CARGO_TARGET_DIR", &test_init_obj)
+        .status()
+        .expect("failed to invoke cargo build for tests/test-init");
+    assert!(status.success(), "cargo build for tests/test-init failed");
+
+    let unstripped_init = test_init_obj.join("x86_64-unknown-motor/release/test-init");
+    let stripped_init = out_dir.join("test-init");
+    let status = Command::new("strip")
+        .arg("-o")
+        .arg(&stripped_init)
+        .arg(&unstripped_init)
+        .status()
+        .expect("failed to execute strip on test-init");
+    assert!(status.success(), "strip failed for test-init");
+
+    let initrd = out_dir.join("initrd-test-guest");
+    write_test_guest_initrd(&stripped_init, &initrd);
+
+    let kernel = out_dir.join("kernel");
+    let kloader = out_dir.join("kloader");
+    for artifact in [&kernel, &kloader, &stripped_init, &initrd] {
+        assert!(
+            artifact.is_file(),
+            "expected test-guest artifact '{}' missing",
+            artifact.display()
+        );
+    }
+
+    TestGuestArtifacts {
+        dir: out_dir,
+        kernel,
+        kloader,
+        test_init: stripped_init,
+        initrd,
+    }
+}
+
+pub fn ensure_test_guest_artifacts() -> &'static TestGuestArtifacts {
+    static ARTIFACTS: OnceLock<TestGuestArtifacts> = OnceLock::new();
+    ARTIFACTS.get_or_init(build_test_guest)
+}
+
 pub fn ensure_vmm_artifacts() -> &'static Path {
     static ARTIFACT_DIR: OnceLock<PathBuf> = OnceLock::new();
     ARTIFACT_DIR.get_or_init(|| {
@@ -493,4 +640,37 @@ pub fn boot_and_shutdown(
             &stderr_bytes,
         )
     );
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn test_pack_test_guest_initrd_header_and_alignment() {
+        let fake_elf = b"\x7fELFtest-init-payload";
+        let image = pack_test_guest_initrd(fake_elf);
+
+        assert!(image.len() > 4096);
+        assert_eq!(image.len(), 4096 + fake_elf.len());
+
+        let magic = u32::from_le_bytes(image[0..4].try_into().unwrap());
+        let kloader_start = u32::from_le_bytes(image[4..8].try_into().unwrap());
+        let kloader_end = u32::from_le_bytes(image[8..12].try_into().unwrap());
+        let kernel_start = u32::from_le_bytes(image[12..16].try_into().unwrap());
+        let kernel_end = u32::from_le_bytes(image[16..20].try_into().unwrap());
+        let sys_io_start = u32::from_le_bytes(image[20..24].try_into().unwrap());
+        let sys_io_end = u32::from_le_bytes(image[24..28].try_into().unwrap());
+
+        assert_eq!(magic, INITRD_HEADER_MAGIC);
+        assert_eq!(kloader_start, 0);
+        assert_eq!(kloader_end, 0);
+        assert_eq!(kernel_start, 0);
+        assert_eq!(kernel_end, 0);
+        assert_eq!(sys_io_start, INITRD_SYS_IO_START);
+        assert_eq!(sys_io_start % 4096, 0);
+        assert_eq!(sys_io_end as usize, image.len());
+        assert!(image[28..4096].iter().all(|&b| b == 0));
+        assert_eq!(&image[4096..], fake_elf);
+    }
 }
