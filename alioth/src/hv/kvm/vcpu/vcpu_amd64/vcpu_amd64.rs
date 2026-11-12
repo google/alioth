@@ -31,7 +31,7 @@ use crate::hv::kvm::vm::KvmVm;
 use crate::hv::{Error, Result, error};
 use crate::sys::kvm::{
     KVM_MAX_CPUID_ENTRIES, KvmCpuid2, KvmCpuid2Flag, KvmCpuidEntry2, KvmMsrEntry, KvmMsrs, KvmRegs,
-    MAX_IO_MSRS, kvm_create_vcpu, kvm_get_lapic, kvm_get_regs, kvm_get_sregs, kvm_get_xsave,
+    MSRS_PER_CALL, kvm_create_vcpu, kvm_get_lapic, kvm_get_regs, kvm_get_sregs, kvm_get_xsave,
     kvm_kvmclock_ctrl, kvm_set_cpuid2, kvm_set_lapic, kvm_set_msrs, kvm_set_regs, kvm_set_sregs,
     kvm_set_xsave,
 };
@@ -303,15 +303,22 @@ impl KvmVcpu {
 
     pub fn kvm_set_msrs(&mut self, msrs: &[(Msr, u64)]) -> Result<()> {
         let mut kvm_msrs = KvmMsrs {
-            nmsrs: msrs.len() as u32,
+            nmsrs: 0,
             _pad: 0,
-            entries: [KvmMsrEntry::default(); MAX_IO_MSRS],
+            entries: [KvmMsrEntry::default(); MSRS_PER_CALL],
         };
-        for (i, (index, data)) in msrs.iter().enumerate() {
-            kvm_msrs.entries[i].index = index.raw();
-            kvm_msrs.entries[i].data = *data;
+        for chunk in msrs.chunks(MSRS_PER_CALL) {
+            kvm_msrs.nmsrs = chunk.len() as u32;
+            for (entry, (index, data)) in zip(&mut kvm_msrs.entries, chunk) {
+                entry.index = index.raw();
+                entry.data = *data;
+            }
+            let n = unsafe { kvm_set_msrs(&self.fd, &kvm_msrs) }.context(error::GuestMsr)?;
+            // KVM stops at the first MSR that it cannot write.
+            if let Some((index, _)) = chunk.get(n as usize) {
+                return error::SetMsr { index: index.raw() }.fail();
+            }
         }
-        unsafe { kvm_set_msrs(&self.fd, &kvm_msrs) }.context(error::GuestMsr)?;
         Ok(())
     }
 

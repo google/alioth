@@ -23,9 +23,10 @@ use crate::arch::paging::Entry;
 use crate::arch::reg::{Cr0, Cr4, Reg, SegAccess};
 use crate::ffi;
 use crate::hv::{
-    DtReg, DtRegVal, Hypervisor, Kvm, MemMapOption, SReg, SegReg, SegRegVal, Vcpu, Vm, VmEntry,
-    VmExit,
+    DtReg, DtRegVal, Error, Hypervisor, Kvm, MemMapOption, SReg, SegReg, SegRegVal, Vcpu, Vm,
+    VmEntry, VmExit,
 };
+use crate::sys::kvm::MSRS_PER_CALL;
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
@@ -388,5 +389,30 @@ fn test_kvm_run() {
             write: Some(0x0001_0010),
             size: 8
         })
+    );
+}
+
+#[test]
+#[cfg_attr(not(feature = "test-hv"), ignore)]
+fn test_kvm_set_msrs() {
+    use crate::hv::VmSpec;
+    use crate::hv::kvm::KvmSpec;
+
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let vm = kvm.create_vm(&VmSpec { coco: None }).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
+
+    let mut msrs = vec![(Msr::LSTAR, 0x1000); MSRS_PER_CALL + 1];
+    vcpu.set_msrs(&msrs).unwrap();
+
+    // Failing in the first chunk and in a later chunk both report the MSR.
+    assert_matches!(
+        vcpu.set_msrs(&[(Msr::LSTAR, 0x1000), (Msr::EFER, u64::MAX)]),
+        Err(Error::SetMsr { index, .. }) if index == Msr::EFER.raw()
+    );
+    msrs.push((Msr::EFER, u64::MAX));
+    assert_matches!(
+        vcpu.set_msrs(&msrs),
+        Err(Error::SetMsr { index, .. }) if index == Msr::EFER.raw()
     );
 }
