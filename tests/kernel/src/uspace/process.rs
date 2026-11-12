@@ -1,0 +1,2756 @@
+// Userspace process.
+
+use super::sys_ray_dbg::DebugSession;
+use super::sysobject::SysObject;
+use crate::arch::current_cpu;
+use crate::arch::syscall::ThreadControlBlock;
+use crate::arch::syscall::TOCR_KILLED_OTHER;
+use crate::arch::syscall::TOCR_KILLED_SF;
+use crate::arch::time::Instant;
+use crate::config::uCpus;
+use crate::mm;
+use crate::mm::user::UserAddressSpace;
+use crate::util::LockGuard;
+use crate::util::SpinLock;
+use crate::xray::stats::KProcessStats;
+use alloc::borrow::ToOwned;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::sync::Weak;
+use alloc::vec::Vec;
+use core::assert_matches;
+use core::sync::atomic::*;
+use moto_sys::ErrorCode;
+use moto_sys::SysHandle;
+use moto_sys::UserThreadControlBlock;
+
+// W7 direct switch: when a thread hands its CPU directly to a claimed
+// wakee (wait_and_switch), its own park bookkeeping (on_thread_paused)
+// cannot run in its own context — it runs from the *wakee's* context right
+// after the switch, exactly like on_thread_paused runs after tcb.pause()
+// has saved the context in the queue path. The parked thread's Arc and the
+// wakee's are stashed across the switch in this CPU's gs:[72] and gs:[80]
+// slots (see the GS struct in arch/x64) — per-CPU by construction, no
+// static array. Neither may stay on the parked stack: a killed thread's
+// stack is discarded without running Rust destructors.
+
+fn set_direct_switch(prev: Arc<Thread>, next: Arc<Thread>) {
+    crate::arch::set_direct_switch(
+        Arc::into_raw(prev) as usize as u64,
+        Arc::into_raw(next) as usize as u64,
+    );
+}
+
+// Parks the thread that direct-switched to `wakee`, if any. Must run first
+// thing after every potential switch-in point (wait()/wait_and_switch()).
+fn finish_direct_switch(wakee: &Thread) {
+    if let Some((prev, next)) = crate::arch::take_direct_switch() {
+        // SAFETY: both are the Arc::into_raw pointers that set_direct_switch
+        // handed to this incoming context, taken exactly once.
+        let prev = unsafe { Arc::from_raw(prev as usize as *const Thread) };
+        let next = unsafe { Arc::from_raw(next as usize as *const Thread) };
+        debug_assert!(core::ptr::eq(Arc::as_ptr(&next), wakee));
+        prev.on_thread_paused();
+    }
+}
+
+// Public process ID. Kernel identities are separate, non-wrapping u64s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcessId(u64);
+
+pub const KERNEL_PID: ProcessId = ProcessId(moto_sys::stats::PID_KERNEL);
+pub const SYS_IO_PID: ProcessId = ProcessId(moto_sys::stats::PID_SYS_IO);
+
+pub enum UserError {
+    InvalidSyscallReturnPointer,
+    ShutdownRequested,
+}
+
+impl ProcessId {
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub const fn from_u64(pid: u64) -> Self {
+        Self(pid)
+    }
+}
+
+// Globally unique Thread ID. Used in SysObject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ThreadId(u64);
+
+impl ThreadId {
+    fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1); // Start with one, as zero is reserved for kernel.
+        ThreadId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub const fn from_u64(tid: u64) -> Self {
+        Self(tid)
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum ProcessStatus {
+    Created,
+    Running,
+
+    // When a process is a PausedDebuggee, its threads are resumed only
+    // via explicit debugger commands. But when a Running process becomes
+    // PausedDebuggee, its running threads may continue running until
+    // they hit an edge (e.g. preemption) that make them PausedDebuggee
+    // as well. So after a sched tick or two all live threads of a
+    // PausedDebuggee process become PausedDebuggee threads.
+    PausedDebuggee,
+
+    Exiting(u64),
+    Exited(u64),
+    Error(ErrorCode),
+    Killed,
+}
+
+impl ProcessStatus {
+    pub fn is_alive(&self) -> bool {
+        matches!(
+            self,
+            ProcessStatus::Created | ProcessStatus::Running | ProcessStatus::PausedDebuggee
+        )
+    }
+}
+
+// A wait typically returns 1-2 wakers; the inline capacity keeps the
+// per-wait waker accounting allocation-free (S13).
+pub(super) type WakerVec = crate::util::InlineVec<SysHandle, 4>;
+
+#[derive(Clone)]
+pub struct WaitObject {
+    pub sys_object: Arc<SysObject>,
+    pub wake_count: u64,
+}
+
+impl WaitObject {
+    pub fn new(sys_object: Arc<SysObject>) -> Self {
+        let wake_count = sys_object.wake_count();
+        Self {
+            sys_object,
+            wake_count,
+        }
+    }
+}
+
+// Note: Process is never moved, but we don't use Pin<> because
+//       we use Arc and Weak, and Pin interaction with Arc and Weak
+//       is underdeveloped: see e.g. PinWeak.
+pub struct Process {
+    this: Weak<Self>,
+    main_thread: Option<Arc<Thread>>,
+    self_object: Option<Arc<SysObject>>, // Points at self.
+    entry_point: u64,
+
+    address_space: Arc<UserAddressSpace>,
+    capabilities: AtomicU64,
+
+    status: SpinLock<ProcessStatus>,
+
+    // Protected by the status mutex.
+    threads: BTreeMap<ThreadId, Arc<Thread>>,
+
+    // The index in the vector is SysHandle minus CUSTOM_HANDLE_OFFSET.
+    // These are the objects that this process has opened handles to.
+    wait_objects: SpinLock<BTreeMap<SysHandle, WaitObject>>,
+    next_wait_object_id: AtomicU64,
+
+    stats: Arc<KProcessStats>,
+
+    // If this is a debuggEE, debug_session below will contain the session
+    // object.
+    pub(super) debug_session: SpinLock<Option<Arc<DebugSession>>>,
+
+    // Set to true when self.status == PausedDebuggee. This duplicates
+    // the state, but helps with:
+    // (a) performance: no need to lock Process::status to check this flag, and
+    // (b) avoids potential deadlocks: the value of the flag is often used
+    //     when Thread::status is locked; locking Process::status when
+    //     Thread::status is locked is dangerous, as the normal pattern
+    //     is to order the two locks from the larger (process) to the smaller (thread).
+    paused_debuggee: AtomicBool,
+
+    /// Set once a wake has posted the main thread's start (under that
+    /// thread's status lock; any later thread's start implies it). Outlives
+    /// the thread, unlike its own flag: see abandon_if_never_woken().
+    start_posted: AtomicBool,
+
+    /// Threads removed from `threads` whose stacks are not yet unmapped;
+    /// protected by the status lock. See on_thread_exited().
+    pending_cleanups: u32,
+}
+
+unsafe impl Send for Process {}
+unsafe impl Sync for Process {}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        self.stats.process_dropped();
+    }
+}
+
+impl Process {
+    /*
+     * There are built-in handles such as SysHandle::KERNEL. Custom handles
+     * that are not available to every process and are quieried by url, all
+     * have per-process numbers.
+     */
+    const MIN_WAIT_OBJECT_ID: u64 = 65536;
+
+    pub fn new(
+        parent: Arc<KProcessStats>,
+        address_space: Arc<UserAddressSpace>,
+        entry_point: u64,
+        capabilities: u64,
+        detached: bool,
+        debug_name: String,
+    ) -> Result<(Arc<Self>, Arc<SysObject>), ErrorCode> {
+        if !crate::mm::virt::is_user(entry_point) {
+            return Err(moto_rt::E_NOT_ALLOWED);
+        }
+
+        if debug_name.trim().is_empty() {
+            log::error!("Process:new(): empty debug_name.");
+            return Err(moto_rt::E_INVALID_ARGUMENT);
+        }
+
+        log::debug!("New process {debug_name}");
+
+        let user_stack = address_space.alloc_user_stack(Thread::DEFAULT_USER_STACK_SIZE_PAGES)?;
+        let kernel_stack =
+            match address_space.alloc_kernel_stack(Thread::DEFAULT_KERNEL_STACK_SIZE_PAGES) {
+                Ok(segment) => segment,
+                Err(err) => {
+                    address_space.drop_stacks(&user_stack, &None);
+                    return Err(err.into());
+                }
+            };
+
+        let user_mem_stats = address_space.user_mem_stats().clone();
+        let kernel_mem_stats = address_space.kernel_mem_stats().clone();
+
+        let self_ = Arc::new_cyclic(|me| Process {
+            address_space,
+            entry_point,
+            capabilities: AtomicU64::new(capabilities),
+            status: SpinLock::new(ProcessStatus::Created),
+            this: me.clone(),
+            main_thread: None,
+            threads: BTreeMap::default(),
+            wait_objects: SpinLock::new(BTreeMap::new()),
+            next_wait_object_id: AtomicU64::new(Self::MIN_WAIT_OBJECT_ID),
+            self_object: None,
+            stats: KProcessStats::new(
+                parent,
+                crate::xray::stats::allocate_pids(),
+                debug_name,
+                detached,
+                user_mem_stats,
+                kernel_mem_stats,
+                me.clone(),
+            ),
+            debug_session: SpinLock::new(None),
+            paused_debuggee: AtomicBool::new(false),
+            start_posted: AtomicBool::new(false),
+            pending_cleanups: 0,
+        });
+
+        // The process is discoverable by pid from here on, so a kill can reach
+        // it before it is complete. Its object comes first, so that an exit
+        // the kill completes has it to take and the caller still gets a
+        // handle, to a child that died at once; the rest is built under the
+        // status lock, which a kill holds while it looks for threads.
+        let self_object = SysObject::new_owned(
+            Arc::new(alloc::format!("process:{}", self_.stats.pid().as_u64())),
+            self_.clone(),
+            Arc::downgrade(&self_),
+        );
+        {
+            let (self_mut, status) = unsafe { self_.get_mut() };
+            self_mut.self_object = Some(self_object.clone());
+
+            let process_page = self_mut.address_space.process_static_page_mut();
+            process_page.pid = self_mut.pid().as_u64();
+            process_page.capabilities = capabilities;
+
+            let thread = Thread::new(
+                self_.clone(),
+                user_stack,
+                kernel_stack,
+                self_mut.entry_point,
+            );
+            self_mut.threads.insert(thread.tid, thread.clone());
+            self_mut.main_thread = Some(thread.clone());
+            // A kill that came before the thread existed found nothing to
+            // finish the exit with; the thread does so now.
+            if *status != ProcessStatus::Created {
+                thread.post_kill(ThreadKilledReason::ProcessKilled);
+            }
+        }
+
+        Ok((self_, self_object))
+    }
+
+    pub fn from_pid(pid: u64) -> Option<Arc<Self>> {
+        crate::xray::stats::stats_from_pid(pid).and_then(|stats| stats.owner.upgrade())
+    }
+
+    /// Creates a process from an address space in the caller's handle table.
+    /// Returns the child's object, for the caller's handle table (the object
+    /// rather than the process: a kill by pid can complete the child's exit,
+    /// which takes the object, before the caller holds a handle) and, for a
+    /// delegated spawn (`requester=<connection handle>`, sys-io only), the
+    /// peer of that IPC connection, which is the child's parent and whose
+    /// authority every check below uses; it may be the caller itself. The
+    /// peer is held across registration, so a peer that goes away kills the
+    /// child like any other of its children when it is dropped.
+    pub fn new_child(
+        parent_thread: &Thread,
+        address_space_handle: SysHandle,
+        url_part: &str,
+    ) -> Result<(Arc<SysObject>, Option<Arc<Process>>), ErrorCode> {
+        if crate::mm::phys::low_memory() {
+            return Err(moto_rt::E_OUT_OF_MEMORY);
+        }
+
+        let args: alloc::vec::Vec<&str> = url_part.split(';').collect();
+        let entry_point: Option<u64> = crate::util::decode_arg::<u64>(&args, "entry_point");
+        let capabilities: u64 = crate::util::decode_arg::<u64>(&args, "capabilities").unwrap_or(0);
+        let detached: bool = crate::util::decode_arg::<u64>(&args, "detached").unwrap_or(0) != 0;
+
+        if entry_point.is_none() {
+            log::debug!("missing entry_point");
+            return Err(moto_rt::E_INVALID_ARGUMENT);
+        }
+
+        let builder = parent_thread.owner();
+        let requester = match crate::util::decode_arg::<u64>(&args, "requester") {
+            None => None,
+            Some(connection) => {
+                if builder.pid() != SYS_IO_PID {
+                    return Err(moto_rt::E_NOT_ALLOWED);
+                }
+                let connection = builder
+                    .get_object(&SysHandle::from_u64(connection))
+                    .ok_or(moto_rt::E_BAD_HANDLE)?;
+                let requester = super::shared::peer_owner(builder.pid(), &connection.sys_object)
+                    .ok_or(moto_rt::E_NOT_ALLOWED)?;
+                // The requester did not create the address space itself.
+                if requester.capabilities() & moto_sys::caps::CAP_SPAWN == 0
+                    || !requester.status().is_alive()
+                {
+                    return Err(moto_rt::E_NOT_ALLOWED);
+                }
+                Some(requester)
+            }
+        };
+        let parent = requester.clone().unwrap_or_else(|| builder.clone());
+        let parent_caps = parent.capabilities();
+        // Every parent, System included, must hold these bits to grant them.
+        if capabilities & !parent_caps & moto_sys::caps::PARENT_OWNED_CAPS != 0 {
+            return Err(moto_rt::E_NOT_ALLOWED);
+        }
+        // This subset rule also makes ProcessRole monotone below CAP_SYS; see
+        // docs/process-roles.md.
+        if parent_caps & moto_sys::caps::CAP_SYS == 0 {
+            if capabilities & (moto_sys::caps::CAP_IO_MANAGER | moto_sys::caps::CAP_SYS) != 0 {
+                return Err(moto_rt::E_NOT_ALLOWED);
+            }
+
+            if matches!(
+                moto_sys::caps::ProcessRole::from_caps(parent_caps),
+                moto_sys::caps::ProcessRole::None
+            ) && capabilities & moto_sys::caps::CAP_LOG != 0
+            {
+                return Err(moto_rt::E_NOT_ALLOWED);
+            }
+
+            if (capabilities & !parent_caps) != 0 {
+                // Non-system processes cannot grant themseves caps they don't have.
+                return Err(moto_rt::E_NOT_ALLOWED);
+            }
+        }
+
+        if detached && (parent_caps & moto_sys::caps::CAP_SPAWN_DETACHED == 0) {
+            log::debug!("detached spawn denied: spawner lacks CAP_SPAWN_DETACHED");
+            return Err(moto_rt::E_NOT_ALLOWED);
+        }
+
+        let (address_space, url) = match builder.get_object(&address_space_handle) {
+            None => {
+                log::debug!("bad handle");
+                return Err(moto_rt::E_INVALID_ARGUMENT);
+            }
+            Some(a) => {
+                if let Ok(c) = Arc::downcast::<UserAddressSpace>(a.sys_object.owner().clone()) {
+                    (c, a.sys_object.url().to_owned())
+                } else {
+                    log::debug!("bad handle");
+                    return Err(moto_rt::E_INVALID_ARGUMENT);
+                }
+            }
+        };
+
+        // A space hosts one process in its lifetime; see
+        // UserAddressSpace::claim_for_process.
+        let class = super::oom::allocation_class(
+            moto_sys::caps::ProcessRole::from_caps(capabilities),
+            parent.pid().as_u64(),
+            parent.stats.parent().map(|p| p.pid().as_u64()),
+        );
+        address_space.claim_for_process(class)?;
+        let (_process, object) = Self::new(
+            parent.stats.clone(),
+            address_space.clone(),
+            entry_point.unwrap(),
+            capabilities,
+            detached,
+            url,
+        )
+        .inspect_err(|_| address_space.release_claim())?;
+
+        Ok((object, requester))
+    }
+
+    pub fn pid(&self) -> ProcessId {
+        self.stats.pid()
+    }
+
+    pub fn kernel_pid(&self) -> u64 {
+        self.stats.kernel_pid()
+    }
+
+    /// The parent while it lives: for a delegated child, its requester.
+    pub fn parent(&self) -> Option<Arc<Process>> {
+        self.stats
+            .parent()
+            .and_then(|parent| parent.owner.upgrade())
+    }
+
+    pub fn capabilities(&self) -> u64 {
+        self.capabilities.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn add_object(&self, object: Arc<SysObject>) -> SysHandle {
+        self.insert_object(&mut self.wait_objects.lock(line!()), object)
+    }
+
+    // The lookup and the new handle share one table lock: put_object removes
+    // handles under it, so closing the last other handle cannot slip between.
+    pub(super) fn dup_object(&self, handle: &SysHandle) -> Option<SysHandle> {
+        let mut objects = self.wait_objects.lock(line!());
+        let object = objects.get(handle)?.sys_object.clone();
+        Some(self.insert_object(&mut objects, object))
+    }
+
+    fn insert_object(
+        &self,
+        objects: &mut BTreeMap<SysHandle, WaitObject>,
+        object: Arc<SysObject>,
+    ) -> SysHandle {
+        object.add_process_handle();
+        let object_id = self
+            .next_wait_object_id
+            .fetch_add(1, Ordering::Relaxed)
+            .into();
+        objects.insert(object_id, WaitObject::new(object));
+        object_id
+    }
+
+    pub(super) fn get_object(&self, handle: &SysHandle) -> Option<WaitObject> {
+        let objects = self.wait_objects.lock(line!());
+        objects.get(handle).cloned()
+    }
+
+    // TODO: put_object should not remove live threads, as they can self-ref.
+    pub(super) fn put_object(&self, handle: &SysHandle) -> Result<(), ()> {
+        // Release wait_objects before endpoint cleanup: shared::on_drop takes
+        // LISTENERS, which is held while process status locks are taken, and
+        // spawn_thread holds status while adding to wait_objects.
+        let removed = self.wait_objects.lock(line!()).remove(handle);
+        Self::release_object(removed.ok_or(())?);
+        Ok(())
+    }
+
+    /// put_object() for a handle that must still refer to `object`: sys-io
+    /// taking a delegated child's handle back from a requester that never
+    /// learned its number.
+    pub(super) fn put_object_of(
+        &self,
+        handle: &SysHandle,
+        object: &Arc<SysObject>,
+    ) -> Result<(), ()> {
+        let removed = {
+            let mut objects = self.wait_objects.lock(line!());
+            if !objects
+                .get(handle)
+                .is_some_and(|obj| Arc::ptr_eq(&obj.sys_object, object))
+            {
+                return Err(());
+            }
+            objects.remove(handle)
+        };
+        Self::release_object(removed.ok_or(())?);
+        Ok(())
+    }
+
+    fn release_object(obj: WaitObject) {
+        if obj.sys_object.remove_process_handle() {
+            // A process handle, not an incidental kernel Arc, owns a
+            // shared endpoint's lifetime.
+            super::shared::on_drop(&obj.sys_object);
+        }
+        drop(obj);
+    }
+
+    // Note: we only mark the process as PausedDebuggee and don't
+    // actively pause running threads, because this is potentially
+    // a long running operation (imagine thousands of threads that
+    // have to be looped over a couple of times to ensure that all
+    // of them have paused), and we want our syscalls to be short.
+    pub(super) fn dbg_pause(&self) -> Result<(), ErrorCode> {
+        let mut status_lock = self.status.lock(line!());
+        match *status_lock {
+            ProcessStatus::Running => {
+                *status_lock = ProcessStatus::PausedDebuggee;
+                assert!(!self.paused_debuggee.swap(true, Ordering::SeqCst));
+                // With IRQ fast-return, running threads only notice
+                // paused_debuggee when they pass through the scheduler; poke
+                // all CPUs so their next tick preempts into it.
+                crate::sched::poke_all_cpus();
+                Ok(())
+            }
+            ProcessStatus::PausedDebuggee => Err(moto_rt::E_ALREADY_IN_USE),
+            ProcessStatus::Exiting(_)
+            | ProcessStatus::Exited(_)
+            | ProcessStatus::Error(_)
+            | ProcessStatus::Created
+            | ProcessStatus::Killed => Err(moto_rt::E_NOT_READY),
+        }
+    }
+
+    // Note: we only mark the process as Created/Running and don't
+    // actively resume paused threads, because this is potentially
+    // a long running operation (imagine thousands of threads that
+    // have to be looped over), and we want our syscalls to be short.
+    pub(super) fn dbg_resume(&self) -> Result<(), ErrorCode> {
+        let mut status_lock = self.status.lock(line!());
+        match *status_lock {
+            ProcessStatus::PausedDebuggee => {
+                assert!(self.paused_debuggee.swap(false, Ordering::SeqCst));
+                *status_lock = ProcessStatus::Running;
+                Ok(())
+            }
+            _ => Err(moto_rt::E_NOT_READY),
+        }
+    }
+
+    pub(super) fn dbg_resume_thread(&self, tid: ThreadId) -> Result<(), ErrorCode> {
+        let thread = {
+            let status = self.status.lock(line!());
+            if *status != ProcessStatus::Running {
+                return Err(moto_rt::E_NOT_READY);
+            }
+            if let Some(t) = self.threads.get(&tid) {
+                t.clone()
+            } else {
+                return Err(moto_rt::E_NOT_FOUND);
+            }
+        };
+
+        thread.resume_debuggee()
+    }
+
+    pub(super) fn process_wake(&self, handle: &SysHandle) {
+        let mut objects = self.wait_objects.lock(line!());
+        if let Some(obj) = objects.get_mut(handle) {
+            obj.wake_count = obj.sys_object.wake_count();
+        }
+    }
+
+    pub fn debug_name(&self) -> &str {
+        self.stats.debug_name()
+    }
+
+    pub(super) fn list_tids(&self, start_tid: &ThreadId, buf: &mut [u64]) -> usize {
+        let _status = self.status.lock(line!());
+        let mut copied = 0;
+        for (slot, (tid, _)) in buf.iter_mut().zip(self.threads.range(start_tid..)) {
+            *slot = tid.as_u64();
+            copied += 1;
+        }
+        copied
+    }
+    pub(super) fn get_thread_data(&self, tid: u64) -> Option<moto_sys::stats::ThreadDataV1> {
+        let thread: Arc<Thread> = {
+            let _status = self.status.lock(line!());
+            self.threads.get(&ThreadId::from_u64(tid))?.clone()
+        };
+
+        Some(thread.get_thread_data())
+    }
+
+    pub(super) fn self_pinned(&self) -> Option<Arc<Process>> {
+        let _status = self.status.lock(line!());
+        self.self_object
+            .as_ref()
+            .and_then(super::sysobject::object_from_sysobject::<Process>)
+    }
+
+    pub fn status(&self) -> ProcessStatus {
+        *self.status.lock(line!())
+    }
+
+    pub(super) fn oom_disposition(&self) -> super::oom::Disposition {
+        let (status, paused, empty) = {
+            let status = self.status.lock(line!());
+            (
+                *status,
+                self.paused_debuggee.load(Ordering::Acquire),
+                self.threads.is_empty(),
+            )
+        };
+        super::oom::classify(
+            self.address_space.allocation_class(),
+            moto_sys::caps::ProcessRole::from_caps(self.capabilities()),
+            status,
+            paused,
+            empty,
+        )
+    }
+
+    pub(super) fn oom_exit_complete(&self) -> bool {
+        matches!(
+            self.status(),
+            ProcessStatus::Exited(_) | ProcessStatus::Killed | ProcessStatus::Error(_)
+        )
+    }
+    pub fn address_space(&self) -> &Arc<UserAddressSpace> {
+        &self.address_space
+    }
+    pub fn main_thread(&self) -> Option<Arc<Thread>> {
+        let _status = self.status.lock(line!());
+        self.main_thread.clone()
+    }
+
+    pub fn start(&self) {
+        self.main_thread.as_ref().unwrap().post_start(0);
+    }
+
+    pub(super) fn spawn_thread(
+        &self,
+        retry: &super::oom::wait::Retry,
+        stack_size: u64,
+        thread_entry_point: u64,
+        thread_arg: u64,
+    ) -> Result<SysHandle, mm::AllocationFailure> {
+        let stack_size = mm::align_up(stack_size, mm::PAGE_SIZE_SMALL);
+        let num_pages = stack_size >> crate::mm::PAGE_SIZE_SMALL_LOG2;
+        if self.status() != ProcessStatus::Running {
+            return Err(moto_rt::E_INTERNAL_ERROR.into());
+        }
+        self.address_space
+            .check_stack_allocation(num_pages, Thread::DEFAULT_KERNEL_STACK_SIZE_PAGES)?;
+        retry.check(self.address_space.allocation_class())?;
+        let stack = self.address_space.alloc_user_stack(num_pages)?;
+        let kernel_stack = match self
+            .address_space
+            .alloc_kernel_stack(Thread::DEFAULT_KERNEL_STACK_SIZE_PAGES)
+        {
+            Ok(segment) => segment,
+            Err(err) => {
+                self.address_space.drop_stacks(&stack, &None);
+                return Err(err);
+            }
+        };
+
+        let process_status = self.status.lock(line!());
+        if *process_status != ProcessStatus::Running {
+            log::debug!("bad process status: {:?}", *process_status);
+            drop(process_status);
+            self.address_space.drop_stacks(&stack, &Some(kernel_stack));
+            return Err(moto_rt::E_INTERNAL_ERROR.into());
+        }
+
+        // add_object uses the separate wait_objects lock. Keep status locked
+        // until Thread::new and the thread-map insertion are both published.
+        let thread = Thread::new(
+            self.this.clone().upgrade().unwrap(),
+            stack,
+            kernel_stack,
+            thread_entry_point,
+        );
+        // Safe under process_status; create the mutable reference only after
+        // Thread::new has finished using its Arc<Process>.
+        let self_mut = unsafe { (self as *const Process as *mut Process).as_mut().unwrap() };
+        self_mut.threads.insert(thread.tid, thread.clone());
+        drop(process_status);
+
+        let thread_handle = thread.join_handle;
+        log::debug!(
+            "thread {:?} - {:x} created",
+            thread.debug_name(),
+            thread_handle.as_u64()
+        );
+        thread.post_start(thread_arg);
+        Ok(thread_handle)
+    }
+
+    pub(super) fn kill(&self, target: SysHandle) -> Result<(), ErrorCode> {
+        let target_obj = if let Some(obj) = self.get_object(&target) {
+            obj
+        } else {
+            return Err(moto_rt::E_NOT_FOUND);
+        };
+        let target = if let Some(process) =
+            super::sysobject::object_from_sysobject::<Process>(&target_obj.sys_object)
+        {
+            process
+        } else {
+            log::info!("victim 0x{:x} not process", target.as_u64());
+            return Err(moto_rt::E_NOT_FOUND);
+        };
+
+        log::debug!("killing {}", target.debug_name());
+
+        {
+            let (target_mut, mut status_lock) = unsafe { target.get_mut() };
+            let do_kill = match *status_lock {
+                ProcessStatus::Created | ProcessStatus::Running | ProcessStatus::PausedDebuggee => {
+                    true
+                }
+                ProcessStatus::Exiting(_)
+                | ProcessStatus::Exited(_)
+                | ProcessStatus::Error(_)
+                | ProcessStatus::Killed => false,
+            };
+
+            if do_kill {
+                *status_lock = ProcessStatus::Exiting(u64::MAX);
+                for thread in target_mut.threads.values() {
+                    thread.post_kill(ThreadKilledReason::ProcessKilled);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn die(&self) {
+        let (target_mut, mut status_lock) = unsafe { self.get_mut() };
+
+        if status_lock.is_alive() {
+            *status_lock = ProcessStatus::Exiting(u64::MAX);
+            for thread in target_mut.threads.values() {
+                thread.post_kill(ThreadKilledReason::ProcessKilled);
+            }
+        }
+    }
+
+    /// Kills a never-woken child and returns true, including if already killed.
+    /// Used for delegated rollback and detached children losing their parent.
+    /// The main thread's status lock serializes the kill with its first wake;
+    /// the process's start record survives thread teardown.
+    pub(super) fn abandon_if_never_woken(&self) -> bool {
+        let (target_mut, mut status_lock) = unsafe { self.get_mut() };
+        if *status_lock == ProcessStatus::Created {
+            if let Some(main_thread) = target_mut.main_thread.as_ref() {
+                if main_thread.kill_if_never_woken() {
+                    *status_lock = ProcessStatus::Exiting(u64::MAX);
+                    return true;
+                }
+            }
+        }
+        // Nothing can post the start any more: the record is final.
+        !self.start_posted.load(Ordering::Acquire)
+    }
+
+    pub(super) fn exit(&self, exit_status: u64) {
+        let (target_mut, mut status_lock) = unsafe { self.get_mut() };
+
+        if status_lock.is_alive() {
+            *status_lock = ProcessStatus::Exiting(exit_status);
+            for thread in target_mut.threads.values() {
+                thread.post_kill(ThreadKilledReason::ProcessExited);
+            }
+        }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_mut(&self) -> (&mut Self, LockGuard<'_, ProcessStatus>) {
+        let lock = self.status.lock(line!());
+        ((self as *const Self as *mut Self).as_mut().unwrap(), lock)
+    }
+
+    fn on_thread_starting(&self, _thread: &Thread) -> bool {
+        let mut status = self.status.lock(line!());
+        match *status {
+            ProcessStatus::Created => {
+                // Sys-io is constructed by bootstrap, outside new_child.
+                if self.pid() != SYS_IO_PID && crate::mm::phys::low_memory() {
+                    // The starting thread takes the normal exit path below.
+                    *status = ProcessStatus::Exiting(u64::MAX);
+                    return false;
+                }
+                log::debug!(
+                    "started process {}: '{}'",
+                    self.pid().as_u64(),
+                    self.debug_name() // This is process debug name, does not acquire a lock.
+                );
+                *status = ProcessStatus::Running;
+                true
+            }
+            ProcessStatus::Exiting(_) => false,
+            ProcessStatus::Running => true,
+            _ => panic!("unexpected process status: {:?}", *status),
+        }
+    }
+
+    fn on_thread_exited(&self, tid: ThreadId, thread_status: ThreadStatus) {
+        self.stats.on_thread_exited();
+        self.address_space
+            .process_static_page_mut()
+            .active_threads
+            .fetch_sub(1, Ordering::Relaxed);
+
+        #[cfg(debug_assertions)]
+        log::debug!(
+            "on_thread_exited: pid: {} tid: {}",
+            self.pid().as_u64(),
+            tid.as_u64()
+        );
+        let exited_thread;
+        {
+            let (self_mut, mut status_lock) = unsafe { self.get_mut() };
+            #[cfg(debug_assertions)]
+            match *status_lock {
+                ProcessStatus::Running | ProcessStatus::PausedDebuggee => {}
+                ProcessStatus::Exiting(_) => {}
+                _ => {
+                    panic!("Unexpected process status {:?}.", *status_lock);
+                }
+            }
+
+            exited_thread = self_mut.threads.remove(&tid).unwrap();
+            self_mut.pending_cleanups += 1;
+
+            if self_mut.threads.is_empty() {
+                #[cfg(debug_assertions)]
+                log::debug!(
+                    "process {} '{}' exiting: no threads left.",
+                    self.pid().as_u64(),
+                    self.debug_name() // Process debug name, not locking.
+                );
+                // The exit completes below, once the stacks are gone: the
+                // status needs the main thread's exit value, and we would
+                // rather not have nested locks.
+            } else if self.main_thread.as_ref().unwrap().tid == tid {
+                if status_lock.is_alive() {
+                    *status_lock = match thread_status {
+                        ThreadStatus::Finished => ProcessStatus::Exiting(0),
+                        ThreadStatus::Killed(_) | ThreadStatus::Error(_) => {
+                            ProcessStatus::Exiting(u64::MAX)
+                        }
+                        // _ => ProcessStatus::Exiting(u64::MAX),
+                        _ => panic!("Unexpected thread status {:?}.", thread_status),
+                    };
+
+                    #[cfg(debug_assertions)]
+                    log::debug!(
+                        "process {} '{}' exiting: main thread exited.",
+                        self.pid().as_u64(),
+                        self.debug_name() // Process debug name, not locking.
+                    );
+                    for thread in self_mut.threads.values() {
+                        thread.post_kill(ThreadKilledReason::ProcessExited);
+                    }
+                }
+            } else {
+                match thread_status {
+                    ThreadStatus::Finished => {}
+                    ThreadStatus::Exited(_) => {
+                        assert!(!status_lock.is_alive());
+                    }
+                    ThreadStatus::Killed(_) | ThreadStatus::Error(_) => {
+                        if !matches!(*status_lock, ProcessStatus::Exiting(_)) {
+                            *status_lock = ProcessStatus::Exiting(u64::MAX);
+                        }
+                        #[cfg(debug_assertions)]
+                        log::debug!(
+                            "process {} '{}' killed: thread {} killed.",
+                            self.pid().as_u64(),
+                            self.debug_name(), // Process debug name, not locking.
+                            tid.as_u64()
+                        );
+                        for thread in self_mut.threads.values() {
+                            thread.post_kill(ThreadKilledReason::ProcessKilled);
+                        }
+                    }
+                    _ => panic!("Unexpected thread exit status {:?}", thread_status),
+                }
+            }
+        }
+
+        // Unmap the dead thread's stacks outside the critical section: the
+        // unmap does a TLB shootdown -- an all-CPU rendezvous that takes
+        // milliseconds when the host has vCPUs descheduled -- and holding the
+        // process lock across it convoys every wake/park/exit on this process
+        // behind it.
+        exited_thread.cleanup();
+
+        // A thread leaves the map before its stacks are unmapped, so the exit
+        // completes under whichever thread finishes the last cleanup of an
+        // emptied map; that happens exactly once, as nothing joins an emptied
+        // map.
+        let completed = {
+            let (self_mut, _status_lock) = unsafe { self.get_mut() };
+            self_mut.pending_cleanups -= 1;
+            self_mut.pending_cleanups == 0 && self_mut.threads.is_empty()
+        };
+
+        if completed {
+            // Queue executable retirements before exit becomes visible.
+            super::pager::retire_space(&self.address_space);
+
+            // Close existing IPC endpoints before completion becomes visible
+            // to waiters or status queries; services may run cleanup later.
+            let objects = core::mem::take(&mut *self.wait_objects.lock(line!()));
+            for object in objects.values() {
+                if object.sys_object.remove_process_handle() {
+                    super::shared::on_drop(&object.sys_object);
+                }
+            }
+            drop(objects);
+
+            // The process's memory goes back now, not with the last handle
+            // to it: a handle that outlives the process must neither keep
+            // its pages nor map new ones into the dead space.
+            self.address_space.release_user_memory();
+
+            let self_obj = {
+                let (self_mut, mut status_lock) = unsafe { self.get_mut() };
+                match *status_lock {
+                    ProcessStatus::Running | ProcessStatus::PausedDebuggee => {
+                        let main_thread_status = self.main_thread.as_ref().unwrap().status();
+                        *status_lock = match main_thread_status {
+                            ThreadStatus::Finished => ProcessStatus::Exited(0),
+                            ThreadStatus::Exited(val) => ProcessStatus::Exited(val),
+                            ThreadStatus::Killed(_) => ProcessStatus::Killed,
+                            _ => panic!("Unexpected main thread status {:?}", main_thread_status),
+                        };
+                    }
+                    ProcessStatus::Exiting(val) => {
+                        *status_lock = ProcessStatus::Exited(val);
+                    }
+                    ProcessStatus::Error(_) => {}
+                    _ => {
+                        panic!("Unexpected process status {:?}.", *status_lock);
+                    }
+                }
+
+                #[cfg(debug_assertions)]
+                log::debug!(
+                    "Process {}: '{}' exited with status {:?}.",
+                    self.pid().as_u64(),
+                    self.debug_name(), // Process debug name, not locking.
+                    *status_lock
+                );
+
+                self_mut.main_thread = None;
+                self_mut.self_object.take().unwrap()
+            };
+            // Before the wake: a waiter may reap and probe the PID at once.
+            self.stats.mark_exited();
+            self_obj.mark_done();
+            SysObject::wake(&self_obj, false);
+            super::oom::on_process_exited(self.kernel_pid());
+
+            if self.pid().as_u64() == moto_sys::stats::PID_SYS_IO {
+                crate::init::init_exited(self);
+            }
+        }
+    }
+
+    fn job_fn_parent_dropped(_: Weak<Thread>, target: u64) {
+        // Safety: `target` comes from `Weak::into_raw` in `post_parent_dropped`, and a
+        // posted job runs exactly once.
+        let target = unsafe { Weak::from_raw(target as usize as *const Process) };
+        if let Some(target) = target.upgrade() {
+            crate::xray::tracing::trace("job_fn_parent_dropped", target.pid().as_u64(), 0, 0);
+            if target.capabilities() & moto_sys::caps::CAP_SYS == 0 {
+                if target.stats.is_detached() {
+                    target.abandon_if_never_woken();
+                } else {
+                    target.die();
+                }
+            }
+        }
+    }
+}
+
+// Allowed live thread status transitions:
+//
+// Running -> Preempted
+// Running -> Syscall
+//
+// Preempted -> Running (will be resume in the userspace)
+//
+// Syscall -> Running
+// Syscall -> InWait
+// Syscall -> Runnable
+//
+// InWait -> Runnable
+//
+// Runnable -> Running
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum LiveThreadStatus {
+    Running, // Running in userspace.
+    Preempted,
+
+    // Numbers in statuses below represent the current syscall number/operation.
+    Runnable(u8, u8), // Waiting to be scheduled by the kernel.
+    Syscall(u8, u8),  // Running in the kenrel.
+    InWait(u8, u8),   // Paused.
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub enum ThreadStatus {
+    Created,
+    Live(LiveThreadStatus),
+    // A syscall has committed to pausing but has not saved its context yet.
+    PausingDebuggee(LiveThreadStatus),
+    PausedDebuggee(LiveThreadStatus),
+    Finished,    // Finished "normally", via SysCtl::OP_PUT(SELF).
+    Exited(u64), // SysCpu::OP_EXIT.
+    Error(ErrorCode),
+    Killed(ThreadKilledReason),
+}
+
+// The reason a thread got off a CPU.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ThreadOffCpuReason {
+    Paused,
+    Preempted,
+    Exited,
+    KilledSf,
+    KilledGpf,
+    KilledPf(u64),
+    KilledOther,
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum ThreadKilledReason {
+    GPF,
+    PageFault,
+    SegFault,
+    ProcessExited,
+    ProcessKilled,
+    InternalError,
+}
+
+// Per-thread wait/wake accounting, dumped to serial when a debugger reads
+// the thread (mdbg print-stacks; grep WDIAG on the console). Two dumps some
+// seconds apart give per-thread rates -- enough to tell a timeout-repark
+// loop from a wake storm from a lost wake without rebuilding the kernel.
+// All updates are Relaxed on paths that already take the status lock, so
+// the runtime cost is noise. A sys_wait ends in exactly one of
+// {fast, paused}; wakes split by path (thread post_wake vs object) and by
+// the target's state at wake time (in-wait vs running/queued-only).
+#[derive(Default)]
+pub struct WakeDiag {
+    pub waits: AtomicU64,            // sys_wait_impl entries
+    pub fast: AtomicU64,             // returned without descheduling (W5 + io nonblock)
+    pub paused: AtomicU64,           // real deschedules (wait / wait_and_switch)
+    pub spur_wakers: AtomicU64,      // on_thread_paused repost: wakers non-empty
+    pub spur_counter: AtomicU64,     // on_thread_paused repost: wakes_queued != taken
+    pub w_in: AtomicU64,             // post_wake*: target was InWait
+    pub w_run: AtomicU64,            // post_wake*: target running, queued-only
+    pub o_in: AtomicU64,             // wake_by_object*: target was InWait
+    pub o_run: AtomicU64,            // wake_by_object*: target running
+    pub to_wakes: AtomicU64,         // wake_by_timeout fired
+    pub syscall_wakes: AtomicU64,    // wakes arriving via SysCpu::wake (do_wake)
+    pub last_waker_tid: AtomicU64,   // do_wake path only
+    pub last_wake_handle: AtomicU64, // wake_by_object* path only
+}
+
+// Note: Thread is never moved, but we don't use Pin<> because
+//       we use Arc and Weak, and Pin interaction with Arc and Weak
+//       is underdeveloped: see e.g. PinWeak.
+pub struct Thread {
+    // Read-only fields:
+    tid: ThreadId, // Used in SysObject (waiting threads). Must be globally unique.
+    owner: Weak<Process>,
+    this: Weak<Self>,
+    thread_entry_point: u64,
+    user_stack: crate::mm::user::UserStack,
+
+    // Self object, points at self. Can be used to wake this thread either locally
+    // or remotely.
+    self_object: Option<Arc<SysObject>>,
+    self_handle: SysHandle, // The handle for self_object. Used in UserThreadControlBlock.
+
+    // Join object, used by other threads in the same process to "join" this thread.
+    join_object: Option<Arc<SysObject>>,
+    join_handle: SysHandle, // The handle for join_object.
+
+    wakes_queued: AtomicU64, // Counts wakes for self wakes.
+    wakes_taken: AtomicU64,
+    wake_immediately: AtomicBool,
+    // The next pause is an OOM park: see oom_wait() and on_thread_paused().
+    oom_park: AtomicBool,
+
+    pub diag: WakeDiag,
+
+    /// Set by the first wake, under the status lock; see kill_if_never_woken().
+    start_posted: AtomicBool,
+
+    kernel_stack_segment: Option<mm::MemorySegment>,
+
+    // Fields that change over the thread runtime.
+    status: SpinLock<ThreadStatus>,
+    tcb: ThreadControlBlock,
+    user_tcb_user_addr: u64, // *mut UserThreadControlBlock in the user address space.
+    user_tcb_kernel_addr: u64, // *mut UserThreadControlBlock in the kernel address space.
+
+    capabilities: AtomicU64,
+
+    timer_id: AtomicU64,
+    timer_cpu: AtomicU32,
+
+    // The list of objects this thread is currently in sys_wait() for.
+    // Cleared (not dropped) on wake so its capacity is reused by the next
+    // wait: steady-state waits register handles without allocating (S13).
+    sys_wait_objects: SpinLock<Vec<WaitObject>>,
+
+    // The handle list of a sys_wait() too long for the syscall's inline
+    // buffer. It lives here, not on the syscall stack, because a killed
+    // thread's stack is discarded without running Rust destructors. Kept
+    // between waits: at most max_wait_handles entries. Only the thread
+    // itself touches it, so it needs no lock.
+    wait_handle_spill: core::cell::UnsafeCell<Vec<u64>>,
+
+    timed_out: AtomicBool,
+    wakers: SpinLock<WakerVec>,
+
+    last_cpu: AtomicU32,
+    affined_to: AtomicU32,
+
+    pub process_stats: Arc<KProcessStats>,
+}
+
+unsafe impl Send for Thread {}
+unsafe impl Sync for Thread {}
+
+#[cfg(debug_assertions)]
+impl Drop for Thread {
+    fn drop(&mut self) {
+        // Note: at this point the thread's process may be gone,
+        // so we can't do much here. Use Thread::cleanup().
+        self.trace("Thread::drop", 0, 0);
+        log::debug!("thread {} dropped.", self.tid.as_u64());
+    }
+}
+
+impl Thread {
+    const DEFAULT_USER_STACK_SIZE_PAGES: u64 = 254; // +2 are added as guards.
+    #[cfg(debug_assertions)]
+    const DEFAULT_KERNEL_STACK_SIZE_PAGES: u64 = 8; // +2 are added as guards.
+    #[cfg(not(debug_assertions))]
+    const DEFAULT_KERNEL_STACK_SIZE_PAGES: u64 = 4; // +2 are added as guards.
+
+    const USER_TCB_GUARD: u64 = 0xdead_f00b_a4ba_22cd; // Whatever.
+
+    fn new(
+        owner: Arc<Process>,
+        user_stack: crate::mm::user::UserStack,
+        kernel_stack: mm::MemorySegment,
+        thread_entry_point: u64,
+    ) -> Arc<Self> {
+        let self_ = Arc::new(Self {
+            tid: ThreadId::new(),
+            tcb: ThreadControlBlock::new(),
+            user_tcb_user_addr: 0,
+            user_tcb_kernel_addr: 0,
+            this: Weak::default(),
+            self_object: None,
+            self_handle: SysHandle::NONE,
+            join_object: None,
+            join_handle: SysHandle::NONE,
+            wakes_queued: AtomicU64::new(0),
+            wakes_taken: AtomicU64::new(0),
+            wake_immediately: AtomicBool::new(false),
+            oom_park: AtomicBool::new(false),
+            diag: WakeDiag::default(),
+            owner: Arc::downgrade(&owner),
+            start_posted: AtomicBool::new(false),
+            thread_entry_point,
+            user_stack,
+            capabilities: AtomicU64::new(0),
+            kernel_stack_segment: Some(kernel_stack),
+            status: SpinLock::new(ThreadStatus::Created),
+            timer_id: AtomicU64::new(0),
+            timer_cpu: AtomicU32::new(u32::MAX),
+            sys_wait_objects: SpinLock::new(Vec::new()),
+            wait_handle_spill: core::cell::UnsafeCell::new(Vec::new()),
+            timed_out: AtomicBool::new(false),
+            wakers: SpinLock::new(WakerVec::new(SysHandle::NONE)),
+            last_cpu: AtomicU32::new(u32::MAX),
+            affined_to: AtomicU32::new(uCpus::MAX as u32),
+            process_stats: owner.stats.clone(),
+        });
+
+        unsafe {
+            log::debug!("new thread {}", self_.debug_name());
+            let (self_mut, _lock) = self_.get_mut();
+            self_mut.this = Arc::downgrade(&self_);
+            let self_object = SysObject::new_owned(
+                Arc::new(alloc::format!(
+                    "thread:{}:{}",
+                    owner.pid().as_u64(),
+                    self_mut.tid.as_u64()
+                )),
+                self_.clone(),
+                Arc::downgrade(&owner),
+            );
+
+            self_mut.self_object = Some(self_object.clone());
+            self_mut.self_handle = owner.add_object(self_object);
+
+            let join_object = SysObject::new_owned(
+                Arc::new(alloc::format!(
+                    "thread_joiner:{}:{}",
+                    owner.pid().as_u64(),
+                    self_mut.tid.as_u64()
+                )),
+                self_.clone(),
+                Arc::downgrade(&owner),
+            );
+
+            self_mut.join_object = Some(join_object.clone());
+            self_mut.join_handle = owner.add_object(join_object);
+        }
+
+        owner
+            .address_space
+            .process_static_page_mut()
+            .active_threads
+            .fetch_add(1, Ordering::Relaxed);
+
+        owner.stats.on_thread_added();
+        self_
+    }
+
+    pub fn get(&self) -> Arc<Self> {
+        self.this.upgrade().unwrap()
+    }
+
+    pub fn user_tcb_user_addr(&self) -> u64 {
+        debug_assert_ne!(0, self.user_tcb_user_addr);
+        self.user_tcb_user_addr
+    }
+
+    /// # Safety
+    ///
+    /// Assumes that self is not running in the userspace.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn user_tcb_mut(&self) -> &mut UserThreadControlBlock {
+        debug_assert_ne!(0, self.user_tcb_kernel_addr);
+        (self.user_tcb_kernel_addr as usize as *mut UserThreadControlBlock)
+            .as_mut()
+            .unwrap_unchecked()
+    }
+
+    fn check_user_tcb_guard(&self) -> Result<(), ()> {
+        debug_assert_ne!(0, self.user_tcb_kernel_addr);
+        let utcb = unsafe {
+            (self.user_tcb_kernel_addr as usize as *const UserThreadControlBlock)
+                .as_ref()
+                .unwrap_unchecked()
+        };
+
+        if utcb.guard == Self::USER_TCB_GUARD {
+            Ok(())
+        } else {
+            log::info!(
+                "UTCB guard check failed: {}:{}",
+                self.owner().pid().as_u64(),
+                self.tid.as_u64()
+            );
+            Err(())
+        }
+    }
+
+    pub fn get_weak(&self) -> Weak<Self> {
+        self.this.clone()
+    }
+
+    pub(super) fn self_object(&self) -> Option<Arc<SysObject>> {
+        let _status = self.status.lock(line!());
+        self.self_object.as_ref().cloned()
+    }
+
+    pub fn cancel_timeout(&self) {
+        let timer_id = self.timer_id.swap(0, Ordering::Relaxed);
+        if timer_id != 0 {
+            crate::sched::cancel_timer(timer_id, self.timer_cpu.load(Ordering::Relaxed) as uCpus);
+        }
+    }
+
+    // Called when THIS thread is running and is calling wait(timeout).
+    pub fn new_timeout(&self, when: Instant) {
+        if when.is_nan() {
+            self.post_wake(false);
+        } else {
+            // Note: timers are always created for the current CPU to avoid wait/wake races.
+            let cpu = current_cpu();
+            let timer = crate::sched::Timer::new(Self::job_fn_wake_by_timeout, self, when, cpu);
+            let prev_id = self.timer_id.swap(timer.id(), Ordering::Relaxed);
+            assert_eq!(0, prev_id);
+            self.timer_cpu.store(cpu as u32, Ordering::Relaxed);
+            crate::sched::post_timer(timer);
+        }
+    }
+
+    pub(super) fn add_wait_objects(&self, objects: impl Iterator<Item = WaitObject>) {
+        let mut list = self.sys_wait_objects.lock(line!());
+        assert!(list.is_empty());
+        list.extend(objects); // Reuses the capacity retained by clear_wait_objects_on_wake().
+    }
+
+    /// # Safety
+    ///
+    /// Only the thread itself may call this, and it must not hold an earlier
+    /// borrow: see the field comment.
+    #[allow(clippy::mut_from_ref)]
+    pub(super) unsafe fn wait_handle_spill(&self) -> &mut Vec<u64> {
+        &mut *self.wait_handle_spill.get()
+    }
+
+    pub(super) fn add_waker(&self, waker: SysHandle) {
+        if waker != SysHandle::NONE {
+            self.wakers.lock(line!()).push(waker);
+        }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_mut(&self) -> (&mut Self, LockGuard<'_, ThreadStatus>) {
+        let lock = self.status.lock(line!());
+        ((self as *const Self as *mut Self).as_mut().unwrap(), lock)
+    }
+
+    // Note: debug_name() takes self.status.lock() in get_thread_data().
+    pub fn debug_name(&self) -> String {
+        let parent = self.owner.upgrade().unwrap();
+        alloc::format!(
+            "{} 0x{:x}:0x{:x} - '{}'",
+            parent.debug_name(), // Process debug name, not locking.
+            parent.pid().as_u64(),
+            self.tid.as_u64(),
+            self.get_thread_data().thread_name()
+        )
+    }
+
+    pub fn capabilities(&self) -> u64 {
+        self.capabilities.load(Ordering::Relaxed)
+    }
+
+    pub fn owner(&self) -> Arc<Process> {
+        self.owner.upgrade().unwrap()
+    }
+
+    pub fn last_cpu(&self) -> Option<uCpus> {
+        let cpu = self.last_cpu.load(Ordering::Relaxed);
+        if cpu == u32::MAX {
+            None
+        } else {
+            Some(cpu as uCpus)
+        }
+    }
+
+    // Called from TCB::set_fs(), the choke point of every kernel->user
+    // transition (spawn, preempt-resume, syscall exit incl. wait-resume).
+    pub fn set_last_cpu(&self, cpu: uCpus) {
+        self.last_cpu.store(cpu as u32, Ordering::Relaxed);
+    }
+
+    pub fn trace(&self, event: &'static str, arg1: u64, arg2: u64) {
+        crate::xray::tracing::trace(event, self.tid.as_u64(), arg1, arg2);
+    }
+
+    fn pause_debuggee_in_syscall(&self) {
+        self.tcb.pause();
+        let status = self.status.lock(line!());
+        if let ThreadStatus::Killed(reason) = *status {
+            drop(status);
+            self.die(reason);
+        }
+    }
+
+    fn resume_debuggee(&self) -> Result<(), ErrorCode> {
+        let mut status = self.status.lock(line!());
+        match *status {
+            ThreadStatus::Live(_) => Err(moto_rt::E_ALREADY_IN_USE),
+            ThreadStatus::PausedDebuggee(live_thread_status) => match live_thread_status {
+                LiveThreadStatus::Running => {
+                    // Paused in on_syscall_exit().
+                    *status = ThreadStatus::Live(LiveThreadStatus::Running);
+                    self.post_wake_locked(false);
+                    Ok(())
+                }
+                LiveThreadStatus::Preempted => {
+                    // Paused in resume_in_userspace() or on_thread_preempted().
+                    *status = ThreadStatus::Live(LiveThreadStatus::Preempted);
+                    self.post_resume_in_userspace(false);
+                    Ok(())
+                }
+                LiveThreadStatus::Syscall(_, _) => {
+                    // Paused in on_syscall_enter().
+                    *status = ThreadStatus::Live(live_thread_status);
+                    self.post_wake_locked(false);
+                    Ok(())
+                }
+                LiveThreadStatus::Runnable(_, _) => panic!("not possible"),
+                LiveThreadStatus::InWait(_, _) => panic!("not possible"),
+            },
+            _ => Err(moto_rt::E_NOT_READY),
+        }
+    }
+
+    // Called when the thread has entered the kernel via a syscall.
+    pub fn on_syscall_enter(&self, syscall_nr: u8, operation: u8) {
+        self.trace("on_syscall_enter", syscall_nr as u64, operation as u64);
+        if self.check_user_tcb_guard().is_err() {
+            self.die(ThreadKilledReason::SegFault); // Never returns.
+        }
+        let mut pause_debuggee = false;
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(LiveThreadStatus::Running) => {
+                    if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                        *status = ThreadStatus::PausingDebuggee(LiveThreadStatus::Syscall(
+                            syscall_nr, operation,
+                        ));
+                        pause_debuggee = true;
+                    } else {
+                        *status =
+                            ThreadStatus::Live(LiveThreadStatus::Syscall(syscall_nr, operation));
+                    }
+                }
+                ThreadStatus::Killed(reason) => {
+                    core::mem::drop(status); // Unlock.
+                    self.die(reason); // Never returns.
+                }
+                _ => panic!("unexpected thread status {:?}", *status),
+            }
+        }
+        if pause_debuggee {
+            self.pause_debuggee_in_syscall();
+        }
+    }
+
+    // Called when the thread is about to exit the syscall/kernel to userspace.
+    pub fn on_syscall_exit(&self) {
+        self.trace("on_sycall_exit", 0, 0);
+        let mut pause_debuggee = false;
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(LiveThreadStatus::Syscall(_, _)) => {
+                    if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                        *status = ThreadStatus::PausingDebuggee(LiveThreadStatus::Running);
+                        pause_debuggee = true;
+                    } else {
+                        *status = ThreadStatus::Live(LiveThreadStatus::Running);
+                    }
+                }
+                ThreadStatus::Killed(reason) => {
+                    core::mem::drop(status); // Unlock.
+                    self.die(reason);
+                }
+                _ => panic!("unexpected thread status {:?}", *status),
+            }
+        }
+        if pause_debuggee {
+            self.pause_debuggee_in_syscall();
+        }
+    }
+
+    pub fn tid(&self) -> ThreadId {
+        self.tid
+    }
+
+    pub fn rip(&self) -> u64 {
+        self.tcb.rip()
+    }
+
+    pub fn set_cpu_affinity(&self, cpu: Option<uCpus>) {
+        match cpu {
+            Some(cpu) => self.affined_to.store(cpu as u32, Ordering::Relaxed),
+            None => self.affined_to.store(uCpus::MAX as u32, Ordering::Relaxed),
+        }
+    }
+
+    pub fn get_cpu_affinity(&self) -> uCpus {
+        self.affined_to.load(Ordering::Relaxed) as uCpus
+    }
+
+    fn init_user_tcb(&mut self) {
+        self.user_tcb_user_addr = (self.user_stack.stack_top()
+            - (core::mem::size_of::<UserThreadControlBlock>() as u64))
+            & !15; // Align on 16 bytes.
+
+        self.user_tcb_kernel_addr = self
+            .owner()
+            .address_space
+            .virt_to_phys(self.user_tcb_user_addr)
+            .unwrap()
+            + crate::mm::PAGING_DIRECT_MAP_OFFSET;
+
+        unsafe {
+            let user_tcb = self.user_tcb_mut();
+            user_tcb.guard = Self::USER_TCB_GUARD;
+            user_tcb.kernel_version = 2; // v2: added libc_tcb.
+            user_tcb.user_version = 0;
+            user_tcb.self_handle = self.self_handle.as_u64();
+            user_tcb.self_tid = self.tid.as_u64();
+            user_tcb.stack_guard = Self::USER_TCB_GUARD;
+            user_tcb.tls = 0;
+            user_tcb.current_cpu.store(0, Ordering::Relaxed);
+            user_tcb.reserved0 = [0; 3];
+            user_tcb.name_len = 0;
+            user_tcb.name_bytes = [0; 32];
+            user_tcb.libc_tcb = 0;
+        }
+    }
+
+    // Never returns.
+    pub fn kill(&self, _error: UserError) -> ! {
+        todo!()
+    }
+
+    fn post_kill(&self, reason: ThreadKilledReason) {
+        // TODO: this post_exited thing is fragile and bad design.
+        //        on_thread_exited() is called in too many places,
+        //        so it could be called more than once or not at all.
+        let mut post_exited = false;
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Created => {
+                    // Never started, so nothing else will finish its exit; a
+                    // wake after this sees Killed and does nothing.
+                    *status = ThreadStatus::Killed(reason);
+                    post_exited = true;
+                }
+                ThreadStatus::PausingDebuggee(_) => {
+                    // on_thread_paused owns cleanup until the context is saved.
+                    *status = ThreadStatus::Killed(reason);
+                }
+                ThreadStatus::PausedDebuggee(live_status) => {
+                    *status = ThreadStatus::Killed(reason);
+                    match live_status {
+                        LiveThreadStatus::Running | LiveThreadStatus::Syscall(_, _) => {
+                            self.post_wake_locked(false);
+                        }
+                        LiveThreadStatus::Preempted => post_exited = true,
+                        LiveThreadStatus::Runnable(_, _) | LiveThreadStatus::InWait(_, _) => {
+                            unreachable!()
+                        }
+                    }
+                }
+                ThreadStatus::Live(live_status) => match live_status {
+                    LiveThreadStatus::Running => {
+                        *status = ThreadStatus::Killed(reason);
+                        // With IRQ fast-return, a busy thread on a CPU with an
+                        // empty run queue never re-enters the kernel on its
+                        // own; poke its CPU so the next tick preempts it and
+                        // the kill is processed. The CPU read is best-effort:
+                        // a Running thread stays on its CPU until it passes
+                        // through the scheduler, which would see Killed.
+                        let utcb = unsafe {
+                            (self.user_tcb_kernel_addr as usize as *const UserThreadControlBlock)
+                                .as_ref()
+                                .unwrap_unchecked()
+                        };
+                        crate::sched::poke_cpu(utcb.current_cpu.load(Ordering::Relaxed));
+                    }
+                    LiveThreadStatus::Runnable(_, _) | LiveThreadStatus::Syscall(_, _) => {
+                        *status = ThreadStatus::Killed(reason);
+                    }
+                    LiveThreadStatus::InWait(_, _) => {
+                        *status = ThreadStatus::Killed(reason);
+                        self.post_wake_locked(false);
+                    }
+                    LiveThreadStatus::Preempted => {
+                        *status = ThreadStatus::Killed(reason);
+                        post_exited = true;
+                    }
+                },
+                ThreadStatus::Killed(_)
+                | ThreadStatus::Error(_)
+                | ThreadStatus::Exited(_)
+                | ThreadStatus::Finished => { /* Nothing to do here. */ }
+            }
+        };
+        if post_exited {
+            crate::sched::post(crate::sched::Job::new(
+                Self::job_fn_on_thread_exited,
+                self.get_weak(),
+                self.tid.as_u64(),
+                uCpus::MAX,
+            ));
+        }
+    }
+
+    /// Kills the thread if it is still `Created` and no wake has posted its
+    /// start, atomically with such wakes: they set `start_posted` under this
+    /// lock. Returns whether it did; the exit then completes as in post_kill.
+    fn kill_if_never_woken(&self) -> bool {
+        {
+            let mut status = self.status.lock(line!());
+            if *status != ThreadStatus::Created || self.start_posted.load(Ordering::Relaxed) {
+                return false;
+            }
+            *status = ThreadStatus::Killed(ThreadKilledReason::ProcessKilled);
+        }
+        crate::sched::post(crate::sched::Job::new(
+            Self::job_fn_on_thread_exited,
+            self.get_weak(),
+            self.tid.as_u64(),
+            uCpus::MAX,
+        ));
+        true
+    }
+
+    fn post_start(&self, arg: u64) {
+        // Under the status lock when a wake of a Created thread gets here;
+        // see kill_if_never_woken(). The first wake posts the start; a later
+        // one before the thread runs is a pending wake, as for a running
+        // thread, not a second start job.
+        if self.start_posted.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(owner) = self.owner.upgrade() {
+            owner.start_posted.store(true, Ordering::Release);
+        }
+        self.wakes_taken
+            .store(self.wakes_queued.load(Ordering::Relaxed), Ordering::Relaxed);
+
+        let mut job = crate::sched::Job::new(Self::job_fn_start, self.get_weak(), 0, uCpus::MAX);
+        job.arg = arg;
+        crate::sched::post(job);
+    }
+
+    pub fn status(&self) -> ThreadStatus {
+        *self.status.lock(line!())
+    }
+
+    // We use trampoline to start threads because Thread::start() is called
+    // with the owner process locked, and we want to have it unlocked.
+    //fn start_trampoline(thread: u64, arg: u64) {
+    //    let self_ = thread as usize as *const Thread;
+    fn do_start(&self, arg: u64) {
+        let cpu_usage_scope = self.process_stats.cpu_usage_scope_kernel();
+
+        self.trace("thread do_start", arg, 0);
+        let entry_point = self.thread_entry_point;
+
+        // A start queued by a wake can outlive its process: a kill of this
+        // still Created thread finished its exit, the process is gone, and
+        // only a thread handle keeps this object. Nothing to start.
+        let Some(process) = self.owner.upgrade() else {
+            assert_matches!(self.status(), ThreadStatus::Killed(_));
+            return;
+        };
+        let start = 0; // process.as_ref().uspace_base;
+
+        let mut error = None;
+        {
+            let (_process_mut, process_status) = unsafe { process.get_mut() };
+            match *process_status {
+                ProcessStatus::Created | ProcessStatus::Running => {}
+                _ => {
+                    error = Some(moto_rt::E_INTERNAL_ERROR);
+                    log::debug!("bad process status: {:?}", *process_status);
+                }
+            }
+        }
+
+        if let Some(err) = error {
+            {
+                let mut status = self.status.lock(line!());
+                if *status != ThreadStatus::Created {
+                    // Killed before it ran: post_kill has finished its exit.
+                    assert_matches!(*status, ThreadStatus::Killed(_));
+                    return;
+                }
+                *status = ThreadStatus::Error(err);
+            }
+            self.on_thread_exited();
+            return;
+        }
+
+        {
+            let tcb = {
+                let (self_mut, mut thread_status_lock) = unsafe { self.get_mut() };
+                if *thread_status_lock != ThreadStatus::Created {
+                    // Killed before it ran: post_kill has finished its exit.
+                    assert_matches!(*thread_status_lock, ThreadStatus::Killed(_));
+                    return;
+                }
+                let self_ptr = self_mut as *const Thread;
+
+                // Allocated in Thread::new.
+                let kernel_stack_start =
+                    self_mut.kernel_stack_segment.unwrap().end() - mm::PAGE_SIZE_SMALL;
+
+                self_mut
+                    .capabilities
+                    .store(process.capabilities(), Ordering::Relaxed);
+
+                let upt = process.address_space.user_page_table();
+
+                self_mut.init_user_tcb();
+
+                let tcb = &mut self_mut.tcb;
+                tcb.init(
+                    self_ptr,
+                    start + entry_point,
+                    // User stack starts after user_tcb.
+                    // TODO: userspace with sse enabled uses movaps, which does #GPF(0)
+                    //       if the argument is not aligned on 16 bytes. But for some reason
+                    //       the rust compiler does "push %rbp" and then calls moveaps with
+                    //       %rsp, so %rsp must be 8-byte aligned but not 16-byte aligned.
+                    (self_mut.user_tcb_user_addr & !15) - 8, // Make sure user %rsp is 0x****8.
+                    kernel_stack_start,
+                    upt,
+                );
+
+                *thread_status_lock = ThreadStatus::Live(LiveThreadStatus::Running);
+                tcb
+            };
+
+            if !process.on_thread_starting(self) {
+                // The process is dying.
+                {
+                    *self.status.lock(line!()) =
+                        ThreadStatus::Killed(ThreadKilledReason::ProcessKilled);
+                }
+                self.on_thread_exited();
+                return;
+            }
+            core::mem::drop(cpu_usage_scope);
+            self.trace("will spawn usermode", 0, 0);
+            let tocr = tcb.spawn_usermode_thread(arg);
+            Self::off_cpu_current().on_thread_descheduled(tocr);
+            self.trace("back from spawn usermode", 0, 0);
+        }
+    }
+
+    fn clear_wait_objects_on_wake(&self) {
+        // Note: we consciously drop all wait objects on wakeup below and
+        // require a full list of wait objects on each new wait. While it
+        // may seem that requiring a full list of wait objects on each wait
+        // is wasteful and does not scale, this is done consciously so that
+        // we avoid synchronous designs (where many wait objects are needed).
+        //
+        // Holding sys_wait_objects across remove_waiting_thread() is safe:
+        // nothing takes sys_wait_objects while holding an object's
+        // waiting_threads lock (the order is always wait list -> waiters).
+        let mut wait_objects = self.sys_wait_objects.lock(line!());
+        for obj in wait_objects.iter() {
+            obj.sys_object.remove_waiting_thread(self);
+        }
+        // Drops the Arc refs (must happen before the thread resumes), but
+        // keeps the capacity for the next wait's registration (S13). Bound
+        // what a single huge wait can pin per thread.
+        wait_objects.clear();
+        if wait_objects.capacity() > 64 {
+            wait_objects.shrink_to(64);
+        }
+    }
+
+    // The negation of on_thread_paused()'s park condition: a thread that
+    // pauses with pending wakes is re-posted immediately instead of parking,
+    // so callers seeing `true` may skip the pause entirely (W5).
+    pub fn has_pending_wakes(&self) -> bool {
+        !self.wakers.lock(line!()).is_empty()
+            || self.wakes_taken.load(Ordering::Relaxed) != self.wakes_queued.load(Ordering::Relaxed)
+    }
+
+    // Called for IO threads on non-blocking waits.
+    pub(super) fn take_wakers(&self) -> WakerVec {
+        self.clear_wait_objects_on_wake();
+
+        self.wakes_taken
+            .store(self.wakes_queued.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.timed_out.store(false, Ordering::Relaxed);
+        let mut wakers = core::mem::replace(
+            &mut *self.wakers.lock(line!()),
+            WakerVec::new(SysHandle::NONE),
+        );
+
+        wakers.sort_dedup();
+
+        wakers
+    }
+
+    // Returns true if the wait timed out, and/or a list of waker handles.
+    pub(super) fn wait(&self) -> (bool, WakerVec) {
+        self.trace("thread::wait", 0, 0);
+
+        // tcb.pause() below will triger on_thread_paused() that will
+        // change this thread's status to InWait. It will NOT return
+        // until the thread wakes.
+        self.tcb.pause();
+        // tcb.pause() above is done, which means the thread is
+        // no longer InWait.
+
+        finish_direct_switch(self);
+        self.after_wait()
+    }
+
+    /// Hands the CPU to this CPU's scheduler loop from inside a syscall and
+    /// returns once the loop has run this thread again.
+    pub(super) fn scheduler_tick_in_syscall(&self) {
+        self.trace("thread::scheduler_tick_in_syscall", 0, 0);
+        self.wake_immediately.store(true, Ordering::Release);
+        // on_thread_paused() re-queues the thread; a scheduler loop resumes
+        // it in the kernel, and it returns here.
+        self.tcb.pause();
+        finish_direct_switch(self);
+        self.back_in_syscall();
+    }
+
+    /// Parks the thread inside an allocating syscall until oom::attend()
+    /// resumes it. Unlike wait(), this leaves the wake latch (wakers and wake
+    /// counters) untouched: those belong to the userspace wait that follows
+    /// the syscall. The queue protocol is in oom::wait::park().
+    pub(super) fn oom_wait(&self) {
+        self.trace("thread::oom_wait", 0, 0);
+        self.oom_park.store(true, Ordering::Release);
+        self.tcb.pause();
+        finish_direct_switch(self);
+        self.back_in_syscall();
+    }
+
+    /// Resumes a thread parked by oom_wait(). Only the removal of its OOM
+    /// queue entry may call this; a thread that has not paused yet sees that
+    /// entry gone in on_thread_paused() and does not sleep.
+    pub(super) fn oom_resume(&self) {
+        let mut status = self.status.lock(line!());
+        if let ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) = *status {
+            *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+            self.post_wake_locked(false);
+        }
+    }
+
+    // Back on a CPU after pausing inside a syscall: the resume job made the
+    // thread Runnable; a kill meanwhile ends it here.
+    fn back_in_syscall(&self) {
+        let mut status = self.status.lock(line!());
+        match *status {
+            ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op)) => {
+                *status = ThreadStatus::Live(LiveThreadStatus::Syscall(nr, op));
+            }
+            ThreadStatus::Killed(reason) => {
+                core::mem::drop(status); // Unlock.
+                self.die(reason); // Does not return.
+            }
+            x => panic!("back_in_syscall: bad status: {:?}", x),
+        }
+    }
+
+    // W7: like wait(), but hands the CPU directly to `next` (claimed via a
+    // *_for_switch wake) instead of posting its resume job and bouncing
+    // through the scheduler loop. Own park bookkeeping runs from next's
+    // context (finish_direct_switch), after the context is saved.
+    pub(super) fn wait_and_switch(&self, next: Arc<Thread>) -> (bool, WakerVec) {
+        self.trace("thread::wait_and_switch", next.tid.as_u64(), 0);
+
+        // Mirror resume_in_kernel() for the wakee.
+        next.cancel_timeout();
+        next.clear_wait_objects_on_wake();
+
+        let next_tcb = core::ptr::addr_of!(next.tcb);
+        set_direct_switch(self.get_weak().upgrade().unwrap(), next);
+        // SAFETY: `next` was claimed by a *_for_switch wake. Its Arc, just
+        // handed over, is released by finish_direct_switch in the wakee,
+        // that is, only after the switch to its TCB.
+        unsafe { self.tcb.switch_to(next_tcb) };
+        // We are back on a CPU: someone woke us (queue path or a direct
+        // switch of their own).
+
+        finish_direct_switch(self);
+        self.after_wait()
+    }
+
+    fn after_wait(&self) -> (bool, WakerVec) {
+        let (timed_out, mut wakers) = {
+            {
+                self.trace("thread::wait: woke", 0, 0);
+                // The pause() above deschedules this thread from this CPU.
+                // The thread will resume below via Self::resume().
+
+                let mut status = self.status.lock(line!());
+                let (nr, op) = match *status {
+                    ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op)) => (nr, op),
+                    ThreadStatus::Killed(reason) => {
+                        core::mem::drop(status); // Unlock.
+                        self.die(reason); // Does not return.
+                    }
+                    x => panic!("bad status: {:?}", x),
+                };
+                *status = ThreadStatus::Live(LiveThreadStatus::Syscall(nr, op));
+            }
+            // else: have queued wakes.
+
+            self.wakes_taken
+                .store(self.wakes_queued.load(Ordering::Relaxed), Ordering::Relaxed);
+            (
+                self.timed_out.swap(false, Ordering::AcqRel),
+                core::mem::replace(
+                    &mut *self.wakers.lock(line!()),
+                    WakerVec::new(SysHandle::NONE),
+                ),
+            )
+        };
+
+        wakers.sort_dedup();
+
+        (timed_out, wakers)
+    }
+
+    // This is called when a thread in a syscall calls self.tcb.pause(), which
+    // happens in sys_wait(), in an OOM park, or when the process is PausedDebuggee.
+    fn on_thread_paused(&self) {
+        self.trace("thread::on_thread_paused", 0, 0);
+        self.tcb.validate_rsp();
+        let mut call_on_exited = false;
+        let wake_immediately = self.wake_immediately.swap(false, Ordering::AcqRel);
+        let oom_park = self.oom_park.swap(false, Ordering::AcqRel);
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(LiveThreadStatus::Syscall(nr, op)) if wake_immediately => {
+                    *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                    let this_cpu = self.get_cpu_affinity() == uCpus::MAX
+                        && crate::sched::this_cpu_queues_empty();
+                    self.post_wake_locked(this_cpu);
+                }
+                ThreadStatus::Live(LiveThreadStatus::Syscall(nr, op)) if oom_park => {
+                    // Latched userspace wakes stay pending for the wait that
+                    // follows the syscall. Sleep only while the OOM queue still
+                    // owns this thread's resume (status lock, then OOM lock;
+                    // nothing nests them the other way around).
+                    if super::oom::wait::is_parked(self) {
+                        *status = ThreadStatus::Live(LiveThreadStatus::InWait(nr, op));
+                    } else {
+                        *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                        self.post_wake_locked(false);
+                    }
+                }
+                ThreadStatus::Live(LiveThreadStatus::Syscall(nr, op)) => {
+                    let wakers_empty = self.wakers.lock(line!()).is_empty();
+                    if wakers_empty
+                        && self.wakes_taken.load(Ordering::Relaxed)
+                            == self.wakes_queued.load(Ordering::Relaxed)
+                    {
+                        *status = ThreadStatus::Live(LiveThreadStatus::InWait(nr, op))
+                    } else {
+                        if wakers_empty {
+                            self.diag.spur_counter.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            self.diag.spur_wakers.fetch_add(1, Ordering::Relaxed);
+                        }
+                        *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                        self.trace("thread::on_thread_paused: will resume", 0, 0);
+                        self.post_wake_locked(false);
+                    }
+                }
+                ThreadStatus::PausingDebuggee(live_status) => {
+                    if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                        *status = ThreadStatus::PausedDebuggee(live_status);
+                    } else {
+                        // Resume can cancel a pause before the context is saved.
+                        *status = ThreadStatus::Live(live_status);
+                        self.post_wake_locked(false);
+                    }
+                }
+                ThreadStatus::Killed(_) => {
+                    call_on_exited = true;
+                }
+                _ => panic!(
+                    "{}: unexpected thread status {:?}",
+                    self.tid.as_u64(),
+                    // self.debug_name(),
+                    *status
+                ),
+            }
+        }
+
+        if call_on_exited {
+            crate::sched::post(crate::sched::Job::new(
+                Self::job_fn_on_thread_exited,
+                self.get_weak(),
+                self.tid.as_u64(),
+                uCpus::MAX,
+            ));
+        }
+    }
+
+    // W7: after a resume-type TCB call returns to this CPU's kernel stack,
+    // the thread that actually went off-CPU is gs:[32]'s owner, NOT
+    // necessarily the thread the frame resumed: direct switches
+    // (wait_and_switch) move threads on-CPU without returning here.
+    fn off_cpu_current() -> Arc<Thread> {
+        ThreadControlBlock::off_cpu_thread()
+            .upgrade()
+            .expect("off-CPU thread already dropped")
+    }
+
+    // Resumes a thread sleeping in Thread::wait() or in Thread::pause_debuggee_in_syscall().
+    fn resume_in_kernel(&self) {
+        self.trace("thread::resume_in_kernel", 0, 0);
+        self.tcb.validate_rsp();
+        // @self is not currently running. So we don't check its status; it will
+        // be checked when it is resumed in Self::wait().
+        self.cancel_timeout();
+        self.clear_wait_objects_on_wake();
+
+        /*
+         * Resumes the thread on this CPU:
+         * jumps to the line marked 'resumes here' in Self::wait().
+         */
+        let tocr = self.tcb.resume();
+        Self::off_cpu_current().on_thread_descheduled(tocr);
+        self.trace("resume_in_kernel back", 0, 0);
+    }
+
+    fn resume_in_userspace(&self) {
+        self.trace("thread::resume_in_userspace", 0, 0);
+        let resume = {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(LiveThreadStatus::Preempted) => {
+                    if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                        *status = ThreadStatus::PausedDebuggee(LiveThreadStatus::Preempted);
+                        false
+                    } else {
+                        *status = ThreadStatus::Live(LiveThreadStatus::Running);
+                        true
+                    }
+                }
+                ThreadStatus::Killed(_) => false,
+                _ => panic!("Unexpected thread status {:?}.", *status),
+            }
+        };
+
+        if resume {
+            let tocr = self.tcb.resume_preempted_thread();
+            Self::off_cpu_current().on_thread_descheduled(tocr);
+        }
+    }
+
+    pub fn post_wake(&self, this_cpu: bool) {
+        self.trace("thread::post_wake", 0, 0);
+        self.wakes_queued.fetch_add(1, Ordering::Relaxed);
+        let mut status = self.status.lock(line!());
+        match *status {
+            ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) => {
+                self.diag.w_in.fetch_add(1, Ordering::Relaxed);
+                *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                self.post_wake_locked(this_cpu);
+            }
+            ThreadStatus::Created => {
+                self.post_start(0);
+            }
+            _ => {
+                self.diag.w_run.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    // W7: post_wake(), but when the thread is InWait it is claimed for a
+    // direct switch instead of having its resume job posted: on Some(_)
+    // the caller MUST either switch to it (wait_and_switch) or release it
+    // (release_switch_claim).
+    pub fn post_wake_for_switch(self: &Arc<Self>) -> Option<Arc<Thread>> {
+        self.trace("thread::post_wake_for_switch", 0, 0);
+        self.wakes_queued.fetch_add(1, Ordering::Relaxed);
+        let mut status = self.status.lock(line!());
+        match *status {
+            ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) => {
+                self.diag.w_in.fetch_add(1, Ordering::Relaxed);
+                *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                Some(self.clone())
+            }
+            ThreadStatus::Created => {
+                self.post_start(0);
+                None
+            }
+            _ => {
+                self.diag.w_run.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    // W7: wake_by_object(), but claiming instead of posting; see
+    // post_wake_for_switch.
+    pub fn wake_by_object_for_switch(self: Arc<Self>, handle: SysHandle) -> Option<Arc<Thread>> {
+        let mut status = self.status.lock(line!());
+        self.add_waker(handle);
+        self.diag
+            .last_wake_handle
+            .store(handle.as_u64(), Ordering::Relaxed);
+        match *status {
+            ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) => {
+                self.diag.o_in.fetch_add(1, Ordering::Relaxed);
+                *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                self.trace("thread::wake_by_object_for_switch", handle.as_u64(), 0);
+                core::mem::drop(status);
+                Some(self)
+            }
+            _ => {
+                self.diag.o_run.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    // W7: releases a thread claimed for a direct switch that will not
+    // happen (error paths): post its resume job as the normal wake would
+    // have.
+    pub fn release_switch_claim(&self) {
+        let _status = self.status.lock(line!());
+        self.post_wake_locked(true);
+    }
+
+    fn process_live_thread_status_locked(
+        &self,
+        live_status: LiveThreadStatus,
+        thread_data: &mut moto_sys::stats::ThreadDataV1,
+    ) {
+        match live_status {
+            LiveThreadStatus::Running => {
+                thread_data.status = moto_sys::stats::ThreadStatus::LiveRunning
+            }
+            LiveThreadStatus::Preempted => {
+                thread_data.status = moto_sys::stats::ThreadStatus::LivePreempted;
+                thread_data.ip = self.tcb.rip();
+                thread_data.rbp = self.tcb.rbp();
+            }
+            LiveThreadStatus::Runnable(s, o) => {
+                thread_data.status = moto_sys::stats::ThreadStatus::LiveRunnable;
+                thread_data.syscall_num = s;
+                thread_data.syscall_op = o;
+                thread_data.ip = self.tcb.rip();
+                thread_data.rbp = self.tcb.rbp();
+            }
+            LiveThreadStatus::Syscall(s, o) => {
+                thread_data.status = moto_sys::stats::ThreadStatus::LiveSyscall;
+                thread_data.syscall_num = s;
+                thread_data.syscall_op = o;
+                thread_data.ip = self.tcb.rip();
+                thread_data.rbp = self.tcb.rbp();
+            }
+            LiveThreadStatus::InWait(s, o) => {
+                thread_data.status = moto_sys::stats::ThreadStatus::LiveInWait;
+                thread_data.syscall_num = s;
+                thread_data.syscall_op = o;
+                thread_data.ip = self.tcb.rip();
+                thread_data.rbp = self.tcb.rbp();
+            }
+        }
+    }
+
+    fn get_thread_data(&self) -> moto_sys::stats::ThreadDataV1 {
+        let mut thread_data = moto_sys::stats::ThreadDataV1 {
+            tid: self.tid.as_u64(),
+            ..Default::default()
+        };
+        {
+            let status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Created => {
+                    thread_data.status = moto_sys::stats::ThreadStatus::Created
+                }
+                ThreadStatus::Live(live_status) | ThreadStatus::PausingDebuggee(live_status) => {
+                    self.process_live_thread_status_locked(live_status, &mut thread_data);
+                }
+
+                ThreadStatus::PausedDebuggee(live_status) => {
+                    self.process_live_thread_status_locked(live_status, &mut thread_data);
+                    thread_data.paused_debuggee = 1;
+                }
+                ThreadStatus::Finished
+                | ThreadStatus::Exited(_)
+                | ThreadStatus::Error(_)
+                | ThreadStatus::Killed(_) => {
+                    thread_data.status = moto_sys::stats::ThreadStatus::Dead
+                }
+            }
+        }
+
+        let name = {
+            if self.user_tcb_kernel_addr == 0 {
+                ""
+            } else {
+                let utcb = unsafe {
+                    (self.user_tcb_kernel_addr as usize as *mut UserThreadControlBlock)
+                        .as_ref()
+                        .unwrap_unchecked()
+                };
+                utcb.get_thread_name()
+            }
+        };
+        let name_bytes = name.as_bytes();
+
+        thread_data.name_len = name_bytes.len() as u8;
+        if !name_bytes.is_empty() {
+            thread_data.name_bytes[0..name_bytes.len()].copy_from_slice(name_bytes);
+        }
+
+        // See the WakeDiag doc: rates from two dumps taken seconds apart.
+        /*
+        crate::write_serial!(
+            "WDIAG tid={} q={} t={} waits={} fast={} paused={} spurw={} spurc={} w_in={} w_run={} o_in={} o_run={} to={} scw={} lwt={} lwh=0x{:x} tmo={}\n",
+            self.tid.as_u64(),
+            self.wakes_queued.load(Ordering::Relaxed),
+            self.wakes_taken.load(Ordering::Relaxed),
+            self.diag.waits.load(Ordering::Relaxed),
+            self.diag.fast.load(Ordering::Relaxed),
+            self.diag.paused.load(Ordering::Relaxed),
+            self.diag.spur_wakers.load(Ordering::Relaxed),
+            self.diag.spur_counter.load(Ordering::Relaxed),
+            self.diag.w_in.load(Ordering::Relaxed),
+            self.diag.w_run.load(Ordering::Relaxed),
+            self.diag.o_in.load(Ordering::Relaxed),
+            self.diag.o_run.load(Ordering::Relaxed),
+            self.diag.to_wakes.load(Ordering::Relaxed),
+            self.diag.syscall_wakes.load(Ordering::Relaxed),
+            self.diag.last_waker_tid.load(Ordering::Relaxed),
+            self.diag.last_wake_handle.load(Ordering::Relaxed),
+            self.timed_out.load(Ordering::Relaxed)
+        );
+        */
+
+        thread_data
+    }
+
+    // The timer is claimed under the status lock. Every path that ends a
+    // wait takes the thread out of InWait under this lock before cancelling
+    // the timer, so a timer still current here while the thread is InWait
+    // belongs to this wait. Claimed before the lock, a delayed job could
+    // find the thread InWait again in a later wait, even an untimed one.
+    fn wake_by_timeout(&self, timer_id: u64) {
+        let mut status = self.status.lock(line!());
+        if self
+            .timer_id
+            .compare_exchange(timer_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        if let ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) = *status {
+            self.diag.to_wakes.fetch_add(1, Ordering::Relaxed);
+            *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+
+            self.timed_out.store(true, Ordering::Release);
+            self.post_wake_locked(false);
+        }
+    }
+
+    fn post_wake_locked(&self, this_cpu: bool) {
+        self.trace("thread::post_wake_locked", 0, 0);
+        self.tcb.validate_rsp();
+        if this_cpu {
+            crate::sched::post(crate::sched::Job::new(
+                Self::job_fn_resume_in_kernel,
+                self.get_weak(),
+                self.tid.as_u64(),
+                current_cpu(),
+            ));
+        } else {
+            crate::sched::post(crate::sched::Job::new(
+                Self::job_fn_resume_in_kernel,
+                self.get_weak(),
+                self.tid.as_u64(),
+                self.get_cpu_affinity(),
+            ));
+        }
+    }
+
+    pub fn wake_by_object(&self, handle: SysHandle, this_cpu: bool) {
+        if self.tid().as_u64() == 2 {
+            log::debug!("sys-io wake_by_object 0x{:x}", handle.as_u64());
+        }
+        let mut status = self.status.lock(line!());
+        self.add_waker(handle);
+        self.diag
+            .last_wake_handle
+            .store(handle.as_u64(), Ordering::Relaxed);
+        match *status {
+            ThreadStatus::Live(LiveThreadStatus::InWait(nr, op)) => {
+                self.diag.o_in.fetch_add(1, Ordering::Relaxed);
+                *status = ThreadStatus::Live(LiveThreadStatus::Runnable(nr, op));
+                self.trace("thread::wake_by_object", handle.as_u64(), 0);
+                self.post_wake_locked(this_cpu);
+            }
+            _ => {
+                self.diag.o_run.fetch_add(1, Ordering::Relaxed);
+                /*
+                log::debug!(
+                    "Thread::wake_by_object: not waking: t {} {:?}",
+                    self.tid.as_u64(),
+                    *status
+                );
+                */
+            }
+        }
+    }
+
+    pub fn exit_process(&self, exit_status: u64) -> ! {
+        self.trace("exit", exit_status, 0);
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(_) => {
+                    *status = ThreadStatus::Exited(exit_status);
+                }
+                ThreadStatus::Error(_) | ThreadStatus::Killed(_) => {}
+                _ => panic!("Thread::exit: unexpected thread status: {:?}", *status),
+            }
+        }
+        self.owner().exit(exit_status);
+        self.tcb.exit()
+    }
+
+    pub fn finish(&self) -> ! {
+        self.trace("finish", 0, 0);
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(_) => {
+                    *status = ThreadStatus::Finished;
+                }
+                ThreadStatus::Error(_) | ThreadStatus::Killed(_) | ThreadStatus::Exited(_) => {}
+                _ => panic!("Thread::finish: unexpected thread status: {:?}", *status),
+            }
+        }
+        self.tcb.exit()
+    }
+
+    fn die(&self, why: ThreadKilledReason) -> ! {
+        self.trace("die", 0, 0);
+        // Note: must be called only by the currently running thread.
+        match why {
+            ThreadKilledReason::SegFault => self.tcb.die(TOCR_KILLED_SF, 0),
+            ThreadKilledReason::ProcessExited => self.tcb.die(TOCR_KILLED_OTHER, 0),
+            ThreadKilledReason::ProcessKilled => self.tcb.die(TOCR_KILLED_OTHER, 0),
+            _ => {
+                panic!("Thread::die: unexpected reason: {:?}", why)
+            }
+        }
+    }
+
+    fn on_thread_exited(&self) {
+        self.trace("exited", 0, 0);
+        let thread_status = {
+            let status = self.status.lock(line!());
+            #[cfg(debug_assertions)]
+            match *status {
+                ThreadStatus::Finished => {
+                    log::debug!("Thread 0x{:x} finished.", self.tid().as_u64());
+                }
+                ThreadStatus::Exited(exit_status) => {
+                    log::debug!(
+                        "Thread 0x{:x} exited with status 0x{:x}.",
+                        self.tid().as_u64(),
+                        exit_status
+                    );
+                }
+                ThreadStatus::Killed(reason) => {
+                    log::debug!("Thread 0x{:x} killed: {:?}.", self.tid().as_u64(), reason);
+                }
+                ThreadStatus::Error(err) => {
+                    log::debug!("Thread 0x{:x} error: {:?}.", self.tid().as_u64(), err);
+                }
+                _ => {
+                    panic!("unrecognized thread status: {:?}", *status)
+                }
+            }
+            *status
+        };
+
+        #[cfg(debug_assertions)]
+        log::debug!(
+            "thread::on_thread_exited(): 0x{:x} status {:?}",
+            self.tid.as_u64(),
+            thread_status
+        );
+
+        let (self_object, self_handle) = {
+            let (self_mut, _lock) = unsafe { self.get_mut() };
+            let self_object = self_mut.self_object.take().unwrap();
+            let self_handle = self_mut.self_handle;
+            self_mut.self_handle = SysHandle::NONE;
+            (self_object, self_handle)
+        };
+
+        core::mem::drop(self_object);
+
+        let (join_object, join_handle) = {
+            let (self_mut, _lock) = unsafe { self.get_mut() };
+            let join_object = self_mut.join_object.take().unwrap();
+            let join_handle = self_mut.join_handle;
+            self_mut.join_handle = SysHandle::NONE;
+            (join_object, join_handle)
+        };
+
+        log::debug!(
+            "thread with join handle 0x{:x} exited",
+            join_handle.as_u64()
+        );
+        SysObject::wake(&join_object, false);
+        core::mem::drop(join_object);
+
+        let owner = self.owner.upgrade().unwrap();
+
+        // self and join handles are used to wait for the thread to complete and
+        // to wake the thread. The userspace must not put() these handles,
+        // because they did not get() them.
+        //
+        // We ignore the result because the userspace may call put()
+        // on the handle, and we don't want to crash the kernel here.
+        let _ = owner.put_object(&self_handle);
+        let _ = owner.put_object(&join_handle);
+
+        owner.on_thread_exited(self.tid, thread_status);
+    }
+
+    fn cleanup(&self) {
+        self.owner()
+            .address_space
+            .drop_stacks(&self.user_stack, &self.kernel_stack_segment);
+    }
+
+    #[cfg(debug_assertions)]
+    fn print_backtrace(&self) {
+        let backtrace = self
+            .owner()
+            .address_space
+            .get_backtrace(self.tcb.rip(), self.tcb.rbp());
+
+        let mut log_msg = alloc::format!("\nKILLED: {}: backtrace:\n", self.debug_name());
+        for val in backtrace {
+            log_msg.push_str(alloc::format!("\t0x{val:x} \\\n").as_str());
+        }
+
+        log::info!("{log_msg}");
+    }
+
+    fn on_pagefault(&self) {
+        let (pf_addr, error_code) = self.tcb.pf_addr_error_code().unwrap();
+        self.trace("thread pagefault", pf_addr, error_code);
+        log::trace!("Thread #PF: 0x{pf_addr:x}");
+        // Publishing Preempted lets another CPU finish the thread's exit.
+        // Keep its process alive until fault dispatch and cleanup return.
+        let owner = self.owner();
+        let mut resume_in_userspace = false;
+        let mut call_on_exited = false;
+        let mut killed_now = false;
+        let mut parked = false;
+        let mut pressure = None;
+
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Live(LiveThreadStatus::Running) => {
+                    let fixed = owner.address_space.fix_pagefault(pf_addr, error_code);
+                    if fixed == Err(moto_rt::E_NOT_READY.into()) {
+                        // An absent file-paged page: parked without a resume
+                        // job until the pager fills it (see pager::on_fault).
+                        *status = ThreadStatus::Live(LiveThreadStatus::Preempted);
+                        parked = true;
+                    } else if matches!(fixed, Err(mm::AllocationFailure::Pressure { state, .. }) if state.armed())
+                    {
+                        *status = ThreadStatus::Live(LiveThreadStatus::Preempted);
+                        pressure = fixed.err();
+                    } else if fixed.is_ok() {
+                        log::trace!("#PF fixed!");
+                        if owner.paused_debuggee.load(Ordering::Relaxed) {
+                            *status = ThreadStatus::PausedDebuggee(LiveThreadStatus::Preempted);
+                        } else {
+                            *status = ThreadStatus::Live(LiveThreadStatus::Preempted);
+                            resume_in_userspace = true;
+                        }
+                    } else {
+                        killed_now = true;
+                        *status = ThreadStatus::Killed(ThreadKilledReason::PageFault);
+                        call_on_exited = true;
+                    }
+                }
+                ThreadStatus::Killed(_) => {
+                    call_on_exited = true;
+                }
+                _ => panic!("Unexpected thread status {:?}", *status),
+            }
+        }
+
+        if let Some(failure) = pressure {
+            if !super::oom::on_fault(self, failure) {
+                self.post_kill(ThreadKilledReason::PageFault);
+            }
+            return;
+        }
+
+        if parked {
+            if !super::pager::on_fault(self, pf_addr) {
+                // Another CPU may already have reclaimed the user TCB.
+                log::info!(
+                    "#PF: {} 0x{:x}:0x{:x} killed: no pager for 0x{pf_addr:x}",
+                    owner.debug_name(),
+                    owner.pid().as_u64(),
+                    self.tid.as_u64()
+                );
+                self.post_kill(ThreadKilledReason::PageFault);
+            }
+            return;
+        }
+
+        if killed_now {
+            // self.debug_name() locks self.status, so can't do the logging above under the lock.
+            log::info!(
+                "#PF: thread {} killed: pf_addr: 0x{:x}\n\trip: 0x{:x} stack: 0x{:x?}",
+                self.debug_name(),
+                pf_addr,
+                self.tcb.rip(),
+                self.user_stack
+            );
+
+            #[cfg(debug_assertions)]
+            self.print_backtrace();
+            // crate::xray::tracing::dump();
+        }
+
+        if resume_in_userspace {
+            // Page faults should not lead to CPU migrations.
+            self.post_resume_in_userspace(true);
+        } else if call_on_exited {
+            self.on_thread_exited();
+        }
+    }
+
+    fn post_resume_in_userspace(&self, this_cpu: bool) {
+        let cpu = if this_cpu {
+            current_cpu()
+        } else {
+            self.get_cpu_affinity()
+        };
+        crate::sched::post(crate::sched::Job::new(
+            Self::job_fn_resume_in_userspace,
+            self.get_weak(),
+            self.tid.as_u64(),
+            cpu,
+        ));
+    }
+
+    /// Resumes a parked pager/OOM fault, or kills it if its page cannot be provided.
+    /// The queue's removal owns this call: the status check does not deduplicate jobs.
+    /// Only faults resolved in the fault handler itself use local placement.
+    pub(super) fn resume_file_fault(&self, this_cpu: bool, success: bool) {
+        if !success {
+            self.post_kill(ThreadKilledReason::PageFault);
+            return;
+        }
+        let mut status = self.status.lock(line!());
+        if *status == ThreadStatus::Live(LiveThreadStatus::Preempted) {
+            if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                *status = ThreadStatus::PausedDebuggee(LiveThreadStatus::Preempted);
+            } else {
+                self.post_resume_in_userspace(this_cpu);
+            }
+        }
+    }
+
+    fn on_thread_descheduled(&self, tocr: ThreadOffCpuReason) {
+        crate::util::full_fence();
+        self.trace("on_thread_descheduled", 0, 0);
+        match tocr {
+            ThreadOffCpuReason::Exited => self.on_thread_exited(),
+            ThreadOffCpuReason::Paused => self.on_thread_paused(),
+            ThreadOffCpuReason::Preempted => {
+                if self.tcb.pf_addr_error_code().is_some() {
+                    self.on_pagefault();
+                } else {
+                    self.trace("thread::on_thread_preempted", 0, 0);
+
+                    let mut resume_in_userspace = false;
+                    let mut call_on_exited = false;
+                    {
+                        let mut status = self.status.lock(line!());
+                        match *status {
+                            ThreadStatus::Live(LiveThreadStatus::Running) => {
+                                if self.owner().paused_debuggee.load(Ordering::Relaxed) {
+                                    *status =
+                                        ThreadStatus::PausedDebuggee(LiveThreadStatus::Preempted);
+                                } else {
+                                    *status = ThreadStatus::Live(LiveThreadStatus::Preempted);
+                                    resume_in_userspace = true;
+                                }
+                            }
+                            ThreadStatus::Killed(_) => {
+                                call_on_exited = true;
+                            }
+                            _ => panic!("Unexpected thread status {:?}", *status),
+                        }
+                    }
+                    if resume_in_userspace {
+                        self.post_resume_in_userspace(false);
+                    } else if call_on_exited {
+                        self.on_thread_exited();
+                    }
+                }
+            }
+            ThreadOffCpuReason::KilledPf(addr) => {
+                {
+                    let mut status = self.status.lock(line!());
+                    if self.user_stack.is_overflow(addr) {
+                        log::debug!(
+                            "Thread killed: {:?}: #PF(0x{:x}): stack overflow.",
+                            *status,
+                            addr
+                        );
+                    } else if self.user_stack.is_underflow(addr) {
+                        log::debug!(
+                            "Thread killed: {:?}: #PF(0x{:x}): stack underflow.",
+                            *status,
+                            addr
+                        );
+                    } else {
+                        log::debug!("Thread killed: {:?}: #PF(0x{:x})", *status, addr);
+                    }
+
+                    match *status {
+                        ThreadStatus::Live(LiveThreadStatus::Running) => {
+                            *status = ThreadStatus::Killed(ThreadKilledReason::PageFault)
+                        }
+
+                        ThreadStatus::Killed(ThreadKilledReason::ProcessKilled) => {}
+                        _ => panic!("Unexpected thread status {:?}", *status),
+                    }
+                }
+                self.on_thread_exited();
+            }
+            ThreadOffCpuReason::KilledGpf => {
+                {
+                    #[cfg(debug_assertions)]
+                    self.print_backtrace();
+                    let mut status = self.status.lock(line!());
+                    log::debug!("Thread killed (#GPF): {:?}", *status);
+                    match *status {
+                        ThreadStatus::Live(LiveThreadStatus::Running) => {
+                            *status = ThreadStatus::Killed(ThreadKilledReason::GPF)
+                        }
+                        ThreadStatus::Killed(_) => {}
+                        _ => panic!("Unexpected thread status {:?}", *status),
+                    }
+                }
+                self.on_thread_exited();
+            }
+            ThreadOffCpuReason::KilledSf => {
+                {
+                    let mut status = self.status.lock(line!());
+                    log::debug!("Thread killed: {:?}", *status);
+                    if let ThreadStatus::Live(LiveThreadStatus::Syscall(_, _)) = *status {
+                        *status = ThreadStatus::Killed(ThreadKilledReason::SegFault);
+                    } else {
+                        panic!("KilledSf: unexpected thread status: {:?}", *status);
+                    }
+                }
+                self.on_thread_exited();
+            }
+            ThreadOffCpuReason::KilledOther => {
+                {
+                    let status = self.status.lock(line!());
+                    log::debug!("Thread killed: {:?}", *status);
+                    assert_matches!(*status, ThreadStatus::Killed(_));
+                }
+                self.on_thread_exited();
+            }
+        }
+    }
+
+    fn job_fn_resume_in_userspace(thread: Weak<Self>, _: u64) {
+        crate::xray::tracing::trace("job_fn_resume_in_userspace", 0, 0, 0);
+        crate::xray::tracing::trace(
+            "job_fn_resume_in_userspace + weak",
+            thread.weak_count() as u64,
+            0,
+            0,
+        );
+        crate::xray::tracing::trace(
+            "job_fn_resume_in_userspace + strong + weak",
+            thread.strong_count() as u64,
+            thread.weak_count() as u64,
+            0,
+        );
+        if let Some(thread) = thread.upgrade() {
+            crate::xray::tracing::trace("job_fn_resume_in_userspace 10", 0, 0, 0);
+            thread.resume_in_userspace();
+        }
+    }
+
+    fn job_fn_resume_in_kernel(thread: Weak<Self>, _: u64) {
+        crate::xray::tracing::trace("job_fn_resume_in_kernel", 0, 0, 0);
+        if let Some(thread) = thread.upgrade() {
+            thread.resume_in_kernel();
+        }
+    }
+
+    fn job_fn_start(thread: Weak<Self>, arg: u64) {
+        crate::xray::tracing::trace("job_fn_start", 0, 0, 0);
+        if let Some(thread) = thread.upgrade() {
+            thread.do_start(arg);
+        }
+    }
+
+    fn job_fn_wake_by_timeout(thread: Weak<Self>, timer_id: u64) {
+        crate::xray::tracing::trace("job_fn_wake_by_timeout", 0, 0, 0);
+        if let Some(thread) = thread.upgrade() {
+            thread.wake_by_timeout(timer_id);
+        }
+    }
+
+    fn job_fn_on_thread_exited(thread: Weak<Self>, _: u64) {
+        crate::xray::tracing::trace("job_fn_on_thread_exited", 0, 0, 0);
+        if let Some(thread) = thread.upgrade() {
+            thread.on_thread_exited();
+        }
+    }
+}
+
+/// Cleans up a child after its parent drops; detached children survive once
+/// woken. Use the process's weak reference because its pid could be reused.
+pub fn post_parent_dropped(target: Weak<Process>) {
+    crate::sched::post(crate::sched::Job::new(
+        Process::job_fn_parent_dropped,
+        Weak::default(),
+        Weak::into_raw(target) as usize as u64,
+        uCpus::MAX,
+    ));
+}

@@ -1,0 +1,441 @@
+//! This module defines SysObject. For SysObj syscall handling, go to sys_obj.rs.
+use core::any::Any;
+use core::sync::atomic::*;
+
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::{collections::BTreeMap, sync::Weak};
+use moto_sys::syscalls::*;
+
+use crate::util::SpinLock;
+
+use super::process::{Thread, ThreadId};
+use super::Process;
+
+/// Intrusive atomic queue.
+static WAKE_QUEUE: AtomicU64 = AtomicU64::new(0);
+
+// The dominant case is zero or one thread waiting on an object (a single
+// IPC peer), and waiters re-register on every wait/wake cycle; a plain
+// BTreeMap would allocate/free a node per cycle on the hottest path. The
+// One variant keeps the single-waiter cycle allocation-free; the map is
+// only materialized when a second waiter appears (futexes, process/thread
+// completion objects).
+#[derive(Default)]
+enum WaitingThreads {
+    #[default]
+    Empty,
+    One(ThreadId, Weak<Thread>, SysHandle),
+    Map(BTreeMap<ThreadId, (Weak<Thread>, SysHandle)>),
+}
+
+enum WaitingThreadsIter {
+    Empty,
+    One(Option<(Weak<Thread>, SysHandle)>),
+    Map(alloc::collections::btree_map::IntoIter<ThreadId, (Weak<Thread>, SysHandle)>),
+}
+
+impl Iterator for WaitingThreadsIter {
+    type Item = (Weak<Thread>, SysHandle);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(item) => item.take(),
+            Self::Map(iter) => iter.next().map(|(_, v)| v),
+        }
+    }
+}
+
+impl IntoIterator for WaitingThreads {
+    type Item = (Weak<Thread>, SysHandle);
+    type IntoIter = WaitingThreadsIter;
+
+    fn into_iter(self) -> WaitingThreadsIter {
+        match self {
+            Self::Empty => WaitingThreadsIter::Empty,
+            Self::One(_, thread, handle) => WaitingThreadsIter::One(Some((thread, handle))),
+            Self::Map(map) => WaitingThreadsIter::Map(map.into_iter()),
+        }
+    }
+}
+
+// Represents a system object that SysHandle points to.
+#[repr(align(8))]
+pub struct SysObject {
+    // Upon a wake event, SysObject adds itself to the global list
+    // of woken objects. As this is often done in the IRQ context,
+    // we can't do mutexes/memory allocations/etc., so we we work
+    // with a lock-free intrusive singly-linked-list. See Self::wake()
+    wake_queue_intrusive_ptr: AtomicU64,
+    wake_queue_ptr_guard: AtomicBool,
+
+    waiting_threads: SpinLock<WaitingThreads>,
+
+    url: Arc<String>,
+    owner: Arc<dyn Any + Sync + Send>,
+    process_owner: Weak<Process>,
+
+    // A unique ID, otherwise it is hard to figure out if two refs point at the same obj:
+    // Rust does not have equality by reference.
+    id: u64,
+
+    // Each wake increments the counter; each waiter stores the last delivered wake counter
+    // value, thus ensuring that wake events are not lost.
+    wake_counter: AtomicU64,
+
+    // Shared objects in shared.rs close when their process drops the last
+    // handle, which may precede destruction of incidental kernel references.
+    process_handles: AtomicUsize,
+    closed: AtomicBool,
+    sibling_dropped: AtomicBool,
+
+    // Some objects wake once and then always stay "woken", e.g. process completions.
+    done: AtomicBool,
+    wake_pending: AtomicBool,
+}
+
+impl PartialEq for SysObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Drop for SysObject {
+    fn drop(&mut self) {
+        // Woken objects are stored as raw pointers on the global
+        // woken list, so they should never be dropped.
+        assert!(!self.is_woken());
+
+        super::shared::on_drop(self);
+    }
+}
+
+impl SysObject {
+    pub fn new_owned(
+        url: Arc<String>,
+        owner: Arc<dyn Any + Sync + Send>,
+        process_owner: Weak<Process>,
+    ) -> Arc<Self> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+        Arc::new(Self {
+            waiting_threads: SpinLock::new(WaitingThreads::Empty),
+            wake_queue_intrusive_ptr: AtomicU64::new(0),
+            wake_queue_ptr_guard: AtomicBool::new(false),
+            url,
+            owner,
+            process_owner,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            wake_counter: AtomicU64::new(0),
+            process_handles: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            sibling_dropped: AtomicBool::new(false),
+            done: AtomicBool::new(false),
+            wake_pending: AtomicBool::new(false),
+        })
+    }
+
+    pub fn new(url: Arc<String>) -> Arc<Self> {
+        Self::new_owned(url, Arc::<()>::new(()), Weak::new())
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn owner(&self) -> &Arc<dyn Any + Sync + Send> {
+        &self.owner
+    }
+
+    pub fn process_owner(&self) -> &Weak<Process> {
+        &self.process_owner
+    }
+
+    pub fn on_sibling_dropped(&self) {
+        if !self.sibling_dropped.swap(true, Ordering::AcqRel) {
+            self.wake(false); // Important to wake after setting sibling_dropped.
+        }
+    }
+
+    pub(super) fn add_process_handle(&self) {
+        let previous = self.process_handles.fetch_add(1, Ordering::AcqRel);
+        assert_ne!(previous, usize::MAX);
+    }
+
+    pub(super) fn remove_process_handle(&self) -> bool {
+        let previous = self.process_handles.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(previous, 0);
+        previous == 1
+    }
+
+    pub(super) fn mark_closed(&self) -> bool {
+        !self.closed.swap(true, Ordering::AcqRel)
+    }
+
+    pub(super) fn closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    pub fn sibling_dropped(&self) -> bool {
+        self.sibling_dropped.load(Ordering::Acquire)
+    }
+
+    pub fn mark_done(&self) {
+        assert!(!self.done.swap(true, Ordering::AcqRel));
+    }
+
+    pub fn done(&self) -> bool {
+        self.done.load(Ordering::Acquire)
+    }
+
+    #[inline(always)]
+    fn is_woken(&self) -> bool {
+        self.wake_queue_intrusive_ptr.load(Ordering::Acquire) != 0
+    }
+
+    #[inline(always)]
+    pub fn add_waiting_thread(&self, thread: &Thread, handle: SysHandle) {
+        let tid = thread.tid();
+        let mut waiting = self.waiting_threads.lock(line!());
+        match &mut *waiting {
+            WaitingThreads::Empty => *waiting = WaitingThreads::One(tid, thread.get_weak(), handle),
+            WaitingThreads::One(tid0, thread0, handle0) => {
+                if *tid0 == tid {
+                    // Same semantics as BTreeMap::insert: overwrite.
+                    *thread0 = thread.get_weak();
+                    *handle0 = handle;
+                } else {
+                    let mut map = BTreeMap::new();
+                    map.insert(*tid0, (thread0.clone(), *handle0));
+                    map.insert(tid, (thread.get_weak(), handle));
+                    *waiting = WaitingThreads::Map(map);
+                }
+            }
+            WaitingThreads::Map(map) => {
+                map.insert(tid, (thread.get_weak(), handle));
+            }
+        }
+    }
+
+    pub fn remove_waiting_thread(&self, thread: &Thread) {
+        let tid = thread.tid();
+        let mut waiting = self.waiting_threads.lock(line!());
+        match &mut *waiting {
+            WaitingThreads::Empty => {}
+            WaitingThreads::One(tid0, ..) => {
+                if *tid0 == tid {
+                    *waiting = WaitingThreads::Empty;
+                }
+            }
+            WaitingThreads::Map(map) => {
+                map.remove(&tid);
+                if map.is_empty() {
+                    // Drop the map's node allocation; the next waiter
+                    // starts on the allocation-free One path again.
+                    *waiting = WaitingThreads::Empty;
+                }
+            }
+        }
+    }
+
+    fn dequeue_woken_head(&self) -> u64 {
+        loop {
+            let prev = self.wake_queue_ptr_guard.swap(true, Ordering::AcqRel);
+            if !prev {
+                break;
+            }
+        }
+        // Use -1 because we did a +1 in set_next_woken.
+        let next = self.wake_queue_intrusive_ptr.swap(0, Ordering::AcqRel) - 1;
+        self.wake_queue_ptr_guard.store(false, Ordering::Release);
+
+        next
+    }
+
+    fn take_waiting_threads(&self) -> WaitingThreads {
+        core::mem::take(&mut *self.waiting_threads.lock(line!()))
+    }
+
+    // May be called from IRQ.
+    #[inline]
+    pub fn wake_irq(self_: &Arc<Self>) {
+        self_.wake_counter.fetch_add(1, Ordering::AcqRel);
+        // Protect against concurrent attempts to add this object to the woken list.
+        let prev = self_.wake_queue_ptr_guard.swap(true, Ordering::AcqRel);
+        if prev {
+            self_.wake_pending.store(true, Ordering::Release);
+            return;
+        }
+
+        if !self_.is_woken() {
+            add_object_to_wake_queue(self_);
+        }
+
+        self_.wake_queue_ptr_guard.store(false, Ordering::Release);
+    }
+
+    #[allow(clippy::result_unit_err)]
+    pub fn wake_thread(&self, wakee_thread: SysHandle, this_cpu: bool) -> Result<(), ()> {
+        if let Some(process) = self.process_owner().upgrade() {
+            if let Some(thread) = super::sysobject::object_from_handle::<super::process::Thread>(
+                &process,
+                wakee_thread,
+            ) {
+                thread.post_wake(this_cpu);
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
+    // NOT called from IRQ.
+    pub fn wake(&self, this_cpu: bool) {
+        self.wake_counter.fetch_add(1, Ordering::AcqRel);
+        // Protect against concurrent attempts to add this object to the woken list.
+        let prev = self.wake_queue_ptr_guard.swap(true, Ordering::AcqRel);
+        if prev {
+            self.wake_pending.store(true, Ordering::Release);
+            return;
+        }
+
+        if self.is_woken() {
+            // Already on the wake queue.
+            self.wake_queue_ptr_guard.store(false, Ordering::Release);
+            return;
+        }
+
+        self.wake_queue_ptr_guard.store(false, Ordering::Release);
+
+        // See process_wake_events.
+        let threads_and_handles = self.take_waiting_threads();
+        for (thread, handle) in threads_and_handles {
+            if let Some(thread) = thread.upgrade() {
+                thread.wake_by_object(handle, this_cpu);
+            }
+        }
+    }
+
+    // W7: wake(this_cpu = true), but the first InWait waiting thread is
+    // claimed for a direct switch instead of having its resume job posted
+    // (see Thread::wake_by_object_for_switch); any remaining waiting
+    // threads are woken normally. Returns the claimed thread, which the
+    // caller MUST switch to or release.
+    pub fn wake_for_switch(&self) -> Option<Arc<super::process::Thread>> {
+        self.wake_counter.fetch_add(1, Ordering::AcqRel);
+        let prev = self.wake_queue_ptr_guard.swap(true, Ordering::AcqRel);
+        if prev {
+            self.wake_pending.store(true, Ordering::Release);
+            return None;
+        }
+
+        if self.is_woken() {
+            // Already on the wake queue.
+            self.wake_queue_ptr_guard.store(false, Ordering::Release);
+            return None;
+        }
+
+        self.wake_queue_ptr_guard.store(false, Ordering::Release);
+
+        let threads_and_handles = self.take_waiting_threads();
+        let mut claimed: Option<Arc<super::process::Thread>> = None;
+        for (thread, handle) in threads_and_handles {
+            if let Some(thread) = thread.upgrade() {
+                if claimed.is_none() {
+                    // A failed claim leaves the same state as wake_by_object
+                    // on a non-InWait thread (waker recorded, nothing posted).
+                    claimed = thread.wake_by_object_for_switch(handle);
+                } else {
+                    thread.wake_by_object(handle, false);
+                }
+            }
+        }
+        claimed
+    }
+
+    pub fn wake_count(&self) -> u64 {
+        self.wake_counter.load(Ordering::Acquire)
+    }
+}
+
+pub fn object_from_handle<T: Any + Send + Sync>(
+    process: &super::Process,
+    handle: SysHandle,
+) -> Option<Arc<T>> {
+    match process.get_object(&handle) {
+        None => None,
+        Some(obj) => object_from_sysobject(&obj.sys_object),
+    }
+}
+
+pub fn object_from_sysobject<T: Any + Send + Sync>(sys_object: &Arc<SysObject>) -> Option<Arc<T>> {
+    Arc::downcast::<T>(sys_object.owner.clone()).ok()
+}
+
+fn add_object_to_wake_queue(woken: &Arc<SysObject>) {
+    // NOTE: this is often called from an IRQ, be very careful what you do here:
+    // no taking of locks, no memory allocations.
+    debug_assert!(!woken.is_woken());
+
+    let mut iters: u64 = 0;
+    loop {
+        iters += 1;
+        if iters > 1_000_000 {
+            panic!("{}:{} - loop inside IRQ", file!(), line!());
+        }
+        let prev_head = WAKE_QUEUE.load(Ordering::Acquire);
+        // Use +1 to indicate self is woken even if next is zero.
+        woken
+            .wake_queue_intrusive_ptr
+            .store(prev_head + 1, Ordering::Release);
+
+        // Do Arc::into_raw + clone to keep the refcount up.
+        // Increase the refcount.
+        let next_head = Arc::into_raw(woken.clone()) as usize as u64;
+
+        if WAKE_QUEUE
+            .compare_exchange_weak(prev_head, next_head, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            break;
+        } else {
+            // Decrease the refcount.
+            let _ = unsafe { Arc::from_raw(next_head as usize as *const SysObject) };
+            core::hint::spin_loop();
+        }
+    }
+}
+
+pub fn process_wake_events() {
+    // This is called on every sched-loop iteration on every CPU; an
+    // unconditional swap acquires the cacheline exclusively even when the
+    // queue is empty (the common case), so check with a plain load first.
+    if WAKE_QUEUE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+
+    let mut next = WAKE_QUEUE.swap(0, Ordering::AcqRel);
+
+    while next != 0 {
+        let obj = unsafe { Arc::from_raw(next as usize as *const SysObject) };
+        // See SysObject::wake().
+        next = obj.dequeue_woken_head();
+
+        loop {
+            let threads_and_handles = obj.take_waiting_threads();
+            for (thread, handle) in threads_and_handles {
+                if let Some(thread) = thread.upgrade() {
+                    thread.wake_by_object(handle, false);
+                }
+            }
+
+            if !obj.wake_pending.swap(false, Ordering::AcqRel) {
+                break;
+            }
+        }
+    }
+}

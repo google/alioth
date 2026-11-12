@@ -1,0 +1,436 @@
+// Memory Management.
+// Note: only kheap and virt_intrusive provide memory allocation facilities,
+//       other than some corner cases that do frameless allocations.
+
+mod allocation;
+pub(crate) use allocation::{
+    AllocationClass, AllocationFailure, RefusalKind, RetryDecision, RetryKind, StateSnapshot,
+    WaitReason,
+};
+mod cache;
+pub mod kheap;
+pub mod mmio;
+pub mod phys;
+pub(crate) mod phys_blocks;
+mod slab;
+pub mod user;
+pub mod user_copy;
+pub mod virt;
+mod virt_intrusive;
+
+use core::sync::atomic::Ordering;
+
+pub use crate::arch::paging::*;
+
+use alloc::vec::Vec;
+use bitflags::bitflags;
+
+pub const ONE_GB: u64 = 1 << 30;
+pub const ONE_MB: u64 = 1 << 20;
+
+// The full physical memory is mapped to [DIRECT_MAP_OFFSET, *)
+pub const PAGING_DIRECT_MAP_OFFSET: u64 = 1_u64 << 46;
+
+// We load the kernel at 16MB phys and PAGING_DIRECT_MAP_OFFSET + 16MB virt.
+// Keep in sync with KERNEL_PHYS_START in x64.kloader. Low blocks are
+// released whole at stage 2, so the start is block (2 MiB) aligned.
+pub const KERNEL_PHYS_START: u64 = ONE_MB * 16;
+const _: () = assert!(KERNEL_PHYS_START.is_multiple_of(PAGE_SIZE_MID));
+
+// Note that we don't do kaslr, as it is mostly pointless:
+// https://grsecurity.net/kaslr_an_exercise_in_cargo_cult_security
+pub const fn kernel_offset_virt() -> u64 {
+    PAGING_DIRECT_MAP_OFFSET + KERNEL_PHYS_START
+}
+
+// The backing of one slab: `num_pages` page-aligned pages, or
+// `E_OUT_OF_MEMORY` with nothing kept. Slabs are never freed.
+pub(super) fn raw_alloc_for_slab(
+    num_pages: u64,
+    class: AllocationClass,
+) -> Result<*mut u8, AllocationFailure> {
+    if !memory_initialized() {
+        // Bootup: the startup heap, which panics when exhausted.
+        use core::alloc::GlobalAlloc;
+        let layout = core::alloc::Layout::from_size_align(
+            (num_pages << PAGE_SIZE_SMALL_LOG2) as usize,
+            PAGE_SIZE_SMALL as usize,
+        )
+        .expect("Invalid layout");
+        return Ok(unsafe { kheap::RAW_ALLOCATOR.alloc(layout) });
+    }
+    virt::map_slab_pages(num_pages, class).map(|vaddr| vaddr as usize as *mut u8)
+}
+
+#[cfg(debug_assertions)]
+pub fn dump_stats() {
+    phys::dump_serial();
+}
+
+pub fn zero_page(virt_addr: u64, kind: PageType) {
+    assert_eq!(0, virt_addr & (kind.page_size() - 1));
+    unsafe {
+        let mut pos = virt_addr as usize;
+        let end = (virt_addr + kind.page_size()) as usize;
+        while pos < end {
+            let ptr = pos as *mut u64;
+            *ptr = 0;
+            pos += 8;
+        }
+    }
+}
+
+pub trait PageSize: Copy + Eq + PartialOrd + Ord {
+    const SIZE: u64;
+    const SIZE_LOG2: u8;
+
+    fn page_type() -> PageType;
+
+    fn as_str() -> &'static str;
+}
+
+pub const fn align_up(addr: u64, align: u64) -> u64 {
+    (addr + align - 1) & !(align - 1)
+}
+
+pub const fn align_down(addr: u64, align: u64) -> u64 {
+    addr & !(align - 1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageSizeSmall {}
+
+impl PageSize for PageSizeSmall {
+    const SIZE: u64 = PAGE_SIZE_SMALL;
+    const SIZE_LOG2: u8 = PAGE_SIZE_SMALL_LOG2;
+
+    fn page_type() -> PageType {
+        PageType::SmallPage
+    }
+
+    fn as_str() -> &'static str {
+        assert_eq!(Self::SIZE, 1_u64 << 12);
+        "4K"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageSizeMid {}
+
+impl PageSize for PageSizeMid {
+    const SIZE: u64 = PAGE_SIZE_MID;
+    const SIZE_LOG2: u8 = PAGE_SIZE_MID_LOG2;
+
+    fn page_type() -> PageType {
+        PageType::MidPage
+    }
+
+    fn as_str() -> &'static str {
+        assert_eq!(Self::SIZE, 1_u64 << 21);
+        "2M"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageSizeLarge {}
+
+impl PageSize for PageSizeLarge {
+    const SIZE: u64 = PAGE_SIZE_LARGE;
+    const SIZE_LOG2: u8 = PAGE_SIZE_LARGE_LOG2;
+
+    fn page_type() -> PageType {
+        PageType::LargePage
+    }
+
+    fn as_str() -> &'static str {
+        assert_eq!(Self::SIZE, 1_u64 << 30);
+        "1G"
+    }
+}
+
+// TODO: MemorySegment is, basically, a u64 slice. Do we need it?
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct MemorySegment {
+    pub start: u64,
+    pub size: u64,
+}
+
+impl MemorySegment {
+    pub fn end(&self) -> u64 {
+        self.start + self.size
+    }
+
+    pub fn contains(&self, addr: u64) -> bool {
+        (self.start <= addr) && (self.end() > addr)
+    }
+
+    pub fn contains_segment(&self, segment: &Self) -> bool {
+        (self.start <= segment.start) && (self.end() >= segment.end())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    pub const fn empty_segment() -> Self {
+        Self { start: 0, size: 0 }
+    }
+
+    pub fn take(&mut self) -> Self {
+        let result = *self;
+        *self = Self::empty_segment();
+        result
+    }
+
+    pub fn intersect(&self, other: &MemorySegment) -> Self {
+        let start = self.start.max(other.start);
+        let end = self.end().min(other.end());
+
+        if start > end {
+            Self { start: 0, size: 0 }
+        } else {
+            Self {
+                start,
+                size: end - start,
+            }
+        }
+    }
+
+    pub fn minus(&self, other: &MemorySegment) -> (Self, Self) {
+        if self.intersect(other).is_empty() {
+            return (*self, Self::empty_segment());
+        }
+
+        let left_start = self.start;
+        let left_end = if other.start > self.start {
+            other.start
+        } else {
+            self.start
+        };
+
+        let right_end = self.end();
+        let right_start = if other.end() < self.end() {
+            other.end()
+        } else {
+            self.end()
+        };
+
+        (
+            Self {
+                start: left_start,
+                size: left_end - left_start,
+            },
+            Self {
+                start: right_start,
+                size: right_end - right_start,
+            },
+        )
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum PageType {
+    #[default]
+    Unknown = 0,
+    SmallPage,
+    MidPage,
+    LargePage,
+}
+
+impl PageType {
+    pub fn page_size(&self) -> u64 {
+        match self {
+            PageType::SmallPage => PAGE_SIZE_SMALL,
+            PageType::MidPage => PAGE_SIZE_MID,
+            PageType::LargePage => PAGE_SIZE_LARGE,
+            PageType::Unknown => panic!(),
+        }
+    }
+
+    pub fn page_size_log2(&self) -> u8 {
+        match self {
+            PageType::SmallPage => PAGE_SIZE_SMALL_LOG2,
+            PageType::MidPage => PAGE_SIZE_MID_LOG2,
+            PageType::LargePage => PAGE_SIZE_LARGE_LOG2,
+            PageType::Unknown => panic!(),
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Default)]
+    pub struct MappingOptions: u16 {
+        const READABLE        = 1;
+        const WRITABLE        = 2;
+        const USER_ACCESSIBLE = 4;
+        const MMIO            = 8;
+        const DONT_ZERO       = 16;
+        const LAZY            = 32;
+        const GUARD           = 64;
+        const PRIVATE         = 128;  // Used by vmem_pages.
+        const EXECUTABLE      = 256;  // W^X: only ELF text is mapped with this.
+        // A segment's creation policy, never a per-page hardware option:
+        // 2 MiB-aligned placement and huge candidates for its mapping.
+        const HUGE_ELIGIBLE   = 512;
+        // A segment's creation policy: pages are installed on demand by the
+        // executable pager (uspace::pager); absent pages have no descriptor.
+        const FILE_PAGED      = 1024;
+    }
+}
+
+const INIT_STATUS_NONE: u32 = 0;
+const INIT_STATUS_MEMORY: u32 = 1;
+const INIT_STATUS_CPU: u32 = u32::MAX;
+
+static INIT_STATUS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(INIT_STATUS_NONE);
+
+// True when the initrd lies above the kernel and stays reserved in the
+// physical allocator for good; below the kernel it is freed in stage 2.
+static INITRD_RESERVED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn initrd_reserved() -> bool {
+    INITRD_RESERVED.load(Ordering::Relaxed)
+}
+
+pub(super) fn memory_initialized() -> bool {
+    INIT_STATUS.load(Ordering::Relaxed) > 0
+}
+
+fn inc_cpu_initialized() {
+    INIT_STATUS.fetch_add(1, Ordering::Relaxed);
+}
+
+// Acquire pairs with the all-CPU publication in stage 2: GS CPU identity is
+// valid on every CPU once this holds.
+pub(super) fn cpu_initialized() -> bool {
+    INIT_STATUS.load(Ordering::Acquire) == INIT_STATUS_CPU
+}
+
+// Returns the new stack.
+pub fn init_mm_bsp_stage1(boot_info: &crate::init::KernelBootupInfo) -> u64 {
+    // [0..16M) - potentially used by the bootloader
+    // [16M..max_ram_offset) - the kernel binary
+    // initrd may be either below the kernel (if we loaded it) or above (if CHV)
+
+    // Step 1. Give the kernel heap its bootup region, permanently. Only
+    // startup allocations use it, so it is sized for them: nothing is taken
+    // from it once memory is initialized.
+    let ram_end = boot_info
+        .pvh()
+        .mem_map()
+        .iter()
+        .filter(|entry| entry.available())
+        .map(|entry| entry.to_segment().end())
+        .max()
+        .unwrap_or(0);
+    let heap_start_phys = align_up(boot_info.kernel_bytes_phys().end(), PAGE_SIZE_SMALL);
+    let heap_size = phys_blocks::boot_heap_bytes(ram_end);
+
+    #[cfg(debug_assertions)]
+    crate::raw_log!(
+        "Bootup KHEAP at [0x{:x}..0x{:x}): {} pages",
+        heap_start_phys,
+        heap_start_phys + heap_size,
+        heap_size >> PAGE_SIZE_SMALL_LOG2
+    );
+
+    let bootup_heap_phys = MemorySegment {
+        start: heap_start_phys,
+        size: heap_size,
+    };
+    assert!(boot_info.is_available(&bootup_heap_phys));
+    let bootup_heap_virt = MemorySegment {
+        start: bootup_heap_phys.start + PAGING_DIRECT_MAP_OFFSET,
+        size: bootup_heap_phys.size,
+    };
+    kheap::init(bootup_heap_virt);
+
+    // Step 2. Init physical memory.
+    let exclusion = MemorySegment {
+        start: KERNEL_PHYS_START,
+        size: bootup_heap_phys.end() - KERNEL_PHYS_START,
+    };
+    let pvh_mem_map = boot_info.pvh().mem_map();
+    let mut available_memory: Vec<MemorySegment> = Vec::with_capacity(pvh_mem_map.len() + 2);
+    let mut raw_ram = Vec::with_capacity(pvh_mem_map.len());
+    for entry in pvh_mem_map {
+        if !entry.available() {
+            continue;
+        }
+        let pvh_seg = entry.to_segment();
+        raw_ram.push(pvh_seg);
+        // Exclude the kernel + bootup heap permanently.
+        let (left, right) = pvh_seg.minus(&exclusion);
+        if !left.is_empty() {
+            available_memory.push(left);
+        }
+        if !right.is_empty() {
+            available_memory.push(right);
+        }
+    }
+
+    // The bootloader's RAM below the kernel is reserved until stage 2; an
+    // initrd above the boot heap stays allocated for good.
+    let initrd_seg = boot_info.initrd_bytes_phys();
+    let initrd = if initrd_seg.start >= bootup_heap_phys.end() {
+        INITRD_RESERVED.store(true, Ordering::Relaxed);
+        initrd_seg
+    } else {
+        assert!(initrd_seg.end() < KERNEL_PHYS_START);
+        MemorySegment::empty_segment()
+    };
+
+    phys::init(&available_memory, initrd, raw_ram);
+    virt::init();
+
+    // Do the INIT_STATUS dance so that we can initialize CPUs (allocates pages for per-cpu GS)
+    // and initialize PERCPU_ALLOC_STATUS (depends on CPUs and needed for alloc debugging).
+    INIT_STATUS.store(INIT_STATUS_MEMORY, Ordering::Release);
+
+    crate::arch::init_cpu_postboot();
+
+    allocate_kernel_stack()
+}
+
+pub fn init_mm_bsp_stage2() {
+    #[cfg(debug_assertions)]
+    log::warn!("TODO: there is some stranded (wasted) memory in the bootup KHEAP.");
+
+    crate::arch::paging::init_paging_bsp(); // Unmaps the lower 1G.
+    phys::release_low_memory();
+
+    inc_cpu_initialized();
+
+    while INIT_STATUS.load(Ordering::Relaxed) < (crate::config::num_cpus() + 1) as u32 {
+        core::hint::spin_loop();
+    }
+
+    INIT_STATUS.store(INIT_STATUS_CPU, Ordering::Release);
+}
+
+// Returns the new stack.
+pub fn init_mm_ap_stage1() -> u64 {
+    while !memory_initialized() {
+        core::hint::spin_loop();
+    }
+
+    crate::arch::init_cpu_postboot();
+
+    allocate_kernel_stack()
+}
+
+pub fn init_mm_ap_stage2() {
+    inc_cpu_initialized();
+}
+
+fn allocate_kernel_stack() -> u64 {
+    let stack = virt::vmem_allocate_pages(
+        virt::VmemKind::KernelStack,
+        crate::config::KERNEL_STACK_PAGES + 2,
+        AllocationClass::Kernel,
+    )
+    .expect("OOM during kernel bootup.");
+
+    stack.end() - PAGE_SIZE_SMALL
+}

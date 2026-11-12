@@ -8,6 +8,10 @@ members = [
     "vmm-io-host",
     "tests",
 ]
+exclude = [
+    "tests/kernel",
+    "tests/kloader",
+]
 
 [workspace.package]
 version = "0.0.1"
