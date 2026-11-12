@@ -42,84 +42,95 @@ Linux kernel:
   userspace WASI support.
 
 This document lays out:
-- **Section 2**: The end-to-end 7-step development roadmap (`(a)` through `(g)`).
+- **Section 2**: The end-to-end development roadmap (`(a1)`/`(a2)` through `(g)`)
+  and the cross-host and repository-boundary invariants.
 - **Section 3**: High-level architecture of `vmm-core-host` (Ring 0) and
-  `vmm-io-host` (Ring 3) on Motor OS.
-- **Sections 4–6**: Detailed designs for **Step (a)** (`test-guest`), **Step
-  (b)** (booting `test-guest` in `wasm-vmm`), and **Step (c)** (porting
-  `vmm-core-host` to Motor OS Ring 0).
+  `vmm-io-host` (Ring 3) on Motor OS, maintained entirely inside `alioth-vmm`.
+- **Sections 4–6**: Detailed designs for **Step (a)** (`(a1)` copying Motor OS
+  `kernel` + `kloader` into `alioth-vmm/tests/`, and `(a2)` creating `test-init`
+  + `initrd-test-guest` in `alioth-vmm/tests/`), **Step (b)** (booting
+  `test-guest` in `wasm-vmm`), and **Step (c)** (porting `vmm-core-host` into
+  the copied Motor OS kernel in `alioth-vmm/tests/kernel`).
 
 ---
 
 ## 2. End-to-End Development Roadmap (`a` – `g`)
 
 ```text
-  (a) Build diskless/netless `test-guest` (kloader + kernel + initrd[test-init])
-   |
-   v
-  (b) Boot `test-guest` in Linux `wasm-vmm` (verify PVH, COM1, ACPI S5, nested SVM/VMX)
-   |
-   v
-  (c) Port `vmm-core-host` to Motor OS Kernel (Ring 0: SVM/VMX + NPT/EPT + no_std Wasmtime)
-   |
-   v
-  (d) Nested self-hosting smoke: Linux `wasm-vmm` [L0] -> `test-guest` [L1] -> `test-guest` [L2]
-   |
-   v
-  (e) Nested full Motor OS: Ring-3 `vmm-io-host` + `vmm-io.cwasm` (virtio-blk, virtio-net, SMP)
-   |
-   v
-  (f) Nested Alpine Linux: `bzImage` boot, Linux MSR/CPUID/xAPIC/IOAPIC & MMIO decode coverage
-   |
-   v
-  (g) Port Ring-0 `vmm-core-host` to Linux Kernel (kthread / folios / tdp_mmu, <16 KiB stack)
+  (a1) Copy Motor OS `kernel` + `x64.kloader` under `alioth-vmm/tests/`
+       (1st commit: pure verbatim source copy; 2nd: wire `../motor-dev` paths)
+    |
+    v
+  (a2) Create `test-init` crate + `initrd-test-guest` packager in `alioth-vmm/tests/`
+    |
+    v
+  (b)  Boot `test-guest` in Linux `wasm-vmm` (`tests/` + `vm_scripts/`; PVH, S5, SVM/VMX)
+    |
+    v
+  (c)  Port `vmm-core-host` into `alioth-vmm/tests/kernel` (Ring 0: SVM/VMX + NPT/EPT + Wasm)
+    |
+    v
+  (d)  Nested self-hosting smoke: Linux `wasm-vmm` [L0] -> `test-guest` [L1] -> `test-guest` [L2]
+    |
+    v
+  (e)  Nested full Motor OS: Ring-3 `vmm-io-host` + `vmm-io.cwasm` staged via `imager`
+    |
+    v
+  (f)  Nested Alpine Linux: `bzImage` boot, Linux MSR/CPUID/xAPIC/IOAPIC & MMIO decode coverage
+    |
+    v
+  (g)  Port Ring-0 `vmm-core-host` to Linux Kernel (kthread / folios / tdp_mmu, <16 KiB stack)
 ```
 
-| Step    | Milestone            | Key Deliverables                | Exit Criteria                 |
-| :------ | :------------------- | :------------------------------ | :---------------------------- |
-| **(a)** | **Create**           | Minimal Motor OS setup          | Builds reproducibly; boots    |
-|         | **`test-guest`**     | (`kloader` + `kernel` +         | in <20 ms with 64 MiB RAM,    |
-|         |                      | `initrd` with self-contained    | logs system/HV caps on        |
-|         |                      | `test-init` in place of         | `COM1`, and powers off via    |
-|         |                      | `sys-io`; 0 disks, 0 NICs).     | `init_exited` -> ACPI S5.     |
-| **(b)** | **Boot**             | `run-test-guest.sh` +           | `run-test-guest.sh` (`--wasm` |
-|         | **`test-guest`**     | `vm-test-guest.toml`; verify    | & `--cwasm`) boots L1         |
-|         | **in `wasm-vmm`**    | nested `SVM`/`VMX` CPUID &      | `test-guest`, logs `hv=svm`   |
-|         |                      | MSR pass-through into L1.       | or `vmx`, and exits `0`.      |
-| **(c)** | **Port Core Host**   | `kernel/src/vmm/`: `SVM`/`VMX`  | Kernel builds with 0 FP/SIMD  |
-|         | **to Motor Ring 0**  | + `NPT`/`EPT`, Ring-0           | in `vmm-core.cwasm`, passes   |
-|         |                      | `x2APIC` + `pvclock`, `no_std`  | self-tests, and exposes       |
-|         |                      | Wasmtime + `vmm-core.cwasm`,    | `"vmm:..."` `SysObj` to       |
-|         |                      | and `SysObj` `BridgeShm`.       | `CAP_VMM` Ring-3 callers.     |
-| **(d)** | **Nested**           | Embed `vmm-core.cwasm`, inner   | `wasm-vmm` (L0) boots L1      |
-|         | **`test-guest`**     | `test-guest` (`kloader` +       | `test-guest`, L1 boots L2     |
-|         |                      | `initrd`), and tiny Ring-3      | `test-guest` via Ring 0, and  |
-|         |                      | `BridgeShm` bootstrap in L1.    | L2 then L1 shut down cleanly. |
-| **(e)** | **Nested Full**      | Port full `vmm-io-host` +       | L1 Motor OS boots standard    |
-|         | **Motor OS**         | `vmm-io.cwasm` to Motor Ring 3  | SMP `motor-os.img` in L2      |
-|         |                      | (`virtio-blk`, `virtio-net`,    | with interactive `rush`       |
-|         |                      | fast doorbells, MSI-X, SMP).    | shell and `russhd` SSH.       |
-| **(f)** | **Nested**           | Linux guest surface in Motor    | L1 Motor OS boots `bzImage`   |
-|         | **Alpine Linux**     | Ring 0: `bzImage`, `xAPIC` +    | + `alpine.raw` in L2 to       |
-|         |                      | `IoApic` IRQ 4, Linux MSRs,     | login prompt with working     |
-|         |                      | and PCI/Virtio `MmioFault`s.    | `virtio-blk`, net, and SSH.   |
-| **(g)** | **Port Core Host**   | Linux kernel module hosting     | Linux Ring-0 `vmm-core-host`  |
-|         | **to Linux Ring 0**  | identical `vmm-core.cwasm` +    | + Ring-3 `vmm-io-host` boots  |
-|         |                      | `no_std` Wasmtime + `BridgeShm` | Motor OS & Alpine in <16 KiB  |
-|         |                      | over `folio`s & `tdp_mmu`.      | kernel stack and 0 FPU.       |
+| Step     | Milestone            | Key Deliverables               | Exit Criteria               |
+| :------- | :------------------- | :----------------------------- | :-------------------------- |
+| **(a1)** | **Copy `kernel` +**  | Copy Motor OS `kernel` &       | 1st commit is pure verbatim |
+|          | **`kloader` into**   | `x64.kloader` under            | copy (`diff = 0`); 2nd      |
+|          | **`tests/`**         | `alioth-vmm/tests/`; 1st       | wires `../motor-dev` paths  |
+|          |                      | commit has 0 source changes.   | & builds `kloader` ELF.     |
+| **(a2)** | **Create**           | `alioth-vmm/tests/test-init`   | Builds reproducibly in      |
+|          | **`test-init` &**    | crate + `initrd-test-guest`    | `alioth-vmm`; 0 disks/NICs; |
+|          | **`test-guest`**     | packager (0 edits to           | logs HV caps on `COM1` &    |
+|          |                      | `motor-os`).                   | exits via ACPI S5.          |
+| **(b)**  | **Boot**             | `tests/tests/boot_vms.rs` +    | `cargo test` &              |
+|          | **`test-guest`**     | `vm_scripts/run-test-guest.sh` | `run-test-guest.sh`         |
+|          | **in `wasm-vmm`**    | (`--wasm` & `--cwasm`); nested | (`--wasm`/`--cwasm`) log    |
+|          |                      | `SVM`/`VMX` pass-through.      | `hv=svm`/`vmx` & exit `0`.  |
+| **(c)**  | **Port Core Host**   | `tests/kernel/src/vmm/`:       | `tests/kernel` builds with  |
+|          | **to Motor Ring 0**  | `SVM`/`VMX` + `NPT`/`EPT`,     | 0 FP/SIMD in                |
+|          |                      | `x2APIC` + `pvclock`, `no_std` | `vmm-core.cwasm` & exposes  |
+|          |                      | Wasmtime, & `BridgeShm`.       | `"vmm:..."` `SysObj`.       |
+| **(d)**  | **Nested**           | Embed `vmm-core.cwasm`, inner  | `wasm-vmm` (L0) boots L1    |
+|          | **`test-guest`**     | `test-guest` (`kloader` +      | `test-guest`, L1 boots L2   |
+|          |                      | `initrd`), and tiny Ring-3     | `test-guest` via Ring 0, &  |
+|          |                      | `BridgeShm` bootstrap in L1.   | L2 then L1 exit cleanly.    |
+| **(e)**  | **Nested Full**      | Port `vmm-io-host` to Motor    | L1 (`tests/kloader` +       |
+|          | **Motor OS**         | Ring 3 in `alioth-vmm`; stage  | staged disk) boots SMP      |
+|          |                      | into copied `motor-os` image   | `motor-os` in L2 with       |
+|          |                      | via `imager put`.              | `rush` shell & `russhd`.    |
+| **(f)**  | **Nested**           | Linux guest surface in         | L1 Motor OS boots `bzImage` |
+|          | **Alpine Linux**     | `tests/kernel`: `bzImage`,     | + `alpine.raw` in L2 to     |
+|          |                      | `xAPIC` + `IoApic` IRQ 4,      | login prompt with working   |
+|          |                      | Linux MSRs, & `MmioFault`s.    | `virtio-blk`, net, & SSH.   |
+| **(g)**  | **Port Core Host**   | Linux kernel module in         | Linux Ring-0 `vmm-core` +   |
+|          | **to Linux Ring 0**  | `alioth-vmm` hosting identical | Ring-3 `vmm-io-host` boots  |
+|          |                      | `vmm-core.cwasm` + `BridgeShm` | Motor OS & Alpine in        |
+|          |                      | over `folio`s & `tdp_mmu`.     | <16 KiB stack and 0 FPU.    |
 
 ### 2.1 Cross-Host Invariant: Byte-Identical Wasm Guests & Continuous Linux Ring-3 Compatibility
 
-> **Non-Negotiable Invariant Across Steps `(a)`–`(g)`**:
+> **Non-Negotiable Invariant Across Steps `(a1)`–`(g)`**:
 > Throughout every step of this roadmap, the existing **Linux Ring-3
-> `vmm-core-host` and `vmm-io-host`** must remain working continuously as `vmm-core`
-> and `vmm-io` evolve. Each step must finish with **one pair of byte-identical
-> `vmm-core.wasm` and `vmm-io.wasm` guest binaries** (with AOT `.cwasm` artifacts
-> compiled directly from those exact `.wasm` bytes, and **zero** host-specific
-> `#[cfg]` forks or guest build variants) runnable unmodified by:
+> `vmm-core-host` and `vmm-io-host`** must remain working continuously as
+> `vmm-core` and `vmm-io` evolve. Each step must finish with **one pair of
+> byte-identical `vmm-core.wasm` and `vmm-io.wasm` guest binaries** (with AOT
+> `.cwasm` artifacts compiled directly from those exact `.wasm` bytes, and
+> **zero** host-specific `#[cfg]` forks or guest build variants) runnable
+> unmodified by:
 > 1. **Linux Ring-3 `vmm-core-host` + `vmm-io-host`** — booting both **Motor OS**
->    (`run-motor-os.sh`, `run-test-guest.sh`) and **Linux** (`run-vm.sh`,
->    `run-vm-initrd.sh`) in both `--wasm` and `--cwasm` modes;
+>    (`vm_scripts/run-motor-os.sh`, `vm_scripts/run-test-guest.sh`) and **Linux**
+>    (`vm_scripts/run-linux.sh`, `vm_scripts/run-linux-initrd.sh`) in `--wasm`
+>    and `--cwasm` modes (enforced by `cargo test` in `alioth-vmm/tests/`);
 > 2. **Motor OS Ring-0 `vmm-core-host` + Ring-3 `vmm-io-host`** as each capability
 >    lands across Steps `(c)`–`(f)`; and
 > 3. **Linux Ring-0 `vmm-core-host` + Ring-3 `vmm-io-host`** in Step `(g)`.
@@ -130,10 +141,40 @@ This document lays out:
 > `VmmHostCore::caps()` and the `VmmHostCore` / `VmmCoreBridge` / `VmmHostIo`
 > C-ABI imports—never via compile-time divergence in the Wasm guests.
 
+### 2.2 Repository Boundary Invariant: Read-Only Motor OS, Modify & Publish Only `alioth-vmm`
+
+> **Non-Negotiable Repository Rule Across Steps `(a1)`–`(g)`**:
+> **Nothing in this plan modifies Motor OS (`../motor-dev/motor-os`) directly.**
+> `alioth-vmm` is the sole repository we modify, test, and publish:
+> - **Read-Only Reuse of `../motor-dev/motor-os`**: Crates and scripts inside
+>   `alioth-vmm` may depend via Cargo `path` on unchanged Motor OS libraries and
+>   vendored crates (`src/sys/lib/{moto-rt,moto-sys,frusa}`,
+>   `src/third_party/*`), embed prebuilt `rt.vdso`
+>   (`src/sys/lib/rt.vdso/rt.vdso`), boot stock `vm_images/release/*` artifacts
+>   in regression tests, and invoke
+>   `../motor-dev/motor-os/vm_images/release/tools/imager` (`mkfs`, `mkdir`,
+>   `put`) on **copied or scratch** disk images inside `alioth-vmm/target/` or
+>   `/tmp` (see <https://github.com/moturus/motor-os/blob/main/docs/build.md>
+>   for how `../motor-dev/motor-os` is built).
+> - **All Custom Kernel, Loader, & Host Code Lives in `alioth-vmm`**: Step `(a1)`
+>   copies Motor OS's `kernel` and `x64.kloader` crates into `alioth-vmm/tests/`
+>   (starting with a pure, zero-diff source copy commit), Step `(a2)` creates
+>   `test-init` in `alioth-vmm/tests/`, Step `(c)` adds Ring-0 VMM support inside
+>   `alioth-vmm/tests/kernel`, and Step `(e)` builds Motor OS Ring-3
+>   `vmm-io-host` inside `alioth-vmm`.
+> - **Copy-on-Modify for Kernel Dependencies**: Dependencies of `tests/kernel`
+>   and `tests/kloader` remain referenced from `../motor-dev/motor-os` while
+>   unmodified. Whenever a later step requires modifying a Motor OS kernel
+>   dependency (for example, adding a new `CAP_VMM` capability to `moto-sys`),
+>   that dependency crate is also copied under `alioth-vmm/tests/` following the
+>   same `(a1)` rule—first commit as a pure, unmodified source copy, followed by
+>   local `Cargo.toml` path/`[patch]` wiring and the feature change—so
+>   `../motor-dev/motor-os` is never edited.
+
 *Scope of the remainder of this document*: Section 3 defines the overall Motor
 OS Ring-0 / Ring-3 split architecture that spans Steps `(c)`–`(f)`, and
-Sections 4, 5, and 6 detail the concrete designs of **Steps `(a)`, `(b)`, and
-`(c)`**.
+Sections 4, 5, and 6 detail the concrete designs of **Steps `(a1)`/`(a2)`,
+`(b)`, and `(c)`**.
 
 ---
 
@@ -141,10 +182,10 @@ Sections 4, 5, and 6 detail the concrete designs of **Steps `(a)`, `(b)`, and
 
 ```text
 +===================================================================================+
-| Motor OS Userspace (Ring 3) — Process with `CAP_VMM`                              |
+| Motor OS Userspace (Ring 3) — Built in `alioth-vmm`, Process with `CAP_VMM`       |
 |                                                                                   |
 |  +-----------------------------------------------------------------------------+  |
-|  | vmm-io-host (Native Motor OS Rust: `moto-sys` + `moto-rt` + `wasmtime-rt`)  |  |
+|  | vmm-io-host (`alioth-vmm` Motor OS target: `moto-sys` + `moto-rt` + Wasm)   |  |
 |  |                                                                             |  |
 |  |  +-----------------------------------------------------------------------+  |  |
 |  |  | vmm-io.cwasm / vmm-io.wasm  [Step e+; omitted by tiny stub in Step d] |  |  |
@@ -164,7 +205,7 @@ Sections 4, 5, and 6 detail the concrete designs of **Steps `(a)`, `(b)`, and
             Shared Physical Pages (`BridgeShm` + Guest RAM + Payloads)
                   + Bidirectional `vm_handle: SysHandle` (`wait` / `wake`)
 +=========================================|=========================================+
-| Motor OS Kernel (Ring 0) — `src/sys/kernel/src/vmm/`                              |
+| Motor OS Kernel in `alioth-vmm` (Ring 0) — `tests/kernel/src/vmm/`                |
 |                                         v                                         |
 |  +-----------------------------------------------------------------------------+  |
 |  | vmm-core-host (`MotorHvCore` + `MotorCoreBridge` + `#![no_std]` Wasmtime)   |  |
@@ -195,20 +236,29 @@ Sections 4, 5, and 6 detail the concrete designs of **Steps `(a)`, `(b)`, and
 On Linux, `vmm-io-host` (`LinuxIoHost`) glues `vmm-io` to POSIX `memfd_create`,
 `eventfd`, `mio::Poll`, `/dev/net/tun`, `pread`/`pwrite`, and `termios`, and
 spawns `vmm-core-host` as a child process. On Motor OS, **`vmm-core-host` is
-already inside the kernel**, so `vmm-io-host` (`MotorIoHost`) becomes a clean,
-single-process Ring-3 service built on native Motor OS primitives:
+already inside the kernel** (`alioth-vmm/tests/kernel`), so `vmm-io-host`
+(`MotorIoHost`, built inside `alioth-vmm` for `--target x86_64-unknown-motor`)
+becomes a clean, single-process Ring-3 service built on native Motor OS
+primitives:
 
-1. **Wasm Hosting (`moturus/wasmtime` Userspace Runtime)**:
-   - Uses Motor OS's existing Wasmtime port (`wasmtime` / `wasmtime-rt` with
-     `W^X` `SysMem::map2(F_SHARE_SELF | F_EXECUTABLE)` and explicit trap checks)
-     to instantiate `vmm-io.cwasm` (or `vmm-io.wasm` when Cranelift is linked).
+1. **Wasm Hosting & Non-Invasive Image Staging**:
+   - Uses Motor OS-compatible Wasmtime (`W^X`
+     `SysMem::map2(F_SHARE_SELF | F_EXECUTABLE)` and explicit trap checks) to
+     instantiate `vmm-io.cwasm` (or `vmm-io.wasm` when Cranelift is linked).
    - **Staged Bring-Up Advantage**: Because the Ring-0 <-> Ring-3
      boundary is defined strictly by `BridgeShm` (`#[repr(C)]`) + `SysHandle`
      wakeups, Ring 0 neither knows nor cares whether Ring 3 runs full
      `vmm-io.cwasm` or a 150-line native Rust bootstrap (`vmm-io-tiny`). Steps
-     `(c)` and `(d)` use `vmm-io-tiny` (serial + boot payload only), and Step
-     `(e)` swaps in full `vmm-io-host` + `vmm-io.cwasm` without changing the
-     Ring-0 ABI.
+     `(c)` and `(d)` embed `vmm-io-tiny` inside `tests/test-init` (serial + boot
+     payload only), and Step `(e)` swaps in full `vmm-io-host` + `vmm-io.cwasm`
+     without changing the Ring-0 ABI.
+   - **Zero Edits to `../motor-dev/motor-os`**: In Step `(e)`, L1 boots the
+     Airlock-enabled `kloader` built from `alioth-vmm/tests/{kernel,kloader}`
+     paired with stock `../motor-dev/motor-os/vm_images/release/initrd` (`sys-io`)
+     and a scratch copy of `motor-os.qcow2` (converted to raw in `/tmp` or
+     `target/`) into which `vmm-io-host`, `vmm-core.cwasm`, `vmm-io.cwasm`, and
+     L2 guest payloads are injected via
+     `../motor-dev/motor-os/vm_images/release/tools/imager put`.
 2. **Zero-Copy Shared Memory (`SysMem` instead of `memfd` + `mmap`)**:
    - `MotorIoHost` allocates page-aligned regions via `SysMem::alloc` for:
      - `BridgeShm` (64 KiB control header + `core_to_io` / `io_to_core` rings +
@@ -271,7 +321,7 @@ single-process Ring-3 service built on native Motor OS primitives:
 
 ---
 
-## 4. Detailed Design of Step (a): `test-guest` (`kloader` + `kernel` + `initrd`)
+## 4. Detailed Design of Step (a): `test-guest` (`(a1)` + `(a2)` in `alioth-vmm/tests/`)
 
 ### 4.1 Key Observation from Motor OS's Boot Chain
 
@@ -308,21 +358,82 @@ Crucially, **neither `kloader` nor `kernel` touches PCI, `virtio-blk`, or
 `virtio-net`**. All Virtio probing, `motor-fs` mounting, networking, and
 `/system/services/sys-init` spawning live inside userspace `sys-io`.
 
-### 4.2 `test-guest` Architecture
+### 4.2 Sub-Crate Layout Under `alioth-vmm/tests/`
 
-We construct `test-guest` with **zero changes to `kloader` or `kernel`** by
-building a small, self-contained userspace binary **`test-init`** and packing it
-into the `sys_io` slot of a standalone `initrd-test-guest`:
+To keep all development inside `alioth-vmm` without modifying
+`../motor-dev/motor-os`, Step `(a)` splits into `(a1)` and `(a2)` under
+`alioth-vmm/tests/`:
 
-1. **`test-init` Crate In Motor OS (`src/sys/tests/test-init`)**:
-   - Built for `--target x86_64-unknown-motor` (~100 LoC).
+```text
+alioth-vmm/tests/
+├── Cargo.toml           # Host `vmm-tests` crate (`cargo test` runner)
+├── src/lib.rs           # VM test harness + on-demand `test-guest` builder
+├── tests/boot_vms.rs    # Linux, full Motor OS, & `test-guest` boot tests
+├── kernel/              # Step (a1): copied from `motor-os/src/sys/kernel`
+├── kloader/             # Step (a1): copied from `motor-os/src/boot/x64.kloader`
+└── test-init/           # Step (a2): minimal PID 2 crate (`x86_64-unknown-motor`)
+```
+
+Because `kernel` (`--target kernel.json`), `kloader` (`--target kloader.json`),
+and `test-init` (`--target x86_64-unknown-motor`) build against custom bare-metal
+and Motor OS targets using the Motor OS Rust toolchain rather than the Linux
+host `stable` toolchain in `alioth-vmm/rust-toolchain.toml`, root
+`alioth-vmm/Cargo.toml` lists them in `[workspace] exclude = ["tests/kernel",
+"tests/kloader", "tests/test-init"]`. Any Motor OS kernel dependency that later
+needs modifications (such as `moto-sys` in Step `(c)`) is likewise copied into
+`alioth-vmm/tests/` (e.g., `alioth-vmm/tests/moto-sys`, pure verbatim copy in
+its first commit) rather than edited in `../motor-dev/motor-os`.
+
+### 4.3 Step (a1): Copy `kernel` + `kloader` Under `alioth-vmm/tests/`
+
+Step `(a1)` brings Motor OS's Ring-0 kernel and PVH loader into `alioth-vmm` in
+two clean commits so git history preserves an exact upstream baseline before any
+changes:
+
+1. **First Commit — Pure Verbatim Source Copy (Zero Modifications)**:
+   - Copy `../motor-dev/motor-os/src/sys/kernel` to `alioth-vmm/tests/kernel`
+     and `../motor-dev/motor-os/src/boot/x64.kloader` to
+     `alioth-vmm/tests/kloader` with **zero edits** to any copied file
+     (`diff -ru ../motor-dev/motor-os/src/sys/kernel tests/kernel` and
+     `diff -ru ../motor-dev/motor-os/src/boot/x64.kloader tests/kloader` are
+     both empty).
+   - Add `exclude = ["tests/kernel", "tests/kloader"]` to `alioth-vmm/Cargo.toml`
+     so Linux host `cargo test` continues to pass unchanged.
+2. **Second Commit — Build & Dependency Wiring Inside `alioth-vmm`**:
+   - Update only the relative `path = "..."` entries in
+     `tests/kernel/Cargo.toml` (`moto-rt`, `moto-sys`, `frusa`, `bitflags`,
+     `elfloader`, `intrusive-collections`, `x86`, `x86_64`) and
+     `tests/kloader/Cargo.toml` (`acpi`, `bitflags`, `elfloader`, `rsdp`, `x86`,
+     `x86_64`) to point at `../../../motor-dev/motor-os/src/...` (never writing
+     into `../motor-dev/motor-os`).
+   - Select the Motor OS toolchain from
+     `../motor-dev/motor-os/rust-toolchain.toml` (e.g.,
+     `x86_64-unknown-motor-1.99.1-2`) via `rust-toolchain.toml` in
+     `tests/{kernel,kloader}` (or `RUSTUP_TOOLCHAIN` in a `tests/` build helper),
+     routing `CARGO_TARGET_DIR` and `MOTO_BIN` (`MOTO_KERNEL_ELF`) into
+     `alioth-vmm/target/test-guest/`.
+   - **Smoke check for `(a1)`**: Boot the `alioth-vmm`-built
+     `target/test-guest/kloader` with stock
+     `../motor-dev/motor-os/vm_images/release/{initrd,motor-os.qcow2}` in
+     `wasm-vmm` to confirm parity before introducing `test-init`.
+
+### 4.4 Step (a2): `test-init` Crate & `initrd-test-guest` Packager in `alioth-vmm/tests/`
+
+Step `(a2)` creates `test-guest`'s minimal userspace payload inside
+`alioth-vmm/tests/` with **zero changes to `tests/kernel` or `tests/kloader`**
+(and zero changes to `../motor-dev/motor-os`):
+
+1. **`test-init` Crate in `alioth-vmm` (`alioth-vmm/tests/test-init`)**:
+   - Built for `--target x86_64-unknown-motor` (~100 LoC) with `CARGO_TARGET_DIR`
+     under `alioth-vmm/target/test-guest/`, depending read-only on `moto-rt`,
+     `moto-sys`, and `elfloader` in `../../../motor-dev/motor-os/src/...`.
    - **Self-Bootstrapping Runtime (`rt.vdso`)**: Just like `sys-io`
      ([`sys-io/src/rt_vdso.rs`](../motor-dev/motor-os/src/sys/sys-io/src/rt_vdso.rs)),
-     embeds `rt.vdso` via `include_bytes!` and loads it into `RT_VDSO_START`
-     using `SysMem::map2(F_SHARE_SELF | F_EXECUTABLE)` inside
-     `motor_runtime_start()`. Once `rt_vdso::load()` finishes, full Rust `std`
-     (heap allocation, threads, `format!`, atomics, clocks) works with no
-     filesystem or external pager.
+     embeds `../../../motor-dev/motor-os/src/sys/lib/rt.vdso/rt.vdso` via
+     `include_bytes!` and loads it into `RT_VDSO_START` using
+     `SysMem::map2(F_SHARE_SELF | F_EXECUTABLE)` inside `motor_runtime_start()`.
+     Once `rt_vdso::load()` finishes, full Rust `std` (heap allocation, threads,
+     `format!`, atomics, clocks) works with no filesystem or external pager.
    - **Boot Verification & Hardware Virtualization Probe**:
      In `main()`, `test-init`:
      1. Queries `SysMem::query_stats()`, `std::thread::available_parallelism()`,
@@ -340,13 +451,16 @@ into the `sys_io` slot of a standalone `initrd-test-guest`:
         `SysCpu::exit_process(0)` -> `init_exited()` ->
         `vm_exit: bye.` + ACPI S5 poweroff (`out 0x600, 0x34`).
 
-2. **`initrd-test-guest` Packager**:
-   - Uses the exact 512-byte `InitrdHeader` format (`MAGIC = 0xf402_100f`):
+2. **`initrd-test-guest` Packager in `alioth-vmm/tests/`**:
+   - Implemented directly in `alioth-vmm/tests/` (invoked automatically by
+     `tests/src/lib.rs` and `vm_scripts/run-test-guest.sh`, writing
+     `alioth-vmm/target/test-guest/initrd-test-guest`) using Motor OS's 512-byte
+     `InitrdHeader` format (`MAGIC = 0xf402_100f`):
      - Since `wasm-vmm`'s PVH loader already loads `kloader` (and its embedded
        `.kernel_image` section) directly from the `kloader` ELF, the `kloader`
        and `kernel` spans in `initrd-test-guest` can be zero-length
        placeholders for pure PVH boot, shrinking `initrd-test-guest` to just
-       4 KiB header + stripped `test-init` ~ **300–500 KiB**!.
+       4 KiB header + stripped `test-init` ~ **300–500 KiB**!
    - Note: `init.rs::sys_io_bytes()` asserts `initrd.len() > 4096` and checks
      `sys_io_start` page alignment (`4096`), so `sys_io_start = 4096` with a
      >4 KiB stripped `test-init` ELF satisfies `place_sys_io`'s zero-copy
@@ -356,23 +470,37 @@ into the `sys_io` slot of a standalone `initrd-test-guest`:
 
 ## 5. Detailed Design of Step (b): Booting `test-guest` in `wasm-vmm`
 
-### 5.1 `wasm-vmm` Configuration & Launcher
+### 5.1 Integration Test (`tests/`) & Interactive Launcher (`vm_scripts/`)
 
-Add `alioth-vmm/local_test/run-test-guest.sh` generating `vm-test-guest.toml`:
+Step `(b)` wires `test-guest` (`target/test-guest/{kloader,initrd-test-guest}`)
+into both `alioth-vmm`'s automated test suite and `vm_scripts/`:
 
-```toml
-pvh = "/path/to/motor-os/vm_images/release/kloader"
-initramfs = "/path/to/motor-os/vm_images/release/initrd-test-guest"
-cmd_line = "test-guest"
-num_cpus = 2
-mem_size = "64M"
-blk = []
-log_file = "/tmp/wasm-vmm-test-guest.log"
-log_level = "info"
-```
+1. **Automated `cargo test` Coverage (`alioth-vmm/tests/tests/boot_vms.rs`)**:
+   - Adds `boot_test_guest_cwasm` and `boot_test_guest_wasm` alongside the
+     existing Linux and full Motor OS boot tests.
+   - `tests/src/lib.rs` builds `tests/kernel`, `tests/kloader`, `tests/test-init`,
+     and `initrd-test-guest` once per test run (`OnceLock`), boots `wasm-vmm` in
+     both `--cwasm` and `--wasm` modes, verifies the `test-guest: ok | ... | hv=`
+     line on serial stdout (`hv=svm(...)` or `hv=vmx(...)`), and asserts that the
+     VMM exits autonomously with status `0` via ACPI S5 (without sending
+     `Ctrl-a q`).
+2. **CLI Script (`alioth-vmm/vm_scripts/run-test-guest.sh`)**:
+   - Builds `target/test-guest/{kloader,initrd-test-guest}` on demand and invokes
+     `vm_scripts/run-vm.sh` (`--cwasm` default or `--wasm`) with a generated
+     config:
+     ```toml
+     pvh = "/path/to/alioth-vmm/target/test-guest/kloader"
+     initramfs = "/path/to/alioth-vmm/target/test-guest/initrd-test-guest"
+     cmd_line = "test-guest"
+     num_cpus = 2
+     mem_size = "64M"
+     blk = []
+     log_file = "/tmp/wasm-vmm-test-guest.log"
+     log_level = "info"
+     ```
 
-Unlike `run-motor-os.sh`, `run-test-guest.sh` requires **no `moto-tap` device,
-no `qemu-img` disk conversion, and no host-wide `flock`**, so multiple
+Unlike `vm_scripts/run-motor-os.sh`, `test-guest` requires **no `moto-tap`
+device, no `qemu-img` disk conversion, and no host-wide `flock`**, so multiple
 instances can run concurrently in CI or unprivileged sandboxes in ~30 ms per
 run.
 
@@ -411,10 +539,14 @@ begins:
 NOTE: (posk@): this needs review. I want to explore treating guest VCPU threads
 as just another type of thread by the kernel (i.e. fp save/restore, preempt, etc.).
 
-### 6.1 Kernel Subsystem Layout (`motor-os/src/sys/kernel/src/vmm/`)
+### 6.1 Kernel Subsystem Layout (`alioth-vmm/tests/kernel/src/vmm/`)
+
+All Ring-0 VMM development happens inside the copied kernel crate in
+`alioth-vmm/tests/kernel` (`../motor-dev/motor-os/src/sys/kernel` remains
+unmodified):
 
 ```text
-motor-os/src/sys/kernel/src/vmm/
+alioth-vmm/tests/kernel/src/vmm/
 ├── mod.rs           # VmInstance lifecycle, CAP_VMM check, SysObj ("vmm:...") hooks
 ├── arch/
 │   ├── mod.rs       # Vendor-neutral ArchHv / ArchVcpu trait (SVM & VMX backends)
@@ -428,11 +560,11 @@ motor-os/src/sys/kernel/src/vmm/
 └── wasm_runtime.rs  # `#![no_std]` Wasmtime Engine, W^X CustomCodeMemory, TLS, Store lock
 ```
 
-`vmm-core` is imported as a `#![no_std]` Rust crate dependency (`default-features = false`)
-solely for its zero-copy ABI types and traits (`vmm_core::host::abi::*`,
-`VmmHostCore`, `VmmCoreBridge`); **all `vmm-core` device and board logic runs
-exclusively inside the sandboxed `vmm-core.cwasm` module**, never as native
-Ring-0 code.
+`vmm-core` is imported via local path (`path = "../../vmm-core"`,
+`default-features = false`) solely for its zero-copy ABI types and traits
+(`vmm_core::host::abi::*`, `VmmHostCore`, `VmmCoreBridge`); **all `vmm-core`
+device and board logic runs exclusively inside the sandboxed `vmm-core.cwasm`
+module**, never as native Ring-0 code.
 
 ---
 
@@ -560,19 +692,21 @@ config.memory_init_cow(false);
 config.memory_guard_size(0);
 ```
 
-To run this inside `motor-os/src/sys/kernel` (`#![no_std] + alloc`) while
+To run this inside `alioth-vmm/tests/kernel` (`#![no_std] + alloc`) while
 executing `vmm-core.cwasm` compiled from the **exact byte-identical
 `vmm-core.wasm`** (which imports shared memory `(env, memory)` with `+atomics`)
 used on Linux Ring 3:
 
-1. **Cargo Features (`moturus/wasmtime` in `no_std` mode)**:
-   - Depend on `wasmtime` with `default-features = false` and
-     `features = ["runtime", "custom-sync-primitives"]`, plus a small
-     `moturus/wasmtime` patch lifting the `std` feature gate on `threads`
-     (`SharedMemory` locks use `custom-sync-primitives`, and Wasm
-     `memory.atomic.wait32/64` libcalls trap immediately in `no_std` since
-     `vmm-core` is strictly non-blocking—no `std`, no `cranelift`, no
-     `wasmtime-wasi`, no `wasmtime-fiber`).
+1. **Cargo Features (`wasmtime` in `no_std` mode, Hosted in `alioth-vmm`)**:
+   - Depend on the **exact same `wasmtime` version** pinned in
+     `alioth-vmm/Cargo.toml` (so `.cwasm` artifacts compiled on the host
+     deserialize directly in Ring 0) with `default-features = false` and
+     `features = ["runtime", "custom-sync-primitives"]`. Any `no_std` `threads`
+     feature-gate patch (`SharedMemory` locks backed by
+     `custom-sync-primitives`, trapping `memory.atomic.wait32/64` in `no_std`
+     since `vmm-core` never blocks) lives strictly inside `alioth-vmm` via
+     `[patch.crates-io]`—never modifying `../motor-dev/motor-os` and pulling in
+     zero `std`, `cranelift`, `wasmtime-wasi`, or `wasmtime-fiber`.
    - All `.cwasm` inputs pass `verify_no_fp::validate_cwasm_no_fp(&cwasm_bytes)`
      prior to `unsafe { Module::deserialize(&engine, &cwasm_bytes) }`,
      guaranteeing at machine-code level that executing `vmm-core.cwasm` will
@@ -646,10 +780,16 @@ When an external event wakes a parked/running vCPU (`inject_msi`, `SIPI`, or
 immediate `VMEXIT_INTR` out of `VMRUN`/`VMRESUME`.
 
 #### B. Ring-3 <-> Ring-0 `SysObj` Lifecycle (`CAP_VMM`)
-1. **Privilege**: Add `CAP_VMM` (`1 << 14`, or gated under `CAP_SYS` /
-   `CAP_IO_MANAGER` initially) in `moto-sys/src/caps.rs`. Note that in Step `(d)`,
-   `test-init` runs as `PID_SYS_IO` with `0xffff_ffff_ffff_ffff`, so it holds
-   `CAP_VMM` automatically.
+1. **Privilege (`CAP_VMM` via Copied `tests/moto-sys`)**: When `CAP_VMM` (e.g.,
+   `1 << 14`, or other VMM ABI definitions) is added to `moto-sys`, copy
+   `../motor-dev/motor-os/src/sys/lib/moto-sys` into
+   `alioth-vmm/tests/moto-sys` (pure verbatim source copy in the first commit,
+   then re-point `tests/kernel`, `tests/test-init`, and Motor OS Ring-3
+   `vmm-io-host` via `path` / `[patch]` and add `CAP_VMM` in
+   `tests/moto-sys/src/caps.rs`), leaving `../motor-dev/motor-os` untouched.
+   Unmodified `rt.vdso` already forwards arbitrary `u64` capability masks via
+   `MOTOR_OS_CAPS`, and in Step `(d)` `test-init` runs as `PID_SYS_IO` with
+   `0xffff_ffff_ffff_ffff`, holding `CAP_VMM` automatically.
 2. **Creation (`SysObj::create`)**:
    ```rust
    let vm_handle = SysObj::create(
