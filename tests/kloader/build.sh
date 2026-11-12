@@ -6,6 +6,7 @@ BIN_DIR="${MOTO_BIN:-target}"
 
 SCRIPT_DIR="$(dirname $(readlink -f $0))"
 cd "$SCRIPT_DIR"
+mkdir -p "$BIN_DIR"
 
 # The kernel ELF is embedded (see layout.ld), so it must be built first.
 export MOTO_KERNEL_ELF="${MOTO_KERNEL_ELF:-${BIN_DIR}/kernel}"

@@ -6,6 +6,7 @@ BIN_DIR="${MOTO_BIN:-target}"
 
 SCRIPT_DIR="$(dirname $(readlink -f $0))"
 cd "$SCRIPT_DIR"
+mkdir -p "$BIN_DIR"
 
 if [[ $# == 0 ]] ; then
 

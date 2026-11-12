@@ -20,7 +20,7 @@
   "relocation-model": "pic",
   "pre-link-args": {
     "ld.lld": [
-      "--script=kernel/layout.ld"
+      "--script=layout.ld"
     ]
   }
 }

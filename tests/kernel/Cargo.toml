@@ -7,20 +7,36 @@ edition = "2021"
 
 [dependencies]
 
-# internal dependencies
-moto-rt  = { path = "../lib/moto-rt" , features = ["base"] }
-moto-sys = { path = "../lib/moto-sys", default-features = false, features = ["base"] }
-frusa    = { path = "../lib/frusa" }
+# internal dependencies (referenced read-only from ../motor-dev/motor-os;
+# see https://github.com/moturus/motor-os/blob/main/docs/build.md)
+moto-rt  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" , features = ["base"] }
+moto-sys = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys", default-features = false, features = ["base"] }
+frusa    = { path = "../../../motor-dev/motor-os/src/sys/lib/frusa" }
 
 # external dependencies
-bitflags              = { path = "../../third_party/bitflags"     }
-elfloader             = { path = "../../third_party/elfloader"    }
-intrusive-collections = { path = "../../third_party/intrusive-rs" }
-x86                   = { path = "../../third_party/x86"          }
-x86_64                = { path = "../../third_party/x86_64"       }
+bitflags              = { path = "../../../motor-dev/motor-os/src/third_party/bitflags"     }
+elfloader             = { path = "../../../motor-dev/motor-os/src/third_party/elfloader"    }
+intrusive-collections = { path = "../../../motor-dev/motor-os/src/third_party/intrusive-rs" }
+x86                   = { path = "../../../motor-dev/motor-os/src/third_party/x86"          }
+x86_64                = { path = "../../../motor-dev/motor-os/src/third_party/x86_64"       }
 
 log = "0.4.28"
 xsave = "2.0.2"
 
 [features]
+
+[workspace]
+
+[patch.crates-io]
+moto-rt  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt"  }
+moto-sys = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+strip = true
+codegen-units = 1
 

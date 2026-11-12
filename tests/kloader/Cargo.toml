@@ -5,13 +5,17 @@ authors = ["The Motor OS Project Developers"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
 
+[workspace]
+
+# Referenced read-only from ../motor-dev/motor-os;
+# see https://github.com/moturus/motor-os/blob/main/docs/build.md
 [dependencies]
-acpi      = { path = "../../third_party/acpi"      }
-bitflags  = { path = "../../third_party/bitflags"  }
-elfloader = { path = "../../third_party/elfloader" }
-rsdp      = { path = "../../third_party/rsdp"      }
-x86       = { path = "../../third_party/x86"       }
-x86_64    = { path = "../../third_party/x86_64"    }
+acpi      = { path = "../../../motor-dev/motor-os/src/third_party/acpi"      }
+bitflags  = { path = "../../../motor-dev/motor-os/src/third_party/bitflags"  }
+elfloader = { path = "../../../motor-dev/motor-os/src/third_party/elfloader" }
+rsdp      = { path = "../../../motor-dev/motor-os/src/third_party/rsdp"      }
+x86       = { path = "../../../motor-dev/motor-os/src/third_party/x86"       }
+x86_64    = { path = "../../../motor-dev/motor-os/src/third_party/x86_64"    }
 
 [profile.dev]
 panic = "abort"
