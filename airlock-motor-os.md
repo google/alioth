@@ -225,7 +225,7 @@ Sections 4, 5, and 6 detail the concrete designs of **Steps `(a1)`/`(a2)`,
 |  |  |  - Stage-2 MMU: NPT / EPT (`gpa->hpa`) |  |    `PAGING_DIRECT_MAP`    |  |  |
 |  |  |  - Thin x2APIC (`ICR`, `TSC_DEADLINE`) |  |  - Fast Doorbell Table -> |  |  |
 |  |  |  - `pvclock` MSRs (`0x4b564d00..01`)   |  |    push `c2i` + wake R3   |  |  |
-|  |  |  - Non-blocking `Scheduler` vCPU Jobs  |  |    with 0 Wasm calls!     |  |  |
+|  |  |  - Kernel vCPU `process::Thread`s      |  |    with 0 Wasm calls!     |  |  |
 |  |  +----------------------------------------+  +---------------------------+  |  |
 |  +-----------------------------------------------------------------------------+  |
 +===================================================================================+
@@ -536,9 +536,6 @@ begins:
 
 ## 6. Detailed Design of Step (c): Porting `vmm-core-host` to Motor OS Ring 0
 
-NOTE: (posk@): this needs review. I want to explore treating guest VCPU threads
-as just another type of thread by the kernel (i.e. fp save/restore, preempt, etc.).
-
 ### 6.1 Kernel Subsystem Layout (`alioth-vmm/tests/kernel/src/vmm/`)
 
 All Ring-0 VMM development happens inside the copied kernel crate in
@@ -548,6 +545,7 @@ unmodified):
 ```text
 alioth-vmm/tests/kernel/src/vmm/
 ├── mod.rs           # VmInstance lifecycle, CAP_VMM check, SysObj ("vmm:...") hooks
+├── vcpu_thread.rs   # Kernel vCPU Thread loop (VM_ENTER/VM_EXIT, Wasm dispatch, preempt/HLT)
 ├── arch/
 │   ├── mod.rs       # Vendor-neutral ArchHv / ArchVcpu trait (SVM & VMX backends)
 │   ├── svm.rs       # AMD-V: EFER.SVME, VM_HSAVE_PA, 4K VMCB, VMRUN/VMLOAD/VMSAVE
@@ -559,6 +557,11 @@ alioth-vmm/tests/kernel/src/vmm/
 ├── host_impl.rs     # Implements `vmm_core::host::{VmmHostCore, VmmCoreBridge}`
 └── wasm_runtime.rs  # `#![no_std]` Wasmtime Engine, W^X CustomCodeMemory, TLS, Store lock
 ```
+
+Alongside `src/vmm/`, `uspace/process.rs` and `arch/x64/syscall.rs` gain a small
+(~50 LoC) `Thread::new_vcpu` constructor so Ring-0 `vmm-core-host` creates
+first-class kernel vCPU `process::Thread`s sharing scheduling, preemption,
+`XSAVE`/`XRSTOR`, wait/timeout, CPU stats, and teardown with normal threads.
 
 `vmm-core` is imported via local path (`path = "../../vmm-core"`,
 `default-features = false`) solely for its zero-copy ABI types and traits
@@ -590,36 +593,50 @@ internal trait for Intel VT-x + EPT hosts.)*
   - **Intel VMX (`vmx.rs`)**: Sets `CR4.VMXE = 1`, executes `VMXON` per pCPU,
     and tracks `loaded_cpu: Option<uCpus>` per VMCS, issuing a remote `VMCLEAR`
     IPI if a vCPU migrates across pCPUs before `VMPTRLD`.
-- **World-Switch & FPU/SIMD Isolation**:
-  - Motor OS kernel code runs without touching FPU/SIMD registers, whereas guest
-    CPUs freely use `XMM`/`YMM`/`ZMM` (`kloader` calls `enable_sse()`).
-  - Around `VMRUN` / `VMRESUME`, `arch::enter_guest`:
-    1. Disables host maskable interrupts (`CLI` / `CLGI` on SVM).
-    2. Saves the interrupted host user thread's extended state (or swaps a
-       dedicated per-vCPU `XSAVE` area using Motor OS's existing `xsave` crate
-       + `XCR0` save/restore) so guest SIMD state cannot leak to or corrupt
-       host Ring-3 processes.
+- **World-Switch (`VM_ENTER` / `VM_EXIT`) & Timeslice-Scoped FPU/SIMD Isolation**:
+  - Because both the Motor OS kernel (`kernel.json`: `+soft-float,-sse,-avx`)
+    and `vmm-core.cwasm` (`validate_cwasm_no_fp`) execute **zero** FP/SIMD
+    instructions, a vCPU `process::Thread` saves and restores guest extended
+    FP/SSE/AVX state (`tcb.xsave()` / `tcb.xrstor()` + guest `XCR0`) **only
+    when the thread is scheduled onto or off a host CPU**—never on back-to-back
+    `#VMEXIT`s within the same timeslice!
+  - Inside `vmm-core-host`, `arch::enter_guest` performs the Ring-0 <-> Guest
+    world-switch:
+    1. Switches `KProcessStats` from `kernel` to `uspace` and masks host
+       interrupts (`CLI` + `CLGI` on SVM; `CLI` on VMX).
+    2. Re-checks under `CLI` that no preemption tick, scheduler wake, or
+       `ThreadStatus::Killed` arrived before entry (preventing lost-wake races).
     3. Syncs `dirty_regs` (`SYNC_REG_GPRS`, `SYNC_REG_RIP_RFLAGS`,
        `SYNC_REG_SREGS`) from `VcpuCommPage` into the VMCB/VMCS + guest GPR
-       save frame, injects any pending LAPIC interrupt vector (`EVENTINJ`), and
-       executes `VMLOAD` + `VMRUN` + `VMSAVE` (or `VMLAUNCH`/`VMRESUME`).
-    4. Restores host `GS`/`FS`/`STAR`/`LSTAR`/`KERNEL_GS_BASE` and host `XCR0`,
-       re-enables host interrupts (`STGI` / `STI`), and decodes the VM-exit.
-- **Mapping Hardware Exits to `VcpuCommPage`**:
-  - **Host Interrupt (`VMEXIT_INTR` / `EXTERNAL_INTERRUPT`)**: Host IRQ runs on
-    `STI`; vCPU checks `timer_irq_tick` / `shutdown_requested` and either yields
-    to Motor OS `Scheduler` or re-enters the guest with **0 Wasm calls**.
+       frame, injects any pending LAPIC interrupt vector (`EVENTINJ`), and
+       executes `VMLOAD` + `VMRUN` + `VMSAVE` (`INTERCEPT_INTR = 1`, which sets
+       `GIF = 1` in Guest Mode) or `VMLAUNCH`/`VMRESUME`
+       (`PIN_BASED_EXT_INTR_EXITING = 1`).
+    4. On `#VMEXIT`, saves guest GPRs, restores host `GS`/`FS`/`STAR`/`LSTAR` /
+       `KERNEL_GS_BASE`, switches `KProcessStats` back to `kernel`, and executes
+       `STGI; STI` so any pending physical host interrupt (`IRQ_APIC_TIMER`,
+       `IRQ_WAKEUP`, `IRQ_TLB_SHOOTDOWN`, `IRQ_SERIAL`) runs immediately through
+       Motor OS's normal `IDT` (`uspace == false`).
+- **Mapping Hardware Exits to `VcpuCommPage` & `vmm-core.cwasm`**:
+  - **Host Interrupt (`VMEXIT_INTR` / `EXTERNAL_INTERRUPT`)**: Even when the
+    guest executes with guest `CLI` (`RFLAGS.IF = 0`), physical host IRQs force
+    an immediate `#VMEXIT`. After `STGI; STI` delivers the host IRQ, the vCPU
+    thread checks `sched::timer_irq_fast_path_ok()` and either re-enters the
+    guest immediately or yields via `tcb.xsave()` +
+    `thread.scheduler_tick_in_syscall()` (**0 Wasm calls**).
   - **PIO (`VMEXIT_IOIO` / `IO_INSTRUCTION`)**: Checks `doorbell.rs` first;
     otherwise populates `VmExit::Io { port, write, size }`, `insn_len`, `rip`,
-    and `gprs[RAX]` in `VcpuCommPage`.
+    and `gprs[RAX]` in `VcpuCommPage` and hands the exit to `vmm-core.cwasm`
+    (`vmm_on_vcpu_exit`).
   - **Stage-2 Fault (`VMEXIT_NPF` / `EPT_VIOLATION`)**: Checks `doorbell.rs`
-    first; otherwise populates `VmExit::MmioFault { gpa, gva, is_write, insn_len, insn_bytes }`
-    (using SVM `DecodeAssists` `GuestInstructionBytes` or walking `cr3` at
-    `cs:rip` inside guest RAM) along with `gprs`, `rip`, `rflags`, `cr0`, `cr3`,
-    `cr4`, `efer`, and `cs` in `VcpuCommPage`. `vmm-core`'s in-Wasm
-    `insn_decode.rs` decodes the instruction in safe Rust!
-  - **`CPUID` / `RDMSR` / `WRMSR` / `HLT` / `SHUTDOWN`**: Handled in Ring 0 if
-    architectural fast-path (`x2APIC`, `pvclock`, `HLT`), else forwarded via
+    first; otherwise populates `VmExit::MmioFault { gpa, gva, is_write,
+    insn_len, insn_bytes }` (using SVM `DecodeAssists` `GuestInstructionBytes`
+    or walking `cr3` at `cs:rip` inside guest RAM) along with `gprs`, `rip`,
+    `rflags`, `cr0`, `cr3`, `cr4`, `efer`, and `cs` in `VcpuCommPage`, and
+    hands it to `vmm-core.cwasm`'s safe-Rust `insn_decode.rs`.
+  - **`CPUID` / `RDMSR` / `WRMSR` / `XSETBV` / `HLT` / `SHUTDOWN`**: Handled in
+    `vmm-core-host` if architectural fast-path (`x2APIC`, `pvclock`, `XSETBV`
+    clamping guest `XCR0`, `HLT` via `Thread::wait()`), else handed over via
     `VmExit::{Cpuid, MsrRead, MsrWrite, Shutdown}` to `vmm_on_vcpu_exit`.
 
 #### B. Slotless Stage-2 Page Tables (`stage2.rs`)
@@ -664,12 +681,14 @@ later Linux) guests:
      - **ID (`0x802`), LDR (`0x80d`), SVR (`0x80f`), TPR (`0x808`), EOI (`0x80b`)**.
      - **ICR (`0x830`)**: Handles `INIT` (`MpState::InitReceived`), `SIPI`
        (sets target AP `cs.selector = vector << 8`, `cs.base = vector << 12`,
-       `rip = 0`, transitions `MpState::Runnable`, and schedules the AP's
-       `Scheduler` job!), and fixed/self IPIs (`IRR` bit set + `vcpu_kick`).
+       `rip = 0`, transitions `MpState::Runnable`, and wakes the AP's vCPU
+       `Thread` via `SysObject::wake(&ap.kick_obj, false)`!), and fixed/self
+       IPIs (`IRR` bit set + `vcpu_kick`).
      - **LVT Timer (`0x832`) & `IA32_TSC_DEADLINE` (`0x6e0`)**: Compares guest
        TSC deadline against `rdtsc()`; when a vCPU executes `HLT` with a future
-       deadline, registers a Motor OS per-CPU `sched::Timer` at that exact TSC
-       `Instant` to set the timer vector in `IRR` and wake the vCPU!
+       deadline, arms the vCPU `Thread`'s built-in per-CPU timeout
+       (`Thread::new_timeout(deadline)`) before `Thread::wait()` so expiration
+       wakes the vCPU and sets the timer vector in `IRR`!
      - **`VmmHostCore::inject_msi(addr, data)`**: Decodes x86 MSI address
        (`0xfeeX_XXXX` -> destination `apic_id`) and data (`vector`),
        atomically sets `irr[vector]` on the target vCPU, and calls `vcpu_kick`!
@@ -725,9 +744,10 @@ used on Linux Ring 3:
      `alloc` heap and requires only:
      - `wasmtime_tls_get(slot: usize) -> *mut u8` and
        `wasmtime_tls_set(slot: usize, ptr: *mut u8)`, implemented as two
-       `[*mut u8; 2]` slots in `StaticPerCpu` (safe because Motor OS kernel jobs
-       are never preempted while inside `vmm_on_vcpu_exit` or
-       `vmm_on_bridge_rx`), and
+       `[*mut u8; 2]` slots in `StaticPerCpu` (safe because Wasm calls
+       `vmm_init`, `vmm_on_vcpu_exit`, and `vmm_on_bridge_rx` are synchronous,
+       never call `tcb.pause()`, and Ring-0 IRQs never preempt kernel code),
+       and
      - `wasmtime_sync_lock_*` / `wasmtime_sync_rwlock_*` (`custom-sync-primitives`),
        backed directly by Motor OS's kernel `SpinLock`.
 4. **Concurrency Across Guest vCPUs**:
@@ -746,38 +766,81 @@ used on Linux Ring 3:
 
 ---
 
-### 6.5 Integration with Motor OS Scheduler & `SysObj` Airlock
+### 6.5 Kernel vCPU `process::Thread`s & `SysObj` Airlock
 
-#### A. Non-Blocking Per-vCPU `Scheduler` Jobs
-Motor OS's kernel forbids blocking inside syscalls or kernel tasks; instead,
-CPUs execute non-blocking `Job`s (`sched/scheduler.rs`). Each guest vCPU maps
-naturally onto a kernel `Job`:
+#### A. First-Class Kernel vCPU Threads (`Thread::new_vcpu` + `vcpu_thread.rs`)
+Rather than running guest vCPUs as bare `Scheduler` `Job`s (which lack an AP
+preemption timer, `XSAVE` state, `last_cpu` affinity, `Thread::wait()`, and
+process ownership), Ring-0 `vmm-core-host` spawns each guest vCPU as a
+kernel-only **`uspace::process::Thread`** owned by the calling `vmm-io-host`
+`Process`:
 
-```text
-vcpu_job_fn(vm: Arc<VmInstance>, vcpu_id: u32)
-  1. If vm.is_shutting_down() || vcpu.mp_state != MpState::Runnable -> return (parked).
-  2. Loop up to BURST_LIMIT:
-       a. If current_scheduler().timer_irq_tick || current_scheduler().has_other_work():
-            re-enqueue `vcpu_job_fn` -> return (cooperative yield to host threads!).
-       b. `exit = arch::enter_guest(vcpu_id, &mut comm_page[vcpu_id])`
-       c. Match `exit`:
-            - HostIntr          -> continue (loop check (a) yields if needed)
-            - FastLapic/PvClock -> handle in Ring 0 -> continue
-            - FastDoorbell(d,q) -> push `CORE_MSG_VIRTIO_NOTIFY` to `BridgeShm`,
-                                   wake `vm_handle` Ring-3 waiter -> continue
-            - Hlt               -> if pending `IRR`: continue;
-                                   else arm `sched::Timer` for `tsc_deadline`
-                                   and return WITHOUT re-enqueuing (0% idle CPU!)
-            - SlowExit          -> lock `vm.wasm_lock`, call `vmm_on_vcpu_exit(vcpu_id)`:
-                                   if `VmAction::Shutdown` -> wake Ring-3 & stop VM;
-                                   else continue
-```
-
-When an external event wakes a parked/running vCPU (`inject_msi`, `SIPI`, or
-`vcpu_kick`), `VmInstance` atomically transitions the vCPU from parked to queued
-(enqueueing `vcpu_job_fn` on its target CPU) or calls
-`arch::irq::wake_remote_cpu(running_pcpu)` (`IRQ_WAKEUP` IPI) to force an
-immediate `VMEXIT_INTR` out of `VMRUN`/`VMRESUME`.
+1. **Shared `process::Thread` Infrastructure (~50 LoC in `process.rs` + `syscall.rs`)**:
+   - `Thread::new_vcpu(owner: Arc<Process>, runner: Arc<VcpuRunner>, name)`:
+     - Allocates only the standard 16 KiB `kernel_stack_segment` (`4` pages + `2`
+       guard pages in release; `user_stack = None`, `user_tcb_kernel_addr = 0`),
+       so Ring-3 `vmm-io-host` stays single-threaded and vCPUs never enter Ring 3.
+     - Starts on `kernel_stack_segment` with `tcb.in_syscall = true` and
+       `LiveThreadStatus::Syscall`, reusing `tcb.pause()` / `tcb.resume()`
+       (`syscall_pause_asm` / `syscall_resume_asm`), `sched::ensure_preemption_timer()`,
+       `tcb.xsave` (`xsave::XSave`), `last_cpu` warm-cache placement,
+       `KProcessStats` (`uspace` for guest mode, `kernel` for VMM exits),
+       `Thread::wait()` + `new_timeout()`, `Thread::scheduler_tick_in_syscall()`,
+       `paused_debuggee`, and `Process::kill` / `exit` (`post_kill` pokes
+       `self.last_cpu` when `user_tcb_kernel_addr == 0`).
+     - Because Motor OS discards a killed thread's stack without running Rust
+       destructors, all owned heap/RAII state (`Arc<VmInstance>`, `ArchVcpu`,
+       `XSave`) lives on `Thread` / `VcpuRunner`, never as stack-local `Drop`
+       values across `tcb.pause()`.
+2. **`vcpu_thread_main` Run Loop (`VM_ENTER` / `VM_EXIT` -> `vmm-core.cwasm`)**:
+   ```text
+   vcpu_thread_main(thread: &Thread, vm: &VmInstance, vcpu_id: u32) -> !
+     1. Schedule-in setup:
+          thread.set_last_cpu(current_cpu());
+          load_guest_xcr0(vcpu); tcb.xrstor();
+     2. Loop:
+          a. If vm.is_shutting_down():
+               restore_host_xcr0_and_fninit(); thread.finish() // -> !
+          b. If vcpu.mp_state != MpState::Runnable:            // e.g. AP pre-SIPI
+               tcb.xsave(); restore_host_xcr0();
+               thread.add_wait_object(vcpu.kick_obj);
+               thread.wait();                                  // tcb.pause() -> InWait
+               thread.set_last_cpu(current_cpu());
+               load_guest_xcr0(vcpu); tcb.xrstor();
+               continue
+          c. VM_ENTER / VM_EXIT in `vmm-core-host`:
+               exit = arch::enter_guest(thread, vcpu_id, &mut comm_page[vcpu_id])
+               // Sets INTERCEPT_INTR=1, runs VMRUN/VMRESUME under uspace stats,
+               // and on VM_EXIT restores host GS + `STGI; STI` so any pending
+               // host timer/wakeup/device IRQ runs via the host IDT.
+          d. Dispatch `exit`:
+               - HostIntr / PreemptCheckOnly -> (handled in step e; 0 Wasm calls)
+               - FastLapic / PvClock / Xsetbv -> handle in `vmm-core-host` (0 Wasm)
+               - FastDoorbell(dev, q)        -> push `CORE_MSG_VIRTIO_NOTIFY` to
+                                                `BridgeShm`, wake `vm_obj` (0 Wasm)
+               - Hlt -> if !vcpu.lapic.has_deliverable_irr():
+                          tcb.xsave(); restore_host_xcr0();
+                          if let Some(dl) = vcpu.lapic.tsc_deadline():
+                            thread.new_timeout(dl);
+                          thread.add_wait_object(vcpu.kick_obj);
+                          thread.wait();                        // 0% idle host CPU
+                          thread.set_last_cpu(current_cpu());
+                          load_guest_xcr0(vcpu); tcb.xrstor();
+               - EmulatedExit (Io, MmioFault, Cpuid, Msr, Shutdown) ->
+                   acquire `vm.wasm_lock`, call `vmm-core.cwasm::vmm_on_vcpu_exit`:
+                   if `VmAction::Shutdown` -> vm.request_shutdown(), wake `vm_obj`
+          e. Preemption / yield check (matches `irq.rs` fast-return policy):
+               if !sched::timer_irq_fast_path_ok() || thread.needs_pause_or_kill():
+                 tcb.xsave(); restore_host_xcr0();
+                 thread.scheduler_tick_in_syscall();            // tcb.pause() + requeue
+                 thread.set_last_cpu(current_cpu());
+                 load_guest_xcr0(vcpu); tcb.xrstor();
+   ```
+3. **External Wakeups & Kicks (`inject_msi`, `SIPI`, `vcpu_kick`, `Process::kill`)**:
+   - Waking a vCPU calls `SysObject::wake(&vcpu.kick_obj, false)` (waking the
+     `Thread` if parked in `InWait` on `HLT` or pre-`SIPI`) **and**, if the vCPU
+     is currently on-CPU, calls `sched::poke_cpu(vcpu_cpu)` (`IRQ_WAKEUP` IPI),
+     forcing an immediate `VMEXIT_INTR` out of `VMRUN`/`VMRESUME`.
 
 #### B. Ring-3 <-> Ring-0 `SysObj` Lifecycle (`CAP_VMM`)
 1. **Privilege (`CAP_VMM` via Copied `tests/moto-sys`)**: When `CAP_VMM` (e.g.,
@@ -805,7 +868,8 @@ immediate `VMEXIT_INTR` out of `VMRUN`/`VMRESUME`.
    The kernel validates `CAP_VMM` and user mappings, pins the backing physical
    frames, registers `ram` as `MemObjId(0)` (updating `BridgeShm::ram_slots` on
    `gpa_map`), validates & deserializes `vmm-core.cwasm`, runs `vmm_init()`,
-   enqueues runnable BSP `vcpu_job_fn(0)`, and returns `vm_handle`.
+   spawns `num_cpus` kernel vCPU `Thread`s via `Thread::new_vcpu` (BSP
+   `MpState::Runnable`, APs `MpState::Uninitialized`), and returns `vm_handle`.
 3. **Runtime Doorbells (`SysCpu::wait` / `SysCpu::wake`)**:
    - **Ring 0 -> Ring 3**: Pushing to `BridgeShm::core_to_io`
      (`SerialTx`, `VirtioStart`, `VirtioNotify`, `Shutdown`) signals `vm_handle`,
@@ -817,7 +881,9 @@ immediate `VMEXIT_INTR` out of `VMRUN`/`VMRESUME`.
        calls `inject_msi` **directly in Ring 0** (0 Wasm calls!).
      - `IO_MSG_SERIAL_RX` / `IO_MSG_REQUEST_SHUTDOWN` calls `vmm_on_bridge_rx()`.
 4. **Teardown (`SysObj::put(vm_handle)` or Process Exit)**:
-   - Marks `shutdown_requested = 1`, kicks any active pCPUs out of `VMRUN` /
-     `VMRESUME`, cancels per-vCPU `sched::Timer`s, drops the Wasm `Store` +
-     `CustomCodeMemory` `R+X` mapping, frees NPT/EPT tables, and unpins shared
-     frames so no dangling DMA or Stage-2 translation can outlive the VM.
+   - Marks `shutdown_requested = 1`, wakes each `vcpu.kick_obj` and pokes any
+     active pCPUs out of `VMRUN` / `VMRESUME` so all vCPU `Thread`s exit cleanly
+     (or die automatically via `Process::kill`/`exit`), and once the last
+     `Arc<VmInstance>` reference drops, releases the Wasm `Store` +
+     `CustomCodeMemory` `R+X` mapping, NPT/EPT tables, and pinned frames so no
+     dangling DMA or Stage-2 translation can outlive the vCPU threads.
