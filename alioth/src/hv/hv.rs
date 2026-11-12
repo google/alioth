@@ -88,6 +88,9 @@ pub enum Error {
     #[snafu(display("Failed to configure guest MSRs"))]
     GuestMsr { error: std::io::Error },
     #[cfg(target_arch = "x86_64")]
+    #[snafu(display("Failed to set MSR {index:#x}"))]
+    SetMsr { index: u32 },
+    #[cfg(target_arch = "x86_64")]
     #[snafu(display("Failed to configure guest XSAVE"))]
     GuestXsave { error: std::io::Error },
     #[cfg(target_arch = "x86_64")]

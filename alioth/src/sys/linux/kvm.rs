@@ -112,7 +112,10 @@ pub struct KvmMsrs<const N: usize> {
     pub entries: [KvmMsrEntry; N],
 }
 
-pub const MAX_IO_MSRS: usize = 256;
+const MAX_IO_MSRS: usize = 256;
+
+/// The most MSRs that `KVM_GET_MSRS` and `KVM_SET_MSRS` take at a time.
+pub const MSRS_PER_CALL: usize = MAX_IO_MSRS - 1;
 
 bitflags! {
     pub struct KvmMemFlag(u32) {
