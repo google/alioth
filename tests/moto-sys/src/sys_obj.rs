@@ -1,0 +1,294 @@
+//! SysObj syscall.
+
+#[cfg(feature = "userspace")]
+use crate::syscalls::*;
+#[cfg(feature = "userspace")]
+use crate::ErrorCode;
+
+/// SysObj syscall: various object-management-related operations.
+pub struct SysObj;
+
+impl SysObj {
+    pub const OP_GET: u8 = 1;
+    pub const OP_PUT: u8 = 2;
+    pub const OP_CREATE: u8 = 3;
+    pub const OP_QUERY_HANDLE: u8 = 4;
+    pub const OP_DUP: u8 = 5;
+
+    pub const F_QUERY_PEER: u32 = 2;
+    pub const F_QUERY_PID: u32 = 4;
+    pub const F_QUERY_CAPS: u32 = 8;
+
+    // Retained for compatibility; shared GET always wakes the counterpart.
+    pub const F_WAKE_PEER: u32 = 1;
+
+    // URLS:
+    //     - "address_space:$URL"
+    //                  Creates a new address space that can be identified by the $URL;
+    //     - "capabilities"
+    //     - "irq_wait:$NUM"
+    //     - "process:entry_point=$NUM;capabilities=$NUM"
+    //     - "serial_console"
+    //     - "shared:url=$URL;address=$addr;page_type=[small|mid];page_num=$num"
+    //            - A "server" calls CREATE for a custom URL. Then waits.
+    //              may provide an unmapped page.
+    //            - Each URL has one live owner: the first process to CREATE it. The owner
+    //              may CREATE more listeners for it; another process's CREATE fails while
+    //              the owner is alive. The owner keeps the URL while it has any listening
+    //              or connected endpoint for it, and releases it on its last close or on
+    //              exit. Only "sys-io" is reserved (for sys-io); any other URL is first
+    //              come, so peers authenticate each other with get_capabilities()/get_pid().
+    //            - A "client" calls GET for the URL; page must be mapped; if there is a matching
+    //              endpoint, the IPC channel is created and the server is woken, even without
+    //              a request. Subsequent waits and wakes are up to userspace.
+    //              GET returns E_NOT_READY when the owner has no free listener;
+    //              E_NOT_FOUND means no live service owns the URL.
+    //            - For now, only 1:1 connections are supported.
+    //            - Later "multicast" connections will be added (server writes), multiple clients read.
+    #[cfg(feature = "userspace")]
+    pub fn create(parent: SysHandle, flags: u32, url: &str) -> Result<SysHandle, ErrorCode> {
+        Self::create_res1(parent, flags, url).map(|(handle, _)| handle)
+    }
+
+    /// `create`, returning the kernel's second result word as well: for a
+    /// process created on a requester's behalf (`requester=`), the number
+    /// of the requester's own handle to it.
+    #[cfg(feature = "userspace")]
+    pub fn create_res1(
+        parent: SysHandle,
+        flags: u32,
+        url: &str,
+    ) -> Result<(SysHandle, u64), ErrorCode> {
+        let bytes = url.as_bytes();
+
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_CREATE, flags, 0),
+            parent.as_u64(),
+            bytes.as_ptr() as usize as u64,
+            bytes.len() as u64,
+            0,
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok((SysHandle::from(result.data[0]), result.data[1]))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    // Create a pair of wait handles so that the userspace can wake/wait/swap on them.
+    // Similar to shared, but while shared is more of a server/client setup,
+    // the IPC pair is more of a direct connection (e.g. stdio).
+    //
+    // Returned handles are valid inside processes passed as parameters, not
+    // the caller; the caller can pass SysHandle::SELF to have one (or both) of
+    // the wait handles to belong to it.
+    #[cfg(feature = "userspace")]
+    pub fn create_ipc_pair(
+        process1: SysHandle,
+        process2: SysHandle,
+        flags: u32,
+    ) -> Result<(SysHandle, SysHandle), ErrorCode> {
+        let bytes = "ipc_pair".as_bytes();
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_CREATE, flags, 0),
+            process1.as_u64(),
+            bytes.as_ptr() as usize as u64,
+            bytes.len() as u64,
+            process2.as_u64(),
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok((
+                SysHandle::from(result.data[0]),
+                SysHandle::from(result.data[1]),
+            ))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn get(parent: SysHandle, flags: u32, url: &str) -> Result<SysHandle, ErrorCode> {
+        let res = Self::get_res1(parent, flags, url)?;
+        Ok(res.0)
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn get_res1(
+        parent: SysHandle,
+        flags: u32,
+        url: &str,
+    ) -> Result<(SysHandle, u64), ErrorCode> {
+        let bytes = url.as_bytes();
+
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_GET, flags, 0),
+            parent.as_u64(),
+            bytes.as_ptr() as usize as u64,
+            bytes.len() as u64,
+            0,
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok((SysHandle::from(result.data[0]), result.data[1]))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Returns a second handle to the object behind `handle`. The kernel's
+    /// missed-wake latch is per handle, so waiters on the two handles do
+    /// not consume each other's pending wakes.
+    #[cfg(feature = "userspace")]
+    pub fn dup(handle: SysHandle) -> Result<SysHandle, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_DUP, 0, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok(SysHandle::from(result.data[0]))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn put(handle: SysHandle) -> Result<(), ErrorCode> {
+        Self::put_1(handle, 0)
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn put_1(handle: SysHandle, arg: u64) -> Result<(), ErrorCode> {
+        Self::put_remote_1(SysHandle::SELF, handle, arg)
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn put_remote(owner_process: SysHandle, handle: SysHandle) -> Result<(), ErrorCode> {
+        Self::put_remote_1(owner_process, handle, 0)
+    }
+
+    /// `put_remote_1`'s `arg` for sys-io to abandon a child it created on a
+    /// requester's behalf (`requester=`) but could not hand over: `owner` is
+    /// sys-io's handle to the child, `handle` the number of the requester's.
+    /// A child that was never woken is killed and the requester's handle
+    /// withdrawn; a child the requester has woken is left alone
+    /// (`E_ALREADY_IN_USE`).
+    pub const ABANDON_DELEGATED: u64 = 1;
+
+    #[cfg(feature = "userspace")]
+    pub fn put_remote_1(
+        owner_process: SysHandle,
+        handle: SysHandle,
+        arg: u64,
+    ) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_PUT, 0, 0),
+            owner_process.as_u64(),
+            handle.as_u64(),
+            arg,
+            0,
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    // Returns OK if the handle can be waited on.
+    #[cfg(feature = "userspace")]
+    pub fn handle_status(handle: SysHandle) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_QUERY_HANDLE, 0, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    // Checks if the shared object/handle has a peer.
+    #[cfg(feature = "userspace")]
+    pub fn is_connected(handle: SysHandle) -> Result<bool, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_QUERY_HANDLE, Self::F_QUERY_PEER, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(true)
+        } else {
+            let err = result.error_code();
+            if err == moto_rt::E_NOT_CONNECTED {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
+
+    /// Returns the PID of the process owning the peer endpoint of `handle`.
+    #[cfg(feature = "userspace")]
+    pub fn get_pid(handle: SysHandle) -> Result<u64, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_QUERY_HANDLE, Self::F_QUERY_PID, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0])
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Returns the capabilities of the process owning the peer endpoint of
+    /// `handle`.
+    #[cfg(feature = "userspace")]
+    pub fn get_capabilities(handle: SysHandle) -> Result<u64, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_OBJ, Self::OP_QUERY_HANDLE, Self::F_QUERY_CAPS, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0])
+        } else {
+            Err(result.error_code())
+        }
+    }
+}

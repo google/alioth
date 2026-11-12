@@ -1,0 +1,415 @@
+//! SysRay syscall.
+
+#[cfg(feature = "userspace")]
+use crate::syscalls::*;
+#[cfg(feature = "userspace")]
+use crate::ErrorCode;
+
+/// SysRay syscall: various statistics/debugging operations.
+pub struct SysRay;
+
+impl SysRay {
+    pub const OP_QUERY_PROCESS: u8 = 1;
+    pub const OP_DBG: u8 = 2;
+    pub const OP_LOG: u8 = 3;
+
+    // When a driver (sys-io) panics, it takes down the whole VM.
+    // It may try to log something useful to the serial console on the way
+    // out, so it notifies the kernel that it is panic-ing, so that
+    // the kernel won't redirect logs to sys-tty, as sys-tty may have
+    // no time to process and display the logs before the VM exits.
+    pub const OP_SYS_PANIC_NOTIFY: u8 = 4;
+
+    /// Federated-stats: describe (`F_STATS_DESCRIBE`) or read (`F_STATS_QUERY`)
+    /// the kernel's metrics, so the kernel acts as a dynamically-discoverable
+    /// stats provider (see moto-stats). The metric set is not hardcoded anywhere
+    /// in userspace; tools learn it from the describe op.
+    pub const OP_QUERY_STATS: u8 = 5;
+
+    /// Read the original kernel command line. Requires `CAP_SYS`.
+    pub const OP_QUERY_CMDLINE: u8 = 6;
+    /// Maximum command-line length, excluding the terminating NUL.
+    pub const MAX_CMDLINE_LEN: usize = 4095;
+
+    pub const F_QUERY_STATUS: u32 = 1;
+    pub const F_QUERY_LIST: u32 = 2;
+    pub const F_QUERY_LIST_CHILDREN: u32 = 3;
+    /// `OP_QUERY_PROCESS`: the pid behind a held process handle.
+    pub const F_QUERY_PID: u32 = 4;
+
+    /// `OP_QUERY_STATS`: describe the kernel's metric catalog (ids, names, units).
+    pub const F_STATS_DESCRIBE: u32 = 1;
+    /// `OP_QUERY_STATS`: read metric values for a given scope.
+    pub const F_STATS_QUERY: u32 = 2;
+
+    /// Attach to a running process.
+    pub const F_DBG_ATTACH: u32 = 1;
+    /// Mark the debuggee process as paused. All its threads will
+    /// eventually pause.
+    pub const F_DBG_PAUSE_PROCESS: u32 = 2;
+    /// Mark a paused debuggee process as running. Paused threads
+    /// will not resume automatically until explicitly resumed
+    /// using F_DBG_RESUME_THREAD.
+    pub const F_DBG_RESUME_PROCESS: u32 = 3;
+    /// Resume a paused thread.
+    pub const F_DBG_RESUME_THREAD: u32 = 4;
+    /// List threads in the attached process.
+    pub const F_DBG_LIST_THREADS: u32 = 5;
+    /// Get thread data.
+    pub const F_DBG_GET_THREAD_DATA: u32 = 6;
+    /// Get process memory.
+    pub const F_DBG_GET_MEM: u32 = 7;
+    /// Detach the debugger. Note that just putting the handle is not enough.
+    pub const F_DBG_DETACH: u32 = 8;
+
+    /// Used internally by the kernel and sys-tty.
+    pub const CONSOLE_SHARED_BUF_SZ: usize = crate::kernel_log::KERNEL_LOG_RING_SIZE;
+
+    /// Read the original kernel command-line bytes, excluding the terminating
+    /// NUL. Requires `CAP_SYS`. Returns `(written, total)`; a short buffer gets
+    /// the prefix, and an empty buffer queries the length without copying.
+    #[cfg(feature = "userspace")]
+    pub fn query_cmdline(buf: &mut [u8]) -> Result<(usize, usize), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_CMDLINE, 0, 0),
+            buf.as_mut_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+            0,
+        );
+        if result.is_ok() {
+            Ok((result.data[0] as usize, result.data[1] as usize))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn process_status(handle: SysHandle) -> Result<Option<u64>, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_PROCESS, Self::F_QUERY_STATUS, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(Some(result.data[0]))
+        } else if result.error_code() == moto_rt::E_ALREADY_IN_USE {
+            Ok(None)
+        } else {
+            Err(moto_rt::E_NOT_FOUND)
+        }
+    }
+
+    /// Returns the pid of the process behind a held process handle. No new
+    /// ambient authority: the caller must already own the handle.
+    #[cfg(feature = "userspace")]
+    pub fn process_pid(handle: SysHandle) -> Result<u64, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_PROCESS, Self::F_QUERY_PID, 0),
+            handle.as_u64(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0])
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn list_processes_v1(
+        pid: u64,
+        flat_list: bool,
+        buf: &mut [super::stats::ProcessInfoV1],
+    ) -> Result<usize, ErrorCode> {
+        if buf.is_empty() {
+            return Err(moto_rt::E_INVALID_ARGUMENT);
+        }
+
+        let flags = if flat_list {
+            Self::F_QUERY_LIST
+        } else {
+            Self::F_QUERY_LIST_CHILDREN
+        };
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_PROCESS, flags, 1),
+            pid,
+            buf.as_mut_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0] as usize)
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Describe the kernel's metric catalog into `buf`. Returns
+    /// `(written, total)`: if `total > buf.len()`, retry with a larger buffer.
+    #[cfg(feature = "userspace")]
+    pub fn query_stats_describe(
+        buf: &mut [super::stats::MetricDescWire],
+    ) -> Result<(usize, usize), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_STATS, Self::F_STATS_DESCRIBE, 1),
+            buf.as_mut_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok((result.data[0] as usize, result.data[1] as usize))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Read the kernel's metric values for `scope` (a PID; 0 is the system-wide
+    /// aggregate) into `buf`. Returns `(written, total)`.
+    #[cfg(feature = "userspace")]
+    pub fn query_stats(
+        scope: u64, // PID
+        buf: &mut [super::stats::MetricEntry],
+    ) -> Result<(usize, usize), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_QUERY_STATS, Self::F_STATS_QUERY, 1),
+            scope,
+            buf.as_mut_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok((result.data[0] as usize, result.data[1] as usize))
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_attach(pid: u64) -> Result<SysHandle, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_ATTACH, 1),
+            pid,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0].into())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_pause_process(dbg_handle: SysHandle) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_PAUSE_PROCESS, 1),
+            dbg_handle.into(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_resume_process(dbg_handle: SysHandle) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_RESUME_PROCESS, 1),
+            dbg_handle.into(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_resume_thread(dbg_handle: SysHandle, tid: u64) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_RESUME_THREAD, 1),
+            dbg_handle.into(),
+            tid,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Fill buf with thread IDs starting with start_tid.
+    /// The process indicated by dbg_handle must be stopped.
+    /// Upon success, returns the number of TIDs populated into buf.
+    #[cfg(feature = "userspace")]
+    pub fn dbg_list_threads(
+        dbg_handle: SysHandle,
+        start_tid: u64,
+        buf: &mut [u64],
+    ) -> Result<usize, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_LIST_THREADS, 1),
+            dbg_handle.into(),
+            start_tid,
+            buf.as_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0] as usize)
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_get_thread_data_v1(
+        dbg_handle: SysHandle,
+        tid: u64,
+    ) -> Result<crate::stats::ThreadDataV1, ErrorCode> {
+        let mut thread_data = crate::stats::ThreadDataV1::default();
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_GET_THREAD_DATA, 1),
+            dbg_handle.into(),
+            tid,
+            (&mut thread_data) as *mut _ as usize as u64,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(thread_data)
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    /// Copy userspace memory of the debugged process into buf,
+    /// starting at start_addr address. Returns the number of bytes copied.
+    #[cfg(feature = "userspace")]
+    pub fn dbg_get_mem(
+        dbg_handle: SysHandle,
+        start_addr: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_GET_MEM, 1),
+            dbg_handle.into(),
+            start_addr,
+            buf.as_ptr() as usize as u64,
+            buf.len() as u64,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(result.data[0] as usize)
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn dbg_detach(dbg_handle: SysHandle) -> Result<(), ErrorCode> {
+        let result = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_DBG, Self::F_DBG_DETACH, 1),
+            dbg_handle.into(),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn log(msg: &str) -> Result<(), ErrorCode> {
+        let bytes = msg.as_bytes();
+        if bytes.is_empty() {
+            return Err(moto_rt::E_INVALID_ARGUMENT);
+        }
+
+        let res = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_LOG, 0, 0),
+            msg.as_bytes().as_ptr() as usize as u64,
+            bytes.len() as u64,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        if res.is_ok() {
+            Ok(())
+        } else {
+            Err(res.error_code())
+        }
+    }
+
+    #[cfg(feature = "userspace")]
+    pub fn sys_panic_notify() {
+        let _ = do_syscall(
+            pack_nr_ver(SYS_RAY, Self::OP_SYS_PANIC_NOTIFY, 0, 0),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+    }
+}
