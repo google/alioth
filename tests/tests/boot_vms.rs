@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use vmm_tests::{
     TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock, boot_and_shutdown,
-    convert_qcow2_to_raw, copy_sparse_raw, linux_blobs_dir, motor_os_release_dir, use_network_tap,
+    boot_until_autonomous_exit, convert_qcow2_to_raw, copy_sparse_raw, ensure_test_guest_artifacts,
+    linux_blobs_dir, motor_os_release_dir, use_network_tap,
 };
 
 fn run_linux_initrd(mode: VmmMode) {
@@ -187,4 +188,49 @@ fn boot_full_motor_os_cwasm() {
 #[test]
 fn boot_full_motor_os_wasm() {
     run_full_motor_os(VmmMode::Wasm);
+}
+
+fn run_test_guest(mode: VmmMode) {
+    let guest = ensure_test_guest_artifacts();
+    let tmp = TempTestDir::new(&format!("test-guest-{}", mode.as_str()));
+    let cfg = format!(
+        "pvh = \"{}\"\n\
+         initramfs = \"{}\"\n\
+         cmd_line = \"test-guest\"\n\
+         num_cpus = 2\n\
+         mem_size = \"64M\"\n\
+         blk = []\n",
+        guest.kloader.display(),
+        guest.initrd.display(),
+    );
+
+    let serial =
+        boot_until_autonomous_exit("test_guest", mode, &tmp, &cfg, Duration::from_secs(10));
+
+    assert!(
+        serial.contains("test-guest: ok | cpus=2"),
+        "missing test-guest summary line in serial output:\n{serial}"
+    );
+    assert!(
+        serial.contains("cmd=\"test-guest\""),
+        "missing kernel cmdline in test-guest serial output:\n{serial}"
+    );
+    assert!(
+        serial.contains("hv=svm(npt=1,") || serial.contains("hv=vmx"),
+        "expected nested hardware virtualization (SVM+NPT or VMX) in L1 test-guest, got:\n{serial}"
+    );
+    assert!(
+        serial.contains("vm_exit: bye."),
+        "missing clean Motor OS ACPI S5 exit marker in serial output:\n{serial}"
+    );
+}
+
+#[test]
+fn boot_test_guest_cwasm() {
+    run_test_guest(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_test_guest_wasm() {
+    run_test_guest(VmmMode::Wasm);
 }

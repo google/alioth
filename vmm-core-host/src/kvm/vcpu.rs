@@ -625,6 +625,25 @@ impl KvmVcpu {
             }
         }
         unsafe { kvm_set_cpuid2(&self.fd, &kvm_cpuid2) }.map_err(io_to_hv_err)?;
+
+        // Direct PVH/bzImage boot skips BIOS/UEFI firmware; on Intel hosts advertising nested
+        // VMX (`CPUID.1:ECX.VMX`), lock IA32_FEATURE_CONTROL (0x3a) with VMXON enabled outside
+        // SMX (bits 0 | 2 = 0x5) so L1 Ring 0 can execute VMXON directly.
+        if cpuids
+            .iter()
+            .any(|c| c.func == 0x1 && (c.ecx & (1 << 5)) != 0)
+        {
+            let feat_ctrl = KvmMsrs::<1> {
+                nmsrs: 1,
+                pad: 0,
+                entries: [KvmMsrEntry {
+                    index: 0x3a,
+                    reserved: 0,
+                    data: 0x5,
+                }],
+            };
+            let _ = unsafe { kvm_set_msrs(&self.fd, &feat_ctrl) };
+        }
         Ok(())
     }
 

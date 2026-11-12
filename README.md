@@ -79,7 +79,8 @@ cargo build --release --target=x86_64-unknown-linux-musl
 ```
 
 To run workspace unit and end-to-end VM boot tests (full Linux, Linux `initrd`,
-and full Motor OS in both `--cwasm` and `--wasm` modes):
+full Motor OS, and minimal Motor OS `test-guest` in both `--cwasm` and `--wasm`
+modes):
 ```sh
 cargo test
 ```
@@ -107,6 +108,12 @@ Guest image blobs live outside this repository in `../linux-blobs/` and
   ./vm_scripts/run-motor-os.sh --cwasm
   # or with JIT compilation:
   ./vm_scripts/run-motor-os.sh --wasm
+  ```
+- **Boot Minimal Motor OS `test-guest` (`kloader` + `kernel` + `test-init`, 0 disks/NICs)**:
+  ```sh
+  ./vm_scripts/run-test-guest.sh --cwasm
+  # or with JIT compilation:
+  ./vm_scripts/run-test-guest.sh --wasm
   ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
   VM and exit.

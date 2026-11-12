@@ -642,6 +642,122 @@ pub fn boot_and_shutdown(
     );
 }
 
+/// Boots `wasm-vmm` in `mode` using `config_body` WITHOUT sending `Ctrl-a q`, waiting for the
+/// guest to shut itself down autonomously (e.g. via ACPI S5), asserts exit status `0`, and
+/// returns the captured serial console output.
+pub fn boot_until_autonomous_exit(
+    test_name: &str,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    config_body: &str,
+    timeout: Duration,
+) -> String {
+    let target_dir = ensure_vmm_artifacts();
+    let config_path = tmp.path().join("vm.toml");
+    let log_path = tmp.path().join("vmm.log");
+    let full_config = format!(
+        "log_file = \"{}\"\nlog_level = \"info\"\n{config_body}",
+        log_path.display()
+    );
+    fs::write(&config_path, &full_config).expect("failed to write test vm.toml");
+
+    let (io_host, io_mod, core_host, core_mod) = match mode {
+        VmmMode::Cwasm => (
+            target_dir.join("vmm-io-host-cwasm"),
+            target_dir.join("vmm-io.cwasm"),
+            target_dir.join("vmm-core-host-cwasm"),
+            target_dir.join("vmm-core.cwasm"),
+        ),
+        VmmMode::Wasm => (
+            target_dir.join("vmm-io-host-wasm"),
+            target_dir.join("vmm-io.wasm"),
+            target_dir.join("vmm-core-host-wasm"),
+            target_dir.join("vmm-core.wasm"),
+        ),
+    };
+
+    let mut cmd = Command::new(&io_host);
+    cmd.current_dir(tmp.path())
+        .arg("-c")
+        .arg(&config_path)
+        .arg("-w")
+        .arg(&io_mod)
+        .arg("--core-host")
+        .arg(&core_host)
+        .arg("--core-wasm")
+        .arg(&core_mod)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+
+    let mut child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
+    let _stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut guard = ProcessGroupGuard::new(child);
+
+    let stdout_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        out
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stderr.read_to_end(&mut out);
+        out
+    });
+
+    let deadline = Instant::now() + timeout;
+    let exit_status = loop {
+        match guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= deadline => break None,
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+
+    if exit_status.is_none() {
+        guard.kill_group();
+        guard.armed = false;
+    }
+    drop(_stdin);
+    let serial_bytes = stdout_handle.join().unwrap_or_default();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+
+    let format_diag = |reason: &str| -> String {
+        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
+        format!(
+            "[{test_name} ({})] {reason}\n--- vm.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm.log ---\n{vmm_log}",
+            mode.as_str(),
+            String::from_utf8_lossy(&serial_bytes),
+            String::from_utf8_lossy(&stderr_bytes),
+        )
+    };
+
+    let Some(status) = exit_status else {
+        panic!(
+            "{}",
+            format_diag(&format!(
+                "VM did not shut down autonomously within {timeout:?}"
+            ))
+        );
+    };
+
+    assert!(
+        status.success(),
+        "{}",
+        format_diag(&format!("VM exited with non-zero status: {status}"))
+    );
+
+    String::from_utf8_lossy(&serial_bytes).into_owned()
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
