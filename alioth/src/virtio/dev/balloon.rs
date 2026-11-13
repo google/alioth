@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use std::fmt::Debug;
-use std::io::{IoSlice, IoSliceMut};
+use std::io::{Error, ErrorKind, IoSlice, IoSliceMut};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use alioth_macros::Layout;
-use libc::{_SC_PAGESIZE, sysconf};
+use libc::{_SC_PAGESIZE, MADV_DONTNEED};
 use mio::Registry;
 use mio::event::Event;
 use parking_lot::RwLock;
@@ -46,6 +46,24 @@ pub struct BalloonConfig {
 
 impl_mmio_for_zerocopy!(BalloonConfig);
 
+fn write_u32(dst: &mut u32, field_offset: usize, offset: u64, size: u8, val: u64) -> bool {
+    if !matches!(size, 1 | 2 | 4) {
+        return false;
+    }
+    let Some(sub_offset) = offset.checked_sub(field_offset as u64) else {
+        return false;
+    };
+    if sub_offset.saturating_add(size as u64) > size_of::<u32>() as u64 {
+        return false;
+    }
+    let sub_offset = sub_offset as usize;
+    let size = size as usize;
+    let mut bytes = dst.to_le_bytes();
+    bytes[sub_offset..sub_offset + size].copy_from_slice(&val.to_le_bytes()[..size]);
+    *dst = u32::from_le_bytes(bytes);
+    true
+}
+
 #[derive(Debug)]
 pub struct BalloonConfigMmio {
     name: Arc<str>,
@@ -64,17 +82,35 @@ impl Mmio for BalloonConfigMmio {
 
     fn write(&self, offset: u64, size: u8, val: u64) -> mem::Result<Action> {
         let config = &mut *self.config.write();
-        match (offset as usize, size as usize) {
-            BalloonConfig::LAYOUT_ACTUAL => {
-                config.actual = val as u32;
-                log::info!(
-                    "{}: update: num_pages = {:#x}, actual = {val:#x}",
-                    self.name,
-                    config.num_pages,
-                );
-                Ok(Action::None)
-            }
-            _ => Mmio::write(config, offset, size, val),
+        if write_u32(
+            &mut config.actual,
+            BalloonConfig::OFFSET_ACTUAL,
+            offset,
+            size,
+            val,
+        ) {
+            log::info!(
+                "{}: update: num_pages = {:#x}, actual = {:#x}",
+                self.name,
+                config.num_pages,
+                config.actual,
+            );
+            Ok(Action::None)
+        } else if write_u32(
+            &mut config.poison_val,
+            BalloonConfig::OFFSET_POISON_VAL,
+            offset,
+            size,
+            val,
+        ) {
+            log::info!(
+                "{}: update: poison_val = {:#x}",
+                self.name,
+                config.poison_val
+            );
+            Ok(Action::None)
+        } else {
+            Mmio::write(config, offset, size, val)
         }
     }
 }
@@ -105,7 +141,7 @@ consts! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BalloonQueue {
     Inflate,
     Deflate,
@@ -120,15 +156,12 @@ pub struct Balloon {
     name: Arc<str>,
     config: Arc<BalloonConfigMmio>,
     feature: BalloonFeature,
+    driver_feature: BalloonFeature,
     queues: [BalloonQueue; 5],
 }
 
 impl Balloon {
-    pub fn new(spec: BalloonSpec, name: impl Into<Arc<str>>) -> Result<Self> {
-        if unsafe { sysconf(_SC_PAGESIZE) } != 1 << 12 {
-            let err = std::io::ErrorKind::Unsupported;
-            Err(std::io::Error::from(err))?;
-        }
+    fn new_inner(spec: BalloonSpec, name: Arc<str>) -> Self {
         let config = BalloonConfig {
             num_pages: 0,
             ..Default::default()
@@ -136,17 +169,24 @@ impl Balloon {
         let mut feature = BalloonFeature::all();
         if !spec.free_page_reporting {
             feature.remove(BalloonFeature::PAGE_REPORTING);
-        };
-        let name = name.into();
-        Ok(Balloon {
+        }
+        Balloon {
             name: name.clone(),
             config: Arc::new(BalloonConfigMmio {
                 config: RwLock::new(config),
                 name,
             }),
             feature,
+            driver_feature: BalloonFeature::empty(),
             queues: [BalloonQueue::NotExist; 5],
-        })
+        }
+    }
+
+    pub fn new(spec: BalloonSpec, name: impl Into<Arc<str>>) -> Result<Self> {
+        if unsafe { libc::sysconf(_SC_PAGESIZE) } != 1 << 12 {
+            Err(Error::from(ErrorKind::Unsupported))?;
+        }
+        Ok(Self::new_inner(spec, name.into()))
     }
 
     fn inflate(&self, desc: &[IoSlice], ram: &Ram) {
@@ -160,7 +200,7 @@ impl Balloon {
                     continue;
                 };
                 let gpa = (page_num as u64) << 12;
-                if let Err(e) = ram.madvise(gpa, 1 << 12, libc::MADV_DONTNEED) {
+                if let Err(e) = ram.madvise(gpa, 1 << 12, MADV_DONTNEED) {
                     log::error!("{}: inflate at GPA {gpa:#x}: {e:?}", self.name);
                 } else {
                     log::trace!("{}: freed GPA {gpa:#x}", self.name);
@@ -169,15 +209,23 @@ impl Balloon {
         }
     }
 
+    fn should_reclaim_reported_pages(&self) -> bool {
+        !self.driver_feature.contains(BalloonFeature::PAGE_POISON)
+            || self.config.config.read().poison_val == 0
+    }
+
     fn free_reporting(&self, desc: &mut [IoSliceMut]) {
+        if !self.should_reclaim_reported_pages() {
+            return;
+        }
         for buf in desc.iter_mut() {
             let addr = buf.as_mut_ptr();
             let len = buf.len();
-            let ret = ffi!(unsafe { libc::madvise(addr as _, len, libc::MADV_DONTNEED) });
+            let ret = ffi!(unsafe { libc::madvise(addr as _, len, MADV_DONTNEED) });
             if let Err(e) = ret {
-                log::error!("freeing pages: {addr:p} {len:#x}: {e:?}");
+                log::error!("{}: freeing pages: {addr:p} {len:#x}: {e:?}", self.name);
             } else {
-                log::trace!("freed pages: {addr:p} {len:#x}");
+                log::trace!("{}: freed pages: {addr:p} {len:#x}", self.name);
             }
         }
     }
@@ -222,6 +270,8 @@ impl VirtioMio for Balloon {
         S: IrqSender,
     {
         let feature = BalloonFeature::from_bits_retain(feature);
+        self.driver_feature = feature;
+        self.queues = [BalloonQueue::NotExist; 5];
         self.queues[0] = BalloonQueue::Inflate;
         self.queues[1] = BalloonQueue::Deflate;
         let mut index = 2;
@@ -291,6 +341,10 @@ impl VirtioMio for Balloon {
 
     fn reset(&mut self, _registry: &Registry) {
         self.queues = [BalloonQueue::NotExist; 5];
+        self.driver_feature = BalloonFeature::empty();
+        let mut config = self.config.config.write();
+        config.actual = 0;
+        config.poison_val = 0;
     }
 }
 
@@ -308,3 +362,7 @@ impl DevSpec for BalloonSpec {
         Balloon::new(self, name)
     }
 }
+
+#[cfg(test)]
+#[path = "balloon_test.rs"]
+mod tests;
