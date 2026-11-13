@@ -13,15 +13,15 @@ if [[ $# == 0 ]] ; then
    echo "kernel debug build"
 
    RUSTFLAGS="-C force-frame-pointers=yes " \
-   cargo build --target kernel.json -Zjson-target-spec \
+   cargo build --target x86_64-unknown-none.json -Zjson-target-spec \
       -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
       --no-default-features
 
-   cargo clippy --target kernel.json -Zjson-target-spec \
+   cargo clippy --target x86_64-unknown-none.json -Zjson-target-spec \
       -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
       --no-default-features
 
-   strip -o "${BIN_DIR}/kernel" "${TARGET_DIR}/kernel/debug/kernel"
+   strip -o "${BIN_DIR}/kernel" "${TARGET_DIR}/x86_64-unknown-none/debug/kernel"
 
 elif [[ $# != 1 ]] ; then
 
@@ -38,15 +38,15 @@ elif [[ "$1" != "--release" ]] ; then
    echo "kernel release build"
 
    RUSTFLAGS="-C force-frame-pointers=yes " \
-   cargo build --release --target kernel.json -Zjson-target-spec \
+   cargo build --release --target x86_64-unknown-none.json -Zjson-target-spec \
       -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
       --no-default-features
 
-   cargo clippy --release --target kernel.json -Zjson-target-spec \
+   cargo clippy --release --target x86_64-unknown-none.json -Zjson-target-spec \
       -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
       --no-default-features
 
-   strip -o "${BIN_DIR}/kernel" "${TARGET_DIR}/kernel/release/kernel"
+   strip -o "${BIN_DIR}/kernel" "${TARGET_DIR}/x86_64-unknown-none/release/kernel"
 
 fi
 
