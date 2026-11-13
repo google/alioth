@@ -1133,6 +1133,10 @@ fn test_device_reset_queue_registers() {
     );
 
     // Verify all queue registers are reset
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2),
+        Ok(0)
+    );
     for (q_index, _) in queues.iter().enumerate() {
         assert_matches!(
             mmio.write(
@@ -1163,6 +1167,238 @@ fn test_device_reset_queue_registers() {
             );
         }
     }
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn test_device_reset_clears_features_and_selectors(#[case] with_driver_ok: bool) {
+    let queues = Arc::new([QueueReg::default(), QueueReg::default()]);
+    let (mut mmio, event_rx, report_tx) = create_test_mmio(queues);
+    let offered = [0x1111_2222, 0x3333_4444, 0x5555_6666, 0x7777_8888];
+    let accepted = [0x0101_0202, 0x0300_0404, 0x0505_0006, 0x0007_0808];
+    mmio.reg.device_feature = offered;
+
+    for (bank, val) in accepted.into_iter().enumerate() {
+        assert_matches!(
+            mmio.write(
+                VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64,
+                4,
+                bank as u64,
+            ),
+            Ok(Action::None)
+        );
+        assert_matches!(
+            mmio.write(VirtioCommonCfg::OFFSET_DRIVER_FEATURE as u64, 4, val as u64),
+            Ok(Action::None)
+        );
+    }
+
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_FEATURE_SELECT as u64, 4, 3),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64, 4, 2),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2, 1),
+        Ok(Action::None)
+    );
+
+    let mut status = DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK;
+    if with_driver_ok {
+        status |= DevStatus::DRIVER_OK;
+    }
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
+            1,
+            status.bits() as u64,
+        ),
+        Ok(Action::None)
+    );
+    if with_driver_ok {
+        assert_matches!(event_rx.try_recv(), Ok(WakeEvent::Start { .. }));
+    }
+
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
+        Ok(Action::None)
+    );
+    if with_driver_ok {
+        let Ok(WakeEvent::Reset { seq }) = event_rx.try_recv() else {
+            panic!("expected a reset event");
+        };
+        // Registers remain untouched until the worker acknowledges the reset.
+        assert_ne!(mmio.reg.get_driver_feature(), 0);
+        assert_matches!(
+            mmio.read(VirtioCommonCfg::OFFSET_DEVICE_FEATURE_SELECT as u64, 4),
+            Ok(3)
+        );
+        assert_matches!(
+            mmio.read(VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64, 4),
+            Ok(2)
+        );
+        assert_matches!(
+            mmio.read(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2),
+            Ok(1)
+        );
+        report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
+    }
+    assert!(event_rx.is_empty());
+
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
+        Ok(0)
+    );
+    assert_eq!(mmio.reg.get_driver_feature(), 0);
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_FEATURE_SELECT as u64, 4),
+        Ok(0)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64, 4),
+        Ok(0)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_QUEUE_SELECT as u64, 2),
+        Ok(0)
+    );
+
+    for (bank, expected_offered) in offered.into_iter().enumerate() {
+        assert_matches!(
+            mmio.write(
+                VirtioCommonCfg::OFFSET_DEVICE_FEATURE_SELECT as u64,
+                4,
+                bank as u64,
+            ),
+            Ok(Action::None)
+        );
+        assert_matches!(
+            mmio.read(VirtioCommonCfg::OFFSET_DEVICE_FEATURE as u64, 4),
+            Ok(val) if val == expected_offered as u64
+        );
+        assert_matches!(
+            mmio.write(
+                VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT as u64,
+                4,
+                bank as u64,
+            ),
+            Ok(Action::None)
+        );
+        assert_matches!(
+            mmio.read(VirtioCommonCfg::OFFSET_DRIVER_FEATURE as u64, 4),
+            Ok(0)
+        );
+    }
+}
+
+#[test]
+fn test_feature_renegotiation_after_reset() {
+    let queues = Arc::new([QueueReg {
+        size: AtomicU16::new(QUEUE_SIZE_MAX),
+        ..Default::default()
+    }]);
+    let (mmio, event_rx, report_tx) = create_test_mmio(queues);
+
+    let bank1_packed =
+        ((VirtioFeature::VERSION_1 | VirtioFeature::RING_PACKED).bits() >> 32) as u64;
+    let driver_ok =
+        DevStatus::ACK | DevStatus::DRIVER | DevStatus::FEATURES_OK | DevStatus::DRIVER_OK;
+
+    // First driver negotiates bank 0 (0xff), bank 1 (VERSION_1 | RING_PACKED), and bank 2 (0xaa).
+    for (offset, size, val) in [
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT, 4, 0),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE, 4, 0xff),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT, 4, 1),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE, 4, bank1_packed),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT, 4, 2),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE, 4, 0xaa),
+        (VirtioCommonCfg::OFFSET_QUEUE_SELECT, 2, 0),
+        (VirtioCommonCfg::OFFSET_QUEUE_SIZE, 2, 80),
+        (
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS,
+            1,
+            driver_ok.bits() as u64,
+        ),
+    ] {
+        assert_matches!(mmio.write(offset as u64, size, val), Ok(Action::None));
+    }
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_QUEUE_SIZE as u64, 2),
+        Ok(80)
+    );
+    assert_matches!(
+        event_rx.try_recv(),
+        Ok(WakeEvent::Start { param }) => {
+            assert_eq!(
+                param.feature,
+                0xff | ((bank1_packed as u128) << 32) | (0xaau128 << 64)
+            );
+        }
+    );
+
+    // Reset the device.
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1, 0),
+        Ok(Action::None)
+    );
+    let Ok(WakeEvent::Reset { seq }) = event_rx.try_recv() else {
+        panic!("expected a reset event");
+    };
+    report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64, 1),
+        Ok(0)
+    );
+
+    // Second driver only writes bank 0 (0x01) and bank 1 (VERSION_1), never touching bank 2.
+    let bank1_split = (VirtioFeature::VERSION_1.bits() >> 32) as u64;
+    for (offset, size, val) in [
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT, 4, 0),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE, 4, 0x01),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE_SELECT, 4, 1),
+        (VirtioCommonCfg::OFFSET_DRIVER_FEATURE, 4, bank1_split),
+    ] {
+        assert_matches!(mmio.write(offset as u64, size, val), Ok(Action::None));
+    }
+
+    // The second driver did not accept RING_PACKED, so a non-power-of-two
+    // size (80) is rejected and a 2-byte aligned split driver area (0x2002)
+    // is accepted.
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_SIZE as u64, 2, 80),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_QUEUE_SIZE as u64, 2),
+        Ok(val) if val == QUEUE_SIZE_MAX as u64
+    );
+    assert_matches!(
+        mmio.write(VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO as u64, 4, 0x2002),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        mmio.read(VirtioCommonCfg::OFFSET_QUEUE_DRIVER_LO as u64, 4),
+        Ok(0x2002)
+    );
+
+    assert_matches!(
+        mmio.write(
+            VirtioCommonCfg::OFFSET_DEVICE_STATUS as u64,
+            1,
+            driver_ok.bits() as u64,
+        ),
+        Ok(Action::None)
+    );
+    assert_matches!(
+        event_rx.try_recv(),
+        Ok(WakeEvent::Start { param }) => {
+            assert_eq!(param.feature, VirtioFeature::VERSION_1.bits() | 0x01);
+        }
+    );
 }
 
 #[rstest]
@@ -1762,9 +1998,16 @@ fn test_virtio_pci_device_pci_reset() {
     )
     .unwrap();
 
-    // Set queue enabled and device status
+    // Set queue enabled, features, selectors, and device status
     let registers = pci_dev.registers.clone();
     registers.queues[0].enabled.store(true, Ordering::Release);
+    registers.reg.driver_feature[1].store(
+        (VirtioFeature::VERSION_1.bits() >> 32) as u32,
+        Ordering::Release,
+    );
+    registers.reg.device_feature_sel.store(1, Ordering::Release);
+    registers.reg.driver_feature_sel.store(1, Ordering::Release);
+    registers.reg.queue_sel.store(3, Ordering::Release);
     let driver_ok = DevStatus::DRIVER_OK.bits();
     registers.reg.status.store(driver_ok, Ordering::Release);
     registers.irq_sender.msix_table.entries.write()[0] =
@@ -1782,6 +2025,8 @@ fn test_virtio_pci_device_pci_reset() {
             panic!("expected a reset event");
         };
         assert_eq!(registers.reg.status.load(Ordering::Acquire), driver_ok);
+        assert_ne!(registers.reg.get_driver_feature(), 0);
+        assert_eq!(registers.reg.queue_sel.load(Ordering::Acquire), 3);
         assert!(registers.queues[0].enabled.load(Ordering::Acquire));
         report_tx.send(WorkerReport::ResetDone { seq }).unwrap();
     });
@@ -1791,6 +2036,24 @@ fn test_virtio_pci_device_pci_reset() {
     worker.join().unwrap();
 
     assert_eq!(pci_dev.registers.reg.status.load(Ordering::Acquire), 0);
+    assert_eq!(pci_dev.registers.reg.get_driver_feature(), 0);
+    assert_eq!(
+        pci_dev
+            .registers
+            .reg
+            .device_feature_sel
+            .load(Ordering::Acquire),
+        0
+    );
+    assert_eq!(
+        pci_dev
+            .registers
+            .reg
+            .driver_feature_sel
+            .load(Ordering::Acquire),
+        0
+    );
+    assert_eq!(pci_dev.registers.reg.queue_sel.load(Ordering::Acquire), 0);
     assert!(!pci_dev.registers.queues[0].enabled.load(Ordering::Acquire));
     // Unlike a device reset, a PCI reset also clears the MSI-X table.
     let entries = pci_dev.registers.irq_sender.msix_table.entries.read();
