@@ -138,6 +138,25 @@ impl Net {
         Ok(net)
     }
 
+    fn max_data_queues(&self) -> u16 {
+        if self
+            .driver_feature
+            .intersects(NetFeature::MQ | NetFeature::RSS)
+        {
+            self.config.max_queue_pairs * 2
+        } else {
+            2
+        }
+    }
+
+    fn ctrl_queue_index(&self) -> Option<u16> {
+        if self.driver_feature.contains(NetFeature::CTRL_VQ) {
+            Some(self.max_data_queues())
+        } else {
+            None
+        }
+    }
+
     fn handle_ctrl_queue(
         &mut self,
         desc: &mut DescChain,
@@ -154,45 +173,47 @@ impl Net {
             return error::InvalidBuffer.fail();
         };
         let ack = match header.class {
-            CtrlClass::MQ => match CtrlMq(header.command) {
-                CtrlMq::VQ_PARIS_SET => {
-                    let to_set = |b: &IoSlice| CtrlMqParisSet::read_from_bytes(b).ok();
-                    let Some(data) = desc.readable.get(1).and_then(to_set) else {
-                        return error::InvalidBuffer.fail();
-                    };
-                    let pairs = data.virtq_pairs;
-                    if pairs == 0 || pairs > self.config.max_queue_pairs {
-                        log::error!(
-                            "{}: invalid number of queue pairs {pairs}, max {}",
-                            self.name,
-                            self.config.max_queue_pairs
-                        );
-                        CtrlAck::ERR
-                    } else {
-                        let pairs = pairs as usize;
-                        self.tap_sockets.truncate(pairs);
-                        for index in self.tap_sockets.len()..pairs {
-                            let mut socket = new_socket(
-                                self.dev_tap.as_deref(),
-                                matches!(self.api, WorkerApi::IoUring),
-                            )?;
-                            setup_socket(&mut socket, self.if_name.as_deref(), true)?;
-                            enable_tap_offload(&mut socket, self.driver_feature)?;
-                            if let Some(r) = registry {
-                                r.register(
-                                    &mut SourceFd(&socket.as_raw_fd()),
-                                    Token(index),
-                                    Interest::READABLE | Interest::WRITABLE,
+            CtrlClass::MQ if self.driver_feature.contains(NetFeature::MQ) => {
+                match CtrlMq(header.command) {
+                    CtrlMq::VQ_PARIS_SET => {
+                        let to_set = |b: &IoSlice| CtrlMqParisSet::read_from_bytes(b).ok();
+                        let Some(data) = desc.readable.get(1).and_then(to_set) else {
+                            return error::InvalidBuffer.fail();
+                        };
+                        let pairs = data.virtq_pairs;
+                        if pairs == 0 || pairs > self.config.max_queue_pairs {
+                            log::error!(
+                                "{}: invalid number of queue pairs {pairs}, max {}",
+                                self.name,
+                                self.config.max_queue_pairs
+                            );
+                            CtrlAck::ERR
+                        } else {
+                            let pairs = pairs as usize;
+                            self.tap_sockets.truncate(pairs);
+                            for index in self.tap_sockets.len()..pairs {
+                                let mut socket = new_socket(
+                                    self.dev_tap.as_deref(),
+                                    matches!(self.api, WorkerApi::IoUring),
                                 )?;
+                                setup_socket(&mut socket, self.if_name.as_deref(), true)?;
+                                enable_tap_offload(&mut socket, self.driver_feature)?;
+                                if let Some(r) = registry {
+                                    r.register(
+                                        &mut SourceFd(&socket.as_raw_fd()),
+                                        Token(index),
+                                        Interest::READABLE | Interest::WRITABLE,
+                                    )?;
+                                }
+                                self.tap_sockets.push(socket);
                             }
-                            self.tap_sockets.push(socket);
+                            log::info!("{}: using {pairs} pairs of queues", self.name);
+                            CtrlAck::OK
                         }
-                        log::info!("{}: using {pairs} pairs of queues", self.name);
-                        CtrlAck::OK
                     }
+                    _ => CtrlAck::ERR,
                 }
-                _ => CtrlAck::ERR,
-            },
+            }
             _ => CtrlAck::ERR,
         };
         *ack_byte = ack.raw();
@@ -272,9 +293,14 @@ impl VirtioMio for Net {
         S: IrqSender,
     {
         let token = event.token().0;
+        let rx_queue_index = token << 1;
+        let tx_queue_index = rx_queue_index + 1;
+        if tx_queue_index >= self.max_data_queues() as usize {
+            log::error!("{}: invalid tap queue {token}", self.name);
+            return Ok(());
+        }
         let irq_sender = active_mio.irq_sender;
         if event.is_readable() {
-            let rx_queue_index = token << 1;
             let Some(Some(queue)) = active_mio.queues.get_mut(rx_queue_index) else {
                 log::error!("{}: cannot find rx queue {rx_queue_index}", self.name);
                 return Ok(());
@@ -286,7 +312,6 @@ impl VirtioMio for Net {
             queue.handle_desc(rx_queue_index as u16, irq_sender, copy_from_reader(socket))?;
         }
         if event.is_writable() {
-            let tx_queue_index = (token << 1) + 1;
             let Some(Some(queue)) = active_mio.queues.get_mut(tx_queue_index) else {
                 log::error!("{}: cannot find tx queue {tx_queue_index}", self.name);
                 return Ok(());
@@ -311,11 +336,15 @@ impl VirtioMio for Net {
         };
         let irq_sender = active_mio.irq_sender;
         let registry = active_mio.poll.registry();
-        if index == self.config.max_queue_pairs * 2 {
+        if self.ctrl_queue_index() == Some(index) {
             return queue.handle_desc(index, irq_sender, |chain| {
                 let len = self.handle_ctrl_queue(chain, Some(registry))?;
                 Ok(Status::Done { len })
             });
+        }
+        if index >= self.max_data_queues() {
+            log::error!("{}: invalid data queue index {index}", self.name);
+            return Ok(());
         }
         let Some(socket) = self.tap_sockets.get(index as usize >> 1) else {
             log::error!("{}: invalid tap queue {}", self.name, index >> 1);
@@ -342,9 +371,13 @@ impl VirtioIoUring for Net {
     }
 
     fn handle_desc(&mut self, q_index: u16, chain: &mut DescChain) -> Result<BufferAction> {
-        if q_index == self.config.max_queue_pairs * 2 {
+        if self.ctrl_queue_index() == Some(q_index) {
             let len = self.handle_ctrl_queue(chain, None)?;
             return Ok(BufferAction::Written(len));
+        }
+        if q_index >= self.max_data_queues() {
+            log::error!("{}: invalid data queue index {q_index}", self.name);
+            return Ok(BufferAction::Written(0));
         }
         let Some(socket) = self.tap_sockets.get(q_index as usize >> 1) else {
             log::error!("{}: invalid tap queue {}", self.name, q_index >> 1);
@@ -465,3 +498,7 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> Result<()> {
     unsafe { tun_set_offload(tap, tap_feature) }?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tap_test.rs"]
+mod tests;
