@@ -243,6 +243,7 @@ impl Virtio for Net {
 impl VirtioMio for Net {
     fn reset(&mut self, registry: &Registry) {
         self.tap_sockets.truncate(1);
+        self.driver_feature = NetFeature::empty();
         let _ = registry.deregister(&mut SourceFd(&self.tap_sockets[0].as_raw_fd()));
     }
 
@@ -330,6 +331,11 @@ impl VirtioMio for Net {
 }
 
 impl VirtioIoUring for Net {
+    fn reset(&mut self) {
+        self.tap_sockets.truncate(1);
+        self.driver_feature = NetFeature::empty();
+    }
+
     fn activate<Q, S>(&mut self, feature: u128, _ring: &mut ActiveIoUring<'_, Q, S>) -> Result<()>
     where
         S: IrqSender,
@@ -465,3 +471,7 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> Result<()> {
     unsafe { tun_set_offload(tap, tap_feature) }?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tap_test.rs"]
+mod tests;

@@ -29,11 +29,11 @@ use crate::ffi;
 use crate::mem::mapped::ArcMemPages;
 use crate::sync::notifier::Notifier;
 use crate::virtio::dev::entropy::{EntropyConfig, EntropyFeature};
-use crate::virtio::dev::{ActiveBackend, StartParam, Virtio, WakeEvent, WorkerParam};
+use crate::virtio::dev::{ActiveBackend, StartParam, Virtio, WakeEvent, WorkerCtl, WorkerParam};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
 use crate::virtio::queue::{self, DescChain, Queue, QueueReg, VirtQueue};
-use crate::virtio::tests::{DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
+use crate::virtio::tests::{self, DATA_ADDR, FakeIrqSender, fixture_queues, fixture_ram_bus};
 use crate::virtio::worker::io_uring::{
     ActiveIoUring, BufferAction, IoUring, RING_SIZE, VirtioIoUring,
 };
@@ -46,6 +46,7 @@ struct PipeReader {
     config: Arc<EntropyConfig>,
     submitted: Sender<u16>,
     completed: Arc<AtomicUsize>,
+    resets: Arc<AtomicUsize>,
 }
 
 impl Virtio for PipeReader {
@@ -105,6 +106,10 @@ impl VirtioIoUring for PipeReader {
         self.completed.fetch_add(1, Ordering::Relaxed);
         Ok(cqe.result().max(0) as u32)
     }
+
+    fn reset(&mut self) {
+        self.resets.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 fn pipe() -> (OwnedFd, File) {
@@ -124,11 +129,13 @@ fn io_uring_drain_test() {
     let observer = unsafe { File::from_raw_fd(libc::dup(reader.as_raw_fd())) };
     let (submitted_tx, submitted_rx) = flume::unbounded();
     let completed = Arc::new(AtomicUsize::new(0));
+    let resets = Arc::new(AtomicUsize::new(0));
     let dev = PipeReader {
         reader,
         config: Arc::new(EntropyConfig),
         submitted: submitted_tx,
         completed: completed.clone(),
+        resets: resets.clone(),
     };
 
     let (tx, rx) = flume::unbounded();
@@ -168,6 +175,7 @@ fn io_uring_drain_test() {
     notifier.notify().unwrap();
     handle.join().unwrap();
     assert_eq!(completed.load(Ordering::Relaxed), 0);
+    assert_eq!(resets.load(Ordering::Acquire), 1);
     assert!(irq_rx.try_recv().is_err());
 
     // Nobody reads from the pipe any more, so the data stays there and
@@ -206,6 +214,7 @@ fn io_uring_drain_cancels_pending_reads() {
         config: Arc::new(EntropyConfig),
         submitted: submitted_tx,
         completed: completed.clone(),
+        resets: Arc::default(),
     };
 
     let (irq_tx, irq_rx) = flume::unbounded();
@@ -265,6 +274,7 @@ fn io_uring_request_in_flight_across_layout_change() {
         config: Arc::new(EntropyConfig),
         submitted: submitted_tx,
         completed: Arc::default(),
+        resets: Arc::default(),
     };
     let (irq_tx, irq_rx) = flume::unbounded();
     let irq_sender = FakeIrqSender { q_tx: irq_tx };
@@ -303,4 +313,74 @@ fn io_uring_request_in_flight_across_layout_change() {
     let used = guest_q.get_used().unwrap();
     assert_eq!((used.id, used.len), (id, s.len() as u32));
     assert!(old_ram.upgrade().is_none());
+}
+
+#[test]
+fn io_uring_reset_test() {
+    let ram_bus = Arc::new(tests::fixture_ram_bus());
+    let regs: Arc<[QueueReg]> = Arc::from(tests::fixture_queues(1));
+
+    let (reader, _writer) = pipe();
+    let (submitted_tx, submitted_rx) = flume::unbounded();
+    let completed = Arc::new(AtomicUsize::new(0));
+    let resets = Arc::new(AtomicUsize::new(0));
+    let dev = PipeReader {
+        reader,
+        config: Arc::new(EntropyConfig),
+        submitted: submitted_tx,
+        completed: completed.clone(),
+        resets: resets.clone(),
+    };
+
+    let (event_tx, event_rx) = flume::unbounded();
+    let (report_tx, report_rx) = flume::unbounded();
+    let (handle, notifier) = dev
+        .spawn_worker(WorkerParam {
+            event_rx,
+            report_tx,
+            memory: ram_bus.clone(),
+            queue_regs: regs.clone(),
+        })
+        .unwrap();
+    let ctl = WorkerCtl::new("pipe-reader".into(), event_tx, notifier, report_rx);
+
+    // Resetting before start does not invoke VirtioIoUring::reset.
+    let seq = ctl.request_reset();
+    ctl.wait_reset(seq, Duration::from_secs(5)).unwrap();
+    assert_eq!(resets.load(Ordering::Acquire), 0);
+
+    let (irq_tx, _irq_rx) = flume::unbounded();
+    let irq_sender = Arc::new(FakeIrqSender { q_tx: irq_tx });
+    let start = || StartParam {
+        feature: VirtioFeature::VERSION_1.bits(),
+        irq_sender: irq_sender.clone(),
+        notifiers: None,
+    };
+    assert!(ctl.wake(WakeEvent::Start { param: start() }));
+
+    // Submit an in-flight read and then reset the device.
+    {
+        let ram = ram_bus.load();
+        let mut guest_q = GuestQueue::new(
+            SplitQueue::new(&regs[0], &ram, false).unwrap().unwrap(),
+            &regs[0],
+        );
+        let id = guest_q.add_desc(&[], &[(DATA_ADDR, 4 << 10)]);
+        assert!(ctl.wake(WakeEvent::Notify { q_index: 0 }));
+        assert_eq!(submitted_rx.recv_timeout(Duration::from_secs(1)), Ok(id));
+    }
+
+    let seq = ctl.request_reset();
+    ctl.wait_reset(seq, Duration::from_secs(5)).unwrap();
+    assert_eq!(completed.load(Ordering::Relaxed), 0);
+    assert_eq!(resets.load(Ordering::Acquire), 1);
+
+    // Re-activate and reset a second time.
+    assert!(ctl.wake(WakeEvent::Start { param: start() }));
+    let seq = ctl.request_reset();
+    ctl.wait_reset(seq, Duration::from_secs(5)).unwrap();
+    assert_eq!(resets.load(Ordering::Acquire), 2);
+
+    assert!(ctl.wake(WakeEvent::Shutdown));
+    handle.join().unwrap();
 }
