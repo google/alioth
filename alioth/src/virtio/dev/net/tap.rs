@@ -15,8 +15,8 @@
 use std::cmp::max;
 use std::fmt::Debug;
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, IoSlice};
-use std::mem::MaybeUninit;
+use std::io::{Error as IoError, ErrorKind, IoSlice, IoSliceMut, Read};
+use std::mem::{MaybeUninit, offset_of};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::Path;
@@ -41,7 +41,7 @@ use crate::virtio::dev::net::{
     CtrlAck, CtrlClass, CtrlHdr, CtrlMq, CtrlMqParisSet, NetConfig, NetFeature, VirtioNetHdr,
 };
 use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WorkerParam};
-use crate::virtio::queue::{DescChain, Status, VirtQueue, copy_from_reader, copy_to_writer};
+use crate::virtio::queue::{self, DescChain, Status, VirtQueue};
 use crate::virtio::worker::WorkerApi;
 use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, VirtioIoUring};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
@@ -240,6 +240,62 @@ impl Virtio for Net {
     }
 }
 
+fn check_rx_buffer(writable: &[IoSliceMut<'_>]) -> Result<()> {
+    let total_len = writable
+        .iter()
+        .map(|s| s.len())
+        .fold(0usize, usize::saturating_add);
+    if total_len < size_of::<VirtioNetHdr>() {
+        return error::InvalidBuffer.fail();
+    }
+    Ok(())
+}
+
+fn set_num_buffers(writable: &mut [IoSliceMut<'_>], num_buffers: u16) {
+    let bytes = num_buffers.to_le_bytes();
+    let mut offset = offset_of!(VirtioNetHdr, num_buffers);
+    let mut written = 0;
+    for slice in writable {
+        if offset >= slice.len() {
+            offset -= slice.len();
+            continue;
+        }
+        let dst = &mut slice[offset..];
+        let count = dst.len().min(bytes.len() - written);
+        dst[..count].copy_from_slice(&bytes[written..written + count]);
+        written += count;
+        if written == bytes.len() {
+            break;
+        }
+        offset = 0;
+    }
+}
+
+fn receive_from_tap<'a>(
+    name: &'a str,
+    mut socket: &'a File,
+    mrg_rxbuf: bool,
+) -> impl FnMut(&mut DescChain) -> Result<Status> + 'a {
+    move |chain| {
+        check_rx_buffer(&chain.writable)?;
+        match socket.read_vectored(&mut chain.writable) {
+            Ok(0) => Ok(Status::Break),
+            Ok(len) if len < size_of::<VirtioNetHdr>() => {
+                log::error!("{name}: short packet header: {len} bytes");
+                Ok(Status::Done { len: 0 })
+            }
+            Ok(len) => {
+                if !mrg_rxbuf {
+                    set_num_buffers(&mut chain.writable, 1);
+                }
+                Ok(Status::Done { len: len as u32 })
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(Status::Break),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 impl VirtioMio for Net {
     fn reset(&mut self, registry: &Registry) {
         self.tap_sockets.truncate(1);
@@ -283,7 +339,12 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.handle_desc(rx_queue_index as u16, irq_sender, copy_from_reader(socket))?;
+            let mrg_rxbuf = self.driver_feature.contains(NetFeature::MRG_RXBUF);
+            queue.handle_desc(
+                rx_queue_index as u16,
+                irq_sender,
+                receive_from_tap(&self.name, socket, mrg_rxbuf),
+            )?;
         }
         if event.is_writable() {
             let tx_queue_index = (token << 1) + 1;
@@ -295,7 +356,11 @@ impl VirtioMio for Net {
                 log::error!("{}: cannot find tap queue {token}", self.name);
                 return Ok(());
             };
-            queue.handle_desc(tx_queue_index as u16, irq_sender, copy_to_writer(socket))?;
+            queue.handle_desc(
+                tx_queue_index as u16,
+                irq_sender,
+                queue::copy_to_writer(socket),
+            )?;
         }
         Ok(())
     }
@@ -322,9 +387,14 @@ impl VirtioMio for Net {
             return Ok(());
         };
         if index & 1 == 0 {
-            queue.handle_desc(index, irq_sender, copy_from_reader(socket))
+            let mrg_rxbuf = self.driver_feature.contains(NetFeature::MRG_RXBUF);
+            queue.handle_desc(
+                index,
+                irq_sender,
+                receive_from_tap(&self.name, socket, mrg_rxbuf),
+            )
         } else {
-            queue.handle_desc(index, irq_sender, copy_to_writer(socket))
+            queue.handle_desc(index, irq_sender, queue::copy_to_writer(socket))
         }
     }
 }
@@ -351,6 +421,7 @@ impl VirtioIoUring for Net {
             return Ok(BufferAction::Written(0));
         };
         let entry = if q_index & 1 == 0 {
+            check_rx_buffer(&chain.writable)?;
             let writable = &chain.writable;
             opcode::Readv::new(
                 Fd(socket.as_raw_fd()),
@@ -370,14 +441,22 @@ impl VirtioIoUring for Net {
         Ok(BufferAction::Sqe(entry))
     }
 
-    fn complete_desc(&mut self, q_index: u16, _chain: &mut DescChain, cqe: &Cqe) -> Result<u32> {
+    fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32> {
         let ret = cqe.result();
         if ret < 0 {
-            let err = std::io::Error::from_raw_os_error(-ret);
-            log::error!("{}: failed to send/receive packet: {err}", self.name,);
+            let err = IoError::from_raw_os_error(-ret);
+            log::error!("{}: failed to send/receive packet: {err}", self.name);
             return Ok(0);
         }
         if q_index & 1 == 0 {
+            let len = ret as usize;
+            if len < size_of::<VirtioNetHdr>() {
+                log::error!("{}: short packet header: {len} bytes", self.name);
+                return Ok(0);
+            }
+            if !self.driver_feature.contains(NetFeature::MRG_RXBUF) {
+                set_num_buffers(&mut chain.writable, 1);
+            }
             Ok(ret as u32)
         } else {
             Ok(0)
@@ -465,3 +544,7 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> Result<()> {
     unsafe { tun_set_offload(tap, tap_feature) }?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tap_test.rs"]
+mod tests;
