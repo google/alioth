@@ -243,6 +243,15 @@ fn test_parse_args() {
         ..Default::default()
     }),
 ))]
+#[cfg_attr(target_os = "linux", case(
+    "if=tap0,mac=02:32:10:d0:00:02",
+    NetSpec::Tap(TapNetSpec {
+        mac: MacAddr([0x02, 0x32, 0x10, 0xd0, 0x00, 0x02]),
+        mtu: 0,
+        if_name: Some("tap0".into()),
+        ..Default::default()
+    }),
+))]
 fn test_parse_net_arg(#[case] arg: &str, #[case] want: NetSpec) {
     let objects = HashMap::new();
     assert_eq!(parse_net_arg(arg, &objects).unwrap(), want);

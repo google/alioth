@@ -15,14 +15,19 @@
 use std::fs::File;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
+use std::path::Path;
 use std::sync::Arc;
 
 use assert_matches::assert_matches;
 use mio::unix::SourceFd;
 use mio::{Interest, Poll, Token};
+use rstest::rstest;
 
+use crate::device::net::MacAddr;
 use crate::mem::mapped::Ram;
-use crate::virtio::dev::net::tap::Net;
+use crate::virtio::Error;
+use crate::virtio::dev::DevSpec;
+use crate::virtio::dev::net::tap::{MIN_MTU, Net, TapNetSpec};
 use crate::virtio::dev::net::{NetConfig, NetFeature};
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::tests::GuestQueue;
@@ -178,4 +183,67 @@ fn test_mio_reset() {
     VirtioMio::reset(&mut net, poll.registry());
     assert_eq!(net.tap_sockets.len(), 1);
     assert!(net.driver_feature.is_empty());
+}
+
+#[test]
+fn test_tap_net_spec_default() {
+    let spec = TapNetSpec::default();
+    assert_eq!(spec.mtu, 0);
+    let (config, feat) = spec.build_config().unwrap();
+    assert_eq!(config.mtu, 0);
+    assert_eq!(config.max_queue_pairs, 1);
+    assert!(!feat.contains(NetFeature::MTU));
+    assert!(!feat.contains(NetFeature::MQ));
+    assert!(feat.contains(NetFeature::MAC));
+}
+
+#[rstest]
+#[case(0, 0, false, 1, false)]
+#[case(MIN_MTU, 1, true, 1, false)]
+#[case(1280, 1, true, 1, false)]
+#[case(1500, 2, true, 2, true)]
+#[case(65535, 4, true, 4, true)]
+fn test_build_config(
+    #[case] mtu: u16,
+    #[case] queue_pairs: u16,
+    #[case] want_mtu_feat: bool,
+    #[case] want_max_qp: u16,
+    #[case] want_mq_feat: bool,
+) {
+    let mac = MacAddr([0x02, 0x32, 0x10, 0xd0, 0x00, 0x01]);
+    let spec = TapNetSpec {
+        mac: mac.clone(),
+        mtu,
+        queue_pairs,
+        ..Default::default()
+    };
+    let (config, feat) = spec.build_config().unwrap();
+    assert_eq!(config.mac, mac);
+    assert_eq!(config.mtu, mtu);
+    assert_eq!(feat.contains(NetFeature::MTU), want_mtu_feat);
+    assert_eq!(config.max_queue_pairs, want_max_qp);
+    assert_eq!(feat.contains(NetFeature::MQ), want_mq_feat);
+}
+
+#[rstest]
+#[case(1)]
+#[case(67)]
+fn test_invalid_mtu(#[case] mtu: u16) {
+    let spec = TapNetSpec {
+        mtu,
+        tap: Some(Path::new("/nonexistent/tap").into()),
+        ..Default::default()
+    };
+    assert_matches!(
+        spec.build_config(),
+        Err(Error::InvalidMtu { mtu: actual, .. }) if actual == mtu
+    );
+    assert_matches!(
+        Net::new(spec.clone(), "tap-net"),
+        Err(Error::InvalidMtu { mtu: actual, .. }) if actual == mtu
+    );
+    assert_matches!(
+        spec.build("tap-net"),
+        Err(Error::InvalidMtu { mtu: actual, .. }) if actual == mtu
+    );
 }
