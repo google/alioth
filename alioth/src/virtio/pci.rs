@@ -230,6 +230,12 @@ where
             q.driver.store(0, Ordering::Release);
             q.device.store(0, Ordering::Release);
         }
+        for feature in &self.reg.driver_feature {
+            feature.store(0, Ordering::Release);
+        }
+        self.reg.device_feature_sel.store(0, Ordering::Release);
+        self.reg.driver_feature_sel.store(0, Ordering::Release);
+        self.reg.queue_sel.store(0, Ordering::Release);
         // Clear the status last, since it tells the driver that the reset
         // has completed.
         self.reg.status.store(0, Ordering::Release);
