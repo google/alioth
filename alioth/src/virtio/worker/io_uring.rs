@@ -30,6 +30,7 @@ use crate::virtio::dev::{
 use crate::virtio::queue::{DescChain, Queue, Status, VirtQueue};
 use crate::virtio::{IrqSender, Result};
 
+#[derive(Debug)]
 pub enum BufferAction {
     Sqe(Sqe),
     Written(u32),
@@ -44,6 +45,8 @@ pub trait VirtioIoUring: Virtio {
     fn handle_desc(&mut self, q_index: u16, chain: &mut DescChain) -> Result<BufferAction>;
 
     fn complete_desc(&mut self, q_index: u16, chain: &mut DescChain, cqe: &Cqe) -> Result<u32>;
+
+    fn reset(&mut self) {}
 }
 
 const TOKEN_QUEUE: u64 = 1 << 62;
@@ -102,7 +105,8 @@ where
         Ok(self.notifier.clone())
     }
 
-    fn reset(&self, _dev: &mut D) -> Result<()> {
+    fn reset(&self, dev: &mut D) -> Result<()> {
+        dev.reset();
         Ok(())
     }
 
