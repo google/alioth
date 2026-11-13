@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use libc::{EFD_CLOEXEC, EFD_NONBLOCK};
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
@@ -40,6 +43,27 @@ use crate::{bitflags, ffi, mem};
 
 bitflags! {
     pub struct VuDevFeature(u128) { }
+}
+
+// VirtIO spec 1.4, Sec 2.2: bits 0..24 and 50..128 are device-specific;
+// bits 24..50 are reserved for queue/transport extensions and future use.
+const DEVICE_FEATURE_MASK: u64 = ((1 << 24) - 1) | (!0 << 50);
+
+const SUPPORTED_VIRTIO_FEATURES: u64 = (VirtioFeature::INDIRECT_DESC.bits()
+    | VirtioFeature::EVENT_IDX.bits()
+    | VirtioFeature::VERSION_1.bits()
+    | VirtioFeature::ACCESS_PLATFORM.bits()
+    | VirtioFeature::RING_PACKED.bits()) as u64;
+
+// VirtIO spec 1.4, Sec 2.8.1: both driver and device ring wrap counters
+// are initialized to 1. For packed rings, vhost-user SET_VRING_BASE encodes
+// the avail wrap counter in bit 15 and the used wrap counter in bit 31.
+fn vring_base_init(feature: u128) -> u32 {
+    if VirtioFeature::from_bits_retain(feature).contains(VirtioFeature::RING_PACKED) {
+        (1 << 15) | (1 << 31)
+    } else {
+        0
+    }
 }
 
 #[derive(Debug)]
@@ -153,7 +177,7 @@ pub struct VuFrontend {
     vu_feature: VuFeature,
     device_feature: u64,
     num_queues: u16,
-    err_fds: Box<[OwnedFd]>,
+    err_fds: Box<[File]>,
 }
 
 impl VuFrontend {
@@ -209,8 +233,8 @@ impl VuFrontend {
 
         let mut err_fds = vec![];
         for index in 0..num_queues {
-            let raw_fd = ffi!(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
-            let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+            let raw_fd = ffi!(unsafe { libc::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) })?;
+            let fd = unsafe { File::from_raw_fd(raw_fd) };
             session.set_virtq_err(&(index as u64), fd.as_fd())?;
             log::trace!("{name}: queue-{index}: set error fd: {}", fd.as_raw_fd());
             err_fds.push(fd);
@@ -264,7 +288,7 @@ impl Virtio for VuFrontend {
     }
 
     fn feature(&self) -> u128 {
-        self.device_feature as u128
+        (self.device_feature & (DEVICE_FEATURE_MASK | SUPPORTED_VIRTIO_FEATURES)) as u128
     }
 
     fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
@@ -301,9 +325,10 @@ impl VirtioMio for VuFrontend {
         S: IrqSender,
     {
         let name = &*self.name;
-        self.session
-            .set_features(&((feature | VirtioFeature::VHOST_PROTOCOL.bits()) as u64))?;
-        log::trace!("{name}: set driver feature: {feature:x?}");
+        let drv_feat =
+            feature as u64 | (self.device_feature & VirtioFeature::VHOST_PROTOCOL.bits() as u64);
+        self.session.set_features(&drv_feat)?;
+        log::trace!("{name}: set driver feature: {drv_feat:#x}");
 
         for (index, notifier) in active_mio.notifiers.iter().enumerate() {
             self.session
@@ -312,6 +337,7 @@ impl VirtioMio for VuFrontend {
             log::trace!("{name}: queue-{index}: set kick fd: {raw_fd}");
         }
 
+        let base = vring_base_init(feature);
         for (index, queue) in active_mio.queues.iter().enumerate() {
             let Some(queue) = queue else {
                 log::trace!("{name}: queue-{index} is disabled");
@@ -334,10 +360,10 @@ impl VirtioMio for VuFrontend {
 
             let virtq_base = VirtqState {
                 index: index as _,
-                val: 0,
+                val: base,
             };
             self.session.set_virtq_base(&virtq_base)?;
-            log::trace!("{name}: queue-{index}: set base: {}", virtq_base.val);
+            log::trace!("{name}: queue-{index}: set base: {:#x}", virtq_base.val);
 
             let mem = queue.ram();
             let virtq_addr = VirtqAddr {
@@ -375,23 +401,39 @@ impl VirtioMio for VuFrontend {
         Ok(())
     }
 
-    fn handle_event<'a, Q, S>(&mut self, _: &Event, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
+    fn handle_event<'a, Q, S>(&mut self, event: &Event, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
-        unreachable!()
+        let q_index = event.token().0;
+        if let Some(mut fd) = self.err_fds.get(q_index) {
+            let _ = fd.read(&mut [0u8; 8]);
+        }
+        vu_error::QueueErr {
+            index: q_index as u16,
+        }
+        .fail()?
     }
 
-    fn handle_queue<Q, S>(&mut self, index: u16, _: &mut ActiveMio<'_, Q, S>) -> Result<()>
+    fn handle_queue<Q, S>(&mut self, index: u16, active_mio: &mut ActiveMio<'_, Q, S>) -> Result<()>
     where
         Q: VirtQueue,
         S: IrqSender,
     {
-        unreachable!(
-            "{}: queue {index} notification should go to vhost-user backend",
-            self.name
-        )
+        if let Some(notifier) = active_mio.notifiers.get(index as usize) {
+            log::warn!(
+                "{}: forwarding queue {index} notification to vhost-user backend",
+                self.name
+            );
+            notifier.notify()?;
+        } else {
+            log::error!(
+                "{}: unexpected queue {index} notification without kick notifier",
+                self.name
+            );
+        }
+        Ok(())
     }
 
     fn reset(&mut self, registry: &Registry) {
@@ -421,7 +463,8 @@ impl VirtioMio for VuFrontend {
         {
             log::error!("{name}: failed to reset device status: {e:?}");
         }
-        for (index, fd) in self.err_fds.iter().enumerate() {
+        for (index, mut fd) in self.err_fds.iter().enumerate() {
+            let _ = fd.read(&mut [0u8; 8]);
             if let Err(e) = registry.deregister(&mut SourceFd(&fd.as_raw_fd())) {
                 log::error!("{name}: queue-{index}: failed to deregister error fd: {e:?}");
             }
