@@ -47,6 +47,8 @@ use crate::virtio::worker::io_uring::{ActiveIoUring, BufferAction, IoUring, Virt
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{FEATURE_BUILT_IN, IrqSender, error};
 
+const MIN_MTU: u16 = 68;
+
 #[derive(Debug)]
 pub struct Net {
     name: Arc<str>,
@@ -63,7 +65,9 @@ pub struct Net {
 pub struct TapNetSpec {
     /// MAC address of the virtual NIC, e.g. 06:3a:76:53:da:3d.
     pub mac: MacAddr,
-    /// Maximum transmission unit.
+    /// Maximum transmission unit, at least 68.
+    /// 0 means not reporting the MTU to the guest. [default: 0]
+    #[serde(default)]
     pub mtu: u16,
     /// Number of pairs of transmit/receive queues. [default: 1]
     #[serde(alias = "qp", default)]
@@ -81,6 +85,36 @@ pub struct TapNetSpec {
     /// System API for asynchronous IO.
     #[serde(default)]
     pub api: WorkerApi,
+}
+
+impl TapNetSpec {
+    fn build_config(&self) -> Result<(NetConfig, NetFeature)> {
+        let mut dev_feat = NetFeature::MAC
+            | NetFeature::CSUM
+            | NetFeature::HOST_TSO4
+            | NetFeature::HOST_TSO6
+            | NetFeature::HOST_ECN
+            | NetFeature::HOST_UFO
+            | NetFeature::HOST_USO
+            | NetFeature::CTRL_VQ;
+        if self.mtu != 0 {
+            if self.mtu < MIN_MTU {
+                return error::InvalidMtu { mtu: self.mtu }.fail();
+            }
+            dev_feat |= NetFeature::MTU;
+        }
+        let max_queue_pairs = max(self.queue_pairs, 1);
+        if max_queue_pairs > 1 {
+            dev_feat |= NetFeature::MQ;
+        }
+        let config = NetConfig {
+            mac: self.mac.clone(),
+            max_queue_pairs,
+            mtu: self.mtu,
+            ..Default::default()
+        };
+        Ok((config, dev_feat))
+    }
 }
 
 impl DevSpec for TapNetSpec {
@@ -104,30 +138,17 @@ fn new_socket(dev_tap: Option<&Path>, blocking: bool) -> Result<File> {
 
 impl Net {
     pub fn new(spec: TapNetSpec, name: impl Into<Arc<str>>) -> Result<Self> {
+        let (config, mut dev_feat) = spec.build_config()?;
         let mut socket = new_socket(spec.tap.as_deref(), matches!(spec.api, WorkerApi::IoUring))?;
-        let max_queue_pairs = max(spec.queue_pairs, 1);
-        setup_socket(&mut socket, spec.if_name.as_deref(), max_queue_pairs > 1)?;
-        let mut dev_feat = NetFeature::MAC
-            | NetFeature::MTU
-            | NetFeature::CSUM
-            | NetFeature::HOST_TSO4
-            | NetFeature::HOST_TSO6
-            | NetFeature::HOST_ECN
-            | NetFeature::HOST_UFO
-            | NetFeature::HOST_USO
-            | NetFeature::CTRL_VQ
-            | detect_tap_offload(&socket);
-        if max_queue_pairs > 1 {
-            dev_feat |= NetFeature::MQ;
-        }
+        setup_socket(
+            &mut socket,
+            spec.if_name.as_deref(),
+            config.max_queue_pairs > 1,
+        )?;
+        dev_feat |= detect_tap_offload(&socket);
         let net = Net {
             name: name.into(),
-            config: Arc::new(NetConfig {
-                mac: spec.mac,
-                max_queue_pairs,
-                mtu: spec.mtu,
-                ..Default::default()
-            }),
+            config: Arc::new(config),
             tap_sockets: vec![socket],
             feature: dev_feat,
             driver_feature: NetFeature::empty(),

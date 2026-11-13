@@ -81,6 +81,8 @@ pub enum Error {
     InvalidMsixVector { vector: u16 },
     #[snafu(display("Invalid virtq buffer"))]
     InvalidBuffer,
+    #[snafu(display("Invalid MTU {mtu}, minimum is 68"))]
+    InvalidMtu { mtu: u16 },
     #[snafu(display("{name}: device did not complete reset within {timeout:?}"))]
     ResetTimeout { name: Arc<str>, timeout: Duration },
     #[cfg(target_os = "linux")]
