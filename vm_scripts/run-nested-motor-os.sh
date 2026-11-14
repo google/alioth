@@ -193,15 +193,16 @@ fi
 banner "[Step 3/4] Nested Full Motor OS Quick Reference"
 cat <<EOF
   1. At L1's 'motor-os:/user$' prompt, boot L2 full Motor OS ($MODE mode):
-       $L1_LAUNCH_CMD
+       /user/vm/run-l2.sh
+     (runs: $L1_LAUNCH_CMD)
 
   2. Escape keys:
        Ctrl-b q   -> Shut down L2 MotorIoHost and return to L1 rush
        Ctrl-a q   -> Shut down L0 Linux VMM and return to host shell
 
-  3. SSH into L2 russhd (192.168.5.2:2222) from the Linux host via L1 (192.168.4.2:2222):
-       ssh -o ProxyCommand="ssh -i $MOTO_DIR/test.key -W %h:%p -p 2222 motor@192.168.4.2" \\
-           -i "$MOTO_DIR/test.key" -p 2222 motor@192.168.5.2
+  3. From the Linux host, SSH into L1 or nested L2:
+       $SCRIPT_DIR/ssh-into-motor-os.sh           # -> L1 russhd (motor@192.168.4.2:2222)
+       $SCRIPT_DIR/ssh-into-nested-motor-os.sh    # -> L2 russhd (motor@192.168.5.2:2222 via L1)
 EOF
 
 banner "[Step 4/4] Launching L0 Linux Wasm VMM -> L1 Motor OS ($MODE)"

@@ -201,6 +201,11 @@ else
     L1_LAUNCH_CMD="MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm"
 fi
 
+cat > "$RUNTIME_DIR/run-l2.sh" <<EOF
+#!/system/bin/rush
+$L1_LAUNCH_CMD
+EOF
+
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/motor-io-host-cwasm" /user/vm/motor-io-host-cwasm
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/motor-io-host-wasm" /user/vm/motor-io-host-wasm
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/vmm-core.cwasm" /user/vm/vmm-core.cwasm
@@ -208,6 +213,7 @@ fi
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/vmm-io.wasm" /user/vm/vmm-io.wasm
 "$IMAGER" put "$L1_RAW" "$LINUX_BLOBS_DIR/bzImage" /user/vm/bzImage
 "$IMAGER" put "$L1_RAW" "$RUNTIME_DIR/vm-l2.toml" /user/vm/vm-l2.toml
+"$IMAGER" put "$L1_RAW" "$RUNTIME_DIR/run-l2.sh" /user/vm/run-l2.sh
 
 L0_CONFIG="$RUNTIME_DIR/vm-l0.toml"
 cat > "$L0_CONFIG" <<EOF
@@ -234,7 +240,8 @@ fi
 banner "[Step 3/4] Nested Linux inside Motor OS Quick Reference"
 cat <<EOF
   1. At L1's 'motor-os:/user$' prompt, boot L2 Linux ($MODE mode):
-       $L1_LAUNCH_CMD
+       /user/vm/run-l2.sh
+     (runs: $L1_LAUNCH_CMD)
 
   2. Escape keys:
        Ctrl-b q   -> Shut down L2 MotorIoHost and return to L1 rush
@@ -243,9 +250,9 @@ EOF
 if [ "$INITRD_ONLY" = 0 ]; then
     cat <<EOF
 
-  3. SSH into L2 Alpine OpenSSH (root@192.168.8.2:22) via L1 russhd (192.168.4.2:2222):
-       ssh -o ProxyCommand="ssh -i $MOTO_DIR/test.key -W %h:%p -p 2222 motor@192.168.4.2" \\
-           -i "$MOTO_DIR/test.key" root@192.168.8.2
+  3. From the Linux host, SSH into L1 or nested L2 Alpine OpenSSH:
+       $SCRIPT_DIR/ssh-into-motor-os.sh           # -> L1 russhd (motor@192.168.4.2:2222)
+       $SCRIPT_DIR/ssh-into-nested-linux.sh       # -> L2 Alpine (root@192.168.8.2:22 via L1)
 EOF
 fi
 

@@ -106,6 +106,7 @@ cargo test --release
 - **Boot Full Alpine Linux (`virtio-blk` + `virtio-net` on `puff-tap`)**:
   ```sh
   ./vm_scripts/run-linux.sh --cwasm     # or --wasm
+  ./vm_scripts/ssh-into-alpine.sh       # SSH into root@192.168.8.2
   ```
 - **Boot Linux Kernel + BusyBox `initramfs`**:
   ```sh
@@ -113,7 +114,8 @@ cargo test --release
   ```
 - **Boot Full Motor OS (`kloader` + `initrd` + `motor-os.qcow2` + `moto-tap`)**:
   ```sh
-  ./vm_scripts/run-motor-os.sh --cwasm  # or --wasm
+  ./vm_scripts/run-motor-os.sh --cwasm       # or --wasm
+  ./vm_scripts/ssh-into-motor-os.sh          # SSH into motor@192.168.4.2:2222
   ```
 - **Boot Minimal Motor OS `test-guest` (`kloader` + `kernel` + `test-init`)**:
   ```sh
@@ -126,10 +128,12 @@ cargo test --release
 - **Boot Nested `L0 -> L1 -> L2` Full Motor OS (`motor-io-host` + `virtio-blk` + `IpDevice` `virtio-net` + `rush` + `russhd`)**:
   ```sh
   ./vm_scripts/run-nested-motor-os.sh --cwasm     # or --wasm
+  ./vm_scripts/ssh-into-nested-motor-os.sh        # SSH into L2 motor@192.168.5.2:2222 via L1
   ```
 - **Boot Nested `L0 -> L1 -> L2` Full Alpine Linux (`motor-io-host` + `bzImage` + `virtio-blk` + `IpDevice` `virtio-net` + OpenSSH)**:
   ```sh
   ./vm_scripts/run-nested-linux.sh --cwasm        # or --wasm, or --initrd
+  ./vm_scripts/ssh-into-nested-linux.sh           # SSH into L2 root@192.168.8.2:22 via L1
   ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
   outer VM and exit (`Ctrl-b` followed by `q` or `x` inside `motor-io-host` to
