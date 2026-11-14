@@ -2,118 +2,122 @@
 
 WASM VMM is a fork of v0.2.0 of Lencerf's
 [Alioth](https://github.com/google/alioth), refactored to split the VMM into two
-isolated multithreaded WebAssembly guest modules (`#![no_std]` `vmm-core`
-targeting `wasm32-unknown-unknown` and `vmm-io` targeting
-`wasm32-wasip1-threads`) and two corresponding native Wasmtime hosts
-(`vmm-core-host` and `vmm-io-host`). See [`split-vmm.md`](split-vmm.md) and
-[`vmm-core-kernel.md`](vmm-core-kernel.md) for the full architecture and
-cross-split bridge design.
+isolated WebAssembly guest modules (`#![no_std]` `vmm-core` targeting
+`wasm32-unknown-unknown` and `vmm-io` targeting `wasm32-wasip1-threads`) driven
+by privileged core and userspace I/O hosts across a lock-free shared-memory
+bridge (`BridgeShm`).
 
-## Architecture
+See [`architecture.md`](architecture.md) for the core/I/O split and bridge
+specification, and [`airlock-motor-os.md`](airlock-motor-os.md) for the Motor OS
+Ring-0 `vmm-core-host` + Ring-3 `vmm-io-host` roadmap and kernel ABI.
 
-The workspace consists of five crates:
+## Workspace Layout
 
-- **`vmm-core`** (`vmm-core/`): The core VMM architecture logic (x86_64 board,
-  guest physical memory layout, ACPI tables, Linux `bzImage`/ELF/PVH loader,
-  16450 UART register emulation, PCIe bus, Virtio PCI transport (`CommonCfg`,
-  `NotifyCfg`, `IsrStatus`, `DeviceCfg`, MSI-X table), and vCPU run loops).
-  Compiles to `vmm-core.wasm` and AOT-precompiled `vmm-core.cwasm` with zero
+- **`vmm-core`** (`vmm-core/`): `#![no_std] + alloc` core VMM logic (x86_64
+  board, guest physical memory layout, ACPI tables, Linux `bzImage`/ELF/PVH
+  loader, 16450 UART, PCIe ECAM bus, Virtio PCI modern transport + MSI-X,
+  emulated `IoApic`, and x86_64 MMIO instruction decoder). Host-driven via
+  non-blocking exports (`vmm_init`, `vmm_on_vcpu_exit`, `vmm_on_bridge_rx`) over
+  `VcpuCommPage`. Compiles to `vmm-core.wasm` and AOT-precompiled `.cwasm`
+  artifacts (`vmm-core.cwasm` for Linux, `vmm-core-motor.cwasm` for Ring-0 Motor
+  OS) with zero floating-point or SIMD instructions.
+- **`vmm-io`** (`vmm-io/`): Userspace device I/O plane (`vm.toml` parsing,
+  Virtio `SplitQueue` descriptor-ring traversal over shared Guest RAM,
+  `virtio-blk` file backend, `virtio-net` TAP backend, serial console handling,
+  and I/O event loop). Compiles to `vmm-io.wasm` and `vmm-io.cwasm` with zero
   floating-point or SIMD instructions.
-- **`vmm-io`** (`vmm-io/`): The device I/O backend logic (`vm.toml` parsing,
-  Virtio `SplitQueue` descriptor-ring traversal over shared guest RAM,
-  `virtio-blk` file backend, `virtio-net` TAP backend, host serial console
-  handling, and I/O event loop). Compiles to `vmm-io.wasm` and AOT-precompiled
-  `vmm-io.cwasm` with zero floating-point or SIMD instructions.
-- **`vmm-core-host`** (`vmm-core-host/`): Native Linux KVM host implementing the
-  `VmmHostCore` trait (`/dev/kvm` ioctls, guest RAM mapping, MSI-X / INTx
-  injection, and the core side of the shared-memory `BridgeShm` + `eventfd`
-  bridge). Builds both `vmm-core-host-cwasm` (no compiler) and
+- **`vmm-core-host`** (`vmm-core-host/`): Native Linux KVM host implementing
+  `VmmHostCore` and `VmmCoreBridge` (`/dev/kvm` ioctls, Guest RAM mapping,
+  `KVM_CAP_SPLIT_IRQCHIP` MSI injection, `KVM_IOEVENTFD` doorbells, and the core
+  side of `BridgeShm`). Builds `vmm-core-host-cwasm` (no compiler) and
   `vmm-core-host-wasm` (with Cranelift JIT).
-- **`vmm-io-host`** (`vmm-io-host/`): Native Linux I/O host implementing the
-  `VmmHostIo` trait (`/dev/net/tun` TAP devices, block image `pread`/`pwrite`,
-  raw terminal serial I/O, `mio` polling, and the I/O side of the shared-memory
-  bridge). Spawns `vmm-core-host-*` as a child process sharing `BridgeShm`,
-  guest RAM `memfd`, and `eventfd`s. Builds both `vmm-io-host-cwasm` and
-  `vmm-io-host-wasm`.
+- **`vmm-io-host`** (`vmm-io-host/`): Native Linux I/O host implementing
+  `IoHost` (`/dev/net/tun` TAP devices, block image `pread`/`pwrite`, raw
+  terminal serial I/O, `mio` polling, and the I/O side of `BridgeShm`). Spawns
+  `vmm-core-host-*` sharing `BridgeShm`, Guest RAM `memfd`, and `eventfd`s.
+  Builds `vmm-io-host-cwasm` and `vmm-io-host-wasm`.
 - **`derive-layout`** (`derive-layout/`): Procedural macro helper crate for
   register/memory layout offsets.
+- **`tests`** (`tests/`): End-to-end VM integration tests (`tests/tests/boot_vms.rs`)
+  plus the Motor OS Ring-0 Airlock VMM host and guest test harness
+  (`tests/{kernel,kloader,moto-sys,test-init}`).
 
 ## Prerequisites
 
-Install the required Rust compilation targets and `rust-src` (used by
-`-Z build-std=core,alloc` when compiling `vmm-core` for
-`wasm32-unknown-unknown`):
+1. **Sibling Checkouts**:
+   - `../wasmtime`: Wasmtime checkout on branch `posk/nostd-threads` (`no_std`-compatible
+     `threads` support used by both the Linux hosts and Motor OS Ring 0).
+   - `../linux-blobs/` and `../motor-dev/motor-os/` (for end-to-end guest boot
+     tests and Motor OS guest builds; see the
+     [Motor OS build guide](https://github.com/moturus/motor-os/blob/main/docs/build.md)).
+2. **Rust Targets & Components**:
+   ```sh
+   rustup component add rust-src
+   rustup target add wasm32-unknown-unknown
+   rustup target add wasm32-wasip1-threads
+   rustup target add x86_64-unknown-linux-musl
+   ```
 
-```sh
-rustup component add rust-src
-rustup target add wasm32-unknown-unknown
-rustup target add wasm32-wasip1-threads
-rustup target add x86_64-unknown-linux-musl
-```
+## Building & Testing
 
-## Building
+### Option A: Build & Stage with `./publish.sh`
 
-### Option A: Build & Stage with `./publish.sh` (Recommended)
-
-Use [`./publish.sh`](publish.sh) to build all eight artifacts
-(`vmm-core-host-cwasm`, `vmm-core-host-wasm`, `vmm-io-host-cwasm`,
-`vmm-io-host-wasm`, `vmm-core.cwasm`, `vmm-core.wasm`, `vmm-io.cwasm`, and
-`vmm-io.wasm`) as static `musl` / `wasm32-unknown-unknown` +
-`wasm32-wasip1-threads` release binaries, copy
-them to a destination directory `$DIR`, and generate a `$DIR/run-vm.sh` launcher
-script:
+[`./publish.sh`](publish.sh) builds the Linux host and Wasm guest release
+artifacts (`vmm-core-host-{cwasm,wasm}`, `vmm-io-host-{cwasm,wasm}`,
+`vmm-core.{cwasm,wasm}`, `vmm-io.{cwasm,wasm}`), copies them to `$DIR`, and
+generates `$DIR/run-vm.sh`:
 
 ```sh
 ./publish.sh /path/to/stage-dir
 ```
 
-### Option B: Build with `cargo`
+### Option B: Build & Test with `cargo`
 
-Running `cargo build` or `cargo build --release` (or with
-`--target=x86_64-unknown-linux-musl`) automatically builds all eight host and
-guest artifacts via [`vmm-core-host/build.rs`](vmm-core-host/build.rs) and
+Running `cargo build` automatically compiles the Wasm guest modules and AOT
+`.cwasm` artifacts via [`vmm-core-host/build.rs`](vmm-core-host/build.rs) and
 [`vmm-io-host/build.rs`](vmm-io-host/build.rs):
 
 ```sh
 cargo build --release --target=x86_64-unknown-linux-musl
 ```
 
-To run workspace unit and end-to-end VM boot tests (full Linux, Linux `initrd`,
-full Motor OS, and minimal Motor OS `test-guest` in both `--cwasm` and `--wasm`
-modes):
+To build the Motor OS Ring-0 VMM guest image (`tests/{kernel,kloader,test-init}`):
+
 ```sh
-cargo test
+./tests/kernel/build.sh --release
+```
+
+To run workspace unit tests and end-to-end VM boot tests (full Alpine Linux,
+Linux `initrd`, full Motor OS, minimal Motor OS `test-guest`, and nested
+`L0 -> L1 -> L2` Motor OS Ring-0 `test-guest` in both `--cwasm` and `--wasm`
+modes; note that the TAP-backed tests expect `puff-tap` / `moto-tap` configured
+on the host):
+
+```sh
+cargo test --release
 ```
 
 ## Running VMs Interactively (`vm_scripts/`)
 
-Guest image blobs live outside this repository in `../linux-blobs/` and
-`../motor-dev/motor-os/vm_images/release/` (see the
-[Motor OS build guide](https://github.com/moturus/motor-os/blob/main/docs/build.md)).
-
 - **Boot Full Alpine Linux (`virtio-blk` + `virtio-net` on `puff-tap`)**:
   ```sh
-  ./vm_scripts/run-linux.sh --cwasm
-  # or with JIT compilation:
-  ./vm_scripts/run-linux.sh --wasm
+  ./vm_scripts/run-linux.sh --cwasm     # or --wasm
   ```
 - **Boot Linux Kernel + BusyBox `initramfs`**:
   ```sh
-  ./vm_scripts/run-linux-initrd.sh --cwasm
-  # or with JIT compilation:
-  ./vm_scripts/run-linux-initrd.sh --wasm
+  ./vm_scripts/run-linux-initrd.sh --cwasm   # or --wasm
   ```
 - **Boot Full Motor OS (`kloader` + `initrd` + `motor-os.qcow2` + `moto-tap`)**:
   ```sh
-  ./vm_scripts/run-motor-os.sh --cwasm
-  # or with JIT compilation:
-  ./vm_scripts/run-motor-os.sh --wasm
+  ./vm_scripts/run-motor-os.sh --cwasm  # or --wasm
   ```
-- **Boot Minimal Motor OS `test-guest` (`kloader` + `kernel` + `test-init`, 0 disks/NICs)**:
+- **Boot Minimal Motor OS `test-guest` (`kloader` + `kernel` + `test-init`)**:
   ```sh
-  ./vm_scripts/run-test-guest.sh --cwasm
-  # or with JIT compilation:
-  ./vm_scripts/run-test-guest.sh --wasm
+  ./vm_scripts/run-test-guest.sh --cwasm     # or --wasm
+  ```
+- **Boot Nested `L0 -> L1 -> L2` Motor OS Ring-0 VMM (`test-guest` in L1 booting `test-guest` in L2)**:
+  ```sh
+  ./vm_scripts/run-nested-test-guest.sh --cwasm   # or --wasm
   ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
   VM and exit.
