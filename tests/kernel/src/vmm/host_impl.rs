@@ -216,23 +216,32 @@ impl VmmHostCore for MotorHvCore {
 
         for basic in [0x2u32, 0x4, 0x6] {
             if l0.eax >= basic {
-                let r = core::arch::x86_64::__cpuid_count(basic, 0);
-                let has_idx = (basic == 0x4).then_some(0);
-                push_cpuid(&mut leaves, basic, has_idx, r.eax, r.ebx, r.ecx, r.edx);
+                if basic == 0x4 {
+                    for sub in 0..8u32 {
+                        let r = core::arch::x86_64::__cpuid_count(0x4, sub);
+                        if sub > 0 && (r.eax & 0x1f) == 0 {
+                            break;
+                        }
+                        push_cpuid(&mut leaves, 0x4, Some(sub), r.eax, r.ebx, r.ecx, r.edx);
+                    }
+                } else {
+                    let r = core::arch::x86_64::__cpuid_count(basic, 0);
+                    push_cpuid(&mut leaves, basic, None, r.eax, r.ebx, r.ecx, r.edx);
+                }
             }
         }
 
         if l0.eax >= 0x7 {
             let l7 = core::arch::x86_64::__cpuid_count(0x7, 0);
             // Keep FSGSBASE (0), BMI1 (3), AVX2 (5), SMEP (7), BMI2 (8), ERMS (9),
-            // INVPCID (10), RDSEED (18), ADX (19), SMAP (20), CLFLUSHOPT (23), CLWB (24), SHA (29).
+            // RDSEED (18), ADX (19), SMAP (20), CLFLUSHOPT (23), CLWB (24), SHA (29).
+            // Omit INVPCID (10) to match PCID masked out in leaf 0x1 ECX.
             let ebx7_allow = (1 << 0)
                 | (1 << 3)
                 | (1 << 5)
                 | (1 << 7)
                 | (1 << 8)
                 | (1 << 9)
-                | (1 << 10)
                 | (1 << 18)
                 | (1 << 19)
                 | (1 << 20)
@@ -261,23 +270,34 @@ impl VmmHostCore for MotorHvCore {
             }
         }
 
-        // KVM paravirtual clock leaves (`"KVMKVMKVM\0\0\0"`)
+        // KVM paravirtual clock & timing leaves (`"KVMKVMKVM\0\0\0"`, max leaf `0x4000_0010`)
         push_cpuid(
             &mut leaves,
             0x4000_0000,
             None,
-            0x4000_0001,
+            0x4000_0010,
             0x4b4d_564b,
             0x564b_4d56,
             0x0000_004d,
         );
-        // KVM_FEATURE_CLOCKSOURCE (0) | KVM_FEATURE_CLOCKSOURCE2 (3) | KVM_FEATURE_CLOCKSOURCE_STABLE_BIT (24)
+        // KVM_FEATURE_CLOCKSOURCE (0) | KVM_FEATURE_NOP_IO_DELAY (1)
+        // | KVM_FEATURE_CLOCKSOURCE2 (3) | KVM_FEATURE_CLOCKSOURCE_STABLE_BIT (24)
         push_cpuid(
             &mut leaves,
             0x4000_0001,
             None,
-            (1 << 0) | (1 << 3) | (1 << 24),
+            (1 << 0) | (1 << 1) | (1 << 3) | (1 << 24),
             0,
+            0,
+            0,
+        );
+        // Paravirtual TSC kHz (EAX) & 1 GHz virtual LAPIC bus kHz (EBX = 1_000_000)
+        push_cpuid(
+            &mut leaves,
+            0x4000_0010,
+            None,
+            crate::arch::time::tsc_khz(),
+            1_000_000,
             0,
             0,
         );
@@ -296,8 +316,20 @@ impl VmmHostCore for MotorHvCore {
 
         if max_ext >= 0x8000_0001 {
             let e1 = core::arch::x86_64::__cpuid(0x8000_0001);
-            // Mask out SVM (bit 2 of ECX) for L2 leaf guest
-            let ecx_e1 = e1.ecx & !(1 << 2);
+            // Whitelist safe architectural extended ISA bits (LAHF_LM, ABM/LZCNT, SSE4A,
+            // MisAlignSse, 3DNowPrefetch, XOP, FMA4, TBM) while masking SVM, SKINIT, WDT,
+            // OSVW, TOPOEXT, PerfCtrExt*, and MWAITX.
+            let ecx_e1_allow = (1 << 0)
+                | (1 << 5)
+                | (1 << 6)
+                | (1 << 7)
+                | (1 << 8)
+                | (1 << 11)
+                | (1 << 16)
+                | (1 << 21);
+            let ecx_e1 = e1.ecx & ecx_e1_allow;
+            // Mask MCE (7) and MCA (14) consistently with leaf 0x1 EDX.
+            let edx_e1 = e1.edx & !((1 << 7) | (1 << 14));
             push_cpuid(
                 &mut leaves,
                 0x8000_0001,
@@ -305,7 +337,7 @@ impl VmmHostCore for MotorHvCore {
                 e1.eax,
                 e1.ebx,
                 ecx_e1,
-                e1.edx,
+                edx_e1,
             );
         }
         for brand in 0x8000_0002..=0x8000_0004 {

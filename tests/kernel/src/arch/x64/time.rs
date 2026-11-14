@@ -314,6 +314,32 @@ pub fn rdtsc_now() -> u64 {
     rdtsc()
 }
 
+/// Calibrated host TSC frequency in kHz (for KVM `CPUID 0x4000_0010.EAX`).
+pub fn tsc_khz() -> u32 {
+    let hz = GLOBALS.tsc_in_sec.load(Ordering::Acquire);
+    ((hz + 500) / 1000) as u32
+}
+
+/// Overflow-safe conversion from nanoseconds to TSC ticks for virtual APIC countdown timers.
+pub fn nanos_to_tsc_delta(nanos: u64) -> u64 {
+    let hz = GLOBALS.tsc_in_sec.load(Ordering::Acquire);
+    if hz == 0 {
+        return nanos;
+    }
+    let ticks = ((nanos as u128) * (hz as u128)) / (NANOS_IN_SEC as u128);
+    ticks.min(u64::MAX as u128) as u64
+}
+
+/// Overflow-safe conversion from TSC ticks to nanoseconds for virtual APIC countdown timers.
+pub fn tsc_delta_to_nanos(tsc: u64) -> u64 {
+    let hz = GLOBALS.tsc_in_sec.load(Ordering::Acquire);
+    if hz == 0 {
+        return 0;
+    }
+    let nanos = ((tsc as u128) * (NANOS_IN_SEC as u128)) / (hz as u128);
+    nanos.min(u64::MAX as u128) as u64
+}
+
 #[derive(Debug)]
 pub struct Globals {
     pub system_time: AtomicU64,

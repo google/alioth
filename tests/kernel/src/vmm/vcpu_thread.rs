@@ -274,8 +274,27 @@ impl VcpuThreadHandler for VcpuRunner {
                         self.call_wasm_exit(thread);
                     }
                 }
-                FastExit::MmioFault { .. } => {
-                    self.call_wasm_exit(thread);
+                FastExit::MmioFault { gpa, .. } => {
+                    if self.slot.lapic.in_xapic_mmio_range(gpa) {
+                        match self
+                            .slot
+                            .lapic
+                            .emulate_xapic_mmio(gpa, &self.hv.stage2, comm)
+                        {
+                            Ok(ipi_action) => {
+                                self.hv.dispatch_ipi(self.vcpu_id, ipi_action);
+                            }
+                            Err(err) => {
+                                log::error!(
+                                    "vcpu {} xAPIC MMIO emulation failed at gpa={gpa:#x}: {err:?}",
+                                    self.vcpu_id
+                                );
+                                self.terminate_vm_and_exit(thread);
+                            }
+                        }
+                    } else {
+                        self.call_wasm_exit(thread);
+                    }
                 }
             }
         }

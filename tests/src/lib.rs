@@ -313,9 +313,26 @@ fn run_imager(imager: &Path, args: &[&str]) {
     );
 }
 
+pub fn ensure_motor_io_host_artifacts() -> &'static Path {
+    static MOTOR_OUT: OnceLock<PathBuf> = OnceLock::new();
+    MOTOR_OUT.get_or_init(|| {
+        let _ = ensure_vmm_artifacts();
+        let root = repo_root();
+        let motor_out = root.join("target/motor");
+        let mut build_cmd = Command::new(root.join("tests/motor-io-host/build.sh"));
+        clear_host_rustup_env(&mut build_cmd);
+        let status = build_cmd
+            .env("MOTO_VMM_OUT", &motor_out)
+            .status()
+            .expect("failed to execute tests/motor-io-host/build.sh");
+        assert!(status.success(), "tests/motor-io-host/build.sh failed");
+        motor_out
+    })
+}
+
 fn build_nested_motor_os_artifacts() -> NestedMotorOsArtifacts {
     let guest = ensure_test_guest_artifacts();
-    let root = repo_root();
+    let motor_out = ensure_motor_io_host_artifacts();
     let moto_dir = motor_os_release_dir();
     let imager = moto_dir.join("tools/imager");
     let qcow2 = moto_dir.join("motor-os.qcow2");
@@ -331,18 +348,9 @@ fn build_nested_motor_os_artifacts() -> NestedMotorOsArtifacts {
         );
     }
 
-    let motor_out = root.join("target/motor");
-    let mut build_cmd = Command::new(root.join("tests/motor-io-host/build.sh"));
-    clear_host_rustup_env(&mut build_cmd);
-    let status = build_cmd
-        .env("MOTO_VMM_OUT", &motor_out)
-        .status()
-        .expect("failed to execute tests/motor-io-host/build.sh");
-    assert!(status.success(), "tests/motor-io-host/build.sh failed");
-
-    let stage_dir = motor_out.join("nested-stage");
+    let stage_dir = motor_out.join("nested-moto-stage");
     let _ = fs::remove_dir_all(&stage_dir);
-    fs::create_dir_all(&stage_dir).expect("failed to create target/motor/nested-stage");
+    fs::create_dir_all(&stage_dir).expect("failed to create target/motor/nested-moto-stage");
 
     let l2_raw = stage_dir.join("l2-motor-os.raw");
     convert_qcow2_to_raw(&qcow2, &l2_raw);
@@ -477,6 +485,106 @@ fn build_nested_motor_os_artifacts() -> NestedMotorOsArtifacts {
 pub fn ensure_nested_motor_os_artifacts() -> &'static NestedMotorOsArtifacts {
     static NESTED_MOTO: OnceLock<NestedMotorOsArtifacts> = OnceLock::new();
     NESTED_MOTO.get_or_init(build_nested_motor_os_artifacts)
+}
+
+#[derive(Debug, Clone)]
+pub struct NestedLinuxInitrdArtifacts {
+    pub l1_kloader: PathBuf,
+    pub l1_initrd: PathBuf,
+    pub l1_template_raw: PathBuf,
+}
+
+fn build_nested_linux_initrd_artifacts() -> NestedLinuxInitrdArtifacts {
+    let guest = ensure_test_guest_artifacts();
+    let motor_out = ensure_motor_io_host_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+    let imager = moto_dir.join("tools/imager");
+    let qcow2 = moto_dir.join("motor-os.qcow2");
+    let l1_initrd = moto_dir.join("initrd");
+    let bzimage = blobs.join("bzImage");
+    let initramfs = blobs.join("initramfs.cpio.gz");
+
+    for required in [&imager, &qcow2, &l1_initrd, &bzimage, &initramfs] {
+        assert!(
+            required.is_file(),
+            "missing required nested Linux initramfs artifact '{}'",
+            required.display()
+        );
+    }
+
+    let stage_dir = motor_out.join("nested-linux-initrd-stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    fs::create_dir_all(&stage_dir)
+        .expect("failed to create target/motor/nested-linux-initrd-stage");
+
+    let l1_template_raw = motor_out.join("l1-linux-initrd-template.raw");
+    let _ = fs::remove_file(&l1_template_raw);
+    convert_qcow2_to_raw(&qcow2, &l1_template_raw);
+
+    run_imager(
+        &imager,
+        &[
+            "mkdir",
+            "--mode",
+            "rwxrwxr-x",
+            l1_template_raw.to_str().unwrap(),
+            "/user/vm",
+        ],
+    );
+
+    let vm_l2_toml = stage_dir.join("vm-l2.toml");
+    fs::write(
+        &vm_l2_toml,
+        "log_file = \"/user/tmp/vmm-l2.log\"\n\
+         log_level = \"info\"\n\
+         kernel = \"/user/vm/bzImage\"\n\
+         initramfs = \"/user/vm/initramfs.cpio.gz\"\n\
+         cmd_line = \"console=ttyS0 rdinit=/init\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n",
+    )
+    .expect("failed to write vm-l2.toml for nested Linux initramfs");
+
+    for (src, dst) in [
+        (
+            motor_out.join("motor-io-host-cwasm"),
+            "/user/vm/motor-io-host-cwasm",
+        ),
+        (
+            motor_out.join("motor-io-host-wasm"),
+            "/user/vm/motor-io-host-wasm",
+        ),
+        (motor_out.join("vmm-core.cwasm"), "/user/vm/vmm-core.cwasm"),
+        (motor_out.join("vmm-io.cwasm"), "/user/vm/vmm-io.cwasm"),
+        (motor_out.join("vmm-io.wasm"), "/user/vm/vmm-io.wasm"),
+        (bzimage, "/user/vm/bzImage"),
+        (initramfs, "/user/vm/initramfs.cpio.gz"),
+        (vm_l2_toml, "/user/vm/vm-l2.toml"),
+    ] {
+        run_imager(
+            &imager,
+            &[
+                "put",
+                l1_template_raw.to_str().unwrap(),
+                src.to_str().unwrap(),
+                dst,
+            ],
+        );
+    }
+
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    NestedLinuxInitrdArtifacts {
+        l1_kloader: guest.kloader.clone(),
+        l1_initrd,
+        l1_template_raw,
+    }
+}
+
+pub fn ensure_nested_linux_initrd_artifacts() -> &'static NestedLinuxInitrdArtifacts {
+    static NESTED_LINUX_INITRD: OnceLock<NestedLinuxInitrdArtifacts> = OnceLock::new();
+    NESTED_LINUX_INITRD.get_or_init(build_nested_linux_initrd_artifacts)
 }
 
 pub fn ensure_vmm_artifacts() -> &'static Path {
@@ -1409,6 +1517,283 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
     assert!(
         status.success(),
         "[nested_motor_os ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+        mode.as_str(),
+        String::from_utf8_lossy(&serial),
+        String::from_utf8_lossy(&stderr_bytes),
+    );
+}
+
+/// Boots L1 full Motor OS (`tests/kloader` + stock `initrd` + staged `l1-linux-initrd.raw`),
+/// launches `motor-io-host-{cwasm,wasm}` inside L1 to boot SMP Linux 6.14 + BusyBox
+/// `initramfs.cpio.gz` (`2` vCPUs, `256M` RAM), verifies interactive `ttyS0` (`COM1` IRQ 4)
+/// shell execution (`L2_LINUX_OK_Linux_2`), triggers clean ACPI S5 `poweroff -f` inside L2,
+/// and verifies clean L2 -> L1 `rush` -> L0 teardown.
+pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
+    let target_dir = ensure_vmm_artifacts();
+    let nested = ensure_nested_linux_initrd_artifacts();
+
+    let l1_disk = tmp.path().join("l1-linux-initrd.raw");
+    copy_sparse_raw(&nested.l1_template_raw, &l1_disk);
+
+    let config_path = tmp.path().join("vm-l0.toml");
+    let log_path = tmp.path().join("vmm-l0.log");
+    let full_config = format!(
+        "log_file = \"{}\"\n\
+         log_level = \"info\"\n\
+         pvh = \"{}\"\n\
+         initramfs = \"{}\"\n\
+         cmd_line = \"system-tty\"\n\
+         num_cpus = 4\n\
+         mem_size = \"1024M\"\n\
+         blk = [\"{}\"]\n",
+        log_path.display(),
+        nested.l1_kloader.display(),
+        nested.l1_initrd.display(),
+        l1_disk.display(),
+    );
+    fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
+
+    let (io_host, io_mod, core_host, core_mod, l1_launch) = match mode {
+        VmmMode::Cwasm => (
+            target_dir.join("vmm-io-host-cwasm"),
+            target_dir.join("vmm-io.cwasm"),
+            target_dir.join("vmm-core-host-cwasm"),
+            target_dir.join("vmm-core.cwasm"),
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r",
+        ),
+        VmmMode::Wasm => (
+            target_dir.join("vmm-io-host-wasm"),
+            target_dir.join("vmm-io.wasm"),
+            target_dir.join("vmm-core-host-wasm"),
+            target_dir.join("vmm-core.wasm"),
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r",
+        ),
+    };
+
+    let mut cmd = Command::new(&io_host);
+    cmd.current_dir(tmp.path())
+        .arg("-c")
+        .arg(&config_path)
+        .arg("-w")
+        .arg(&io_mod)
+        .arg("--core-host")
+        .arg(&core_host)
+        .arg("--core-wasm")
+        .arg(&core_mod)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+
+    let mut child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut guard = ProcessGroupGuard::new(child);
+
+    let state = Arc::new((
+        Mutex::new(SerialCapture {
+            buf: Vec::with_capacity(32768),
+            eof: false,
+        }),
+        Condvar::new(),
+    ));
+    let state_reader = Arc::clone(&state);
+    let stdout_handle = thread::spawn(move || {
+        let mut chunk = [0u8; 512];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().eof = true;
+                    cvar.notify_all();
+                    break;
+                }
+                Ok(n) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
+                    cvar.notify_all();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().eof = true;
+                    cvar.notify_all();
+                    break;
+                }
+            }
+        }
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stderr.read_to_end(&mut out);
+        out
+    });
+
+    let fail_with_diag = |reason: String,
+                          mut guard: ProcessGroupGuard,
+                          stdin: std::process::ChildStdin,
+                          stdout_handle: thread::JoinHandle<()>,
+                          stderr_handle: thread::JoinHandle<Vec<u8>>|
+     -> ! {
+        guard.kill_group();
+        guard.armed = false;
+        drop(stdin);
+        let _ = stdout_handle.join();
+        let stderr_bytes = stderr_handle.join().unwrap_or_default();
+        let serial = state.0.lock().unwrap().buf.clone();
+        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
+        panic!(
+            "[nested_linux_initrd ({})] {reason}\n--- vm-l0.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            mode.as_str(),
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    };
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"Starting /system/bin/rush",
+        Duration::from_secs(25),
+    ) else {
+        fail_with_diag(
+            "L1 Motor OS did not boot to /system/bin/rush within 25s".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+
+    thread::sleep(Duration::from_millis(300));
+    stdin
+        .write_all(l1_launch.as_bytes())
+        .expect("failed to write L2 Linux launch command to L1 stdin");
+    stdin.flush().expect("failed to flush L1 stdin");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"BusyBox initramfs booted successfully in WASM VMM!",
+        Duration::from_secs(45),
+    ) else {
+        fail_with_diag(
+            "L2 Linux 6.14 + initramfs did not reach BusyBox banner within 45s".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+    cursor = next_pos;
+
+    thread::sleep(Duration::from_millis(300));
+    stdin
+        .write_all(b"echo L2_LINUX_OK_$(uname -s)_$(nproc)\n")
+        .expect("failed to send command to L2 BusyBox shell");
+    stdin.flush().expect("failed to flush L2 BusyBox command");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"L2_LINUX_OK_Linux_2",
+        Duration::from_secs(15),
+    ) else {
+        fail_with_diag(
+            "L2 BusyBox shell command over ttyS0 (COM1 IRQ 4) failed".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+    cursor = next_pos;
+
+    stdin
+        .write_all(b"poweroff -f\n")
+        .expect("failed to send poweroff -f to L2 BusyBox shell");
+    stdin.flush().expect("failed to flush poweroff -f");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"reboot: Power down",
+        Duration::from_secs(15),
+    ) else {
+        fail_with_diag(
+            "L2 Linux did not emit 'reboot: Power down' on poweroff -f".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+    cursor = next_pos;
+
+    thread::sleep(Duration::from_millis(300));
+    stdin
+        .write_all(b"echo L1_RESUMED_AFTER_LINUX_OK\r")
+        .expect("failed to send post-L2 check to L1 rush");
+    stdin.flush().expect("failed to flush L1 rush");
+
+    if wait_for_serial_from(
+        &state,
+        cursor,
+        b"L1_RESUMED_AFTER_LINUX_OK",
+        Duration::from_secs(10),
+    )
+    .is_none()
+    {
+        fail_with_diag(
+            "L1 rush shell did not resume cleanly after L2 Linux ACPI S5 shutdown".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    }
+
+    let _ = stdin.write_all(b"\x01q");
+    let _ = stdin.flush();
+    drop(stdin);
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(10);
+    let exit_status = loop {
+        match guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= shutdown_deadline => break None,
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+
+    if exit_status.is_none() {
+        guard.kill_group();
+        guard.armed = false;
+    }
+    let _ = stdout_handle.join();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let serial = state.0.lock().unwrap().buf.clone();
+    let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
+
+    let Some(status) = exit_status else {
+        panic!(
+            "[nested_linux_initrd ({})] L0 VM failed to exit within 10s after Ctrl-a q\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            mode.as_str(),
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    };
+    assert!(
+        status.success(),
+        "[nested_linux_initrd ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
         mode.as_str(),
         String::from_utf8_lossy(&serial),
         String::from_utf8_lossy(&stderr_bytes),

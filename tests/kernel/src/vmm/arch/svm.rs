@@ -29,6 +29,8 @@ use super::{xsetbv_raw, FastExit};
 use crate::vmm::lapic::VcpuLapic;
 use crate::vmm::stage2::Stage2Mmu;
 
+const MSR_IA32_TSC: u32 = 0x0000_0010;
+const MSR_IA32_TSC_ADJUST: u32 = 0x0000_003b;
 const MSR_PAT: u32 = 0x0000_0277;
 const MSR_SYSENTER_CS: u32 = 0x0000_0174;
 const MSR_SYSENTER_ESP: u32 = 0x0000_0175;
@@ -475,6 +477,8 @@ pub struct SvmVcpu {
     guest_efer: u64,
     guest_xcr0: u64,
     guest_tsc_aux: u64,
+    guest_tsc_adjust: u64,
+    guest_tsc_offset: u64,
     last_tlb_gen: u64,
     last_pcpu: u32,
     cpuids: Vec<RawCpuid>,
@@ -504,6 +508,8 @@ impl SvmVcpu {
             guest_efer: 0,
             guest_xcr0: 1,
             guest_tsc_aux: 0,
+            guest_tsc_adjust: 0,
+            guest_tsc_offset: 0,
             last_tlb_gen: 0,
             last_pcpu: u32::MAX,
             cpuids: Vec::new(),
@@ -535,6 +541,7 @@ impl SvmVcpu {
         let iopm_phys = self.iopm_phys;
         let msrpm_phys = self.msrpm_phys;
         let asid = self.asid;
+        let tsc_offset = self.guest_tsc_offset;
         let vmcb = self.vmcb_mut();
 
         vmcb.control.intercepts_1 = INTERCEPT_INTR
@@ -558,6 +565,7 @@ impl SvmVcpu {
             | INTERCEPT_XSETBV;
         vmcb.control.iopm_base_pa = iopm_phys;
         vmcb.control.msrpm_base_pa = msrpm_phys;
+        vmcb.control.tsc_offset = tsc_offset;
         vmcb.control.guest_asid = asid;
         vmcb.control.tlb_ctl = 1;
         vmcb.control.int_ctl = V_INTR_MASKING;
@@ -742,6 +750,10 @@ impl SvmVcpu {
                         MSR_SYSENTER_EIP => vmcb.save.sysenter_eip,
                         MSR_PAT => vmcb.save.g_pat,
                         MSR_TSC_AUX => self.guest_tsc_aux,
+                        MSR_IA32_TSC => {
+                            crate::arch::time::rdtsc_now().wrapping_add(self.guest_tsc_offset)
+                        }
+                        MSR_IA32_TSC_ADJUST => self.guest_tsc_adjust,
                         _ => lapic.try_rdmsr(msr).unwrap_or(0),
                     };
                     RegVal::Scalar(v)
@@ -833,6 +845,19 @@ impl SvmVcpu {
                     MSR_SYSENTER_EIP => self.vmcb_mut().save.sysenter_eip = v,
                     MSR_PAT => self.vmcb_mut().save.g_pat = v,
                     MSR_TSC_AUX => self.guest_tsc_aux = v,
+                    MSR_IA32_TSC => {
+                        let new_off = v.wrapping_sub(crate::arch::time::rdtsc_now());
+                        let delta = new_off.wrapping_sub(self.guest_tsc_offset);
+                        self.guest_tsc_offset = new_off;
+                        self.guest_tsc_adjust = self.guest_tsc_adjust.wrapping_add(delta);
+                        self.vmcb_mut().control.tsc_offset = new_off;
+                    }
+                    MSR_IA32_TSC_ADJUST => {
+                        let delta = v.wrapping_sub(self.guest_tsc_adjust);
+                        self.guest_tsc_adjust = v;
+                        self.guest_tsc_offset = self.guest_tsc_offset.wrapping_add(delta);
+                        self.vmcb_mut().control.tsc_offset = self.guest_tsc_offset;
+                    }
                     _ => {
                         let _ = lapic.try_wrmsr(msr, v);
                     }
@@ -1005,8 +1030,18 @@ impl SvmVcpu {
             return Ok(FastExit::HostIntr);
         }
 
+        // VMLOAD/VMSAVE do not swap IA32_TSC_AUX (`0xc000_0103`), which guest `RDTSCP` reads directly.
+        let host_tsc_aux = rdmsr(MSR_TSC_AUX);
+        if host_tsc_aux != self.guest_tsc_aux {
+            wrmsr(MSR_TSC_AUX, self.guest_tsc_aux);
+        }
+
         unsafe {
             svm_vmrun_asm(&mut self.gprs, vmcb_pa, host_vmsave_pa);
+        }
+
+        if host_tsc_aux != self.guest_tsc_aux {
+            wrmsr(MSR_TSC_AUX, host_tsc_aux);
         }
 
         {
@@ -1156,6 +1191,23 @@ impl SvmVcpu {
                             self.advance_rip(insn_len);
                             Ok(FastExit::EmulateHandled)
                         }
+                        MSR_IA32_TSC => {
+                            let new_off = val.wrapping_sub(crate::arch::time::rdtsc_now());
+                            let delta = new_off.wrapping_sub(self.guest_tsc_offset);
+                            self.guest_tsc_offset = new_off;
+                            self.guest_tsc_adjust = self.guest_tsc_adjust.wrapping_add(delta);
+                            self.vmcb_mut().control.tsc_offset = new_off;
+                            self.advance_rip(insn_len);
+                            Ok(FastExit::EmulateHandled)
+                        }
+                        MSR_IA32_TSC_ADJUST => {
+                            let delta = val.wrapping_sub(self.guest_tsc_adjust);
+                            self.guest_tsc_adjust = val;
+                            self.guest_tsc_offset = self.guest_tsc_offset.wrapping_add(delta);
+                            self.vmcb_mut().control.tsc_offset = self.guest_tsc_offset;
+                            self.advance_rip(insn_len);
+                            Ok(FastExit::EmulateHandled)
+                        }
                         _ => Ok(FastExit::MsrWrite { msr, val, insn_len }),
                     }
                 } else {
@@ -1171,6 +1223,16 @@ impl SvmVcpu {
                         }
                         MSR_TSC_AUX => {
                             self.complete_rdmsr(self.guest_tsc_aux, insn_len);
+                            Ok(FastExit::EmulateHandled)
+                        }
+                        MSR_IA32_TSC => {
+                            let tsc = crate::arch::time::rdtsc_now()
+                                .wrapping_add(self.guest_tsc_offset);
+                            self.complete_rdmsr(tsc, insn_len);
+                            Ok(FastExit::EmulateHandled)
+                        }
+                        MSR_IA32_TSC_ADJUST => {
+                            self.complete_rdmsr(self.guest_tsc_adjust, insn_len);
                             Ok(FastExit::EmulateHandled)
                         }
                         _ => Ok(FastExit::MsrRead { msr, insn_len }),
@@ -1199,8 +1261,24 @@ impl SvmVcpu {
                 }
                 Ok(FastExit::EmulateHandled)
             }
-            VMEXIT_VMRUN | VMEXIT_VMMCALL | VMEXIT_VMLOAD | VMEXIT_VMSAVE | VMEXIT_STGI
-            | VMEXIT_CLGI | VMEXIT_SKINIT | VMEXIT_MONITOR | VMEXIT_MWAIT => {
+            VMEXIT_VMMCALL => {
+                // KVM hypercall ABI: return `-KVM_ENOSYS` (-1000) in RAX for unsupported Ring-0
+                // hypercalls (e.g., `ptp_kvm`'s `KVM_HC_CLOCK_PAIRING`), or `-KVM_EPERM` (-1) if CPL != 0.
+                let step = Self::insn_step(self.vmcb(), 3);
+                let ret = if self.vmcb().save.cpl == 0 {
+                    (-1000i64) as u64
+                } else {
+                    (-1i64) as u64
+                };
+                self.gprs[GPR_RAX] = ret;
+                let vmcb = self.vmcb_mut();
+                vmcb.save.rax = ret;
+                vmcb.save.rip = vmcb.save.rip.wrapping_add(step);
+                vmcb.control.int_state &= !1;
+                Ok(FastExit::EmulateHandled)
+            }
+            VMEXIT_VMRUN | VMEXIT_VMLOAD | VMEXIT_VMSAVE | VMEXIT_STGI | VMEXIT_CLGI
+            | VMEXIT_SKINIT | VMEXIT_MONITOR | VMEXIT_MWAIT => {
                 self.inject_exception(6, None); // #UD
                 Ok(FastExit::EmulateHandled)
             }

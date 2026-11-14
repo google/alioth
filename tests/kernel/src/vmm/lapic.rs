@@ -1,12 +1,17 @@
-// Thin Ring-0 per-vCPU x2APIC + TSC-deadline timer + INIT/SIPI state machine.
+// Ring-0 per-vCPU Local APIC (x2APIC MSRs + early xAPIC MMIO at `0xfee0_0000`),
+// TSC-deadline & one-shot/periodic countdown timer, and INIT/SIPI state machine.
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use vmm_core::host::MpState;
+use vmm_core::host::abi::{RawVmExit, VcpuCommPage, SYNC_REG_GPRS, SYNC_REG_RIP_RFLAGS};
+use vmm_core::host::{HvError, HvResult, MpState};
 
-use crate::arch::time::{rdtsc_now, Instant};
+use crate::arch::time::{nanos_to_tsc_delta, rdtsc_now, tsc_delta_to_nanos, Instant};
+use crate::mm::PAGING_DIRECT_MAP_OFFSET;
 use crate::uspace::SysObject;
+
+use super::stage2::Stage2Mmu;
 
 pub const MSR_IA32_APIC_BASE: u32 = 0x1b;
 pub const MSR_IA32_TSC_DEADLINE: u32 = 0x6e0;
@@ -36,12 +41,30 @@ const X2APIC_SELF_IPI: u32 = 0x83f;
 
 const LVT_MASKED: u32 = 1 << 16;
 const LVT_TIMER_MODE_MASK: u32 = 0b11 << 17;
+const LVT_TIMER_MODE_ONESHOT: u32 = 0b00 << 17;
+const LVT_TIMER_MODE_PERIODIC: u32 = 0b01 << 17;
 const LVT_TIMER_MODE_TSC_DEADLINE: u32 = 0b10 << 17;
 const SVR_APIC_ENABLED: u32 = 1 << 8;
 
 pub const DEFAULT_APIC_BASE: u64 = 0xfee0_0000;
 const APIC_BASE_BSP: u64 = 1 << 8;
+const APIC_BASE_EXTD: u64 = 1 << 10;
 const APIC_BASE_EN: u64 = 1 << 11;
+
+#[inline]
+fn timer_divide_shift(div_conf: u32) -> u32 {
+    let code = ((div_conf & 0x8) >> 1) | (div_conf & 0x3);
+    match code {
+        0b000 => 1,
+        0b001 => 2,
+        0b010 => 3,
+        0b011 => 4,
+        0b100 => 5,
+        0b101 => 6,
+        0b110 => 7,
+        _ => 0,
+    }
+}
 
 /// Action emitted when a guest writes `X2APIC_ICR` (`INIT`, `SIPI`, or cross-vCPU IPI).
 #[derive(Clone, Copy)]
@@ -69,6 +92,9 @@ pub struct VcpuLapic {
     tpr: AtomicU32,
     svr: AtomicU32,
     esr: AtomicU32,
+    icr_hi: AtomicU32,
+    dfr: AtomicU32,
+    xapic_ldr: AtomicU32,
     lvt_timer: AtomicU32,
     lvt_lint0: AtomicU32,
     lvt_lint1: AtomicU32,
@@ -77,6 +103,8 @@ pub struct VcpuLapic {
     lvt_thermal: AtomicU32,
     init_count: AtomicU32,
     div_conf: AtomicU32,
+    count_deadline_tsc: AtomicU64,
+    count_period_tsc: AtomicU64,
     tsc_deadline: AtomicU64,
     irr: [AtomicU64; 4],
     isr: [AtomicU64; 4],
@@ -100,6 +128,9 @@ impl VcpuLapic {
             tpr: AtomicU32::new(0),
             svr: AtomicU32::new(0x1ff),
             esr: AtomicU32::new(0),
+            icr_hi: AtomicU32::new(0),
+            dfr: AtomicU32::new(0xffff_ffff),
+            xapic_ldr: AtomicU32::new(0),
             lvt_timer: AtomicU32::new(LVT_MASKED),
             lvt_lint0: AtomicU32::new(LVT_MASKED),
             lvt_lint1: AtomicU32::new(LVT_MASKED),
@@ -108,6 +139,8 @@ impl VcpuLapic {
             lvt_thermal: AtomicU32::new(LVT_MASKED),
             init_count: AtomicU32::new(0),
             div_conf: AtomicU32::new(0),
+            count_deadline_tsc: AtomicU64::new(0),
+            count_period_tsc: AtomicU64::new(0),
             tsc_deadline: AtomicU64::new(0),
             irr: [const { AtomicU64::new(0) }; 4],
             isr: [const { AtomicU64::new(0) }; 4],
@@ -216,42 +249,116 @@ impl VcpuLapic {
         self.kick();
     }
 
-    /// Checks whether the armed TSC-deadline timer has expired, latching its vector into `IRR`.
-    pub fn poll_timer(&self) {
-        let dl = self.tsc_deadline.load(Ordering::Acquire);
-        if dl == 0 {
+    fn arm_countdown(&self, count: u32) {
+        self.init_count.store(count, Ordering::Release);
+        let lvt = self.lvt_timer.load(Ordering::Acquire);
+        if count == 0 || (lvt & LVT_TIMER_MODE_MASK) == LVT_TIMER_MODE_TSC_DEADLINE {
+            self.count_deadline_tsc.store(0, Ordering::Release);
+            self.count_period_tsc.store(0, Ordering::Release);
             return;
         }
-        if rdtsc_now() >= dl
-            && self
-                .tsc_deadline
-                .compare_exchange(dl, 0, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
-            let lvt = self.lvt_timer.load(Ordering::Acquire);
-            if (lvt & LVT_MASKED) == 0 && (lvt & LVT_TIMER_MODE_MASK) == LVT_TIMER_MODE_TSC_DEADLINE
-            {
-                let vec = (lvt & 0xff) as u8;
-                if vec >= 16 {
-                    let word = (vec >> 6) as usize;
-                    self.irr[word].fetch_or(1u64 << (vec & 63), Ordering::AcqRel);
-                }
+        let shift = timer_divide_shift(self.div_conf.load(Ordering::Acquire));
+        let nanos = (count as u64) << shift;
+        let period_tsc = nanos_to_tsc_delta(nanos).max(1);
+        self.count_period_tsc.store(period_tsc, Ordering::Release);
+        self.count_deadline_tsc
+            .store(rdtsc_now().wrapping_add(period_tsc), Ordering::Release);
+    }
+
+    fn read_cur_count(&self) -> u32 {
+        self.poll_timer();
+        let dl = self.count_deadline_tsc.load(Ordering::Acquire);
+        if dl == 0 {
+            return 0;
+        }
+        let now = rdtsc_now();
+        if now >= dl {
+            return 0;
+        }
+        let shift = timer_divide_shift(self.div_conf.load(Ordering::Acquire));
+        let rem_ns = tsc_delta_to_nanos(dl - now);
+        let cur = rem_ns >> shift;
+        let max_init = self.init_count.load(Ordering::Acquire) as u64;
+        cur.min(max_init) as u32
+    }
+
+    #[inline]
+    fn latch_timer_irq(&self, lvt: u32) {
+        if (lvt & LVT_MASKED) == 0 {
+            let vec = (lvt & 0xff) as u8;
+            if vec >= 16 {
+                let word = (vec >> 6) as usize;
+                self.irr[word].fetch_or(1u64 << (vec & 63), Ordering::AcqRel);
             }
         }
     }
 
-    /// Returns the active future `TSC_DEADLINE` as a host `Instant` for `HLT` sleep.
+    /// Checks whether the armed TSC-deadline or countdown timer has expired, latching its vector into `IRR`.
+    pub fn poll_timer(&self) {
+        let lvt = self.lvt_timer.load(Ordering::Acquire);
+        match lvt & LVT_TIMER_MODE_MASK {
+            LVT_TIMER_MODE_TSC_DEADLINE => {
+                let dl = self.tsc_deadline.load(Ordering::Acquire);
+                if dl != 0
+                    && rdtsc_now() >= dl
+                    && self
+                        .tsc_deadline
+                        .compare_exchange(dl, 0, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    self.latch_timer_irq(lvt);
+                }
+            }
+            LVT_TIMER_MODE_ONESHOT => {
+                let dl = self.count_deadline_tsc.load(Ordering::Acquire);
+                if dl != 0
+                    && rdtsc_now() >= dl
+                    && self
+                        .count_deadline_tsc
+                        .compare_exchange(dl, 0, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    self.latch_timer_irq(lvt);
+                }
+            }
+            LVT_TIMER_MODE_PERIODIC => {
+                let dl = self.count_deadline_tsc.load(Ordering::Acquire);
+                let period = self.count_period_tsc.load(Ordering::Acquire);
+                if dl != 0 && period != 0 {
+                    let now = rdtsc_now();
+                    if now >= dl {
+                        let elapsed = now - dl;
+                        let steps = (elapsed / period) + 1;
+                        let next_dl = dl.wrapping_add(steps.saturating_mul(period));
+                        if self
+                            .count_deadline_tsc
+                            .compare_exchange(dl, next_dl, Ordering::AcqRel, Ordering::Relaxed)
+                            .is_ok()
+                        {
+                            self.latch_timer_irq(lvt);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns the active future APIC timer deadline as a host `Instant` for `HLT` sleep.
     pub fn active_deadline_instant(&self) -> Option<Instant> {
         self.poll_timer();
-        let dl = self.tsc_deadline.load(Ordering::Acquire);
-        if dl == 0 {
-            return None;
-        }
         let lvt = self.lvt_timer.load(Ordering::Acquire);
-        if (lvt & LVT_MASKED) != 0 || (lvt & LVT_TIMER_MODE_MASK) != LVT_TIMER_MODE_TSC_DEADLINE {
+        if (lvt & LVT_MASKED) != 0 {
             return None;
         }
-        Some(Instant::from_u64(dl))
+        let dl = match lvt & LVT_TIMER_MODE_MASK {
+            LVT_TIMER_MODE_TSC_DEADLINE => self.tsc_deadline.load(Ordering::Acquire),
+            LVT_TIMER_MODE_ONESHOT | LVT_TIMER_MODE_PERIODIC => {
+                self.count_deadline_tsc.load(Ordering::Acquire)
+            }
+            _ => 0,
+        };
+        (dl != 0).then(|| Instant::from_u64(dl))
     }
 
     fn highest_bit(words: &[AtomicU64; 4]) -> Option<u8> {
@@ -352,7 +459,7 @@ impl VcpuLapic {
             X2APIC_LVT_LINT1 => Some(self.lvt_lint1.load(Ordering::Acquire) as u64),
             X2APIC_LVT_ERROR => Some(self.lvt_error.load(Ordering::Acquire) as u64),
             X2APIC_INIT_COUNT => Some(self.init_count.load(Ordering::Acquire) as u64),
-            X2APIC_CUR_COUNT => Some(0),
+            X2APIC_CUR_COUNT => Some(self.read_cur_count() as u64),
             X2APIC_DIV_CONF => Some(self.div_conf.load(Ordering::Acquire) as u64),
             m if (0x800..=0x83f).contains(&m) => Some(0),
             _ => None,
@@ -411,8 +518,13 @@ impl VcpuLapic {
             X2APIC_LVT_TIMER => {
                 let new_lvt = val as u32;
                 let old_mode = self.lvt_timer.swap(new_lvt, Ordering::AcqRel) & LVT_TIMER_MODE_MASK;
-                if (new_lvt & LVT_TIMER_MODE_MASK) != old_mode {
+                let new_mode = new_lvt & LVT_TIMER_MODE_MASK;
+                if new_mode != old_mode {
                     self.tsc_deadline.store(0, Ordering::Release);
+                    if new_mode == LVT_TIMER_MODE_TSC_DEADLINE {
+                        self.count_deadline_tsc.store(0, Ordering::Release);
+                        self.count_period_tsc.store(0, Ordering::Release);
+                    }
                 }
                 Some(IpiAction::None)
             }
@@ -437,7 +549,7 @@ impl VcpuLapic {
                 Some(IpiAction::None)
             }
             X2APIC_INIT_COUNT => {
-                self.init_count.store(val as u32, Ordering::Release);
+                self.arm_countdown(val as u32);
                 Some(IpiAction::None)
             }
             X2APIC_DIV_CONF => {
@@ -453,15 +565,399 @@ impl VcpuLapic {
         }
     }
 
-    /// Services legacy xAPIC MMIO (`0xfee0_0000..0xfee0_1000`) accesses (such as
-    /// Motor OS's `lapic_init()` writes to `SVR`/`TPR`/`EOI`/`LVT_*`).
-    pub fn mmio_access(&self, offset: u64, write_val: Option<u64>) -> u64 {
-        let msr = 0x800 + ((offset >> 4) as u32 & 0xff);
-        if let Some(val) = write_val {
-            let _ = self.try_wrmsr(msr, val & 0xffff_ffff);
-            0
-        } else {
-            self.try_rdmsr(msr).unwrap_or(0) & 0xffff_ffff
+    /// Returns `true` when `gpa` falls within this vCPU's enabled xAPIC MMIO page.
+    #[inline]
+    pub fn in_xapic_mmio_range(&self, gpa: u64) -> bool {
+        let base = self.apic_base();
+        (base & APIC_BASE_EN) != 0
+            && (base & APIC_BASE_EXTD) == 0
+            && (gpa & !0xfff) == (base & !0xfff)
+    }
+
+    pub fn xapic_mmio_read(&self, offset: u64) -> u32 {
+        match offset & 0xff0 {
+            0x020 => self.vcpu_id << 24,
+            0x0d0 => self.xapic_ldr.load(Ordering::Acquire),
+            0x0e0 => self.dfr.load(Ordering::Acquire),
+            0x300 => 0,
+            0x310 => self.icr_hi.load(Ordering::Acquire),
+            off => {
+                let msr = 0x800 + ((off >> 4) as u32 & 0xff);
+                self.try_rdmsr(msr).unwrap_or(0) as u32
+            }
         }
     }
+
+    pub fn xapic_mmio_write(&self, offset: u64, val: u32) -> IpiAction {
+        match offset & 0xff0 {
+            0x020 => IpiAction::None,
+            0x0d0 => {
+                self.xapic_ldr.store(val & 0xff00_0000, Ordering::Release);
+                IpiAction::None
+            }
+            0x0e0 => {
+                self.dfr.store(val | 0x0fff_ffff, Ordering::Release);
+                IpiAction::None
+            }
+            0x300 => {
+                let dest = (self.icr_hi.load(Ordering::Acquire) >> 24) as u64;
+                let combined = (dest << 32) | (val as u64);
+                self.try_wrmsr(X2APIC_ICR, combined)
+                    .unwrap_or(IpiAction::None)
+            }
+            0x310 => {
+                self.icr_hi.store(val, Ordering::Release);
+                IpiAction::None
+            }
+            off => {
+                let msr = 0x800 + ((off >> 4) as u32 & 0xff);
+                self.try_wrmsr(msr, val as u64).unwrap_or(IpiAction::None)
+            }
+        }
+    }
+
+    /// Emulates a guest xAPIC MMIO instruction faulting at `gpa` (`0xfee0_0xxx`) directly in Ring 0.
+    pub fn emulate_xapic_mmio(
+        &self,
+        gpa: u64,
+        stage2: &Stage2Mmu,
+        comm: &mut VcpuCommPage,
+    ) -> HvResult<IpiAction> {
+        let mode64 = (comm.efer & (1 << 10)) != 0 && ((comm.cs.access >> 13) & 1) != 0;
+        let hint_len = comm.exit.insn_len as usize;
+        let mut buf = [0u8; 15];
+        let avail = if hint_len > 0 {
+            let n = hint_len.min(15);
+            buf[..n].copy_from_slice(&comm.exit.insn_bytes[..n]);
+            n
+        } else {
+            let rip_gva = if mode64 {
+                comm.rip
+            } else {
+                comm.cs.base.wrapping_add(comm.rip) & 0xffff_ffff
+            };
+            fetch_guest_insn_bytes(stage2, comm, rip_gva, &mut buf)?
+        };
+
+        let mut pos = 0usize;
+        let mut op_66 = false;
+        let mut addr_67 = false;
+        while pos < avail {
+            match buf[pos] {
+                0x66 => op_66 = true,
+                0x67 => addr_67 = true,
+                0xf0 | 0xf2 | 0xf3 | 0x2e | 0x36 | 0x3e | 0x26 | 0x64 | 0x65 => {}
+                _ => break,
+            }
+            pos += 1;
+        }
+
+        let mut rex: u8 = 0;
+        let mut rex_present = false;
+        if mode64 && pos < avail && (0x40..=0x4f).contains(&buf[pos]) {
+            rex = buf[pos];
+            rex_present = true;
+            pos += 1;
+        }
+        let rex_w = (rex & 0x8) != 0;
+        let rex_r = (rex & 0x4) != 0;
+
+        if pos >= avail {
+            return Err(HvError::HardwareFault);
+        }
+        let op0 = buf[pos];
+        pos += 1;
+
+        let op_size: u8 = if rex_w {
+            8
+        } else if op_66 {
+            2
+        } else {
+            4
+        };
+        let apic_off = gpa & 0xfff;
+        let mut ipi = IpiAction::None;
+
+        match op0 {
+            0xa1 => {
+                let moffs_len = if mode64 {
+                    if addr_67 { 4 } else { 8 }
+                } else if addr_67 {
+                    2
+                } else {
+                    4
+                };
+                pos += moffs_len;
+                let v = self.xapic_mmio_read(apic_off) as u64;
+                write_comm_gpr(comm, 0, op_size, rex_present, v);
+            }
+            0xa3 => {
+                let moffs_len = if mode64 {
+                    if addr_67 { 4 } else { 8 }
+                } else if addr_67 {
+                    2
+                } else {
+                    4
+                };
+                pos += moffs_len;
+                let v = read_comm_gpr(comm, 0, op_size, rex_present) as u32;
+                ipi = self.xapic_mmio_write(apic_off, v);
+            }
+            0x88 | 0x89 | 0x8a | 0x8b | 0x86 | 0x87 | 0xc6 | 0xc7 | 0x0f => {
+                let (is_ext, opcode) = if op0 == 0x0f {
+                    if pos >= avail {
+                        return Err(HvError::HardwareFault);
+                    }
+                    let b1 = buf[pos];
+                    pos += 1;
+                    (true, b1)
+                } else {
+                    (false, op0)
+                };
+
+                if pos >= avail {
+                    return Err(HvError::HardwareFault);
+                }
+                let modrm = buf[pos];
+                pos += 1;
+                let mod_bits = modrm >> 6;
+                let reg = ((modrm >> 3) & 0x7) | ((rex_r as u8) << 3);
+                let rm_low = modrm & 0x7;
+
+                let has_sib = mod_bits != 3 && rm_low == 4;
+                let base_low = if has_sib {
+                    if pos >= avail {
+                        return Err(HvError::HardwareFault);
+                    }
+                    let sib = buf[pos];
+                    pos += 1;
+                    sib & 0x7
+                } else {
+                    rm_low
+                };
+                let disp_len = match mod_bits {
+                    0 if base_low == 5 => 4,
+                    1 => 1,
+                    2 => 4,
+                    _ => 0,
+                };
+                pos += disp_len;
+
+                if is_ext {
+                    match opcode {
+                        0xb6 => {
+                            let v = (self.xapic_mmio_read(apic_off) & 0xff) as u64;
+                            write_comm_gpr(comm, reg, op_size, rex_present, v);
+                        }
+                        0xb7 => {
+                            let v = (self.xapic_mmio_read(apic_off) & 0xffff) as u64;
+                            write_comm_gpr(comm, reg, op_size, rex_present, v);
+                        }
+                        _ => {
+                            log::error!(
+                                "xAPIC unhandled 0F {opcode:#04x} at rip={:#x} gpa={gpa:#x}",
+                                comm.rip
+                            );
+                            return Err(HvError::Unsupported);
+                        }
+                    }
+                } else {
+                    match opcode {
+                        0x88 => {
+                            let v = read_comm_gpr(comm, reg, 1, rex_present) as u32;
+                            ipi = self.xapic_mmio_write(apic_off, v);
+                        }
+                        0x89 => {
+                            let v = read_comm_gpr(comm, reg, op_size, rex_present) as u32;
+                            ipi = self.xapic_mmio_write(apic_off, v);
+                        }
+                        0x8a => {
+                            let v = (self.xapic_mmio_read(apic_off) & 0xff) as u64;
+                            write_comm_gpr(comm, reg, 1, rex_present, v);
+                        }
+                        0x8b => {
+                            let v = self.xapic_mmio_read(apic_off) as u64;
+                            write_comm_gpr(comm, reg, op_size, rex_present, v);
+                        }
+                        0x86 => {
+                            let old = (self.xapic_mmio_read(apic_off) & 0xff) as u64;
+                            let new_v = read_comm_gpr(comm, reg, 1, rex_present) as u32;
+                            ipi = self.xapic_mmio_write(apic_off, new_v);
+                            write_comm_gpr(comm, reg, 1, rex_present, old);
+                        }
+                        0x87 => {
+                            let old = self.xapic_mmio_read(apic_off) as u64;
+                            let new_v = read_comm_gpr(comm, reg, op_size, rex_present) as u32;
+                            ipi = self.xapic_mmio_write(apic_off, new_v);
+                            write_comm_gpr(comm, reg, op_size, rex_present, old);
+                        }
+                        0xc6 if (reg & 0x7) == 0 => {
+                            if pos >= avail {
+                                return Err(HvError::HardwareFault);
+                            }
+                            let imm = buf[pos] as u32;
+                            pos += 1;
+                            ipi = self.xapic_mmio_write(apic_off, imm);
+                        }
+                        0xc7 if (reg & 0x7) == 0 => {
+                            let imm_len = if op_size == 2 { 2 } else { 4 };
+                            if pos + imm_len > avail {
+                                return Err(HvError::HardwareFault);
+                            }
+                            let imm = if imm_len == 2 {
+                                u16::from_le_bytes([buf[pos], buf[pos + 1]]) as u32
+                            } else {
+                                u32::from_le_bytes([
+                                    buf[pos],
+                                    buf[pos + 1],
+                                    buf[pos + 2],
+                                    buf[pos + 3],
+                                ])
+                            };
+                            pos += imm_len;
+                            ipi = self.xapic_mmio_write(apic_off, imm);
+                        }
+                        _ => {
+                            log::error!(
+                                "xAPIC unhandled op {opcode:#04x} at rip={:#x} gpa={gpa:#x}",
+                                comm.rip
+                            );
+                            return Err(HvError::Unsupported);
+                        }
+                    }
+                }
+            }
+            _ => {
+                log::error!(
+                    "xAPIC unhandled op {op0:#04x} at rip={:#x} gpa={gpa:#x}",
+                    comm.rip
+                );
+                return Err(HvError::Unsupported);
+            }
+        }
+
+        let step = if hint_len > 0 { hint_len } else { pos };
+        comm.rip = comm.rip.wrapping_add(step as u64);
+        comm.dirty_regs |= SYNC_REG_RIP_RFLAGS;
+        comm.exit = RawVmExit::default();
+        Ok(ipi)
+    }
+}
+
+fn read_comm_gpr(comm: &VcpuCommPage, reg: u8, size: u8, rex_present: bool) -> u64 {
+    match size {
+        1 => {
+            if !rex_present && (4..8).contains(&reg) {
+                (comm.gprs[(reg - 4) as usize] >> 8) & 0xff
+            } else {
+                comm.gprs[reg as usize] & 0xff
+            }
+        }
+        2 => comm.gprs[reg as usize] & 0xffff,
+        4 => comm.gprs[reg as usize] & 0xffff_ffff,
+        _ => comm.gprs[reg as usize],
+    }
+}
+
+fn write_comm_gpr(comm: &mut VcpuCommPage, reg: u8, size: u8, rex_present: bool, val: u64) {
+    match size {
+        1 => {
+            if !rex_present && (4..8).contains(&reg) {
+                let dst = &mut comm.gprs[(reg - 4) as usize];
+                *dst = (*dst & !0xff00) | ((val & 0xff) << 8);
+            } else {
+                let dst = &mut comm.gprs[reg as usize];
+                *dst = (*dst & !0xff) | (val & 0xff);
+            }
+        }
+        2 => {
+            let dst = &mut comm.gprs[reg as usize];
+            *dst = (*dst & !0xffff) | (val & 0xffff);
+        }
+        4 => {
+            comm.gprs[reg as usize] = val & 0xffff_ffff;
+        }
+        _ => {
+            comm.gprs[reg as usize] = val;
+        }
+    }
+    comm.dirty_regs |= SYNC_REG_GPRS;
+}
+
+fn translate_guest_gva(stage2: &Stage2Mmu, comm: &VcpuCommPage, gva: u64) -> HvResult<u64> {
+    const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
+    if (comm.cr0 & (1 << 31)) == 0 {
+        return Ok(gva & 0xffff_ffff);
+    }
+    let read_u64 = |gpa: u64| -> HvResult<u64> {
+        let hpa = stage2.gpa_to_hpa(gpa, false).ok_or(HvError::HardwareFault)?;
+        Ok(unsafe { *((hpa + PAGING_DIRECT_MAP_OFFSET) as *const u64) })
+    };
+    if (comm.efer & (1 << 10)) != 0 {
+        let mut table = comm.cr3 & PTE_ADDR_MASK;
+        if (comm.cr4 & (1 << 12)) != 0 {
+            let e = read_u64(table + ((gva >> 48) & 0x1ff) * 8)?;
+            if (e & 1) == 0 {
+                return Err(HvError::HardwareFault);
+            }
+            table = e & PTE_ADDR_MASK;
+        }
+        let pml4e = read_u64(table + ((gva >> 39) & 0x1ff) * 8)?;
+        if (pml4e & 1) == 0 {
+            return Err(HvError::HardwareFault);
+        }
+        let pdpte = read_u64((pml4e & PTE_ADDR_MASK) + ((gva >> 30) & 0x1ff) * 8)?;
+        if (pdpte & 1) == 0 {
+            return Err(HvError::HardwareFault);
+        }
+        if (pdpte & 0x80) != 0 {
+            return Ok((pdpte & 0x000f_ffff_c000_0000) | (gva & 0x3fff_ffff));
+        }
+        let pde = read_u64((pdpte & PTE_ADDR_MASK) + ((gva >> 21) & 0x1ff) * 8)?;
+        if (pde & 1) == 0 {
+            return Err(HvError::HardwareFault);
+        }
+        if (pde & 0x80) != 0 {
+            return Ok((pde & 0x000f_ffff_ffe0_0000) | (gva & 0x001f_ffff));
+        }
+        let pte = read_u64((pde & PTE_ADDR_MASK) + ((gva >> 12) & 0x1ff) * 8)?;
+        if (pte & 1) == 0 {
+            return Err(HvError::HardwareFault);
+        }
+        return Ok((pte & PTE_ADDR_MASK) | (gva & 0xfff));
+    }
+    Err(HvError::Unsupported)
+}
+
+fn fetch_guest_insn_bytes(
+    stage2: &Stage2Mmu,
+    comm: &VcpuCommPage,
+    rip_gva: u64,
+    out: &mut [u8; 15],
+) -> HvResult<usize> {
+    let first = (0x1000 - ((rip_gva & 0xfff) as usize)).min(15);
+    let gpa0 = translate_guest_gva(stage2, comm, rip_gva)?;
+    let hpa0 = stage2.gpa_to_hpa(gpa0, false).ok_or(HvError::HardwareFault)?;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (hpa0 + PAGING_DIRECT_MAP_OFFSET) as *const u8,
+            out.as_mut_ptr(),
+            first,
+        );
+    }
+    if first < 15 {
+        if let Ok(gpa1) = translate_guest_gva(stage2, comm, rip_gva.wrapping_add(first as u64)) {
+            if let Some(hpa1) = stage2.gpa_to_hpa(gpa1, false) {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        (hpa1 + PAGING_DIRECT_MAP_OFFSET) as *const u8,
+                        out[first..].as_mut_ptr(),
+                        15 - first,
+                    );
+                }
+                return Ok(15);
+            }
+        }
+    }
+    Ok(first)
 }
