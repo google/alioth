@@ -1,0 +1,55 @@
+[package]
+name = "motor-io-host"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[features]
+compiler = ["wasmtime/cranelift"]
+
+[workspace]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+derive-layout = { path = "../../derive-layout" }
+bitfield = "0.15.0"
+bitflags = "2.4.0"
+log = "0.4.28"
+simplelog = "0.12.2"
+thiserror = "1"
+zerocopy = { version = "0.7.32", default-features = false, features = ["derive", "alloc"] }
+
+[dependencies]
+vmm-core = { path = "../../vmm-core" }
+vmm-io = { path = "../../vmm-io" }
+
+log = "0.4.28"
+moto-rt = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
+moto-sdk = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sdk" }
+moto-sys = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+wasmtime = { path = "../../../motor-dev/motor-os/external-sources/wasmtime/crates/wasmtime", default-features = false, features = ["std", "runtime", "component-model", "async"] }
+wasmtime-wasi = { path = "../../../motor-dev/motor-os/external-sources/wasmtime/crates/wasi", default-features = false, features = ["p1"] }
+zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
+
+[build-dependencies]
+wasmtime = { path = "../../../motor-dev/motor-os/external-sources/wasmtime/crates/wasmtime", default-features = false, features = ["std", "cranelift"] }
+
+[patch.crates-io]
+target-lexicon = { git = "https://github.com/moturus/target-lexicon", branch = "motor-0.13.5" }
+mio = { git = "https://github.com/moturus/mio", branch = "motor-1.2.0" }
+tokio = { git = "https://github.com/moturus/tokio", branch = "motor-1.51.1" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+codegen-units = 1
+strip = true

@@ -12,6 +12,7 @@ exclude = [
     "tests/kernel",
     "tests/kloader",
     "tests/moto-sys",
+    "tests/motor-io-host",
     "tests/test-init",
 ]
 
