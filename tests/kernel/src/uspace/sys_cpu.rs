@@ -450,6 +450,9 @@ pub(super) fn do_wake(
         if super::shared::try_wake(&obj.sys_object, wakee_thread, this_cpu).is_ok() {
             return Ok(());
         }
+        if wakee_thread == SysHandle::NONE && crate::vmm::try_wake(&obj.sys_object).is_ok() {
+            return Ok(());
+        }
     } else if wakee_thread != SysHandle::NONE {
         log::debug!(
             "{}: wakee thread 0x{:x} not found",

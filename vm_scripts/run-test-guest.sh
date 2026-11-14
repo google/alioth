@@ -9,19 +9,23 @@ TEST_GUEST_DIR="$REPO_ROOT/target/test-guest"
 MODE="cwasm"
 CONFIG="$RUNTIME_DIR/vm-test-guest.toml"
 CUSTOM_CONFIG=0
+NESTED=0
+MEM_SET=0
+CMD_SET=0
 SMP="${TEST_GUEST_SMP:-2}"
 MEM_SIZE="${TEST_GUEST_MEM_SIZE:-64M}"
 CMDLINE="${TEST_GUEST_CMDLINE:-test-guest}"
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 [--cwasm | --wasm] [-c path/to/vm-test-guest.toml] [--cpus N] [--memory SIZE] [--cmdline STR]
+Usage: $0 [--cwasm | --wasm] [--nested] [-c path/to/vm-test-guest.toml] [--cpus N] [--memory SIZE] [--cmdline STR]
   --cwasm         Run vmm-{io,core}-host-cwasm + vmm-{io,core}.cwasm (default)
   --wasm          Run vmm-{io,core}-host-wasm + vmm-{io,core}.wasm
+  --nested        Boot L1 test-guest which self-hosts an L2 SMP test-guest via Ring-0 Airlock VMM
   -c FILE         Use an existing custom wasm-vmm TOML config
   --cpus N        Override vCPU count (default: 2)
-  --memory SIZE   Override guest RAM with M or G suffix (default: 64M)
-  --cmdline STR   Override kernel command line (default: test-guest)
+  --memory SIZE   Override guest RAM with M or G suffix (default: 64M, or 256M with --nested)
+  --cmdline STR   Override kernel command line (default: test-guest, or test-guest-nested)
 EOF
 }
 
@@ -33,6 +37,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --cwasm)
             MODE="cwasm"
+            shift
+            ;;
+        --nested)
+            NESTED=1
             shift
             ;;
         -c)
@@ -53,19 +61,23 @@ while [ "$#" -gt 0 ]; do
         --memory)
             [ "$#" -ge 2 ] || { echo "run-test-guest: --memory requires a value" >&2; exit 2; }
             MEM_SIZE="$2"
+            MEM_SET=1
             shift 2
             ;;
         --memory=*)
             MEM_SIZE="${1#--memory=}"
+            MEM_SET=1
             shift
             ;;
         --cmdline)
             [ "$#" -ge 2 ] || { echo "run-test-guest: --cmdline requires a value" >&2; exit 2; }
             CMDLINE="$2"
+            CMD_SET=1
             shift 2
             ;;
         --cmdline=*)
             CMDLINE="${1#--cmdline=}"
+            CMD_SET=1
             shift
             ;;
         -h|--help)
@@ -79,6 +91,11 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$NESTED" = 1 ]; then
+    [ "$MEM_SET" = 1 ] || [ -n "${TEST_GUEST_MEM_SIZE:-}" ] || MEM_SIZE="256M"
+    [ "$CMD_SET" = 1 ] || [ -n "${TEST_GUEST_CMDLINE:-}" ] || CMDLINE="test-guest-nested"
+fi
 
 case "$CMDLINE" in
     *\"* | *'
@@ -97,7 +114,11 @@ else
     cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-tests --bin build_test_guest >&2
 
     KLOADER_PATH="$TEST_GUEST_DIR/kloader"
-    INITRD_PATH="$TEST_GUEST_DIR/initrd-test-guest"
+    if [ "$NESTED" = 1 ]; then
+        INITRD_PATH="$TEST_GUEST_DIR/initrd-test-guest-nested"
+    else
+        INITRD_PATH="$TEST_GUEST_DIR/initrd-test-guest"
+    fi
     if [ ! -f "$KLOADER_PATH" ] || [ ! -f "$INITRD_PATH" ]; then
         echo "run-test-guest: expected artifacts missing under '$TEST_GUEST_DIR'" >&2
         exit 1

@@ -12,7 +12,7 @@ pub mod kheap;
 pub mod mmio;
 pub mod phys;
 pub(crate) mod phys_blocks;
-mod slab;
+pub(crate) mod slab;
 pub mod user;
 pub mod user_copy;
 pub mod virt;

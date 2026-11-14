@@ -94,6 +94,9 @@ fn sys_handle_create(
                 return sys_handle_shared(retry, SysObj::OP_CREATE, thread, parent, suffix)
                     .map(|handle| (handle, 0));
             }
+            "vmm" => {
+                return crate::vmm::create_vm(thread, parent, suffix).map(|handle| (handle, 0));
+            }
             _ => {}
         }
     }

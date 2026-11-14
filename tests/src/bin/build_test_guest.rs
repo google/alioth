@@ -15,7 +15,12 @@
 fn main() {
     let artifacts = vmm_tests::build_test_guest();
     println!("Built test-guest artifacts in {}:", artifacts.dir.display());
-    println!("  kernel:  {}", artifacts.kernel.display());
-    println!("  kloader: {}", artifacts.kloader.display());
-    println!("  initrd:  {}", artifacts.initrd.display());
+    println!("  kernel:        {}", artifacts.kernel.display());
+    println!("  kloader:       {}", artifacts.kloader.display());
+    println!("  initrd:        {}", artifacts.initrd.display());
+    println!("  initrd-nested: {}", artifacts.nested_initrd.display());
+    println!(
+        "  core-cwasm:    {}",
+        artifacts.vmm_core_motor_cwasm.display()
+    );
 }

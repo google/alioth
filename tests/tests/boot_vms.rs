@@ -234,3 +234,62 @@ fn boot_test_guest_cwasm() {
 fn boot_test_guest_wasm() {
     run_test_guest(VmmMode::Wasm);
 }
+
+fn run_nested_test_guest(mode: VmmMode) {
+    let guest = ensure_test_guest_artifacts();
+    let tmp = TempTestDir::new(&format!("nested-test-guest-{}", mode.as_str()));
+    let cfg = format!(
+        "pvh = \"{}\"\n\
+         initramfs = \"{}\"\n\
+         cmd_line = \"test-guest-nested\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n\
+         blk = []\n",
+        guest.kloader.display(),
+        guest.nested_initrd.display(),
+    );
+
+    let serial = boot_until_autonomous_exit(
+        "nested_test_guest",
+        mode,
+        &tmp,
+        &cfg,
+        Duration::from_secs(30),
+    );
+
+    // Verify L1 booted with 2 vCPUs and hardware nested virtualization enabled.
+    assert!(
+        serial.contains("test-guest: ok | cpus=2")
+            && serial.contains("cmd=\"test-guest-nested\"")
+            && (serial.contains("hv=svm(npt=1,") || serial.contains("hv=vmx")),
+        "missing expected L1 test-guest banner in serial output:\n{serial}"
+    );
+
+    // Verify L2 booted SMP (2 vCPUs) inside L1's Ring-0 Airlock Wasm VMM and exited cleanly!
+    assert!(
+        serial.contains("test-guest: ok | cpus=2") && serial.contains("cmd=\"test-guest-l2\""),
+        "missing expected L2 SMP test-guest banner in serial output:\n{serial}"
+    );
+    assert!(
+        serial.contains("[L2] vm_exit: bye."),
+        "missing L2 clean ACPI S5 exit marker in serial output:\n{serial}"
+    );
+    assert!(
+        serial.contains("test-guest: nested-ok | l2_shutdown=clean"),
+        "missing L1 nested-ok teardown confirmation in serial output:\n{serial}"
+    );
+    assert!(
+        serial.contains("vm_exit: bye."),
+        "missing L1 clean Motor OS ACPI S5 exit marker in serial output:\n{serial}"
+    );
+}
+
+#[test]
+fn boot_nested_test_guest_cwasm() {
+    run_nested_test_guest(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_nested_test_guest_wasm() {
+    run_nested_test_guest(VmmMode::Wasm);
+}

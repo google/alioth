@@ -10,7 +10,7 @@ pub(crate) mod oom;
 pub(crate) mod pager;
 mod shared;
 
-mod sysobject;
+pub(crate) mod sysobject;
 pub use sysobject::SysObject;
 
 // Syscalls.

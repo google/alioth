@@ -34,8 +34,8 @@ mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 parking_lot = { version = "0.12" }
 simplelog = "0.12.2"
 thiserror = "1"
-wasmtime = { version = "48.0.2", default-features = false, features = ["runtime", "threads", "std"] }
-wasmtime-wasi = { version = "48.0.2", default-features = false, features = ["p1"] }
+wasmtime = { path = "../wasmtime/crates/wasmtime", default-features = false, features = ["runtime", "threads", "std"] }
+wasmtime-wasi = { path = "../wasmtime/crates/wasi", default-features = false, features = ["p1"] }
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 
 [profile.release]

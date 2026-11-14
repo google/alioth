@@ -5,18 +5,35 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
+[features]
+nested = ["dep:vmm-core"]
+
 [workspace]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+derive-layout = { path = "../../derive-layout" }
+bitfield = "0.15.0"
+bitflags = "2.4.0"
+log = "0.4.28"
+zerocopy = { version = "0.7.32", default-features = false, features = ["derive", "alloc"] }
 
 # Referenced read-only from ../motor-dev/motor-os;
 # see https://github.com/moturus/motor-os/blob/main/docs/build.md
 [dependencies]
 elfloader = { path = "../../../motor-dev/motor-os/src/third_party/elfloader" }
 moto-rt   = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
-moto-sys  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+moto-sys  = { path = "../moto-sys" }
+vmm-core  = { path = "../../vmm-core", optional = true }
 
 [patch.crates-io]
 moto-rt  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
-moto-sys = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-sys" }
+moto-sys = { path = "../moto-sys" }
 
 [profile.dev]
 panic = "abort"

@@ -297,6 +297,23 @@ pub fn populate_kernel_static_page(page: &mut moto_sys::KernelStaticPage) {
     assert_ne!(0, page.tsc_in_sec);
 }
 
+/// Snapshot calibrated host pvclock parameters (`base_nsec`, `system_time`,
+/// `tsc_ts`, `tsc_mul`, `tsc_shift`) for Ring-0 guest `pvclock` MSR emulation.
+pub fn pvclock_snapshot() -> (u64, u64, u64, u32, i8) {
+    (
+        GLOBALS.base_nsec.load(Ordering::Acquire),
+        GLOBALS.system_time.load(Ordering::Relaxed),
+        GLOBALS.tsc_ts.load(Ordering::Relaxed),
+        GLOBALS.tsc_mul.load(Ordering::Relaxed),
+        GLOBALS.tsc_shift.load(Ordering::Relaxed),
+    )
+}
+
+/// Convert a guest TSC deadline (`Instant::from_u64(deadline)`) using host TSC.
+pub fn rdtsc_now() -> u64 {
+    rdtsc()
+}
+
 #[derive(Debug)]
 pub struct Globals {
     pub system_time: AtomicU64,

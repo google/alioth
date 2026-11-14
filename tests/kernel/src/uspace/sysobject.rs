@@ -108,6 +108,7 @@ impl Drop for SysObject {
         assert!(!self.is_woken());
 
         super::shared::on_drop(self);
+        crate::vmm::on_drop(self);
     }
 }
 

@@ -143,6 +143,9 @@ pub struct TestGuestArtifacts {
     pub kloader: PathBuf,
     pub test_init: PathBuf,
     pub initrd: PathBuf,
+    pub vmm_core_motor_cwasm: PathBuf,
+    pub nested_test_init: PathBuf,
+    pub nested_initrd: PathBuf,
 }
 
 fn clear_host_rustup_env(cmd: &mut Command) {
@@ -154,14 +157,19 @@ fn clear_host_rustup_env(cmd: &mut Command) {
         .env_remove("RUSTUP_TOOLCHAIN");
 }
 
-/// Builds `tests/kernel`, `tests/kloader`, `tests/test-init`, and packs `initrd-test-guest`
-/// under `target/test-guest/`.
+/// Builds `tests/kernel`, `tests/kloader`, `tests/test-init` (both leaf and nested Ring-3 VMM
+/// bootstrap), and packs `initrd-test-guest` + `initrd-test-guest-nested` under `target/test-guest/`.
 pub fn build_test_guest() -> TestGuestArtifacts {
+    let vmm_dir = ensure_vmm_artifacts();
     let root = repo_root();
     let tests_dir = root.join("tests");
     let out_dir = root.join("target/test-guest");
     let obj_dir = out_dir.join("obj");
     fs::create_dir_all(&obj_dir).expect("failed to create target/test-guest/obj");
+
+    let vmm_core_motor_cwasm = out_dir.join("vmm-core-motor.cwasm");
+    fs::copy(vmm_dir.join("vmm-core-motor.cwasm"), &vmm_core_motor_cwasm)
+        .expect("failed to copy vmm-core-motor.cwasm into target/test-guest");
 
     let mut kernel_cmd = Command::new(tests_dir.join("kernel/build.sh"));
     clear_host_rustup_env(&mut kernel_cmd);
@@ -190,6 +198,7 @@ pub fn build_test_guest() -> TestGuestArtifacts {
     let status = init_cmd
         .current_dir(&test_init_dir)
         .arg("build")
+        .arg("--offline")
         .arg("--release")
         .arg("--target")
         .arg("x86_64-unknown-motor")
@@ -211,9 +220,52 @@ pub fn build_test_guest() -> TestGuestArtifacts {
     let initrd = out_dir.join("initrd-test-guest");
     write_test_guest_initrd(&stripped_init, &initrd);
 
+    // Build nested `test-init` (`--features nested`), embedding `kloader`, leaf `initrd-test-guest`,
+    // and `vmm-core-motor.cwasm` compiled from the byte-identical `vmm-core.wasm`.
+    let nested_init_obj = obj_dir.join("test-init-nested");
+    let mut nested_cmd = Command::new("cargo");
+    clear_host_rustup_env(&mut nested_cmd);
+    let status = nested_cmd
+        .current_dir(&test_init_dir)
+        .arg("build")
+        .arg("--offline")
+        .arg("--release")
+        .arg("--features")
+        .arg("nested")
+        .arg("--target")
+        .arg("x86_64-unknown-motor")
+        .env("CARGO_TARGET_DIR", &nested_init_obj)
+        .status()
+        .expect("failed to invoke cargo build --features nested for tests/test-init");
+    assert!(
+        status.success(),
+        "cargo build --features nested for tests/test-init failed"
+    );
+
+    let unstripped_nested = nested_init_obj.join("x86_64-unknown-motor/release/test-init");
+    let stripped_nested = out_dir.join("test-init-nested");
+    let status = Command::new("strip")
+        .arg("-o")
+        .arg(&stripped_nested)
+        .arg(&unstripped_nested)
+        .status()
+        .expect("failed to execute strip on test-init-nested");
+    assert!(status.success(), "strip failed for test-init-nested");
+
+    let nested_initrd = out_dir.join("initrd-test-guest-nested");
+    write_test_guest_initrd(&stripped_nested, &nested_initrd);
+
     let kernel = out_dir.join("kernel");
     let kloader = out_dir.join("kloader");
-    for artifact in [&kernel, &kloader, &stripped_init, &initrd] {
+    for artifact in [
+        &kernel,
+        &kloader,
+        &stripped_init,
+        &initrd,
+        &vmm_core_motor_cwasm,
+        &stripped_nested,
+        &nested_initrd,
+    ] {
         assert!(
             artifact.is_file(),
             "expected test-guest artifact '{}' missing",
@@ -227,6 +279,9 @@ pub fn build_test_guest() -> TestGuestArtifacts {
         kloader,
         test_init: stripped_init,
         initrd,
+        vmm_core_motor_cwasm,
+        nested_test_init: stripped_nested,
+        nested_initrd,
     }
 }
 
@@ -266,6 +321,7 @@ pub fn ensure_vmm_artifacts() -> &'static Path {
             "vmm-io.cwasm",
             "vmm-io.wasm",
             "vmm-core.cwasm",
+            "vmm-core-motor.cwasm",
             "vmm-core.wasm",
         ] {
             let p = target_dir.join(artifact);

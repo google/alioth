@@ -595,19 +595,19 @@ pub fn run_wasm_core<H: VmmHostRunner + ?Sized, B: VmmCoreBridge + ?Sized>(
         unsafe { Module::deserialize(&engine, &cwasm_bytes)? }
     };
 
-    let memory_ty = module
-        .imports()
-        .find_map(|imp| {
-            if imp.module() == "env"
-                && imp.name() == "memory"
-                && let ExternType::Memory(ty) = imp.ty()
-            {
-                Some(ty)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| MemoryType::shared(17, 16384));
+    let memory_ty = match module.imports().find_map(|imp| {
+        if imp.module() == "env"
+            && imp.name() == "memory"
+            && let ExternType::Memory(ty) = imp.ty()
+        {
+            Some(ty)
+        } else {
+            None
+        }
+    }) {
+        Some(ty) => ty,
+        None => MemoryType::shared(17, 16384)?,
+    };
 
     let shared_memory = SharedMemory::new(&engine, memory_ty)?;
 
@@ -1011,7 +1011,7 @@ mod tests {
 
         let hv = Arc::new(DummyHv::default());
         let bridge = Arc::new(DummyBridge::default());
-        let shared_memory = SharedMemory::new(&engine, MemoryType::shared(18, 16384))?;
+        let shared_memory = SharedMemory::new(&engine, MemoryType::shared(18, 16384)?)?;
         let mut init_store = Store::new(
             &engine,
             CoreStoreState {

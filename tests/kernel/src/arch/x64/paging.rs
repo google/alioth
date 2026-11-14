@@ -531,6 +531,33 @@ impl PageTableImpl {
         self.flush_virt_addr(virt_addr);
     }
 
+    // Updates small-page kernel PTE flags in-place without flushing yet; caller
+    // invokes `flush_pages` once across the whole segment.
+    fn set_kernel_small_pte_wx(&mut self, virt_addr: u64, writable: bool, executable: bool) {
+        assert!(!self.userspace);
+        assert!(!(writable && executable));
+        assert_eq!(0, virt_addr & (PAGE_SIZE_SMALL - 1));
+        let pte_l4 = self.table_l4.get(PageTableImpl::idx_l4(virt_addr));
+        assert!(pte_l4.is_present());
+        let pte_l3 = HwPageTable::from_pte(pte_l4).get(PageTableImpl::idx_l3(virt_addr));
+        assert!(pte_l3.is_present() && !pte_l3.is_huge_page());
+        let pte_l2 = HwPageTable::from_pte(pte_l3).get(PageTableImpl::idx_l2(virt_addr));
+        assert!(pte_l2.is_present() && !pte_l2.is_huge_page());
+        let table_l1 = HwPageTable::from_pte(pte_l2);
+        let idx_l1 = PageTableImpl::idx_l1(virt_addr);
+        let old = table_l1.get(idx_l1);
+        assert!(old.is_present());
+        let phys = old.get_addr();
+        let mut flags = PTE::PRESENT | PTE::ACCESSED | PTE::GLOBAL;
+        if writable {
+            flags |= PTE::WRITABLE;
+        }
+        if !executable {
+            flags |= PTE::NX;
+        }
+        table_l1.set(idx_l1, PTE::from_u64(phys | flags));
+    }
+
     fn is_readable(&self, virt_addr: u64) -> bool {
         let idx_l4 = PageTableImpl::idx_l4(virt_addr);
         let pte_l4 = self.table_l4.get(idx_l4);
@@ -1006,6 +1033,32 @@ impl PageTable {
                 .get()
                 .lock(line!())
                 .flush_pages(first_page_vaddr, num_pages)
+        }
+    }
+
+    /// Enforces `W^X` page protections on a contiguous range of small kernel pages
+    /// and shoots down stale TLB entries across all CPUs.
+    pub fn set_kernel_pages_wx(
+        &self,
+        first_page_vaddr: u64,
+        num_pages: u64,
+        writable: bool,
+        executable: bool,
+    ) {
+        assert!(!(writable && executable));
+        if num_pages == 0 {
+            return;
+        }
+        unsafe {
+            let mut guard = self.inst.get().lock(line!());
+            for i in 0..num_pages {
+                guard.set_kernel_small_pte_wx(
+                    first_page_vaddr + (i << PAGE_SIZE_SMALL_LOG2),
+                    writable,
+                    executable,
+                );
+            }
+            guard.flush_pages(first_page_vaddr, num_pages);
         }
     }
 

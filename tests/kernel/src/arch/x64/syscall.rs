@@ -245,6 +245,58 @@ impl ThreadControlBlock {
         }
     }
 
+    pub fn init_vcpu(&mut self, owner: *const Thread, syscall_stack_start: u64, upt: u64) {
+        assert!(self.owner.is_null());
+        self.owner = owner;
+        self.syscall_stack_start = syscall_stack_start;
+        self.user_page_table = upt;
+        self.in_syscall.store(true, Ordering::Relaxed);
+        self.fp_env
+            .store(0x1f80_u64 | (0x037f_u64 << 32), Ordering::Relaxed);
+    }
+
+    pub fn spawn_vcpu_thread(
+        &mut self,
+        entry_fn: extern "C" fn(*const Thread) -> !,
+    ) -> ThreadOffCpuReason {
+        crate::sched::ensure_preemption_timer();
+        self.owner().process_stats.start_cpu_usage_kernel();
+        self.owner().trace("spawn_vcpu_thread", 0, 0);
+        crate::util::full_fence();
+
+        assert_ne!(0, self.user_page_table);
+        assert!(self.in_syscall.load(Ordering::Relaxed));
+
+        super::install_page_table(self.user_page_table);
+        self.restore_fp_env();
+
+        let mut ret: u64;
+        let mut maybe_addr: u64;
+        unsafe {
+            asm!(
+                "call rax",
+                in("rax") spawn_vcpu_thread_asm,
+                in("rdi") self.owner as usize as u64,
+                in("rsi") self.to_addr(),
+                in("rdx") self.syscall_stack_start,
+                in("rcx") entry_fn as usize as u64,
+                lateout("rax") ret,
+                lateout("rdi") _,
+                lateout("rsi") maybe_addr,
+                lateout("rdx") _,
+                lateout("rcx") _,
+            );
+        }
+
+        crate::util::full_fence();
+        let off_tcb =
+            unsafe { (super::GS::current_tcb() as usize as *const Self).as_ref() }.unwrap();
+        off_tcb
+            .owner()
+            .trace("spawn_vcpu_thread back", off_tcb.syscall_rsp, 0);
+        off_tcb.thread_off_cpu_reason(ret, maybe_addr)
+    }
+
     fn owner(&self) -> &Thread {
         unsafe { self.owner.as_ref().unwrap() }
     }
@@ -711,6 +763,23 @@ extern "C" fn syscall_handler_rust(
     };
 
     res // rax
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn spawn_vcpu_thread_asm() {
+    // rdi = *const Thread, rsi = TCB addr, rdx = kernel_stack_start, rcx = entry_fn
+    naked_asm!(
+        "cli",
+        push_preserved_registers!(),
+        "mov gs:[40], rsp",
+        "mov gs:[32], rsi",
+        "mov rsp, rdx",
+        "and rsp, -16",
+        "xor rbp, rbp",
+        "sti",
+        "call rcx",
+        "ud2",
+    );
 }
 
 #[unsafe(naked)]

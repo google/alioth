@@ -103,13 +103,38 @@ fn main() {
     verify_no_fp::validate_cwasm_no_fp(&cwasm_bytes)
         .expect("vmm-core.cwasm failed zero-FP/SIMD machine-code validation");
 
+    // Also precompile the exact byte-identical `vmm-core.wasm` for the `#![no_std]` Motor OS
+    // Ring-0 Wasmtime target (`x86_64-unknown-none`, `memory_reservation = 0`).
+    let mut motor_config = Config::new();
+    motor_config.wasm_threads(true);
+    motor_config.shared_memory(true);
+    motor_config.wasm_simd(false);
+    motor_config.wasm_relaxed_simd(false);
+    motor_config.signals_based_traps(false);
+    motor_config.memory_init_cow(false);
+    motor_config.memory_guard_size(0);
+    motor_config.memory_reservation(0);
+    motor_config
+        .target("x86_64-unknown-none")
+        .expect("Failed to configure Wasmtime x86_64-unknown-none target");
+    let motor_engine =
+        Engine::new(&motor_config).expect("Failed to create Motor OS Wasmtime engine");
+    let motor_cwasm_bytes = motor_engine
+        .precompile_module(&wasm_bytes)
+        .expect("Failed to precompile vmm-core.wasm to vmm-core-motor.cwasm");
+    verify_no_fp::validate_cwasm_no_fp(&motor_cwasm_bytes)
+        .expect("vmm-core-motor.cwasm failed zero-FP/SIMD machine-code validation");
+
     fs::write(out_dir.join("vmm-core.wasm"), &wasm_bytes)
         .expect("Failed to write vmm-core.wasm to OUT_DIR");
     fs::write(out_dir.join("vmm-core.cwasm"), &cwasm_bytes)
         .expect("Failed to write vmm-core.cwasm to OUT_DIR");
+    fs::write(out_dir.join("vmm-core-motor.cwasm"), &motor_cwasm_bytes)
+        .expect("Failed to write vmm-core-motor.cwasm to OUT_DIR");
 
     let _ = fs::write(profile_dir.join("vmm-core.wasm"), &wasm_bytes);
     let _ = fs::write(profile_dir.join("vmm-core.cwasm"), &cwasm_bytes);
+    let _ = fs::write(profile_dir.join("vmm-core-motor.cwasm"), &motor_cwasm_bytes);
 
     let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-unknown-unknown/release");
     let _ = fs::DirBuilder::new()
@@ -118,6 +143,10 @@ fn main() {
         .create(&repo_wasm_release_dir);
     let _ = fs::write(repo_wasm_release_dir.join("vmm-core.wasm"), &wasm_bytes);
     let _ = fs::write(repo_wasm_release_dir.join("vmm-core.cwasm"), &cwasm_bytes);
+    let _ = fs::write(
+        repo_wasm_release_dir.join("vmm-core-motor.cwasm"),
+        &motor_cwasm_bytes,
+    );
 
     if env::var_os("CARGO_FEATURE_COMPILER").is_none() {
         let compiler_target_dir = out_dir.join("compiler-host-target");

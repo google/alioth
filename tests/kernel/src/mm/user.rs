@@ -15,10 +15,12 @@ pub struct PinnedUserPage {
 }
 
 impl PinnedUserPage {
+    pub fn phys_addr(&self) -> u64 {
+        self.frame.get().unwrap().start() + self.offset
+    }
+
     pub fn kernel_addr(&self) -> u64 {
-        self.frame.get().unwrap().start()
-            + self.offset
-            + crate::arch::paging::PAGING_DIRECT_MAP_OFFSET
+        self.phys_addr() + crate::arch::paging::PAGING_DIRECT_MAP_OFFSET
     }
 }
 
@@ -127,6 +129,19 @@ impl UserAddressSpace {
             0
         };
         self.check_allocation((user_pages + kernel_charge) << PAGE_SIZE_SMALL_LOG2)
+    }
+
+    pub(crate) fn check_kernel_stack_allocation(
+        &self,
+        kernel_pages: u64,
+    ) -> Result<(), AllocationFailure> {
+        let kernel_pages = stack_segment_pages(kernel_pages);
+        let kernel_charge = if self.kernel_stacks.count(kernel_pages as usize) == 0 {
+            kernel_pages
+        } else {
+            0
+        };
+        self.check_allocation(kernel_charge << PAGE_SIZE_SMALL_LOG2)
     }
 
     /// Releases the process's memory: every user segment with its private
@@ -403,18 +418,15 @@ impl UserAddressSpace {
             .sub_resident((kernel_stack.size >> PAGE_SIZE_SMALL_LOG2) - 2);
     }
 
-    pub fn drop_stacks(&self, user_stack: &UserStack, kernel_stack: &Option<super::MemorySegment>) {
-        let user_segment = user_stack.segment;
-        // if self
-        //     .user_stacks
-        //     .push(
-        //         user_segment,
-        //         (user_segment.size as usize) >> PAGE_SIZE_SMALL_LOG2,
-        //     )
-        //     .is_err()
-        // {
-        self.do_drop_user_stack(user_segment);
-        // }
+    pub fn drop_stacks(
+        &self,
+        user_stack: &Option<UserStack>,
+        kernel_stack: &Option<super::MemorySegment>,
+    ) {
+        if let Some(user_stack) = user_stack {
+            let user_segment = user_stack.segment;
+            self.do_drop_user_stack(user_segment);
+        }
 
         if let Some(kernel_stack) = kernel_stack {
             let kernel_segment = *kernel_stack;
@@ -759,6 +771,34 @@ impl UserAddressSpace {
             return Err(moto_rt::E_INVALID_ARGUMENT.into());
         }
         self.pin_user_page(user_page_addr, access)
+    }
+
+    /// Pins a 4 KiB user page (`READABLE` or `READABLE | WRITABLE`), faulting in
+    /// lazy-allocated pages first if needed so Ring-0 VMM mappings hold stable
+    /// `SlabArc<Frame>` ownership for the lifetime of the VM.
+    pub(crate) fn pin_or_fault_user_page(
+        &self,
+        user_page_addr: u64,
+        writable: bool,
+    ) -> Result<PinnedUserPage, AllocationFailure> {
+        if user_page_addr & (PAGE_SIZE_SMALL - 1) != 0 {
+            return Err(moto_rt::E_INVALID_ARGUMENT.into());
+        }
+        let access = if writable {
+            MappingOptions::READABLE | MappingOptions::WRITABLE
+        } else {
+            MappingOptions::READABLE
+        };
+        match self.pin_user_page(user_page_addr, access) {
+            Ok(page) => Ok(page),
+            Err(UserCopyError::PageAbsent(_)) => {
+                let pf_err = if writable { 6 } else { 4 };
+                self.fix_pagefault(user_page_addr, pf_err)?;
+                self.pin_user_page(user_page_addr, access)
+                    .map_err(|_| moto_rt::E_INVALID_ARGUMENT.into())
+            }
+            Err(_) => Err(moto_rt::E_INVALID_ARGUMENT.into()),
+        }
     }
 
     pub fn read_from_user(
@@ -1244,7 +1284,7 @@ pub fn sparse_lazy_self_test() {
 
     space.unmap(quarter.start).unwrap();
     space.unmap(plain.start).unwrap();
-    space.drop_stacks(&stack, &None);
+    space.drop_stacks(&Some(stack), &None);
     space.unmap(lazy.start).unwrap();
     assert_eq!(descriptors(), descriptors_before);
     assert_eq!(accounted(), accounted_before);
@@ -1495,7 +1535,7 @@ pub fn exit_release_self_test() {
     space.fix_pagefault(lazy.start, 6).unwrap();
     let user_stack = space.alloc_user_stack(16).unwrap();
     let kernel_stack = space.alloc_kernel_stack(4).unwrap();
-    space.drop_stacks(&user_stack, &Some(kernel_stack));
+    space.drop_stacks(&Some(user_stack), &Some(kernel_stack));
     let dest = peer.alloc_user_unmapped(PAGES).unwrap();
     UserAddressSpace::map_shared(&peer, dest.start, &space, heap.start, options).unwrap();
     let peer_usage = peer.user_mem_stats().total();
@@ -1997,7 +2037,7 @@ pub fn exhaustion_self_test() {
     let stack = space.alloc_user_stack(4).unwrap();
     assert_eq!(available_small_pages(), 0);
     assert_eq!(space.user_mem_stats().resident(), 6 << PAGE_SIZE_SMALL_LOG2);
-    space.drop_stacks(&stack, &None);
+    space.drop_stacks(&Some(stack), &None);
     assert_eq!(available_small_pages(), 3);
     check(descriptors + 5, 5);
     hoard.take_all();

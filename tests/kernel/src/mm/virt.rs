@@ -229,6 +229,80 @@ pub fn vmem_free(addr: u64, kind: VmemKind) -> u64 {
     KERNEL_ADDRESS_SPACE.free(addr, kind)
 }
 
+/// Enforces `W^X` permissions (`R+X` vs `RW+NX` vs `RO+NX`) on `num_pages` small
+/// pages inside `KernelStatic` and flushes TLBs across all CPUs.
+pub(crate) fn vmem_set_kernel_wx(
+    virt_start: u64,
+    num_pages: u64,
+    writable: bool,
+    executable: bool,
+) {
+    KERNEL_ADDRESS_SPACE
+        .base
+        .page_table
+        .set_kernel_pages_wx(virt_start, num_pages, writable, executable);
+}
+
+/// Maps externally pinned physical pages (`phys_addrs`, each 4 KiB-aligned) into a
+/// contiguous `KernelStatic` virtual range as `RW + NX`. Caller retains frame pins
+/// until calling [`vmem_unmap_phys_pages`].
+pub(crate) fn vmem_map_phys_pages_rw(
+    phys_addrs: &[u64],
+) -> Result<MemorySegment, AllocationFailure> {
+    if phys_addrs.is_empty() {
+        return Err(moto_rt::E_INVALID_ARGUMENT.into());
+    }
+    let num_pages = phys_addrs.len() as u64;
+    let region = &KERNEL_ADDRESS_SPACE.kernel_static;
+    let mut segments = region.used_segments.lock(line!());
+    let memory_segment = region.allocate_pages_locked(
+        &mut segments,
+        num_pages,
+        MappingOptions::empty(),
+        Some(AllocationClass::Kernel),
+    )?;
+    drop(segments);
+
+    let pt = &KERNEL_ADDRESS_SPACE.base.page_table;
+    let opts = MappingOptions::READABLE | MappingOptions::WRITABLE | MappingOptions::DONT_ZERO;
+    for (idx, &phys) in phys_addrs.iter().enumerate() {
+        let vaddr = memory_segment.start + ((idx as u64) << PAGE_SIZE_SMALL_LOG2);
+        if let Err(err) = pt.map_page(phys, vaddr, PageType::SmallPage, opts, AllocationClass::Kernel)
+        {
+            for (done, &done_phys) in phys_addrs[..idx].iter().enumerate() {
+                pt.unmap_page_no_flush(
+                    done_phys,
+                    memory_segment.start + ((done as u64) << PAGE_SIZE_SMALL_LOG2),
+                    PageType::SmallPage,
+                );
+            }
+            if idx > 0 {
+                pt.flush_pages(memory_segment.start, idx as u64);
+            }
+            let _ = region.free(memory_segment.start);
+            return Err(err);
+        }
+    }
+    pt.set_kernel_pages_wx(memory_segment.start, num_pages, true, false);
+    Ok(memory_segment)
+}
+
+/// Unmaps a `KernelStatic` range previously created with [`vmem_map_phys_pages_rw`].
+pub(crate) fn vmem_unmap_phys_pages(seg: MemorySegment, phys_addrs: &[u64]) {
+    let pt = &KERNEL_ADDRESS_SPACE.base.page_table;
+    for (idx, &phys) in phys_addrs.iter().enumerate() {
+        pt.unmap_page_no_flush(
+            phys,
+            seg.start + ((idx as u64) << PAGE_SIZE_SMALL_LOG2),
+            PageType::SmallPage,
+        );
+    }
+    if !phys_addrs.is_empty() {
+        pt.flush_pages(seg.start, phys_addrs.len() as u64);
+    }
+    let _ = KERNEL_ADDRESS_SPACE.kernel_static.free(seg.start);
+}
+
 pub fn vaddr_map_status(vmem_addr: u64) -> VaddrMapStatus {
     KERNEL_ADDRESS_SPACE.vaddr_map_status(vmem_addr)
 }
@@ -909,6 +983,7 @@ impl KernelAddressSpace {
             VmemKind::KernelHeap => self.kernel_heap.free(addr).unwrap(),
             VmemKind::KernelStack => self.kernel_stacks.free(addr).unwrap(),
             VmemKind::KernelMMIO => self.kernel_mmio.free(addr).unwrap(),
+            VmemKind::KernelStatic => self.kernel_static.free(addr).unwrap(),
             _ => panic!(),
         }
     }
@@ -992,7 +1067,7 @@ pub(super) fn allocation_role_self_test(
         KERNEL_ADDRESS_SPACE.base.allocation_class(),
         AllocationClass::Kernel
     );
-    space.drop_stacks(&user_stack, &Some(kernel_stack));
+    space.drop_stacks(&Some(user_stack), &Some(kernel_stack));
     space.release_claim();
     assert_eq!(space.allocation_class(), AllocationClass::User);
     for class in [User, System] {

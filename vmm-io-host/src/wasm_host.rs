@@ -836,19 +836,19 @@ pub fn run_wasm_io<H: VmmHostIo + ?Sized>(
         unsafe { Module::deserialize(&engine, &cwasm_bytes)? }
     };
 
-    let memory_ty = module
-        .imports()
-        .find_map(|imp| {
-            if imp.module() == "env"
-                && imp.name() == "memory"
-                && let ExternType::Memory(ty) = imp.ty()
-            {
-                Some(ty)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| MemoryType::shared(17, 16384));
+    let memory_ty = match module.imports().find_map(|imp| {
+        if imp.module() == "env"
+            && imp.name() == "memory"
+            && let ExternType::Memory(ty) = imp.ty()
+        {
+            Some(ty)
+        } else {
+            None
+        }
+    }) {
+        Some(ty) => ty,
+        None => MemoryType::shared(17, 16384)?,
+    };
 
     let shared_memory = SharedMemory::new(&engine, memory_ty)?;
     let wasi_config = Arc::new(WasiThreadConfig::new(config_filename));

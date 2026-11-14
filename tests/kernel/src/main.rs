@@ -18,6 +18,7 @@ pub mod mm;
 pub mod sched;
 pub mod uspace;
 pub mod util;
+pub mod vmm;
 pub mod xray;
 
 pub use crate::arch::arch_raw_log as raw_log;

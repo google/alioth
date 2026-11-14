@@ -67,6 +67,21 @@ pub enum UserError {
     ShutdownRequested,
 }
 
+/// Entry hook implemented by Ring-0 vCPU runners for kernel-only `process::Thread`s.
+pub trait VcpuThreadHandler: Send + Sync + 'static {
+    fn run(&self, thread: &Thread) -> !;
+}
+
+extern "C" fn vcpu_thread_trampoline(thread_ptr: *const Thread) -> ! {
+    let thread = unsafe { thread_ptr.as_ref().unwrap() };
+    let runner = thread
+        .vcpu_runner
+        .as_ref()
+        .expect("vcpu_thread_trampoline called on non-vcpu thread")
+        .clone();
+    runner.run(thread)
+}
+
 impl ProcessId {
     pub const fn as_u64(&self) -> u64 {
         self.0
@@ -232,7 +247,7 @@ impl Process {
             match address_space.alloc_kernel_stack(Thread::DEFAULT_KERNEL_STACK_SIZE_PAGES) {
                 Ok(segment) => segment,
                 Err(err) => {
-                    address_space.drop_stacks(&user_stack, &None);
+                    address_space.drop_stacks(&Some(user_stack), &None);
                     return Err(err.into());
                 }
             };
@@ -286,9 +301,11 @@ impl Process {
 
             let thread = Thread::new(
                 self_.clone(),
-                user_stack,
+                Some(user_stack),
                 kernel_stack,
                 self_mut.entry_point,
+                None,
+                "",
             );
             self_mut.threads.insert(thread.tid, thread.clone());
             self_mut.main_thread = Some(thread.clone());
@@ -442,7 +459,7 @@ impl Process {
         self.capabilities.load(Ordering::Relaxed)
     }
 
-    pub(super) fn add_object(&self, object: Arc<SysObject>) -> SysHandle {
+    pub(crate) fn add_object(&self, object: Arc<SysObject>) -> SysHandle {
         self.insert_object(&mut self.wait_objects.lock(line!()), object)
     }
 
@@ -508,8 +525,9 @@ impl Process {
     fn release_object(obj: WaitObject) {
         if obj.sys_object.remove_process_handle() {
             // A process handle, not an incidental kernel Arc, owns a
-            // shared endpoint's lifetime.
+            // shared endpoint's (or Ring-0 VMM instance's) lifetime.
             super::shared::on_drop(&obj.sys_object);
+            crate::vmm::on_drop(&obj.sys_object);
         }
         drop(obj);
     }
@@ -670,7 +688,7 @@ impl Process {
         {
             Ok(segment) => segment,
             Err(err) => {
-                self.address_space.drop_stacks(&stack, &None);
+                self.address_space.drop_stacks(&Some(stack), &None);
                 return Err(err);
             }
         };
@@ -679,7 +697,8 @@ impl Process {
         if *process_status != ProcessStatus::Running {
             log::debug!("bad process status: {:?}", *process_status);
             drop(process_status);
-            self.address_space.drop_stacks(&stack, &Some(kernel_stack));
+            self.address_space
+                .drop_stacks(&Some(stack), &Some(kernel_stack));
             return Err(moto_rt::E_INTERNAL_ERROR.into());
         }
 
@@ -687,9 +706,11 @@ impl Process {
         // until Thread::new and the thread-map insertion are both published.
         let thread = Thread::new(
             self.this.clone().upgrade().unwrap(),
-            stack,
+            Some(stack),
             kernel_stack,
             thread_entry_point,
+            None,
+            "",
         );
         // Safe under process_status; create the mutable reference only after
         // Thread::new has finished using its Arc<Process>.
@@ -705,6 +726,44 @@ impl Process {
         );
         thread.post_start(thread_arg);
         Ok(thread_handle)
+    }
+
+    /// Spawns a kernel-only vCPU `Thread` owned by `self` (`user_stack = None`).
+    pub(crate) fn spawn_vcpu_thread(
+        &self,
+        runner: Arc<dyn VcpuThreadHandler>,
+        name: &str,
+    ) -> Result<Arc<Thread>, mm::AllocationFailure> {
+        if self.status() != ProcessStatus::Running {
+            return Err(moto_rt::E_INTERNAL_ERROR.into());
+        }
+        self.address_space
+            .check_kernel_stack_allocation(Thread::VCPU_KERNEL_STACK_SIZE_PAGES)?;
+        let kernel_stack = self
+            .address_space
+            .alloc_kernel_stack(Thread::VCPU_KERNEL_STACK_SIZE_PAGES)?;
+
+        let process_status = self.status.lock(line!());
+        if *process_status != ProcessStatus::Running {
+            drop(process_status);
+            self.address_space.drop_stacks(&None, &Some(kernel_stack));
+            return Err(moto_rt::E_INTERNAL_ERROR.into());
+        }
+
+        let thread = Thread::new(
+            self.this.clone().upgrade().unwrap(),
+            None,
+            kernel_stack,
+            0,
+            Some(runner),
+            name,
+        );
+        let self_mut = unsafe { (self as *const Process as *mut Process).as_mut().unwrap() };
+        self_mut.threads.insert(thread.tid, thread.clone());
+        drop(process_status);
+
+        thread.post_start(0);
+        Ok(thread)
     }
 
     pub(super) fn kill(&self, target: SysHandle) -> Result<(), ErrorCode> {
@@ -819,10 +878,19 @@ impl Process {
 
     fn on_thread_exited(&self, tid: ThreadId, thread_status: ThreadStatus) {
         self.stats.on_thread_exited();
-        self.address_space
-            .process_static_page_mut()
-            .active_threads
-            .fetch_sub(1, Ordering::Relaxed);
+        // Kernel-only vCPU threads never incremented active_threads in ProcessStaticPage.
+        let is_user_thread = {
+            let _lock = self.status.lock(line!());
+            self.threads
+                .get(&tid)
+                .is_none_or(|t| !t.is_vcpu())
+        };
+        if is_user_thread {
+            self.address_space
+                .process_static_page_mut()
+                .active_threads
+                .fetch_sub(1, Ordering::Relaxed);
+        }
 
         #[cfg(debug_assertions)]
         log::debug!(
@@ -929,6 +997,7 @@ impl Process {
             for object in objects.values() {
                 if object.sys_object.remove_process_handle() {
                     super::shared::on_drop(&object.sys_object);
+                    crate::vmm::on_drop(&object.sys_object);
                 }
             }
             drop(objects);
@@ -1093,7 +1162,10 @@ pub struct Thread {
     owner: Weak<Process>,
     this: Weak<Self>,
     thread_entry_point: u64,
-    user_stack: crate::mm::user::UserStack,
+    user_stack: Option<crate::mm::user::UserStack>,
+    vcpu_runner: Option<Arc<dyn VcpuThreadHandler>>,
+    kernel_name: [u8; 32],
+    kernel_name_len: u8,
 
     // Self object, points at self. Can be used to wake this thread either locally
     // or remotely.
@@ -1168,15 +1240,23 @@ impl Thread {
     const DEFAULT_KERNEL_STACK_SIZE_PAGES: u64 = 8; // +2 are added as guards.
     #[cfg(not(debug_assertions))]
     const DEFAULT_KERNEL_STACK_SIZE_PAGES: u64 = 4; // +2 are added as guards.
+    const VCPU_KERNEL_STACK_SIZE_PAGES: u64 = 8; // 32 KiB + 2 guard pages.
 
     const USER_TCB_GUARD: u64 = 0xdead_f00b_a4ba_22cd; // Whatever.
 
     fn new(
         owner: Arc<Process>,
-        user_stack: crate::mm::user::UserStack,
+        user_stack: Option<crate::mm::user::UserStack>,
         kernel_stack: mm::MemorySegment,
         thread_entry_point: u64,
+        vcpu_runner: Option<Arc<dyn VcpuThreadHandler>>,
+        name: &str,
     ) -> Arc<Self> {
+        let mut kernel_name = [0u8; 32];
+        let name_len = name.len().min(kernel_name.len());
+        kernel_name[..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
+        let is_user_thread = vcpu_runner.is_none();
+
         let self_ = Arc::new(Self {
             tid: ThreadId::new(),
             tcb: ThreadControlBlock::new(),
@@ -1196,6 +1276,9 @@ impl Thread {
             start_posted: AtomicBool::new(false),
             thread_entry_point,
             user_stack,
+            vcpu_runner,
+            kernel_name,
+            kernel_name_len: name_len as u8,
             capabilities: AtomicU64::new(0),
             kernel_stack_segment: Some(kernel_stack),
             status: SpinLock::new(ThreadStatus::Created),
@@ -1241,14 +1324,113 @@ impl Thread {
             self_mut.join_handle = owner.add_object(join_object);
         }
 
-        owner
-            .address_space
-            .process_static_page_mut()
-            .active_threads
-            .fetch_add(1, Ordering::Relaxed);
+        if is_user_thread {
+            owner
+                .address_space
+                .process_static_page_mut()
+                .active_threads
+                .fetch_add(1, Ordering::Relaxed);
+        }
 
         owner.stats.on_thread_added();
         self_
+    }
+
+    pub fn is_vcpu(&self) -> bool {
+        self.vcpu_runner.is_some()
+    }
+
+    /// Saves extended FP/SIMD state into `self.tcb.xsave` (must be called by `self` on-CPU).
+    pub fn tcb_xsave(&self) {
+        let tcb = unsafe {
+            (core::ptr::addr_of!(self.tcb) as *mut ThreadControlBlock)
+                .as_mut()
+                .unwrap()
+        };
+        tcb.xsave();
+    }
+
+    /// Restores extended FP/SIMD state from `self.tcb.xsave` (must be called by `self` on-CPU).
+    pub fn tcb_xrstor(&self) {
+        self.tcb.xrstor();
+    }
+
+    /// Fast pre-entry check under `CLGI` / `CLI`: returns `true` if a kill, debuggee
+    /// pause, or scheduler preemption is pending for this vCPU thread.
+    pub fn vcpu_should_abort_entry(&self) -> bool {
+        if !crate::sched::timer_irq_fast_path_ok() {
+            return true;
+        }
+        if let Some(owner) = self.owner.upgrade() {
+            if owner.paused_debuggee.load(Ordering::Relaxed) {
+                return true;
+            }
+        }
+        !matches!(*self.status.lock(line!()), ThreadStatus::Live(_))
+    }
+
+    /// Race-free park for a vCPU thread (`HLT` or pre-`SIPI`) on `kick_obj` with an
+    /// optional `TSC_DEADLINE` timeout. Calls `before_sleep` only if the thread
+    /// actually deschedules, and `after_wake` upon resuming.
+    pub fn wait_for_vcpu_kick(
+        &self,
+        kick_obj: &Arc<SysObject>,
+        deadline: Option<Instant>,
+        should_sleep: impl FnOnce() -> bool,
+        before_sleep: impl FnOnce(),
+        after_wake: impl FnOnce(),
+    ) {
+        let wait_obj = WaitObject::new(kick_obj.clone());
+        let dummy_handle = SysHandle::from_u64(1);
+        kick_obj.add_waiting_thread(self, dummy_handle);
+        if !should_sleep() || wait_obj.wake_count < kick_obj.wake_count() || kick_obj.done() {
+            kick_obj.remove_waiting_thread(self);
+            return;
+        }
+        self.add_wait_objects(core::iter::once(wait_obj));
+        if let Some(dl) = deadline {
+            self.new_timeout(dl);
+        }
+        before_sleep();
+        let _ = self.wait();
+        after_wake();
+    }
+
+    /// Services pending kills, debuggee pauses, or scheduler timeslice preemption
+    /// between VM exits on a vCPU thread.
+    pub fn check_vcpu_preempt_or_kill(
+        &self,
+        mut before_sleep: impl FnMut(),
+        mut after_wake: impl FnMut(),
+    ) {
+        let mut pause_debuggee = false;
+        {
+            let mut status = self.status.lock(line!());
+            match *status {
+                ThreadStatus::Killed(reason) => {
+                    drop(status);
+                    before_sleep();
+                    self.die(reason);
+                }
+                ThreadStatus::Live(live)
+                    if self.owner().paused_debuggee.load(Ordering::Relaxed) =>
+                {
+                    *status = ThreadStatus::PausingDebuggee(live);
+                    pause_debuggee = true;
+                }
+                _ => {}
+            }
+        }
+        if pause_debuggee {
+            before_sleep();
+            self.pause_debuggee_in_syscall();
+            after_wake();
+        }
+        if !crate::sched::timer_irq_fast_path_ok() {
+            before_sleep();
+            self.scheduler_tick_in_syscall();
+            after_wake();
+        }
     }
 
     pub fn get(&self) -> Arc<Self> {
@@ -1507,7 +1689,8 @@ impl Thread {
     }
 
     fn init_user_tcb(&mut self) {
-        self.user_tcb_user_addr = (self.user_stack.stack_top()
+        let user_stack = self.user_stack.as_ref().unwrap();
+        self.user_tcb_user_addr = (user_stack.stack_top()
             - (core::mem::size_of::<UserThreadControlBlock>() as u64))
             & !15; // Align on 16 bytes.
 
@@ -1573,21 +1756,28 @@ impl Thread {
                 ThreadStatus::Live(live_status) => match live_status {
                     LiveThreadStatus::Running => {
                         *status = ThreadStatus::Killed(reason);
-                        // With IRQ fast-return, a busy thread on a CPU with an
-                        // empty run queue never re-enters the kernel on its
-                        // own; poke its CPU so the next tick preempts it and
-                        // the kill is processed. The CPU read is best-effort:
-                        // a Running thread stays on its CPU until it passes
-                        // through the scheduler, which would see Killed.
-                        let utcb = unsafe {
-                            (self.user_tcb_kernel_addr as usize as *const UserThreadControlBlock)
-                                .as_ref()
-                                .unwrap_unchecked()
-                        };
-                        crate::sched::poke_cpu(utcb.current_cpu.load(Ordering::Relaxed));
+                        if self.user_tcb_kernel_addr != 0 {
+                            let utcb = unsafe {
+                                (self.user_tcb_kernel_addr as usize
+                                    as *const UserThreadControlBlock)
+                                    .as_ref()
+                                    .unwrap_unchecked()
+                            };
+                            crate::sched::poke_cpu(utcb.current_cpu.load(Ordering::Relaxed));
+                        } else if let Some(cpu) = self.last_cpu() {
+                            crate::sched::poke_cpu(cpu as u32);
+                        }
                     }
-                    LiveThreadStatus::Runnable(_, _) | LiveThreadStatus::Syscall(_, _) => {
+                    LiveThreadStatus::Runnable(_, _) => {
                         *status = ThreadStatus::Killed(reason);
+                    }
+                    LiveThreadStatus::Syscall(_, _) => {
+                        *status = ThreadStatus::Killed(reason);
+                        if self.is_vcpu() {
+                            if let Some(cpu) = self.last_cpu() {
+                                crate::sched::poke_cpu(cpu as u32);
+                            }
+                        }
                     }
                     LiveThreadStatus::InWait(_, _) => {
                         *status = ThreadStatus::Killed(reason);
@@ -1722,24 +1912,26 @@ impl Thread {
 
                 let upt = process.address_space.user_page_table();
 
-                self_mut.init_user_tcb();
+                if self_mut.is_vcpu() {
+                    let tcb = &mut self_mut.tcb;
+                    tcb.init_vcpu(self_ptr, kernel_stack_start, upt);
+                    *thread_status_lock = ThreadStatus::Live(LiveThreadStatus::Syscall(0xff, 0));
+                    tcb
+                } else {
+                    self_mut.init_user_tcb();
 
-                let tcb = &mut self_mut.tcb;
-                tcb.init(
-                    self_ptr,
-                    start + entry_point,
-                    // User stack starts after user_tcb.
-                    // TODO: userspace with sse enabled uses movaps, which does #GPF(0)
-                    //       if the argument is not aligned on 16 bytes. But for some reason
-                    //       the rust compiler does "push %rbp" and then calls moveaps with
-                    //       %rsp, so %rsp must be 8-byte aligned but not 16-byte aligned.
-                    (self_mut.user_tcb_user_addr & !15) - 8, // Make sure user %rsp is 0x****8.
-                    kernel_stack_start,
-                    upt,
-                );
+                    let tcb = &mut self_mut.tcb;
+                    tcb.init(
+                        self_ptr,
+                        start + entry_point,
+                        (self_mut.user_tcb_user_addr & !15) - 8, // Make sure user %rsp is 0x****8.
+                        kernel_stack_start,
+                        upt,
+                    );
 
-                *thread_status_lock = ThreadStatus::Live(LiveThreadStatus::Running);
-                tcb
+                    *thread_status_lock = ThreadStatus::Live(LiveThreadStatus::Running);
+                    tcb
+                }
             };
 
             if !process.on_thread_starting(self) {
@@ -1752,10 +1944,17 @@ impl Thread {
                 return;
             }
             core::mem::drop(cpu_usage_scope);
-            self.trace("will spawn usermode", 0, 0);
-            let tocr = tcb.spawn_usermode_thread(arg);
-            Self::off_cpu_current().on_thread_descheduled(tocr);
-            self.trace("back from spawn usermode", 0, 0);
+            if self.is_vcpu() {
+                self.trace("will spawn vcpu thread", 0, 0);
+                let tocr = tcb.spawn_vcpu_thread(vcpu_thread_trampoline);
+                Self::off_cpu_current().on_thread_descheduled(tocr);
+                self.trace("back from spawn vcpu thread", 0, 0);
+            } else {
+                self.trace("will spawn usermode", 0, 0);
+                let tocr = tcb.spawn_usermode_thread(arg);
+                Self::off_cpu_current().on_thread_descheduled(tocr);
+                self.trace("back from spawn usermode", 0, 0);
+            }
         }
     }
 
@@ -2207,7 +2406,8 @@ impl Thread {
 
         let name = {
             if self.user_tcb_kernel_addr == 0 {
-                ""
+                core::str::from_utf8(&self.kernel_name[..self.kernel_name_len as usize])
+                    .unwrap_or("")
             } else {
                 let utcb = unsafe {
                     (self.user_tcb_kernel_addr as usize as *mut UserThreadControlBlock)
@@ -2629,13 +2829,13 @@ impl Thread {
             ThreadOffCpuReason::KilledPf(addr) => {
                 {
                     let mut status = self.status.lock(line!());
-                    if self.user_stack.is_overflow(addr) {
+                    if self.user_stack.as_ref().is_some_and(|s| s.is_overflow(addr)) {
                         log::debug!(
                             "Thread killed: {:?}: #PF(0x{:x}): stack overflow.",
                             *status,
                             addr
                         );
-                    } else if self.user_stack.is_underflow(addr) {
+                    } else if self.user_stack.as_ref().is_some_and(|s| s.is_underflow(addr)) {
                         log::debug!(
                             "Thread killed: {:?}: #PF(0x{:x}): stack underflow.",
                             *status,

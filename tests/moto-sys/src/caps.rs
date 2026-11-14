@@ -59,6 +59,10 @@ pub const CAP_NET: u64 = 1 << 8;
 /// a [`CAP_SYS`] one, must hold it to grant it.
 pub const CAP_FS_WRITE: u64 = 1 << 9;
 
+/// The process may create and manage hardware-virtualized VMs via the Ring-0
+/// Airlock (`SysObj::create(SysHandle::KERNEL, 0, "vmm:...")`).
+pub const CAP_VMM: u64 = 1 << 14;
+
 /// Capabilities a child may receive only from a parent that holds them,
 /// whatever the parent's role. They are inherited by default when held.
 pub const PARENT_OWNED_CAPS: u64 = CAP_VSOCK | CAP_NET | CAP_FS_WRITE;
