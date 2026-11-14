@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use vmm_tests::{
     TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock, boot_and_shutdown,
-    boot_nested_full_motor_os, boot_nested_linux_initrd, boot_until_autonomous_exit,
-    convert_qcow2_to_raw, copy_sparse_raw, ensure_test_guest_artifacts, linux_blobs_dir,
-    motor_os_release_dir, use_network_tap,
+    boot_nested_full_alpine, boot_nested_full_motor_os, boot_nested_linux_initrd,
+    boot_until_autonomous_exit, convert_qcow2_to_raw, copy_sparse_raw, ensure_test_guest_artifacts,
+    linux_blobs_dir, motor_os_release_dir, use_network_tap,
 };
 
 fn run_linux_initrd(mode: VmmMode) {
@@ -328,4 +328,24 @@ fn boot_nested_linux_initrd_cwasm() {
 #[test]
 fn boot_nested_linux_initrd_wasm() {
     run_nested_linux_initrd(VmmMode::Wasm);
+}
+
+fn run_nested_alpine(mode: VmmMode) {
+    let _lock = acquire_motor_os_lock();
+    let has_tap = use_network_tap(
+        "moto-tap",
+        "run ../motor-dev/motor-os/vm_images/release/create-tap.sh",
+    );
+    let tmp = TempTestDir::new(&format!("nested-alpine-{}", mode.as_str()));
+    boot_nested_full_alpine(mode, &tmp, has_tap);
+}
+
+#[test]
+fn boot_nested_alpine_cwasm() {
+    run_nested_alpine(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_nested_alpine_wasm() {
+    run_nested_alpine(VmmMode::Wasm);
 }

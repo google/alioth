@@ -25,7 +25,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -585,6 +585,249 @@ fn build_nested_linux_initrd_artifacts() -> NestedLinuxInitrdArtifacts {
 pub fn ensure_nested_linux_initrd_artifacts() -> &'static NestedLinuxInitrdArtifacts {
     static NESTED_LINUX_INITRD: OnceLock<NestedLinuxInitrdArtifacts> = OnceLock::new();
     NESTED_LINUX_INITRD.get_or_init(build_nested_linux_initrd_artifacts)
+}
+
+#[derive(Debug, Clone)]
+pub struct NestedAlpineArtifacts {
+    pub l1_kloader: PathBuf,
+    pub l1_initrd: PathBuf,
+    pub l1_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn copy_file_slice(src: &File, mut src_off: i64, dst: &File, mut dst_off: i64, mut remaining: usize) {
+    while remaining > 0 {
+        let n = unsafe {
+            libc::copy_file_range(
+                src.as_raw_fd(),
+                &mut src_off,
+                dst.as_raw_fd(),
+                &mut dst_off,
+                remaining,
+                0,
+            )
+        };
+        assert!(
+            n > 0,
+            "copy_file_range failed: {}",
+            std::io::Error::last_os_error()
+        );
+        remaining -= n as usize;
+    }
+}
+
+fn inject_ssh_pubkey_into_alpine_raw(alpine_raw: &Path, ssh_priv_key: &Path, stage_dir: &Path) {
+    let keygen = Command::new("ssh-keygen")
+        .arg("-y")
+        .arg("-f")
+        .arg(ssh_priv_key)
+        .output()
+        .expect("failed to invoke ssh-keygen -y");
+    assert!(keygen.status.success(), "ssh-keygen -y failed");
+
+    let ak_path = stage_dir.join("authorized_keys");
+    fs::write(&ak_path, &keygen.stdout).expect("failed to write staged authorized_keys");
+
+    let raw_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(alpine_raw)
+        .expect("failed to open scratch alpine.raw");
+    let mut part_entry = [0u8; 8];
+    raw_file
+        .read_exact_at(&mut part_entry, 0x1be + 2 * 16 + 8)
+        .expect("failed to read MBR partition 3 entry");
+    let start_sec = u32::from_le_bytes(part_entry[0..4].try_into().unwrap()) as u64;
+    let num_sec = u32::from_le_bytes(part_entry[4..8].try_into().unwrap()) as u64;
+    let part_off = (start_sec * 512) as i64;
+    let part_len = (num_sec * 512) as usize;
+
+    let part3_path = stage_dir.join("part3.ext4");
+    {
+        let part3_out = File::create(&part3_path).expect("failed to create part3.ext4");
+        copy_file_slice(&raw_file, part_off, &part3_out, 0, part_len);
+    }
+
+    let _ = Command::new("/usr/sbin/e2fsck")
+        .arg("-fy")
+        .arg(&part3_path)
+        .output()
+        .expect("failed to run pre-debugfs e2fsck on part3.ext4");
+
+    let cmds = format!(
+        "mkdir /root/.ssh\n\
+         set_inode_field /root/.ssh mode 040700\n\
+         set_inode_field /root/.ssh uid 0\n\
+         set_inode_field /root/.ssh gid 0\n\
+         write {} /root/.ssh/authorized_keys\n\
+         set_inode_field /root/.ssh/authorized_keys mode 0100600\n\
+         set_inode_field /root/.ssh/authorized_keys uid 0\n\
+         set_inode_field /root/.ssh/authorized_keys gid 0\n",
+        ak_path.display()
+    );
+    let mut debugfs = Command::new("/usr/sbin/debugfs")
+        .arg("-w")
+        .arg(&part3_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn /usr/sbin/debugfs");
+    debugfs
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(cmds.as_bytes())
+        .expect("failed to feed commands to debugfs");
+    let debugfs_out = debugfs.wait_with_output().expect("debugfs wait failed");
+    assert!(
+        debugfs_out.status.success(),
+        "debugfs failed: {}",
+        String::from_utf8_lossy(&debugfs_out.stderr)
+    );
+
+    let _ = Command::new("/usr/sbin/e2fsck")
+        .arg("-fy")
+        .arg(&part3_path)
+        .output()
+        .expect("failed to run post-debugfs e2fsck on part3.ext4");
+
+    {
+        let part3_in = File::open(&part3_path).expect("failed to reopen part3.ext4");
+        copy_file_slice(&part3_in, 0, &raw_file, part_off, part_len);
+    }
+    let _ = fs::remove_file(&part3_path);
+}
+
+fn build_nested_alpine_artifacts() -> NestedAlpineArtifacts {
+    let guest = ensure_test_guest_artifacts();
+    let motor_out = ensure_motor_io_host_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+    let imager = moto_dir.join("tools/imager");
+    let qcow2 = moto_dir.join("motor-os.qcow2");
+    let l1_initrd = moto_dir.join("initrd");
+    let ssh_key = moto_dir.join("test.key");
+    let bzimage = blobs.join("bzImage");
+    let src_alpine = blobs.join("alpine.raw");
+
+    for required in [&imager, &qcow2, &l1_initrd, &ssh_key, &bzimage, &src_alpine] {
+        assert!(
+            required.is_file(),
+            "missing required nested Alpine Linux artifact '{}'",
+            required.display()
+        );
+    }
+
+    let stage_dir = motor_out.join("nested-alpine-stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    fs::create_dir_all(&stage_dir).expect("failed to create target/motor/nested-alpine-stage");
+
+    let l2_alpine = stage_dir.join("alpine.raw");
+    copy_sparse_raw(&src_alpine, &l2_alpine);
+    inject_ssh_pubkey_into_alpine_raw(&l2_alpine, &ssh_key, &stage_dir);
+
+    let l1_template_raw = motor_out.join("l1-alpine-template.raw");
+    let _ = fs::remove_file(&l1_template_raw);
+    run_imager(
+        &imager,
+        &[
+            "resize",
+            "-i",
+            qcow2.to_str().unwrap(),
+            "-o",
+            l1_template_raw.to_str().unwrap(),
+            "--size",
+            "2G",
+        ],
+    );
+
+    let l1_init_cfg = stage_dir.join("l1-sys-init.cfg");
+    fs::write(
+        &l1_init_cfg,
+        "tty:/system/services/sys-tty\n\
+         strobe:/system/services/strobe\n\
+         svc:328:/system/services/dns-resolver\n\
+         svc:17404:/system/services/russhd /system/cfg/sshd.toml\n",
+    )
+    .expect("failed to write l1-sys-init.cfg");
+    run_imager(
+        &imager,
+        &[
+            "put",
+            l1_template_raw.to_str().unwrap(),
+            l1_init_cfg.to_str().unwrap(),
+            "/system/cfg/sys-init.cfg",
+        ],
+    );
+    run_imager(
+        &imager,
+        &[
+            "mkdir",
+            "--mode",
+            "rwxrwxr-x",
+            l1_template_raw.to_str().unwrap(),
+            "/user/vm",
+        ],
+    );
+
+    let vm_l2_toml = stage_dir.join("vm-l2.toml");
+    fs::write(
+        &vm_l2_toml,
+        "log_file = \"/user/tmp/vmm-l2.log\"\n\
+         log_level = \"info\"\n\
+         kernel = \"/user/vm/bzImage\"\n\
+         cmd_line = \"console=ttyS0 root=/dev/vda3 rw\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n\
+         blk = [\"/user/vm/alpine.raw\"]\n\n\
+         [net.dev0]\n\
+         mac = \"a4:a1:c2:00:00:02\"\n\
+         mtu = 1500\n\
+         if_name = \"vmm0:192.168.8.1/24\"\n",
+    )
+    .expect("failed to write vm-l2.toml for nested Alpine");
+
+    for (src, dst, mode) in [
+        (
+            motor_out.join("motor-io-host-cwasm"),
+            "/user/vm/motor-io-host-cwasm",
+            None,
+        ),
+        (
+            motor_out.join("motor-io-host-wasm"),
+            "/user/vm/motor-io-host-wasm",
+            None,
+        ),
+        (motor_out.join("vmm-core.cwasm"), "/user/vm/vmm-core.cwasm", None),
+        (motor_out.join("vmm-io.cwasm"), "/user/vm/vmm-io.cwasm", None),
+        (motor_out.join("vmm-io.wasm"), "/user/vm/vmm-io.wasm", None),
+        (bzimage, "/user/vm/bzImage", None),
+        (l2_alpine, "/user/vm/alpine.raw", Some("rw-rw-r--")),
+        (vm_l2_toml, "/user/vm/vm-l2.toml", None),
+    ] {
+        let l1_s = l1_template_raw.to_str().unwrap();
+        let src_s = src.to_str().unwrap();
+        if let Some(m) = mode {
+            run_imager(&imager, &["put", "--mode", m, l1_s, src_s, dst]);
+        } else {
+            run_imager(&imager, &["put", l1_s, src_s, dst]);
+        }
+    }
+
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    NestedAlpineArtifacts {
+        l1_kloader: guest.kloader.clone(),
+        l1_initrd,
+        l1_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_nested_alpine_artifacts() -> &'static NestedAlpineArtifacts {
+    static NESTED_ALPINE: OnceLock<NestedAlpineArtifacts> = OnceLock::new();
+    NESTED_ALPINE.get_or_init(build_nested_alpine_artifacts)
 }
 
 pub fn ensure_vmm_artifacts() -> &'static Path {
@@ -1794,6 +2037,352 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
     assert!(
         status.success(),
         "[nested_linux_initrd ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+        mode.as_str(),
+        String::from_utf8_lossy(&serial),
+        String::from_utf8_lossy(&stderr_bytes),
+    );
+}
+
+fn build_l2_alpine_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
+    let proxy = format!(
+        "ssh -F /dev/null -o IdentitiesOnly=yes -o BatchMode=yes \
+         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         -o ConnectTimeout=5 -i {} -W %h:%p -p 2222 motor@192.168.4.2",
+        key_path.display()
+    );
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-F")
+        .arg("/dev/null")
+        .arg("-o")
+        .arg("IdentitiesOnly=yes")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-o")
+        .arg(format!("ProxyCommand={proxy}"))
+        .arg("-i")
+        .arg(key_path)
+        .arg("-p")
+        .arg("22")
+        .arg("root@192.168.8.2")
+        .arg(remote_cmd);
+    cmd
+}
+
+/// Boots L1 full Motor OS (`1536M` RAM + `tests/kloader` + resized `2G` `l1-alpine.raw`),
+/// launches `motor-io-host-{cwasm,wasm}` inside L1 to boot SMP full Alpine Linux (`bzImage` 6.14
+/// + `alpine.raw` over `virtio-blk` + `IpDevice` `vmm0:192.168.8.1/24` over `virtio-net`),
+/// verifies `alpine-vm login:` on `ttyS0`, verifies ICMP (`ping -c 2 192.168.8.1`) + OpenSSH
+/// (`root@192.168.8.2:22` via L1 `russhd`) + clean `poweroff` (`ACPI S5`), and confirms clean
+/// L2 -> L1 `rush` -> L0 teardown.
+pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: bool) {
+    let target_dir = ensure_vmm_artifacts();
+    let nested = ensure_nested_alpine_artifacts();
+
+    let l1_disk = tmp.path().join("l1-alpine.raw");
+    copy_sparse_raw(&nested.l1_template_raw, &l1_disk);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&nested.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let net_section = if has_host_tap {
+        "\n[net.dev0]\n\
+         mac = \"a4:a1:c2:00:00:01\"\n\
+         mtu = 1500\n\
+         if_name = \"moto-tap\"\n"
+    } else {
+        ""
+    };
+
+    let config_path = tmp.path().join("vm-l0.toml");
+    let log_path = tmp.path().join("vmm-l0.log");
+    let full_config = format!(
+        "log_file = \"{}\"\n\
+         log_level = \"info\"\n\
+         pvh = \"{}\"\n\
+         initramfs = \"{}\"\n\
+         cmd_line = \"system-tty\"\n\
+         num_cpus = 4\n\
+         mem_size = \"1536M\"\n\
+         blk = [\"{}\"]\n\
+         {net_section}",
+        log_path.display(),
+        nested.l1_kloader.display(),
+        nested.l1_initrd.display(),
+        l1_disk.display(),
+    );
+    fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
+
+    let (io_host, io_mod, core_host, core_mod, l1_launch) = match mode {
+        VmmMode::Cwasm => (
+            target_dir.join("vmm-io-host-cwasm"),
+            target_dir.join("vmm-io.cwasm"),
+            target_dir.join("vmm-core-host-cwasm"),
+            target_dir.join("vmm-core.cwasm"),
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r",
+        ),
+        VmmMode::Wasm => (
+            target_dir.join("vmm-io-host-wasm"),
+            target_dir.join("vmm-io.wasm"),
+            target_dir.join("vmm-core-host-wasm"),
+            target_dir.join("vmm-core.wasm"),
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r",
+        ),
+    };
+
+    let mut cmd = Command::new(&io_host);
+    cmd.current_dir(tmp.path())
+        .arg("-c")
+        .arg(&config_path)
+        .arg("-w")
+        .arg(&io_mod)
+        .arg("--core-host")
+        .arg(&core_host)
+        .arg("--core-wasm")
+        .arg(&core_mod)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+
+    let mut child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut guard = ProcessGroupGuard::new(child);
+
+    let state = Arc::new((
+        Mutex::new(SerialCapture {
+            buf: Vec::with_capacity(65536),
+            eof: false,
+        }),
+        Condvar::new(),
+    ));
+    let state_reader = Arc::clone(&state);
+    let stdout_handle = thread::spawn(move || {
+        let mut chunk = [0u8; 512];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().eof = true;
+                    cvar.notify_all();
+                    break;
+                }
+                Ok(n) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
+                    cvar.notify_all();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    let (lock, cvar) = &*state_reader;
+                    lock.lock().unwrap().eof = true;
+                    cvar.notify_all();
+                    break;
+                }
+            }
+        }
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stderr.read_to_end(&mut out);
+        out
+    });
+
+    let fail_with_diag = |reason: String,
+                          mut guard: ProcessGroupGuard,
+                          stdin: std::process::ChildStdin,
+                          stdout_handle: thread::JoinHandle<()>,
+                          stderr_handle: thread::JoinHandle<Vec<u8>>|
+     -> ! {
+        guard.kill_group();
+        guard.armed = false;
+        drop(stdin);
+        let _ = stdout_handle.join();
+        let stderr_bytes = stderr_handle.join().unwrap_or_default();
+        let serial = state.0.lock().unwrap().buf.clone();
+        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
+        panic!(
+            "[nested_alpine ({})] {reason}\n--- vm-l0.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            mode.as_str(),
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    };
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"Starting /system/bin/rush",
+        Duration::from_secs(25),
+    ) else {
+        fail_with_diag(
+            "L1 Motor OS did not boot to /system/bin/rush within 25s".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+
+    thread::sleep(Duration::from_millis(300));
+    stdin
+        .write_all(l1_launch.as_bytes())
+        .expect("failed to write L2 Alpine launch command to L1 stdin");
+    stdin.flush().expect("failed to flush L1 stdin");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"alpine-vm login:",
+        Duration::from_secs(60),
+    ) else {
+        fail_with_diag(
+            "L2 nested full Alpine Linux did not reach 'alpine-vm login:' within 60s".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    };
+    cursor = next_pos;
+
+    if has_host_tap {
+        let ssh_deadline = Instant::now() + Duration::from_secs(25);
+        let mut last_err = String::new();
+        let mut ssh_stdout = None;
+        let verify_cmd = "ping -c 2 192.168.8.1 && echo L2_ALPINE_SSH_OK_$(uname -s)_$(nproc)";
+        while Instant::now() < ssh_deadline {
+            match build_l2_alpine_ssh_command(&key_copy, verify_cmd).output() {
+                Ok(out) if out.status.success() => {
+                    ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                    break;
+                }
+                Ok(out) => {
+                    last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+            thread::sleep(Duration::from_millis(400));
+        }
+
+        let Some(ssh_out) = ssh_stdout else {
+            fail_with_diag(
+                format!("SSH into L2 Alpine sshd (root@192.168.8.2:22 via L1 192.168.4.2:2222) failed: {last_err}"),
+                guard,
+                stdin,
+                stdout_handle,
+                stderr_handle,
+            );
+        };
+        if !ssh_out.contains("bytes from 192.168.8.1")
+            || !ssh_out.contains("L2_ALPINE_SSH_OK_Linux_2")
+        {
+            fail_with_diag(
+                format!("unexpected L2 Alpine SSH/ping output: {ssh_out:?}"),
+                guard,
+                stdin,
+                stdout_handle,
+                stderr_handle,
+            );
+        }
+
+        let _ = build_l2_alpine_ssh_command(&key_copy, "poweroff").status();
+        let Some(next_pos) = wait_for_serial_from(
+            &state,
+            cursor,
+            b"reboot: Power down",
+            Duration::from_secs(20),
+        ) else {
+            fail_with_diag(
+                "L2 Alpine did not emit 'reboot: Power down' after SSH poweroff".to_string(),
+                guard,
+                stdin,
+                stdout_handle,
+                stderr_handle,
+            );
+        };
+        cursor = next_pos;
+    } else {
+        stdin
+            .write_all(b"\x02q")
+            .expect("failed to send Ctrl-b q to L2 Alpine");
+        stdin.flush().expect("failed to flush Ctrl-b q");
+    }
+
+    thread::sleep(Duration::from_millis(300));
+    stdin
+        .write_all(b"echo L1_RESUMED_AFTER_ALPINE_OK\r")
+        .expect("failed to send post-L2 check to L1 rush");
+    stdin.flush().expect("failed to flush L1 rush");
+
+    if wait_for_serial_from(
+        &state,
+        cursor,
+        b"L1_RESUMED_AFTER_ALPINE_OK",
+        Duration::from_secs(10),
+    )
+    .is_none()
+    {
+        fail_with_diag(
+            "L1 rush shell did not resume cleanly after L2 Alpine teardown".to_string(),
+            guard,
+            stdin,
+            stdout_handle,
+            stderr_handle,
+        );
+    }
+
+    let _ = stdin.write_all(b"\x01q");
+    let _ = stdin.flush();
+    drop(stdin);
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(10);
+    let exit_status = loop {
+        match guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= shutdown_deadline => break None,
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+
+    if exit_status.is_none() {
+        guard.kill_group();
+        guard.armed = false;
+    }
+    let _ = stdout_handle.join();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let serial = state.0.lock().unwrap().buf.clone();
+    let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
+
+    let Some(status) = exit_status else {
+        panic!(
+            "[nested_alpine ({})] L0 VM failed to exit within 10s after Ctrl-a q\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            mode.as_str(),
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    };
+    assert!(
+        status.success(),
+        "[nested_alpine ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
         mode.as_str(),
         String::from_utf8_lossy(&serial),
         String::from_utf8_lossy(&stderr_bytes),

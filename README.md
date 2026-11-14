@@ -91,10 +91,11 @@ and Ring-3 I/O host (`tests/motor-io-host`):
 
 To run workspace unit tests and end-to-end VM boot tests (full Alpine Linux,
 Linux `initrd`, full Motor OS, minimal Motor OS `test-guest`, nested
-`L0 -> L1 -> L2` `test-guest`, and nested `L0 -> L1 -> L2` full SMP Motor OS
-with `virtio-blk`, `IpDevice` `virtio-net`, `rush`, and `russhd` in both
-`--cwasm` and `--wasm` modes; note that the TAP-backed tests expect `puff-tap` /
-`moto-tap` configured on the host):
+`L0 -> L1 -> L2` `test-guest`, nested `L0 -> L1 -> L2` full SMP Motor OS, and
+nested `L0 -> L1 -> L2` Linux `initrd` + full SMP Alpine Linux with
+`virtio-blk`, `IpDevice` `virtio-net`, and OpenSSH in both `--cwasm` and
+`--wasm` modes; note that the TAP-backed tests expect `puff-tap` / `moto-tap`
+configured on the host):
 
 ```sh
 cargo test --release
@@ -125,6 +126,10 @@ cargo test --release
 - **Boot Nested `L0 -> L1 -> L2` Full Motor OS (`motor-io-host` + `virtio-blk` + `IpDevice` `virtio-net` + `rush` + `russhd`)**:
   ```sh
   ./vm_scripts/run-nested-motor-os.sh --cwasm     # or --wasm
+  ```
+- **Boot Nested `L0 -> L1 -> L2` Full Alpine Linux (`motor-io-host` + `bzImage` + `virtio-blk` + `IpDevice` `virtio-net` + OpenSSH)**:
+  ```sh
+  ./vm_scripts/run-nested-linux.sh --cwasm        # or --wasm, or --initrd
   ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
   outer VM and exit (`Ctrl-b` followed by `q` or `x` inside `motor-io-host` to
