@@ -205,6 +205,7 @@ cat > "$RUNTIME_DIR/run-l2.sh" <<EOF
 #!/system/bin/rush
 $L1_LAUNCH_CMD
 EOF
+chmod +x "$RUNTIME_DIR/run-l2.sh"
 
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/motor-io-host-cwasm" /user/vm/motor-io-host-cwasm
 "$IMAGER" put "$L1_RAW" "$MOTOR_OUT/motor-io-host-wasm" /user/vm/motor-io-host-wasm
