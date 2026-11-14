@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod ip_tap;
 pub mod motor_host;
 
 #[path = "../../../vmm-io-host/src/verify_no_fp.rs"]

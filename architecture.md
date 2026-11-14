@@ -13,7 +13,8 @@ through shared memory and lock-free doorbell rings:
 2. **`vmm-io`** (`wasm32-wasip1`, zero FP/SIMD): Userspace device I/O
    plane owning `vm.toml` parsing, boot payload opening, Virtio `SplitQueue`
    descriptor-ring traversal over shared Guest RAM, `virtio-blk`, `virtio-net`,
-   and serial console I/O. Hosted in Ring 3 by `vmm-io-host`.
+   and serial console I/O. Hosted in Ring 3 by `vmm-io-host` on Linux or
+   `tests/motor-io-host` on Motor OS.
 
 Both Wasm modules compile to portable `.wasm` binaries and AOT-precompiled
 `.cwasm` images verified at build and load time to contain **zero floating-point
@@ -240,8 +241,8 @@ boundary (`vmm-core/src/host.rs` `abi::BridgeShm`):
 
 | Capability / Primitive | Linux Ring 3 (`vmm-core-host` + `vmm-io-host`) | Motor OS Ring 0 + Ring 3 ([`airlock-motor-os.md`](airlock-motor-os.md)) |
 | :--------------------- | :--------------------------------------------- | :---------------------------------------------------------------------- |
-| Core Wasm binary       | `vmm-core.wasm` / `vmm-core.cwasm`             | Byte-identical `vmm-core.wasm` -> `vmm-core-motor.cwasm`                |
-| I/O Wasm binary        | `vmm-io.wasm` / `vmm-io.cwasm`                 | Byte-identical `vmm-io.wasm` -> `.cwasm` (or `vmm-io-tiny` in Step `d`) |
+| Core Wasm binary       | `vmm-core.wasm` / `vmm-core.cwasm`             | Byte-identical `vmm-core.wasm` -> `target/motor/vmm-core.cwasm`         |
+| I/O Wasm binary        | `vmm-io.wasm` / `vmm-io.cwasm`                 | Byte-identical `vmm-io.wasm` / `target/motor/vmm-io.cwasm` (`motor-io-host`) |
 | Stage-2 GPA mapping    | `KVM_SET_USER_MEMORY_REGION` over `memfd`      | Ring-0 NPT/EPT over pinned `SysMem` pages                               |
 | vCPU threads           | Host `std::thread`s calling `ioctl(KVM_RUN)`   | Kernel `process::Thread`s running `VMRUN` + `x2APIC` + `pvclock`        |
 | Interrupt delivery     | `KVM_SIGNAL_MSI` (`KVM_CAP_SPLIT_IRQCHIP`)     | Ring-0 LAPIC IRR + `sched::poke_cpu` wakeup IPI                         |

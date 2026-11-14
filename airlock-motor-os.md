@@ -48,12 +48,10 @@ Linux kernel:
   [DONE] (b)  Boot `test-guest` in Linux `wasm-vmm` (PVH, ACPI S5, nested SVM/VMX)
   [DONE] (c)  Port `vmm-core-host` into `tests/kernel` (Ring 0: SVM + NPT + Wasmtime)
   [DONE] (d)  Nested smoke: Linux `wasm-vmm` [L0] -> `test-guest` [L1] -> `test-guest` [L2]
+  [DONE] (e)  Nested full Motor OS: Ring-3 `motor-io-host` + `vmm-io.{cwasm,wasm}` + `IpDevice`
            |
            v
-  [NEXT] (e)  Nested full Motor OS: Ring-3 `vmm-io-host` + `vmm-io.cwasm` staged via `imager`
-           |
-           v
-         (f)  Nested Alpine Linux: `bzImage` boot, Linux MSR/CPUID/xAPIC/IOAPIC & MMIO coverage
+  [NEXT] (f)  Nested Alpine Linux: `bzImage` boot, Linux MSR/CPUID/xAPIC/IOAPIC & MMIO coverage
            |
            v
          (g)  Port Ring-0 `vmm-core-host` to Linux Kernel (kthread / folios / tdp_mmu, <16 KiB stack)
@@ -66,8 +64,8 @@ Linux kernel:
 | **(b)** | Done | Boot `test-guest` in Linux `wasm-vmm` | `boot_test_guest_{cwasm,wasm}` + `vm_scripts/run-test-guest.sh` with nested SVM/VMX pass-through. |
 | **(c)** | Done | Port `vmm-core-host` to Motor OS Ring 0 | `tests/kernel/src/vmm/`: AMD SVM + NPT, `x2APIC` + `pvclock`, `#![no_std]` Wasmtime, `CAP_VMM`, `"vmm:..."` `SysObj`. |
 | **(d)** | Done | Nested `L0 -> L1 -> L2` `test-guest` | `boot_nested_test_guest_{cwasm,wasm}` + `vm_scripts/run-nested-test-guest.sh` (~105 ms SMP L2 boot & clean teardown). |
-| **(e)** | Next | Nested Full Motor OS | Port `vmm-io-host` (`IoHost`) to Motor OS Ring 3; stage via `imager` and boot SMP full Motor OS in L2. |
-| **(f)** | Planned | Nested Alpine Linux | `bzImage` boot, `xAPIC` + `IoApic` IRQ 4, Linux MSRs, `MmioFault` coverage, `virtio-blk` + net in L2. |
+| **(e)** | Done | Nested Full Motor OS | `tests/motor-io-host` (`moturus/wasmtime` + `IpDevice`), `boot_nested_motor_os_{cwasm,wasm}`, `vm_scripts/run-nested-motor-os.sh` (`rush` + `russhd` SSH). |
+| **(f)** | Next | Nested Alpine Linux | `bzImage` boot, `xAPIC` + `IoApic` IRQ 4, Linux MSRs, `MmioFault` coverage, `virtio-blk` + net in L2. |
 | **(g)** | Planned | Port Core Host to Linux Ring 0 | Linux kernel module hosting byte-identical `vmm-core.cwasm` + `BridgeShm` over `folio`s & `tdp_mmu`. |
 
 ### 2.1 Cross-Host Invariant: Byte-Identical Wasm Guests

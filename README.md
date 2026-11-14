@@ -39,8 +39,8 @@ Ring-0 `vmm-core-host` + Ring-3 `vmm-io-host` roadmap and kernel ABI.
 - **`derive-layout`** (`derive-layout/`): Procedural macro helper crate for
   register/memory layout offsets.
 - **`tests`** (`tests/`): End-to-end VM integration tests (`tests/tests/boot_vms.rs`)
-  plus the Motor OS Ring-0 Airlock VMM host and guest test harness
-  (`tests/{kernel,kloader,moto-sys,test-init}`).
+  plus the Motor OS Ring-0 Airlock VMM host, Ring-3 `motor-io-host`, and guest
+  test harness (`tests/{kernel,kloader,moto-sys,motor-io-host,test-init}`).
 
 ## Prerequisites
 
@@ -81,17 +81,20 @@ Running `cargo build` automatically compiles the Wasm guest modules and AOT
 cargo build --release --target=x86_64-unknown-linux-musl
 ```
 
-To build the Motor OS Ring-0 VMM guest image (`tests/{kernel,kloader,test-init}`):
+To build the Motor OS Ring-0 VMM guest image (`tests/{kernel,kloader,test-init}`)
+and Ring-3 I/O host (`tests/motor-io-host`):
 
 ```sh
 ./tests/kernel/build.sh --release
+./tests/motor-io-host/build.sh
 ```
 
 To run workspace unit tests and end-to-end VM boot tests (full Alpine Linux,
-Linux `initrd`, full Motor OS, minimal Motor OS `test-guest`, and nested
-`L0 -> L1 -> L2` Motor OS Ring-0 `test-guest` in both `--cwasm` and `--wasm`
-modes; note that the TAP-backed tests expect `puff-tap` / `moto-tap` configured
-on the host):
+Linux `initrd`, full Motor OS, minimal Motor OS `test-guest`, nested
+`L0 -> L1 -> L2` `test-guest`, and nested `L0 -> L1 -> L2` full SMP Motor OS
+with `virtio-blk`, `IpDevice` `virtio-net`, `rush`, and `russhd` in both
+`--cwasm` and `--wasm` modes; note that the TAP-backed tests expect `puff-tap` /
+`moto-tap` configured on the host):
 
 ```sh
 cargo test --release
@@ -119,5 +122,10 @@ cargo test --release
   ```sh
   ./vm_scripts/run-nested-test-guest.sh --cwasm   # or --wasm
   ```
+- **Boot Nested `L0 -> L1 -> L2` Full Motor OS (`motor-io-host` + `virtio-blk` + `IpDevice` `virtio-net` + `rush` + `russhd`)**:
+  ```sh
+  ./vm_scripts/run-nested-motor-os.sh --cwasm     # or --wasm
+  ```
 - Press `Ctrl-a` followed by `q` (or `x`) in the serial console to shut down the
-  VM and exit.
+  outer VM and exit (`Ctrl-b` followed by `q` or `x` inside `motor-io-host` to
+  shut down the nested L2 VM and return to L1).

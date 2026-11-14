@@ -43,6 +43,7 @@ use vmm_io::host::{
 };
 use vmm_io::virtio::dev::net::NetFeature;
 
+use crate::ip_tap::MotorIpTap;
 use crate::wasm_host::VmmHostIo;
 
 /// Page-aligned Ring-3 virtual memory arena allocated via `SysMem::alloc`.
@@ -129,6 +130,14 @@ impl<T> ResourceTable<T> {
     fn remove(&self, id: Handle) {
         self.items.write().unwrap().remove(&id);
     }
+
+    fn values(&self) -> Vec<Arc<T>> {
+        self.items.read().unwrap().values().cloned().collect()
+    }
+
+    fn clear(&self) -> Vec<Arc<T>> {
+        self.items.write().unwrap().drain().map(|(_, v)| v).collect()
+    }
 }
 
 struct MotorBlock {
@@ -213,6 +222,8 @@ pub struct MotorIoHost {
     io_shutdown: AtomicBool,
     pending_events: Mutex<VecDeque<RawIoBridgeEvent>>,
     stdin_pipe: Arc<StdinPipe>,
+    next_tap_idx: AtomicU64,
+    taps: ResourceTable<MotorIpTap>,
     blocks: ResourceTable<MotorBlock>,
     serials: ResourceTable<()>,
 }
@@ -236,6 +247,8 @@ impl MotorIoHost {
             io_shutdown: AtomicBool::new(false),
             pending_events: Mutex::new(VecDeque::with_capacity(64)),
             stdin_pipe: StdinPipe::new(),
+            next_tap_idx: AtomicU64::new(0),
+            taps: ResourceTable::default(),
             blocks: ResourceTable::default(),
             serials: ResourceTable::default(),
         }))
@@ -243,6 +256,9 @@ impl MotorIoHost {
 
     pub fn shutdown(&self) {
         self.io_shutdown.store(true, Ordering::Release);
+        for tap in self.taps.clear() {
+            tap.close();
+        }
         unsafe {
             (*self.shm).shutdown_requested.store(1, Ordering::Release);
         }
@@ -346,6 +362,17 @@ impl MotorIoHost {
                     ..Default::default()
                 });
             }
+            for tap in self.taps.values() {
+                if let Some((token, is_readable, is_writable)) = tap.take_poll_event() {
+                    pending.push_back(RawIoBridgeEvent {
+                        kind: IO_BRIDGE_EVENT_POLL,
+                        token: token.0,
+                        is_readable,
+                        is_writable,
+                        ..Default::default()
+                    });
+                }
+            }
             if let Some(ev) = pending.pop_front() {
                 return Ok(ev);
             }
@@ -431,36 +458,50 @@ impl Drop for MotorIoHost {
 }
 
 impl VmmHostIo for MotorIoHost {
-    fn tap_open(&self, _if_name: Option<&str>) -> io::Result<Handle> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "MotorIoHost networking not yet enabled",
-        ))
+    fn tap_open(&self, if_name: Option<&str>) -> io::Result<Handle> {
+        let idx = self.next_tap_idx.fetch_add(1, Ordering::Relaxed) as usize;
+        let tap = MotorIpTap::open(if_name, idx, self.main_thread)?;
+        Ok(self.taps.insert(tap))
     }
 
-    fn tap_detected_offload(&self, _tap: Handle) -> NetFeature {
-        NetFeature::empty()
+    fn tap_detected_offload(&self, tap: Handle) -> NetFeature {
+        self.taps
+            .get(tap)
+            .map(|t| t.detected_offload())
+            .unwrap_or_else(|_| NetFeature::empty())
     }
 
     fn tap_enable_offload(&self, _tap: Handle, _feature: NetFeature) -> io::Result<()> {
         Ok(())
     }
 
-    fn tap_register(&self, _tap: Handle, _token: Token, _interests: Interest) -> io::Result<()> {
-        Ok(())
+    fn tap_register(&self, tap: Handle, token: Token, interests: Interest) -> io::Result<()> {
+        let t = self.taps.get(tap)?;
+        t.register(token, interests)
     }
 
-    fn tap_deregister(&self, _tap: Handle) {}
-
-    fn tap_read(&self, _tap: Handle, _dst: &mut [u8]) -> io::Result<usize> {
-        Err(io::Error::from(io::ErrorKind::WouldBlock))
+    fn tap_deregister(&self, tap: Handle) {
+        if let Ok(t) = self.taps.get(tap) {
+            t.deregister();
+        }
     }
 
-    fn tap_write(&self, _tap: Handle, _src: &[u8]) -> io::Result<usize> {
-        Err(io::Error::from(io::ErrorKind::WouldBlock))
+    fn tap_read(&self, tap: Handle, dst: &mut [u8]) -> io::Result<usize> {
+        let t = self.taps.get(tap)?;
+        t.read_frame(dst)
     }
 
-    fn tap_close(&self, _tap: Handle) {}
+    fn tap_write(&self, tap: Handle, src: &[u8]) -> io::Result<usize> {
+        let t = self.taps.get(tap)?;
+        t.write_frame(src)
+    }
+
+    fn tap_close(&self, tap: Handle) {
+        if let Ok(t) = self.taps.get(tap) {
+            t.close();
+        }
+        self.taps.remove(tap);
+    }
 
     fn blk_open(&self, path: &Path, read_only: bool) -> io::Result<(Handle, u64)> {
         let file = OpenOptions::new()
