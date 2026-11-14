@@ -59,8 +59,8 @@ fn find_sibling_file(filename: &str) -> Option<PathBuf> {
     {
         for rel in [
             filename.to_string(),
-            format!("../wasm32-wasip1-threads/release/{filename}"),
-            format!("../../wasm32-wasip1-threads/release/{filename}"),
+            format!("../wasm32-wasip1/release/{filename}"),
+            format!("../../wasm32-wasip1/release/{filename}"),
             format!("../wasm32-unknown-unknown/release/{filename}"),
             format!("../../wasm32-unknown-unknown/release/{filename}"),
         ] {

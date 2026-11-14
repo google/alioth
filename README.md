@@ -3,7 +3,7 @@
 WASM VMM is a fork of v0.2.0 of Lencerf's
 [Alioth](https://github.com/google/alioth), refactored to split the VMM into two
 isolated WebAssembly guest modules (`#![no_std]` `vmm-core` targeting
-`wasm32-unknown-unknown` and `vmm-io` targeting `wasm32-wasip1-threads`) driven
+`wasm32-unknown-unknown` and `vmm-io` targeting `wasm32-wasip1`) driven
 by privileged core and userspace I/O hosts across a lock-free shared-memory
 bridge (`BridgeShm`).
 
@@ -54,7 +54,7 @@ Ring-0 `vmm-core-host` + Ring-3 `vmm-io-host` roadmap and kernel ABI.
    ```sh
    rustup component add rust-src
    rustup target add wasm32-unknown-unknown
-   rustup target add wasm32-wasip1-threads
+   rustup target add wasm32-wasip1
    rustup target add x86_64-unknown-linux-musl
    ```
 

@@ -15,9 +15,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
-use parking_lot::RwLock;
 use vmm_io::host::abi::{
     ERR_EOF, ERR_GENERIC, ERR_INTERRUPTED, ERR_WOULD_BLOCK, EXEC_TYPE_LINUX, EXEC_TYPE_PVH,
     IO_BRIDGE_EVENT_POLL, IO_BRIDGE_EVENT_SERIAL_INPUT, IO_BRIDGE_EVENT_SERIAL_TX,
@@ -30,9 +28,7 @@ use vmm_io::host::{
     VirtioIrqKind,
 };
 use vmm_io::virtio::dev::net::NetFeature;
-use wasmtime::{
-    Caller, Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store,
-};
+use wasmtime::{Caller, Config, Engine, Linker, Memory, Module, Store};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 use zerocopy::{AsBytes, FromBytes};
@@ -40,7 +36,7 @@ use zerocopy::{AsBytes, FromBytes};
 /// Host interface trait for the I/O domain (`vmm-io-host`): TAP, block files, serial, and bridge.
 ///
 /// All `"vmm"::*` host imports registered by [`register_io_imports`] delegate exclusively
-/// to this trait, allowing alternate host implementations.
+/// to this trait, allowing alternate host implementations (Linux KVM Ring 3, Motor OS Ring 3).
 pub trait VmmHostIo: Send + Sync + 'static {
     fn tap_open(&self, if_name: Option<&str>) -> io::Result<Handle>;
     fn tap_detected_offload(&self, tap: Handle) -> NetFeature;
@@ -76,20 +72,24 @@ pub trait VmmHostIo: Send + Sync + 'static {
     fn io_serial_push_rx(&self, data: &[u8]) -> io::Result<()>;
 }
 
-/// Per-Wasm-thread ABI context binding a [`VmmHostIo`] implementation to a Wasmtime store.
+/// ABI context binding a [`VmmHostIo`] implementation and `vmm-io` exported `Memory` to a store.
 pub struct IoWasmCtx<H: VmmHostIo + ?Sized> {
     host: Arc<H>,
-    memory: SharedMemory,
+    memory: Option<Memory>,
     last_error: String,
 }
 
 impl<H: VmmHostIo + ?Sized> IoWasmCtx<H> {
-    pub fn new(host: Arc<H>, memory: SharedMemory) -> Self {
+    pub fn new(host: Arc<H>) -> Self {
         Self {
             host,
-            memory,
+            memory: None,
             last_error: String::new(),
         }
+    }
+
+    pub fn set_memory(&mut self, memory: Memory) {
+        self.memory = Some(memory);
     }
 
     fn set_err(&mut self, msg: impl Into<String>) -> i32 {
@@ -114,61 +114,43 @@ impl<H: VmmHostIo + ?Sized> IoWasmCtx<H> {
     }
 }
 
-fn check_bounds(mem: &SharedMemory, ptr: u32, len: usize) -> Result<usize, String> {
+fn slice_bounds(mem_len: usize, ptr: u32, len: usize) -> Result<(usize, usize), String> {
     let start = ptr as usize;
     let end = start
         .checked_add(len)
         .ok_or_else(|| "guest memory address overflow".to_string())?;
-    if end > mem.data().len() {
+    if end > mem_len {
         return Err(format!(
-            "guest memory access out of bounds: {start}..{end} > {}",
-            mem.data().len()
+            "guest memory access out of bounds: {start}..{end} > {mem_len}"
         ));
     }
-    Ok(start)
+    Ok((start, end))
 }
 
-fn read_bytes(mem: &SharedMemory, ptr: u32, dst: &mut [u8]) -> Result<(), String> {
-    let start = check_bounds(mem, ptr, dst.len())?;
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            mem.data().as_ptr().add(start) as *const u8,
-            dst.as_mut_ptr(),
-            dst.len(),
-        );
-    }
+fn read_bytes(mem: &[u8], ptr: u32, dst: &mut [u8]) -> Result<(), String> {
+    let (start, end) = slice_bounds(mem.len(), ptr, dst.len())?;
+    dst.copy_from_slice(&mem[start..end]);
     Ok(())
 }
 
-fn write_bytes(mem: &SharedMemory, ptr: u32, src: &[u8]) -> Result<(), String> {
-    let start = check_bounds(mem, ptr, src.len())?;
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            src.as_ptr(),
-            mem.data().as_ptr().add(start) as *mut u8,
-            src.len(),
-        );
-    }
+fn write_bytes(mem: &mut [u8], ptr: u32, src: &[u8]) -> Result<(), String> {
+    let (start, end) = slice_bounds(mem.len(), ptr, src.len())?;
+    mem[start..end].copy_from_slice(src);
     Ok(())
 }
 
-fn read_struct<T: FromBytes + Copy>(mem: &SharedMemory, ptr: u32) -> Result<T, String> {
+fn read_struct<T: FromBytes + Copy>(mem: &[u8], ptr: u32) -> Result<T, String> {
     let size = std::mem::size_of::<T>();
-    let start = check_bounds(mem, ptr, size)?;
-    let bytes =
-        unsafe { std::slice::from_raw_parts(mem.data().as_ptr().add(start) as *const u8, size) };
-    T::read_from(bytes).ok_or_else(|| "failed to decode struct from guest memory".to_string())
+    let (start, end) = slice_bounds(mem.len(), ptr, size)?;
+    T::read_from(&mem[start..end])
+        .ok_or_else(|| "failed to decode struct from guest memory".to_string())
 }
 
-fn write_struct<T: AsBytes>(mem: &SharedMemory, ptr: u32, val: &T) -> Result<(), String> {
+fn write_struct<T: AsBytes>(mem: &mut [u8], ptr: u32, val: &T) -> Result<(), String> {
     write_bytes(mem, ptr, val.as_bytes())
 }
 
-fn read_vec<T: FromBytes + Copy>(
-    mem: &SharedMemory,
-    ptr: u32,
-    count: u32,
-) -> Result<Vec<T>, String> {
+fn read_vec<T: FromBytes + Copy>(mem: &[u8], ptr: u32, count: u32) -> Result<Vec<T>, String> {
     let elem_size = std::mem::size_of::<T>();
     let _total = (count as usize)
         .checked_mul(elem_size)
@@ -179,6 +161,15 @@ fn read_vec<T: FromBytes + Copy>(
         out.push(read_struct::<T>(mem, item_ptr)?);
     }
     Ok(out)
+}
+
+fn mem_and_ctx<'a, T: 'static, H: VmmHostIo + ?Sized>(
+    caller: &'a mut Caller<'_, T>,
+    get_ctx: impl Fn(&mut T) -> &mut IoWasmCtx<H>,
+) -> Option<(&'a mut [u8], &'a mut IoWasmCtx<H>)> {
+    let mem = get_ctx(caller.data_mut()).memory?;
+    let (data, store_data) = mem.data_and_store_mut(caller);
+    Some((data, get_ctx(store_data)))
 }
 
 /// Register all `"vmm"::*` imports for `vmm-io` against any [`VmmHostIo`] implementation.
@@ -200,10 +191,12 @@ where
         "vmm",
         "vmm_last_error_read",
         move |mut caller: Caller<'_, T>, dst_ptr: u32, dst_len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return ERR_GENERIC;
+            };
             let err_bytes = ctx.last_error.as_bytes();
             let n = err_bytes.len().min(dst_len as usize);
-            if write_bytes(&ctx.memory, dst_ptr, &err_bytes[..n]).is_err() {
+            if write_bytes(mem, dst_ptr, &err_bytes[..n]).is_err() {
                 return ERR_GENERIC;
             }
             n as i32
@@ -215,10 +208,12 @@ where
         "vmm",
         "tap_open",
         move |mut caller: Caller<'_, T>, has_name: u32, name_ptr: u32, name_len: u32| -> i64 {
-            let ctx = get_ctx(caller.data_mut());
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err_i64("guest memory not initialized");
+            };
             let if_name = if has_name != 0 {
                 let mut buf = vec![0u8; name_len as usize];
-                if let Err(e) = read_bytes(&ctx.memory, name_ptr, &mut buf) {
+                if let Err(e) = read_bytes(mem, name_ptr, &mut buf) {
                     return ctx.set_err_i64(e);
                 }
                 match String::from_utf8(buf) {
@@ -289,19 +284,14 @@ where
         "vmm",
         "tap_read",
         move |mut caller: Caller<'_, T>, tap: Handle, dst_ptr: u32, max_len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, dst_ptr, max_len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), dst_ptr, max_len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(
-                    ctx.memory.data().as_ptr().add(start) as *mut u8,
-                    max_len as usize,
-                )
-            };
-            let res = ctx.host.tap_read(tap, dst);
-            match res {
+            match ctx.host.tap_read(tap, &mut mem[start..end]) {
                 Ok(n) => n as i32,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -312,19 +302,14 @@ where
         "vmm",
         "tap_write",
         move |mut caller: Caller<'_, T>, tap: Handle, src_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, src_ptr, len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), src_ptr, len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let src = unsafe {
-                std::slice::from_raw_parts(
-                    ctx.memory.data().as_ptr().add(start) as *const u8,
-                    len as usize,
-                )
-            };
-            let res = ctx.host.tap_write(tap, src);
-            match res {
+            match ctx.host.tap_write(tap, &mem[start..end]) {
                 Ok(n) => n as i32,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -349,9 +334,11 @@ where
               read_only: u32,
               size_out_ptr: u32|
               -> i64 {
-            let ctx = get_ctx(caller.data_mut());
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err_i64("guest memory not initialized");
+            };
             let mut buf = vec![0u8; path_len as usize];
-            if let Err(e) = read_bytes(&ctx.memory, path_ptr, &mut buf) {
+            if let Err(e) = read_bytes(mem, path_ptr, &mut buf) {
                 return ctx.set_err_i64(e);
             }
             let path_str = match String::from_utf8(buf) {
@@ -362,7 +349,7 @@ where
                 Ok(v) => v,
                 Err(e) => return ctx.set_io_err_i64(e),
             };
-            if let Err(e) = write_struct(&ctx.memory, size_out_ptr, &len) {
+            if let Err(e) = write_struct(mem, size_out_ptr, &len) {
                 ctx.host.blk_close(handle);
                 return ctx.set_err_i64(e);
             }
@@ -374,19 +361,14 @@ where
         "vmm",
         "blk_read_at",
         move |mut caller: Caller<'_, T>, blk: Handle, offset: u64, dst_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, dst_ptr, len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), dst_ptr, len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(
-                    ctx.memory.data().as_ptr().add(start) as *mut u8,
-                    len as usize,
-                )
-            };
-            let res = ctx.host.blk_read_at(blk, offset, dst);
-            match res {
+            match ctx.host.blk_read_at(blk, offset, &mut mem[start..end]) {
                 Ok(n) => n as i32,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -397,19 +379,14 @@ where
         "vmm",
         "blk_write_at",
         move |mut caller: Caller<'_, T>, blk: Handle, offset: u64, src_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, src_ptr, len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), src_ptr, len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let src = unsafe {
-                std::slice::from_raw_parts(
-                    ctx.memory.data().as_ptr().add(start) as *const u8,
-                    len as usize,
-                )
-            };
-            let res = ctx.host.blk_write_at(blk, offset, src);
-            match res {
+            match ctx.host.blk_write_at(blk, offset, &mem[start..end]) {
                 Ok(n) => n as i32,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -465,12 +442,14 @@ where
         "vmm",
         "serial_read_input",
         move |mut caller: Caller<'_, T>, serial: Handle, dst_ptr: u32, max_len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
             let mut buf = vec![0u8; max_len as usize];
             match ctx.host.serial_read_input(serial, &mut buf) {
                 Ok(None) => ERR_EOF,
                 Ok(Some(n)) => {
-                    if let Err(e) = write_bytes(&ctx.memory, dst_ptr, &buf[..n]) {
+                    if let Err(e) = write_bytes(mem, dst_ptr, &buf[..n]) {
                         return ctx.set_err(e);
                     }
                     n as i32
@@ -509,16 +488,17 @@ where
               devs_ptr: u32,
               num_devs: u32|
               -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let raw_boot = match read_struct::<RawIoBootConfig>(&ctx.memory, boot_cfg_ptr) {
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let raw_boot = match read_struct::<RawIoBootConfig>(mem, boot_cfg_ptr) {
                 Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let raw_devs =
-                match read_vec::<ShmVirtioDeviceSpec>(&ctx.memory, devs_ptr, num_devs) {
-                    Ok(d) => d,
-                    Err(e) => return ctx.set_err(e),
-                };
+            let raw_devs = match read_vec::<ShmVirtioDeviceSpec>(mem, devs_ptr, num_devs) {
+                Ok(d) => d,
+                Err(e) => return ctx.set_err(e),
+            };
 
             let klen = (raw_boot.kernel_path_len as usize).min(raw_boot.kernel_path.len());
             let kernel_path = if klen > 0 {
@@ -581,7 +561,9 @@ where
         "vmm",
         "io_next_event",
         move |mut caller: Caller<'_, T>, event_out_ptr: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
             let ev = match ctx.host.io_next_event() {
                 Ok(ev) => ev,
                 Err(e) => return ctx.set_io_err(e),
@@ -642,7 +624,7 @@ where
                     ..Default::default()
                 },
             };
-            if let Err(e) = write_struct(&ctx.memory, event_out_ptr, &raw) {
+            if let Err(e) = write_struct(mem, event_out_ptr, &raw) {
                 return ctx.set_err(e);
             }
             0
@@ -665,19 +647,14 @@ where
         "vmm",
         "io_guest_mem_read",
         move |mut caller: Caller<'_, T>, gpa: u64, dst_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, dst_ptr, len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), dst_ptr, len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(
-                    ctx.memory.data().as_ptr().add(start) as *mut u8,
-                    len as usize,
-                )
-            };
-            let res = ctx.host.io_guest_mem_read(gpa, dst);
-            match res {
+            match ctx.host.io_guest_mem_read(gpa, &mut mem[start..end]) {
                 Ok(()) => 0,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -688,19 +665,14 @@ where
         "vmm",
         "io_guest_mem_write",
         move |mut caller: Caller<'_, T>, gpa: u64, src_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let start = match check_bounds(&ctx.memory, src_ptr, len as usize) {
-                Ok(s) => s,
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), src_ptr, len as usize) {
+                Ok(b) => b,
                 Err(e) => return ctx.set_err(e),
             };
-            let src = unsafe {
-                std::slice::from_raw_parts(
-                    ctx.memory.data().as_ptr().add(start) as *const u8,
-                    len as usize,
-                )
-            };
-            let res = ctx.host.io_guest_mem_write(gpa, src);
-            match res {
+            match ctx.host.io_guest_mem_write(gpa, &mem[start..end]) {
                 Ok(()) => 0,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -728,12 +700,14 @@ where
         "vmm",
         "io_serial_push_rx",
         move |mut caller: Caller<'_, T>, src_ptr: u32, len: u32| -> i32 {
-            let ctx = get_ctx(caller.data_mut());
-            let mut bytes = vec![0u8; len as usize];
-            if let Err(e) = read_bytes(&ctx.memory, src_ptr, &mut bytes) {
-                return ctx.set_err(e);
-            }
-            match ctx.host.io_serial_push_rx(&bytes) {
+            let Some((mem, ctx)) = mem_and_ctx(&mut caller, get_ctx) else {
+                return get_ctx(caller.data_mut()).set_err("guest memory not initialized");
+            };
+            let (start, end) = match slice_bounds(mem.len(), src_ptr, len as usize) {
+                Ok(b) => b,
+                Err(e) => return ctx.set_err(e),
+            };
+            match ctx.host.io_serial_push_rx(&mem[start..end]) {
                 Ok(()) => 0,
                 Err(e) => ctx.set_io_err(e),
             }
@@ -743,13 +717,12 @@ where
     Ok(())
 }
 
-#[derive(Clone)]
-struct WasiThreadConfig {
+struct WasiIoConfig {
     config_filename: String,
     preopen_dirs: Vec<(PathBuf, String)>,
 }
 
-impl WasiThreadConfig {
+impl WasiIoConfig {
     fn new(config_filename: &str) -> Self {
         let mut dirs: Vec<(PathBuf, String)> = Vec::new();
 
@@ -773,7 +746,9 @@ impl WasiThreadConfig {
             add_dir(parent);
         }
 
-        add_dir(Path::new("/tmp"));
+        for dir in ["/tmp", "/none/tmp", "/user/tmp", "/vm", "/system"] {
+            add_dir(Path::new(dir));
+        }
 
         Self {
             config_filename: config_filename.to_string(),
@@ -788,10 +763,21 @@ impl WasiThreadConfig {
             .inherit_stdio()
             .args(&["vmm-io", "-c", &self.config_filename])
             .inherit_env();
-        for (host_path, guest_path) in &self.preopen_dirs {
-            let _ = builder.preopened_dir(host_path, guest_path, FsPerms::ReadWrite);
+        #[cfg(target_os = "motor")]
+        if std::env::var_os("VMM_ESCAPE_BYTE").is_none() {
+            builder.env("VMM_ESCAPE_BYTE", "0x02");
         }
-        let _ = builder.preopened_dir(".", ".", FsPerms::ReadWrite);
+        for (host_path, guest_path) in &self.preopen_dirs {
+            if builder
+                .preopened_dir(host_path, guest_path, FsPerms::ReadWrite)
+                .is_err()
+            {
+                let _ = builder.preopened_dir(host_path, guest_path, FsPerms::ReadOnly);
+            }
+        }
+        if builder.preopened_dir(".", ".", FsPerms::ReadWrite).is_err() {
+            let _ = builder.preopened_dir(".", ".", FsPerms::ReadOnly);
+        }
         Ok(builder.build_p1())
     }
 }
@@ -807,13 +793,22 @@ pub fn run_wasm_io<H: VmmHostIo + ?Sized>(
     config_filename: &str,
     host: Arc<H>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_wasm_io_with_config(module_path, config_filename, host, |_| Ok(()))
+}
+
+/// Instantiate and execute `vmm-io` with an optional platform-specific [`Config`] hook.
+pub fn run_wasm_io_with_config<H: VmmHostIo + ?Sized>(
+    module_path: &Path,
+    config_filename: &str,
+    host: Arc<H>,
+    configure_engine: impl FnOnce(&mut Config) -> wasmtime::Result<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::new();
-    config.wasm_threads(true);
-    config.shared_memory(true);
     config.wasm_simd(false);
     config.wasm_relaxed_simd(false);
     #[cfg(feature = "compiler")]
     config.target(env!("VMM_HOST_TARGET"))?;
+    configure_engine(&mut config)?;
     let engine = Engine::new(&config)?;
 
     #[cfg(feature = "compiler")]
@@ -836,111 +831,25 @@ pub fn run_wasm_io<H: VmmHostIo + ?Sized>(
         unsafe { Module::deserialize(&engine, &cwasm_bytes)? }
     };
 
-    let memory_ty = match module.imports().find_map(|imp| {
-        if imp.module() == "env"
-            && imp.name() == "memory"
-            && let ExternType::Memory(ty) = imp.ty()
-        {
-            Some(ty)
-        } else {
-            None
-        }
-    }) {
-        Some(ty) => ty,
-        None => MemoryType::shared(17, 16384)?,
-    };
-
-    let shared_memory = SharedMemory::new(&engine, memory_ty)?;
-    let wasi_config = Arc::new(WasiThreadConfig::new(config_filename));
-
+    let wasi_config = WasiIoConfig::new(config_filename);
     let mut store = Store::new(
         &engine,
         IoStoreState {
             wasi: wasi_config.build_p1()?,
-            io: IoWasmCtx::new(host, shared_memory.clone()),
+            io: IoWasmCtx::new(host),
         },
     );
 
     let mut linker = Linker::<IoStoreState<H>>::new(&engine);
-    linker.define(&store, "env", "memory", shared_memory)?;
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     register_io_imports(&mut linker, |state| &mut state.io)?;
 
-    let next_tid = Arc::new(AtomicI32::new(1));
-    let spawn_engine = engine.clone();
-    let spawn_module = module.clone();
-    let spawn_wasi_config = wasi_config.clone();
-
-    let spawn_linker_slot: Arc<RwLock<Option<Linker<IoStoreState<H>>>>> =
-        Arc::new(RwLock::new(None));
-    let spawn_linker_ref = spawn_linker_slot.clone();
-
-    linker.func_wrap(
-        "wasi",
-        "thread-spawn",
-        move |caller: Caller<'_, IoStoreState<H>>, start_arg: i32| -> i32 {
-            let tid = next_tid
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(if v >= 0x1fff_fffe { 1 } else { v + 1 })
-                })
-                .unwrap();
-
-            let engine = spawn_engine.clone();
-            let module = spawn_module.clone();
-            let linker_opt = spawn_linker_ref.read().clone();
-            let Some(child_linker) = linker_opt else {
-                return -1;
-            };
-            let wasi_ctx = match spawn_wasi_config.build_p1() {
-                Ok(c) => c,
-                Err(_) => return -1,
-            };
-            let child_host = caller.data().io.host.clone();
-            let memory = caller.data().io.memory.clone();
-
-            let spawn_res = std::thread::Builder::new()
-                .name(format!("io_wasm_thread_{tid}"))
-                .spawn(move || {
-                    let mut child_store = Store::new(
-                        &engine,
-                        IoStoreState {
-                            wasi: wasi_ctx,
-                            io: IoWasmCtx::new(child_host, memory),
-                        },
-                    );
-                    let instance = match child_linker.instantiate(&mut child_store, &module) {
-                        Ok(inst) => inst,
-                        Err(e) => {
-                            log::error!("failed to instantiate io module on thread {tid}: {e}");
-                            return;
-                        }
-                    };
-                    let start_fn = match instance
-                        .get_typed_func::<(i32, i32), ()>(&mut child_store, "wasi_thread_start")
-                    {
-                        Ok(f) => f,
-                        Err(e) => {
-                            log::error!("missing wasi_thread_start export on thread {tid}: {e}");
-                            return;
-                        }
-                    };
-                    if let Err(e) = start_fn.call(&mut child_store, (tid, start_arg))
-                        && e.downcast_ref::<I32Exit>().is_none_or(|c| c.0 != 0)
-                    {
-                        log::error!("wasi_thread_start on thread {tid} trapped: {e}");
-                    }
-                });
-
-            match spawn_res {
-                Ok(_) => tid,
-                Err(_) => -1,
-            }
-        },
-    )?;
-
-    *spawn_linker_slot.write() = Some(linker.clone());
-
     let instance = linker.instantiate(&mut store, &module)?;
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or("vmm-io module does not export linear `memory`")?;
+    store.data_mut().io.set_memory(memory);
+
     let start = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
     if let Err(err) = start.call(&mut store, ()) {
         if let Some(exit) = err.downcast_ref::<I32Exit>()

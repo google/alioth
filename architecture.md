@@ -10,7 +10,7 @@ through shared memory and lock-free doorbell rings:
    `IoApic`, and x86_64 MMIO instruction decoder. Driven synchronously and
    non-blockingly by a privileged hypervisor host (`vmm-core-host` on Linux KVM,
    or `tests/kernel/src/vmm/` in Motor OS Ring 0).
-2. **`vmm-io`** (`wasm32-wasip1-threads`, zero FP/SIMD): Userspace device I/O
+2. **`vmm-io`** (`wasm32-wasip1`, zero FP/SIMD): Userspace device I/O
    plane owning `vm.toml` parsing, boot payload opening, Virtio `SplitQueue`
    descriptor-ring traversal over shared Guest RAM, `virtio-blk`, `virtio-net`,
    and serial console I/O. Hosted in Ring 3 by `vmm-io-host`.

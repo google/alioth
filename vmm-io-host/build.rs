@@ -124,7 +124,7 @@ fn main() {
         .arg("--bin")
         .arg("vmm-io")
         .arg("--target")
-        .arg("wasm32-wasip1-threads")
+        .arg("wasm32-wasip1")
         .arg("--target-dir")
         .arg(&wasm_target_dir)
         .arg("--release")
@@ -132,21 +132,19 @@ fn main() {
         .env("RUSTFLAGS", "-C target-feature=-bulk-memory,-simd128")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status()
-        .expect("Failed to invoke cargo to build vmm-io for wasm32-wasip1-threads");
+        .expect("Failed to invoke cargo to build vmm-io for wasm32-wasip1");
 
     if !status.success() {
-        panic!("Building vmm-io for wasm32-wasip1-threads failed");
+        panic!("Building vmm-io for wasm32-wasip1 failed");
     }
 
-    let built_wasm = wasm_target_dir.join("wasm32-wasip1-threads/release/vmm-io.wasm");
+    let built_wasm = wasm_target_dir.join("wasm32-wasip1/release/vmm-io.wasm");
     let mut wasm_bytes = fs::read(&built_wasm).expect("Failed to read built vmm-io.wasm");
     rewrite_wasm_memory_copy(&mut wasm_bytes);
     verify_no_fp::validate_wasm_no_fp(&wasm_bytes)
         .expect("vmm-io.wasm failed zero-FP/SIMD validation");
 
     let mut config = Config::new();
-    config.wasm_threads(true);
-    config.shared_memory(true);
     config.wasm_simd(false);
     config.wasm_relaxed_simd(false);
     config
@@ -167,7 +165,7 @@ fn main() {
     let _ = fs::write(profile_dir.join("vmm-io.wasm"), &wasm_bytes);
     let _ = fs::write(profile_dir.join("vmm-io.cwasm"), &cwasm_bytes);
 
-    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-wasip1-threads/release");
+    let repo_wasm_release_dir = manifest_dir.join("../target/wasm32-wasip1/release");
     let _ = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o750)

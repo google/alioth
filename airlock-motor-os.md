@@ -13,7 +13,7 @@ emulation inside a sandboxed WebAssembly airlock:
    `IoApic` (`0xfec0_0000`), and x86_64 MMIO instruction decoding
    (`VmExit::MmioFault`). Driven synchronously by the host via `vmm_init`,
    `vmm_on_vcpu_exit`, and `vmm_on_bridge_rx` over `VcpuCommPage`.
-2. **`vmm-io` (`wasm32-wasip1-threads`) + `vmm-io-host` (`IoHost`)**:
+2. **`vmm-io` (`wasm32-wasip1`) + `vmm-io-host` (`IoHost`)**:
    Runs in userspace (Ring 3). Owns `vm.toml` parsing, boot payload opening,
    Virtio `SplitQueue` descriptor-ring walking over shared Guest RAM,
    `virtio-blk`, `virtio-net`, and serial console I/O, communicating with Ring 0

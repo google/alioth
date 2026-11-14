@@ -69,6 +69,23 @@ impl Write for PerThreadLogWriter {
     }
 }
 
+fn configured_escape_byte() -> u8 {
+    std::env::var("VMM_ESCAPE_BYTE")
+        .ok()
+        .and_then(|raw| {
+            let s = raw.trim();
+            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                u8::from_str_radix(hex, 16).ok()
+            } else if s.len() == 2 && s.starts_with('^') {
+                let c = s.as_bytes()[1].to_ascii_uppercase();
+                (b'A'..=b'Z').contains(&c).then_some(c - b'A' + 1)
+            } else {
+                s.parse::<u8>().ok()
+            }
+        })
+        .unwrap_or(0x01)
+}
+
 pub fn run(
     config_filename: &str,
     host: Arc<dyn IoHost>,
@@ -124,7 +141,8 @@ pub fn run(
 
     host.io_register_vm_config(&boot_cfg, &specs)?;
 
-    let mut ctrl_a_pending = false;
+    let escape_byte = configured_escape_byte();
+    let mut escape_pending = false;
     loop {
         match host.io_next_event()? {
             IoBridgeEvent::VirtioStart {
@@ -153,37 +171,37 @@ pub fn run(
             }
             IoBridgeEvent::SerialInput => {
                 let mut rx_buf = VecDeque::new();
-                if let Some(len) = serial.read_input(&mut rx_buf)? {
-                    if len > 0 {
-                        let mut forward = Vec::with_capacity(len);
-                        let mut should_shutdown = false;
-                        for b in rx_buf {
-                            if ctrl_a_pending {
-                                ctrl_a_pending = false;
-                                match b {
-                                    b'q' | b'x' => {
-                                        should_shutdown = true;
-                                        break;
-                                    }
-                                    0x01 => forward.push(0x01),
-                                    other => {
-                                        forward.push(0x01);
-                                        forward.push(other);
-                                    }
+                if let Some(len) = serial.read_input(&mut rx_buf)?
+                    && len > 0
+                {
+                    let mut forward = Vec::with_capacity(len);
+                    let mut should_shutdown = false;
+                    for b in rx_buf {
+                        if escape_pending {
+                            escape_pending = false;
+                            match b {
+                                b'q' | b'x' => {
+                                    should_shutdown = true;
+                                    break;
                                 }
-                            } else if b == 0x01 {
-                                ctrl_a_pending = true;
-                            } else {
-                                forward.push(b);
+                                _ if b == escape_byte => forward.push(escape_byte),
+                                other => {
+                                    forward.push(escape_byte);
+                                    forward.push(other);
+                                }
                             }
+                        } else if b == escape_byte {
+                            escape_pending = true;
+                        } else {
+                            forward.push(b);
                         }
-                        if !forward.is_empty() {
-                            host.io_serial_push_rx(&forward)?;
-                        }
-                        if should_shutdown {
-                            let _ = host.io_request_shutdown();
-                            break;
-                        }
+                    }
+                    if !forward.is_empty() {
+                        host.io_serial_push_rx(&forward)?;
+                    }
+                    if should_shutdown {
+                        let _ = host.io_request_shutdown();
+                        break;
                     }
                 }
             }

@@ -62,7 +62,7 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-echo "Building split hosts and guests (x86_64-unknown-linux-musl / wasm32-unknown-unknown + wasm32-wasip1-threads release)..."
+echo "Building split hosts and guests (x86_64-unknown-linux-musl / wasm32-unknown-unknown + wasm32-wasip1 release)..."
 cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
     -p vmm-core-host -p vmm-io-host \
     --release --target=x86_64-unknown-linux-musl
