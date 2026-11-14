@@ -211,3 +211,143 @@ Any Ring-3 VMM host holding `CAP_VMM` (`0x4000`) drives a VM through three sysca
    - Requests VM shutdown, kicks all running or halted vCPU and RX kernel
      threads out of `VMRUN` / `Thread::wait()`, and drops `VmInstance` (freeing
      Wasm stores, `R+X` code mappings, NPT tables, and pinned page references).
+
+---
+
+## 5. Step `(e)` Design: Nested Full Motor OS (`L0 -> L1 -> L2`)
+
+### 5.1 Goal & Scope
+
+Boot **full Motor OS** in L1 using our Ring-0-enabled `tests/kloader` paired with
+**stock** `../motor-dev/motor-os/vm_images/release/initrd` (`sys-io`) and a
+scratch copy of `motor-os.qcow2` staged via `imager`. Inside L1 Ring 3, run
+`motor-io-host` (`tests/motor-io-host/`, `--target x86_64-unknown-motor`)
+hosting the **byte-identical `vmm-io.wasm`** (or its Motor OS AOT-precompiled
+`vmm-io.cwasm`) paired with Ring-0 `vmm-core.cwasm`, booting SMP **full Motor OS**
+in L2 with `virtio-blk`, `rush` shell, `virtio-net`, and `russhd`.
+
+### 5.2 Hosting Byte-Identical `vmm-io.wasm` via `moturus/wasmtime`
+
+1. **Switch `vmm-io` Target from `wasm32-wasip1-threads` to `wasm32-wasip1`**:
+   - `vmm-io` is 100% single-threaded (it spawns zero threads, and Guest RAM
+     lives outside Wasm linear memory); `wasm32-wasip1-threads` was only a
+     holdover from the pre-split monolithic `vmm-runner`.
+   - Compiling `vmm-io` for `wasm32-wasip1` produces a single, byte-identical
+     `vmm-io.wasm` across Linux and Motor OS with a standard non-shared exported
+     `memory` (which also simplifies Linux [`vmm-io-host/src/wasm_host.rs`](vmm-io-host/src/wasm_host.rs)
+     by dropping unused `SharedMemory` and `wasi::thread-spawn` glue).
+2. **Reuse Unmodified `moturus/wasmtime` (`../motor-dev/motor-os/external-sources/wasmtime`)**:
+   - Because `tests/motor-io-host` is a standalone Ring-3 userspace crate
+     communicating with `tests/kernel` (Ring 0) strictly via `BridgeShm`
+     (`#[repr(C)]`) + `SysObj`/`SysCpu`, it links directly against
+     `../motor-dev/motor-os/external-sources/wasmtime` (`motor-50.0.0`:
+     `wasmtime` + `wasmtime-wasi` p1) with **zero Wasmtime porting or custom
+     WASI shims**.
+   - Out of the box, `moturus/wasmtime` supplies:
+     - Motor OS `CodeMemory` (`SysMem::map2` dual-alias `W^X` code publishing),
+     - `Reservations` (`MemoryCreator` backed by lazy `SysMem::map` pages),
+     - `OperatingSystem::Motor` `Tunables` (`signals_based_traps = false`,
+       `memory_guard_size = 0`, `memory_init_cow = false`), and
+     - Native Motor OS `wasmtime_wasi::p1::add_to_linker_sync` (filesystem,
+       clocks, RNG, args/env, stdio).
+3. **Both `--wasm` and `--cwasm` Execution Modes (Two Canonical `.wasm` Files Only)**:
+   - Only two `.wasm` binaries exist across the entire project: `vmm-core.wasm`
+     and `vmm-io.wasm`.
+   - In `--wasm` mode (when built with Cranelift), `motor-io-host` loads
+     `vmm-io.wasm` directly.
+   - In `--cwasm` (runtime-only) mode, the host build precompiles `vmm-io.wasm`
+     for `--target x86_64-unknown-motor` using `moturus/wasmtime` into a separate
+     Motor output directory (`target/motor/vmm-io.cwasm`) alongside the Ring-0
+     core artifact (`target/motor/vmm-core.cwasm`), so staged artifacts keep the
+     canonical names `vmm-core.cwasm` and `vmm-io.cwasm`.
+
+### 5.3 Granting `CAP_VMM` (`0x4000`) Under Unmodified Stock `sys-init` & `rush`
+
+In Motor OS (`Process::new_child` and `docs/caps.md`), a `System` process
+(`CAP_SYS = 0x1`) is authorized to grant child capability bits it does not
+itself hold (except `CAP_VSOCK`, `CAP_NET`, and `CAP_FS_WRITE`, which must be
+held by the parent), and stock `rt.vdso` forwards arbitrary hex `u64` masks from
+`MOTOR_OS_CAPS`:
+
+1. **Serial Console / Automated Test Launch (`system-tty`)**:
+   When L1 boots with `system-tty`, `sys-tty` runs `/system/bin/rush -i` with
+   `System` capabilities (`CAP_SYS | CAP_SPAWN | CAP_LOG | CAP_NET | CAP_FS_WRITE | ...`).
+   Launching:
+   ```sh
+   MOTOR_OS_CAPS=0x434c /system/bin/motor-io-host -c /vm/vm.toml
+   ```
+   (`CAP_SPAWN(0x4) | CAP_LOG(0x8) | CAP_INTERACTIVE(0x40) | CAP_NET(0x100) | CAP_FS_WRITE(0x200) | CAP_VMM(0x4000)`,
+   or `0x430d` for `System` role) grants `CAP_VMM` with **zero changes** to stock
+   `initrd` or binaries.
+2. **SSH Launch (`russhd`)**:
+   Stock `/system/cfg/sys-init.cfg` starts `russhd` as `svc:1020:...` (`0x3fc`,
+   `Interactive` role without `CAP_SYS` or `CAP_VMM`), and non-`System` parents
+   can only delegate bits they already hold. Staging an updated
+   `/system/cfg/sys-init.cfg` onto the scratch L1 image via `imager put` with
+   `svc:17404:/system/services/russhd /system/cfg/sshd.toml` (`1020 | 16384`)
+   lets SSH sessions spawn `motor-io-host` with `CAP_VMM` as well.
+
+### 5.4 `MotorIoHost` (`VmmHostIo`) Backends & Event Loop
+
+1. **Shared Memory & Ring-0 VM Creation (`io_register_vm_config`)**:
+   - Allocate 4 KiB page-aligned regions via `SysMem::alloc` for `BridgeShm`,
+     Guest RAM (`boot_cfg.mem_size`), packed boot payload (`kloader` + `initrd`
+     read from `motor-fs`), and Ring-0 `vmm-core.cwasm`.
+   - Call `SysObj::create(SysHandle::KERNEL, 0, "vmm:shm_addr=...;ram_addr=...")`
+     to start the Ring-0 VM and store `vm_handle: SysHandle`.
+   - `io_guest_mem_read` and `io_guest_mem_write` translate `gpa -> shm_offset`
+     through `BridgeShm::ram_slots` and `memcpy` directly against the pinned
+     Ring-3 Guest RAM slice.
+2. **Block Backend (`blk_*`)**:
+   - Backed by `std::fs::OpenOptions` (`File` on `motor-fs` through `sys-io`),
+     using `Seek::seek(SeekFrom::Start(offset))` + `read_exact` / `write_all`
+     (protected by a per-disk `Mutex<File>`) and `File::sync_all()` on `blk_flush`.
+3. **Serial Console & Nested Escape Key (`serial_*`)**:
+   - Writes `SerialTx` bytes to stdout; reads console input from a background
+     stdin reader thread (waking the main `SysCpu::wait` loop via a `SysHandle`
+     when bytes arrive).
+   - Uses **`Ctrl-b q`/`x`** by default (configurable via environment variable)
+     so interactive nested sessions in L2 are not intercepted by L0
+     `vmm-io-host`'s `Ctrl-a q`/`x`.
+4. **Network Backend (`tap_*`) via `moto_sdk::io::ip_device::IpDevice`**:
+   - Stock `moto-sdk` provides `moto_sdk::io::ip_device::IpDevice`
+     (`src/sys/lib/moto-sdk/src/io/ip_device.rs`), allowing an `Interactive` or
+     `System` process holding `CAP_NET` to dynamically register a dedicated L3
+     point-to-point IP interface with `sys-io`.
+   - `MotorIoHost` registers an `IpDevice` (e.g., `vmm0`, `192.168.5.1/24`),
+     while L2's scratch `/system/cfg/sys-net.toml` is configured with
+     `192.168.5.2/24` and gateway `192.168.5.1` (avoiding subnet collision with
+     L1's `192.168.4.2/24` on `moto-tap`).
+   - On TX/RX, `MotorIoHost` strips/prepends `virtio_net_hdr` (12B) + Ethernet
+     header (14B) for IPv4/IPv6 packets and replies locally to L2 ARP requests
+     (`WHO-HAS 192.168.5.1`). L1 can then `ping 192.168.5.2` and
+     `ssh 192.168.5.2` directly into L2's `russhd` (and L0 can reach L2 directly
+     via an optional host route `ip route add 192.168.5.0/24 via 192.168.4.2 dev moto-tap`)
+     with zero in-process TCP/IP stack inside `MotorIoHost`.
+5. **Unified Event Loop (`io_next_event`)**:
+   - Drain pending `BridgeShm::core_to_io` entries first (`VirtioStart`,
+     `VirtioNotify`, `VirtioReset`, `SerialTx`, `Shutdown`).
+   - Poll registered `IpDevice` RX / stdin queues; when idle, sleep in
+     `SysCpu::wait(&mut [vm_handle, net_ipc_handle, stdin_wake_handle], ...)`
+     for `0%` idle CPU usage.
+
+### 5.5 Crate Layout & Phased Bring-Up
+
+1. **Standalone Crate at `tests/motor-io-host/`**:
+   - Placed at `tests/motor-io-host/` (excluded from the root Linux Cargo
+     workspace, mirroring `tests/{kernel,kloader,moto-sys,test-init}`) and built
+     with the Motor OS `x86_64-unknown-motor` toolchain (`motor-clang` linker)
+     against `../motor-dev/motor-os/external-sources/wasmtime` and `moto-sdk`.
+   - Shares the OS-agnostic `VmmHostIo` / ABI definitions with `vmm-io` and
+     `vmm-io-host` so the `"vmm"::*` Wasm import surface stays single-sourced.
+2. **Phased Rollout**:
+   - **Step `(e.1)` — `wasm32-wasip1` Switch + Disk + Shell (`--no-network`)**:
+     Switch `vmm-io` to `wasm32-wasip1` (verifying all existing Linux `cargo test`
+     suites), implement `tests/motor-io-host` (`BridgeShm`, `blk_*`, `serial_*`),
+     stage artifacts + `l2-motor-os.raw` into scratch `l1-motor-os.raw` via
+     `imager` (`L1 RAM = 1024–1536 MiB`, `L2 RAM = 256 MiB`, `2` SMP vCPUs), and
+     boot L2 full Motor OS over `virtio-blk` to an interactive `rush` prompt.
+   - **Step `(e.2)` — `IpDevice` Networking + `russhd`**:
+     Add the `IpDevice` L2<->L3 + ARP `tap_*` backend in `tests/motor-io-host`,
+     verify SSH into L2's `russhd`, and wire up `vm_scripts/run-nested-motor-os.sh`
+     plus `boot_nested_motor_os_*` in `tests/tests/boot_vms.rs`.
