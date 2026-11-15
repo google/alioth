@@ -136,6 +136,9 @@ if [ "$NO_NETWORK" = 1 ]; then
             exit 2
             ;;
     esac
+elif [ ! -d /sys/class/net/puff-tap ]; then
+    echo "run-airlock-linux-alpine: tap device 'puff-tap' not found; run '$SCRIPT_DIR/create-tap.sh' or pass --no-network" >&2
+    exit 1
 fi
 
 banner() {
@@ -232,6 +235,7 @@ EOF
         --put "$RUNTIME_DIR/stage/init:init:0755"
 
     L1_CMDLINE="console=ttyS0 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041,1af4:1044"
+    echo "direct" > "$RUNTIME_DIR/ssh-mode"
     rm -rf "$RUNTIME_DIR/stage"
 
     banner "[Step 3/4] All-PCI Passthrough Alpine Linux Quick Reference"
@@ -241,8 +245,8 @@ EOF
   * Escape / shutdown keys:
       Ctrl-b q   -> Shut down L2 Alpine (L1 automatically unloads airlock.ko & powers off)
       Ctrl-a q   -> Immediate L0 Wasm VMM exit (when --vmm wasm)
-  * Direct SSH from host into L2 Alpine over passed-through 00:03.0 (puff-tap):
-      $SCRIPT_DIR/ssh-into-alpine.sh
+  * Direct SSH from host into L2 Alpine over passed-through 00:03.0 (192.168.8.2):
+      $SCRIPT_DIR/ssh-into-airlock-nested-alpine.sh   (or $SCRIPT_DIR/ssh-into-alpine.sh)
 EOF
 
     if [ "$L0_VMM" = "chv" ]; then
@@ -333,6 +337,7 @@ EOF
         IFACES_ARG="--interfaces-file $RUNTIME_DIR/stage/l1-interfaces"
         UNBIND_CMD="if [ -e /sys/bus/pci/devices/0000:00:03.0/driver/unbind ]; then echo 0000:00:03.0 > /sys/bus/pci/devices/0000:00:03.0/driver/unbind; fi"
         L1_CMDLINE="console=ttyS0 root=/dev/vda3 rw pci-stub.ids=1af4:1041"
+        echo "direct" > "$RUNTIME_DIR/ssh-mode"
         cat > "$RUNTIME_DIR/stage/vm-l2.toml" <<EOF
 log_file = "/tmp/vmm-l2.log"
 log_level = "info"
@@ -343,9 +348,10 @@ mem_size = "$L2_MEM"
 pci = ["00:03.0"]
 blk = ["/opt/airlock/l2-alpine.raw"]
 EOF
-        SSH_HINTS="       $SCRIPT_DIR/ssh-into-alpine.sh                      # -> Direct L0->L2 OpenSSH (root@192.168.8.2:22)"
+        SSH_HINTS="       $SCRIPT_DIR/ssh-into-airlock-nested-alpine.sh       # -> Direct L0->L2 OpenSSH (root@192.168.8.2:22)"
         ;;
     alpine)
+        echo "jump" > "$RUNTIME_DIR/ssh-mode"
         L1_RESIZE_MIB=2560
         L2_RAW="$RUNTIME_DIR/stage/l2-alpine.raw"
         cat > "$RUNTIME_DIR/stage/l2-interfaces" <<EOF
@@ -418,6 +424,7 @@ cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-tests --bin s
     $IFACES_ARG \
     --mkdir /opt \
     --mkdir /opt/airlock \
+    --put "$LINUX_SSH_KEY:/opt/airlock/id_ed25519:0600" \
     --put "$RUNTIME_DIR/stage/l1-shell.sh:/opt/airlock/l1-shell.sh:0755" \
     --put "$AIRLOCK_DIR/airlock.ko:/opt/airlock/airlock.ko:0644" \
     --put "$AIRLOCK_DIR/irqbypass.ko:/opt/airlock/irqbypass.ko:0644" \

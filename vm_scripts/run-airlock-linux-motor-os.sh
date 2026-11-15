@@ -131,6 +131,50 @@ if [ "$PT_MODE" != "none" ] && [ "$NO_NETWORK" = 1 ]; then
     exit 2
 fi
 
+PT_TAP="moto-tap"
+PT_GUEST_IP="192.168.4.2"
+if [ "$NO_NETWORK" = 0 ]; then
+    if [ "$PT_MODE" != "none" ]; then
+        if [ -d /sys/class/net/moto-tap ]; then
+            PT_TAP="moto-tap"
+            PT_GUEST_IP="192.168.4.2"
+        elif [ -d /sys/class/net/puff-tap ]; then
+            PT_TAP="puff-tap"
+            PT_GUEST_IP="192.168.8.2"
+            echo "run-airlock-linux-motor-os: 'moto-tap' not found; falling back to 'puff-tap' ($PT_GUEST_IP)" >&2
+        else
+            echo "run-airlock-linux-motor-os: neither 'moto-tap' nor 'puff-tap' found; run '$MOTO_DIR/create-tap.sh' or '$SCRIPT_DIR/create-tap.sh'" >&2
+            exit 1
+        fi
+    else
+        if [ ! -d /sys/class/net/puff-tap ]; then
+            echo "run-airlock-linux-motor-os: tap device 'puff-tap' not found; run '$SCRIPT_DIR/create-tap.sh' or pass --no-network" >&2
+            exit 1
+        fi
+    fi
+fi
+
+stage_puff_tap_motor_net() {
+    TARGET_RAW="$1"
+    cat > "$RUNTIME_DIR/stage/puff-sys-net.toml" <<EOF
+auto_icmp_echo_reply = true
+loopback = true
+max_icmp_error_rate = 200
+max_rst_rate = 200
+max_syn_cookie_rate = 1000
+
+[devices.net0]
+mac = "a4:a1:c2:00:00:01"
+cidrs = ["192.168.8.2/24"]
+dns_servers = ["8.8.8.8"]
+
+[[devices.net0.routes]]
+ip_network = "0.0.0.0/0"
+gateway = "192.168.8.1"
+EOF
+    "$IMAGER" put "$TARGET_RAW" "$RUNTIME_DIR/stage/puff-sys-net.toml" /system/cfg/sys-net.toml
+}
+
 banner() {
     printf '\n================================================================================\n'
     printf '%s\n' "$1"
@@ -168,6 +212,9 @@ if [ "$PT_MODE" = "all" ]; then
     banner "[Step 2/4] Staging diskless initramfs-only L1 Linux + passthrough L2 Motor OS disk"
     L2_RAW="$RUNTIME_DIR/motor-os.raw"
     qemu-img convert -f qcow2 -O raw "$MOTO_DIR/motor-os.qcow2" "$L2_RAW"
+    if [ "$PT_TAP" = "puff-tap" ]; then
+        stage_puff_tap_motor_net "$L2_RAW"
+    fi
 
     cat > "$RUNTIME_DIR/stage/vm-l2.toml" <<EOF
 log_file = "/tmp/vmm-l2.log"
@@ -223,7 +270,9 @@ EOF
 
     L1_CMDLINE="console=ttyS0 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041,1af4:1044"
     L0_DISK="$L2_RAW"
-    L0_TAP="moto-tap"
+    L0_TAP="$PT_TAP"
+    echo "direct" > "$RUNTIME_DIR/ssh-mode"
+    echo "$PT_GUEST_IP" > "$RUNTIME_DIR/ssh-host"
     rm -rf "$RUNTIME_DIR/stage"
 
     banner "[Step 3/4] All-PCI Passthrough Motor OS Quick Reference"
@@ -233,8 +282,8 @@ EOF
   * Escape / shutdown keys:
       Ctrl-b q   -> Shut down L2 Motor OS (L1 automatically unloads airlock.ko & powers off)
       Ctrl-a q   -> Immediate L0 Wasm VMM exit (when --vmm wasm)
-  * Direct SSH from host into L2 Motor OS over passed-through 00:03.0 (moto-tap):
-      $SCRIPT_DIR/ssh-into-motor-os.sh
+  * Direct SSH from host into L2 Motor OS over passed-through 00:03.0 ($PT_GUEST_IP:2222):
+      $SCRIPT_DIR/ssh-into-airlock-nested-motor-os.sh   (or $SCRIPT_DIR/ssh-into-motor-os.sh)
 EOF
 
     if [ "$L0_VMM" = "chv" ]; then
@@ -291,7 +340,12 @@ L1_RAW="$RUNTIME_DIR/l1-alpine.raw"
 qemu-img convert -f qcow2 -O raw "$MOTO_DIR/motor-os.qcow2" "$L2_RAW"
 
 if [ "$PT_MODE" = "net" ]; then
-    L0_TAP="moto-tap"
+    L0_TAP="$PT_TAP"
+    if [ "$PT_TAP" = "puff-tap" ]; then
+        stage_puff_tap_motor_net "$L2_RAW"
+    fi
+    echo "direct" > "$RUNTIME_DIR/ssh-mode"
+    echo "$PT_GUEST_IP" > "$RUNTIME_DIR/ssh-host"
     cat > "$RUNTIME_DIR/stage/interfaces" <<EOF
 auto lo
 iface lo inet loopback
@@ -309,9 +363,10 @@ blk = ["/opt/airlock/l2-motor-os.raw"]
 EOF
     UNBIND_CMD="if [ -e /sys/bus/pci/devices/0000:00:03.0/driver/unbind ]; then echo 0000:00:03.0 > /sys/bus/pci/devices/0000:00:03.0/driver/unbind; fi"
     IFACES_ARG="--interfaces-file $RUNTIME_DIR/stage/interfaces"
-    SSH_HINTS="       $SCRIPT_DIR/ssh-into-motor-os.sh                    # -> Direct L0->L2 russhd (motor@192.168.4.2:2222)"
+    SSH_HINTS="       $SCRIPT_DIR/ssh-into-airlock-nested-motor-os.sh     # -> Direct L0->L2 russhd (motor@$PT_GUEST_IP:2222)"
 else
     L0_TAP="puff-tap"
+    echo "jump" > "$RUNTIME_DIR/ssh-mode"
     cat > "$RUNTIME_DIR/stage/l2-sys-net.toml" <<EOF
 auto_icmp_echo_reply = true
 loopback = true
@@ -382,6 +437,7 @@ cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-tests --bin s
     $IFACES_ARG \
     --mkdir /opt \
     --mkdir /opt/airlock \
+    --put "$MOTO_DIR/test.key:/opt/airlock/motor_test.key:0600" \
     --put "$RUNTIME_DIR/stage/l1-shell.sh:/opt/airlock/l1-shell.sh:0755" \
     --put "$AIRLOCK_DIR/airlock.ko:/opt/airlock/airlock.ko:0644" \
     --put "$AIRLOCK_DIR/irqbypass.ko:/opt/airlock/irqbypass.ko:0644" \
