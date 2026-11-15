@@ -248,7 +248,9 @@ pub fn init() {
             .set_handler_fn(stack_segment_fault)
             .set_stack_index(super::gdt::FATAL_FAULT_IST_INDEX); // IRQ 12
         idt.general_protection_fault
-            .set_handler_fn(gpf_handler)
+            .set_handler_addr(x86_64::VirtAddr::new(
+                gpf_handler_asm as *const () as usize as u64,
+            ))
             .set_stack_index(super::gdt::PAGE_FAULT_IST_INDEX); // IRQ 13
         idt.page_fault
             .set_handler_addr(x86_64::VirtAddr::new(
@@ -479,26 +481,38 @@ extern "x86-interrupt" fn generic_handler3(stack_frame: InterruptStackFrame) -> 
     kernel_exit();
 }
 
-extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
-    let uspace = stack_frame.code_segment & 0x3 == 3;
-    super::slow_swapgs();
+#[no_mangle]
+pub extern "C" fn gpf_handler_inner(rsp: u64) {
+    let irq_stack = unsafe { (rsp as usize as *mut IrqStack).as_mut().unwrap() };
+    let uspace = (irq_stack.cs & 0x3) == 3;
+    let swapgs = super::slow_swapgs();
 
+    if uspace && irq_stack.error_code == 0 && super::syscall::try_emulate_io_manager_gpf(irq_stack)
+    {
+        if swapgs {
+            unsafe { core::arch::asm!("swapgs", options(nomem, nostack)) }
+        }
+        return;
+    }
+
+    let error_code = irq_stack.error_code;
     if uspace {
         crate::write_serial!(
-            "\n#GPF({}) on cpu {} in uspace: {:#?}.\n\n",
+            "\n#GPF({}) on cpu {} in uspace at rip=0x{:x}, rsp=0x{:x}.\n\n",
             error_code,
             crate::arch::current_cpu(),
-            stack_frame
+            irq_stack.rip,
+            irq_stack.rsp
         );
         crate::xray::tracing::trace_irq(0xdead_beef, 0, 0);
         crate::xray::tracing::dump();
         kill_current_thread(super::syscall::TOCR_KILLED_GPF, 0);
     } else {
-        crate::write_serial!("\n#GPF({}) in kernel.\n\n", error_code);
         crate::write_serial!(
-            "\n#GPF({}) in kernel on cpu {}.\n\n",
+            "\n#GPF({}) in kernel on cpu {} at rip=0x{:x}.\n\n",
             error_code,
-            crate::arch::current_cpu()
+            crate::arch::current_cpu(),
+            irq_stack.rip
         );
         #[cfg(debug_assertions)]
         crate::arch::log_backtrace("#GPF");
@@ -506,6 +520,19 @@ extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_co
         crate::xray::tracing::dump();
         crate::arch::kernel_exit();
     }
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn gpf_handler_asm() {
+    naked_asm!(
+        "cli",
+        push_irq_registers!(),
+        "mov rdi, rsp",
+        "call gpf_handler_inner",
+        pop_irq_registers!(),
+        "add rsp, 8",
+        "iretq",
+    );
 }
 
 // External (asynchronous) interrupt vectors: device IRQs, the APIC timer and

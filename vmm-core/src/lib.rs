@@ -90,6 +90,7 @@ pub fn read_boot_config(
             dev: raw.dev as u32,
             name,
             device_id: raw.device_id,
+            pci_bdf: raw.pci_bdf,
             device_features: raw.device_features,
             num_queues: raw.num_queues,
             config_bytes,

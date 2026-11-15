@@ -240,7 +240,9 @@ impl ThreadControlBlock {
         self.syscall_stack_start = syscall_stack_start;
         self.user_page_table = upt;
 
-        if self.owner().capabilities() & moto_sys::caps::CAP_IO_MANAGER != 0 {
+        if self.owner().capabilities() & moto_sys::caps::CAP_IO_MANAGER != 0
+            && !crate::vmm::pci_cfg::should_trap_io_manager_pio()
+        {
             self.rflags |= 3 << 12; // IOPL
         }
     }
@@ -254,6 +256,22 @@ impl ThreadControlBlock {
         self.fp_env
             .store(0x1f80_u64 | (0x037f_u64 << 32), Ordering::Relaxed);
     }
+}
+
+pub(super) fn try_emulate_io_manager_gpf(irq_stack: &mut super::irq::IrqStack) -> bool {
+    let tcb_addr = super::GS::current_tcb();
+    if tcb_addr == 0 {
+        return false;
+    }
+    let tcb = unsafe { ThreadControlBlock::from_addr(tcb_addr) };
+    let thread = tcb.owner();
+    if (thread.capabilities() & moto_sys::caps::CAP_IO_MANAGER) == 0 {
+        return false;
+    }
+    crate::vmm::pci_cfg::try_emulate_uspace_pio(tcb.user_page_table, irq_stack)
+}
+
+impl ThreadControlBlock {
 
     pub fn spawn_vcpu_thread(
         &mut self,

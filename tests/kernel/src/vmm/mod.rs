@@ -3,12 +3,23 @@
 pub mod arch;
 pub mod doorbell;
 pub mod host_impl;
+pub mod iommu;
 pub mod lapic;
+pub mod pci_cfg;
 pub mod pvclock;
 pub mod stage2;
 pub mod vcpu_thread;
 pub mod verify_no_fp;
+pub mod virtio_iommu;
 pub mod wasm_runtime;
+
+/// Early Ring-0 initialization invoked on BSP before PID 2 (`sys-io`) starts:
+/// parses `pci_passthrough=...` and brings up `virtio-iommu` if present.
+pub fn init_early() {
+    let cmdline = crate::config::get().cmdline.as_slice();
+    pci_cfg::init_from_cmdline(cmdline);
+    virtio_iommu::init_early();
+}
 
 use alloc::format;
 use alloc::sync::Arc;

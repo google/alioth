@@ -28,29 +28,29 @@ pub fn handle_desc(
     let guard = queue.lock_ram_layout();
     let mut q = guard.queue()?;
     'out: loop {
-        if !q.has_next_desc() {
+        if !q.has_next_desc()? {
             break;
         }
-        q.enable_notification(false);
+        q.enable_notification(false)?;
         while let Some(desc) = q.next_desc() {
             let mut desc = desc?;
             match op(&mut desc) {
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break 'out,
                 Err(e) => {
                     log::error!("{dev_name}: queue {q_index}: {e}");
-                    q.enable_notification(true);
+                    let _ = q.enable_notification(true);
                     break 'out;
                 }
                 Ok(len) => {
-                    q.push_used(desc, len);
-                    if q.interrupt_enabled() {
+                    q.push_used(desc, len)?;
+                    if q.interrupt_enabled()? {
                         fence(Ordering::SeqCst);
                         irq_sender.queue_irq(q_index)
                     }
                 }
             }
         }
-        q.enable_notification(true);
+        q.enable_notification(true)?;
         fence(Ordering::SeqCst);
     }
     Ok(())

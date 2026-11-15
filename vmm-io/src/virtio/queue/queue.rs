@@ -29,10 +29,10 @@ pub struct Descriptor {
 
 pub trait LockedQueue<'g> {
     fn next_desc(&self) -> Option<Result<Descriptor>>;
-    fn has_next_desc(&self) -> bool;
-    fn push_used(&mut self, desc: Descriptor, len: usize) -> u16;
-    fn enable_notification(&self, enabled: bool);
-    fn interrupt_enabled(&self) -> bool;
+    fn has_next_desc(&self) -> Result<bool>;
+    fn push_used(&mut self, desc: Descriptor, len: usize) -> Result<u16>;
+    fn enable_notification(&self, enabled: bool) -> Result<()>;
+    fn interrupt_enabled(&self) -> Result<bool>;
 }
 
 pub trait QueueGuard {

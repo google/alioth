@@ -114,51 +114,50 @@ struct SplitLayout<'g> {
 }
 
 impl<'g> SplitLayout<'g> {
-    pub fn avail_index(&self) -> u16 {
-        self.memory
-            .read::<AvailHeader>(self.avail_gpa)
-            .expect("read AvailHeader")
-            .idx
+    pub fn avail_index(&self) -> Result<u16> {
+        Ok(self.memory.read::<AvailHeader>(self.avail_gpa)?.idx)
     }
 
-    pub fn set_used_index(&self) {
-        self.memory
-            .write(
-                self.used_gpa + UsedHeader::OFFSET_IDX as u64,
-                &self.used_index,
-            )
-            .expect("write UsedHeader.idx");
+    pub fn set_used_index(&self) -> Result<()> {
+        self.memory.write(
+            self.used_gpa + UsedHeader::OFFSET_IDX as u64,
+            &self.used_index,
+        )?;
+        Ok(())
     }
 
-    pub fn used_event(&self) -> Option<u16> {
+    pub fn used_event(&self) -> Result<Option<u16>> {
         self.used_event_gpa
-            .map(|gpa| self.memory.read::<u16>(gpa).expect("read used_event"))
+            .map(|gpa| self.memory.read::<u16>(gpa))
+            .transpose()
+            .map_err(Error::from)
     }
 
-    pub fn set_avail_event(&self, index: u16) -> Option<()> {
+    pub fn set_avail_event(&self, index: u16) -> Result<Option<()>> {
         self.avail_event_gpa
-            .map(|gpa| self.memory.write(gpa, &index).expect("write avail_event"))
+            .map(|gpa| self.memory.write(gpa, &index))
+            .transpose()
+            .map_err(Error::from)
     }
 
-    pub fn set_flag_notification(&self, enabled: bool) {
+    pub fn set_flag_notification(&self, enabled: bool) -> Result<()> {
         let flags: u16 = (!enabled) as u16;
         self.memory
-            .write(self.used_gpa + UsedHeader::OFFSET_FLAGS as u64, &flags)
-            .expect("write UsedHeader.flags");
+            .write(self.used_gpa + UsedHeader::OFFSET_FLAGS as u64, &flags)?;
+        Ok(())
     }
 
-    pub fn flag_interrupt_enabled(&self) -> bool {
-        self.memory
-            .read::<AvailHeader>(self.avail_gpa)
-            .expect("read AvailHeader")
-            .flags
-            == 0
+    pub fn flag_interrupt_enabled(&self) -> Result<bool> {
+        Ok(self.memory.read::<AvailHeader>(self.avail_gpa)?.flags == 0)
     }
 
-    pub fn read_avail(&self, index: u16) -> u16 {
+    pub fn read_avail(&self, index: u16) -> Result<u16> {
+        if self.queue_size == 0 || !self.queue_size.is_power_of_two() {
+            return Err(Error::InvalidDescriptor(index));
+        }
         let wrapped_index = (index & (self.queue_size - 1)) as usize;
         let gpa = self.avail_ring_gpa + (wrapped_index * size_of::<u16>()) as u64;
-        self.memory.read::<u16>(gpa).expect("read avail_ring")
+        Ok(self.memory.read::<u16>(gpa)?)
     }
 
     pub fn get_desc(&self, id: u16) -> Result<Desc> {
@@ -172,14 +171,26 @@ impl<'g> SplitLayout<'g> {
     fn get_indirect(
         &self,
         addr: u64,
+        byte_len: u32,
         readable: &mut Vec<(u64, usize)>,
         writeable: &mut Vec<(u64, usize)>,
     ) -> Result<()> {
-        let mut id = 0;
+        if byte_len == 0 || (byte_len & 0xf) != 0 {
+            return Err(Error::InvalidDescriptor(0));
+        }
+        let max_entries = (byte_len as usize) / size_of::<Desc>();
+        let mut id = 0usize;
+        let mut steps = 0usize;
         loop {
+            if id >= max_entries || steps >= max_entries {
+                return Err(Error::InvalidDescriptor(id as u16));
+            }
+            steps += 1;
             let desc: Desc = self.memory.read(addr + (id * size_of::<Desc>()) as u64)?;
             let flag = DescFlag::from_bits_retain(desc.flag);
-            assert!(!flag.contains(DescFlag::INDIRECT));
+            if flag.contains(DescFlag::INDIRECT) {
+                return Err(Error::InvalidDescriptor(id as u16));
+            }
             if flag.contains(DescFlag::WRITE) {
                 writeable.push((desc.addr, desc.len as usize));
             } else {
@@ -197,12 +208,16 @@ impl<'g> SplitLayout<'g> {
     pub fn get_desc_iov(&self, mut id: u16) -> Result<(Vec<(u64, usize)>, Vec<(u64, usize)>)> {
         let mut readable = Vec::new();
         let mut writeable = Vec::new();
+        let mut steps = 0u16;
         loop {
+            if steps >= self.queue_size {
+                return Err(Error::InvalidDescriptor(id));
+            }
+            steps += 1;
             let desc = self.get_desc(id)?;
             let flag = DescFlag::from_bits_retain(desc.flag);
             if flag.contains(DescFlag::INDIRECT) {
-                assert_eq!(desc.len & 0xf, 0);
-                self.get_indirect(desc.addr, &mut readable, &mut writeable)?;
+                self.get_indirect(desc.addr, desc.len, &mut readable, &mut writeable)?;
             } else if flag.contains(DescFlag::WRITE) {
                 writeable.push((desc.addr, desc.len as usize));
             } else {
@@ -218,10 +233,10 @@ impl<'g> SplitLayout<'g> {
     }
 
     fn get_next_desc(&self) -> Result<Option<Descriptor>> {
-        if self.used_index == self.avail_index() {
+        if self.used_index == self.avail_index()? {
             return Ok(None);
         }
-        let desc_id = self.read_avail(self.used_index);
+        let desc_id = self.read_avail(self.used_index)?;
         let (readable_gpas, writable_gpas) = self.get_desc_iov(desc_id)?;
         let mut readable = Vec::with_capacity(readable_gpas.len());
         for (gpa, len) in readable_gpas {
@@ -247,25 +262,21 @@ impl<'g> LockedQueue<'g> for SplitLayout<'g> {
         self.get_next_desc().transpose()
     }
 
-    fn has_next_desc(&self) -> bool {
-        self.used_index != self.avail_index()
+    fn has_next_desc(&self) -> Result<bool> {
+        Ok(self.used_index != self.avail_index()?)
     }
 
-    fn push_used(&mut self, desc: Descriptor, len: usize) -> u16 {
+    fn push_used(&mut self, desc: Descriptor, len: usize) -> Result<u16> {
         if desc.writable.len() == 1 {
             let (gpa, _) = desc.writable_gpas[0];
             let buf = &desc.writable[0];
             let write_len = std::cmp::min(len, buf.len());
             if write_len > 0 {
-                self.memory
-                    .write_bytes(gpa, &buf[..write_len])
-                    .expect("write used descriptor buffer");
+                self.memory.write_bytes(gpa, &buf[..write_len])?;
             }
         } else {
             for ((gpa, _), buf) in desc.writable_gpas.iter().zip(desc.writable.iter()) {
-                self.memory
-                    .write_bytes(*gpa, buf)
-                    .expect("write used descriptor buffer");
+                self.memory.write_bytes(*gpa, buf)?;
             }
         }
         let used_index = self.used_index;
@@ -275,23 +286,21 @@ impl<'g> LockedQueue<'g> for SplitLayout<'g> {
         };
         let wrapped_index = (used_index & (self.queue_size - 1)) as usize;
         let elem_gpa = self.used_ring_gpa + (wrapped_index * size_of::<UsedElem>()) as u64;
-        self.memory
-            .write(elem_gpa, &used_elem)
-            .expect("write UsedElem");
+        self.memory.write(elem_gpa, &used_elem)?;
         fence(Ordering::SeqCst);
         self.used_index = used_index.wrapping_add(1);
-        self.set_used_index();
-        used_index
+        self.set_used_index()?;
+        Ok(used_index)
     }
 
-    fn enable_notification(&self, enabled: bool) {
+    fn enable_notification(&self, enabled: bool) -> Result<()> {
         if self.avail_event_gpa.is_some() {
-            let mut avail_index = self.avail_index();
+            let mut avail_index = self.avail_index()?;
             if enabled {
                 loop {
-                    self.set_avail_event(avail_index);
+                    self.set_avail_event(avail_index)?;
                     fence(Ordering::SeqCst);
-                    let new_avail_index = self.avail_index();
+                    let new_avail_index = self.avail_index()?;
                     if new_avail_index == avail_index {
                         break;
                     } else {
@@ -299,16 +308,17 @@ impl<'g> LockedQueue<'g> for SplitLayout<'g> {
                     }
                 }
             } else {
-                self.set_avail_event(avail_index.wrapping_sub(1));
+                self.set_avail_event(avail_index.wrapping_sub(1))?;
             }
         } else {
-            self.set_flag_notification(enabled);
+            self.set_flag_notification(enabled)?;
         }
+        Ok(())
     }
 
-    fn interrupt_enabled(&self) -> bool {
-        match self.used_event() {
-            Some(used_event) => used_event == self.used_index.wrapping_sub(1),
+    fn interrupt_enabled(&self) -> Result<bool> {
+        match self.used_event()? {
+            Some(used_event) => Ok(used_event == self.used_index.wrapping_sub(1)),
             None => self.flag_interrupt_enabled(),
         }
     }
@@ -408,14 +418,32 @@ mod tests {
         fn read_bytes(&self, gpa: u64, dst: &mut [u8]) -> io::Result<()> {
             let b = self.buf.lock();
             let start = gpa as usize;
-            dst.copy_from_slice(&b[start..start + dst.len()]);
+            let end = start.checked_add(dst.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "DMA read overflow")
+            })?;
+            if end > b.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "DMA read out of bounds",
+                ));
+            }
+            dst.copy_from_slice(&b[start..end]);
             Ok(())
         }
 
         fn write_bytes(&self, gpa: u64, src: &[u8]) -> io::Result<()> {
             let mut b = self.buf.lock();
             let start = gpa as usize;
-            b[start..start + src.len()].copy_from_slice(src);
+            let end = start.checked_add(src.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "DMA write overflow")
+            })?;
+            if end > b.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "DMA write out of bounds",
+                ));
+            }
+            b[start..end].copy_from_slice(src);
             Ok(())
         }
     }
@@ -469,7 +497,7 @@ mod tests {
         assert_eq!(desc.writable[0].len(), 32);
         desc.writable[0].fill(0xcd);
 
-        let used_idx = q.push_used(desc, 32);
+        let used_idx = q.push_used(desc, 32).unwrap();
         assert_eq!(used_idx, 0);
 
         let used_hdr: UsedHeader = mem.read(used_gpa).unwrap();
@@ -481,5 +509,48 @@ mod tests {
         let mut written = [0u8; 32];
         mem.read_bytes(0x5000, &mut written).unwrap();
         assert_eq!(&written, &[0xcdu8; 32]);
+    }
+
+    #[test]
+    fn test_split_queue_rejects_cyclic_and_unmapped_dma() {
+        let mem: Arc<dyn GuestMemAccess> = Arc::new(MockGuestMem::new(0x4000));
+        let desc_gpa = 0x1000u64;
+        let avail_gpa = 0x2000u64;
+        let used_gpa = 0x3000u64;
+
+        // Self-loop descriptor chain (`next = 0` with `NEXT` flag) must fail cleanly, not hang.
+        let cyclic = Desc {
+            addr: 0x500,
+            len: 16,
+            flag: DescFlag::NEXT.bits(),
+            next: 0,
+        };
+        mem.write(desc_gpa, &cyclic).unwrap();
+        mem.write(avail_gpa, &AvailHeader { flags: 0, idx: 1 })
+            .unwrap();
+        mem.write(avail_gpa + size_of::<AvailHeader>() as u64, &0u16)
+            .unwrap();
+
+        let qcfg = VirtioQueueConfig {
+            size: 8,
+            enabled: true,
+            desc_gpa,
+            avail_gpa,
+            used_gpa,
+        };
+        let sq = SplitQueue::new(&qcfg, mem.clone(), 0);
+        let guard = sq.lock_ram_layout();
+        let q = guard.queue().unwrap();
+        assert!(q.next_desc().unwrap().is_err());
+
+        // Out-of-bounds buffer DMA must fail cleanly without panicking.
+        let bad_dma = Desc {
+            addr: 0xdead_0000,
+            len: 64,
+            flag: 0,
+            next: 0,
+        };
+        mem.write(desc_gpa, &bad_dma).unwrap();
+        assert!(q.next_desc().unwrap().is_err());
     }
 }

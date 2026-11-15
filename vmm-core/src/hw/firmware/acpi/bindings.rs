@@ -19,6 +19,7 @@ pub const SIG_XSDT: [u8; 4] = *b"XSDT";
 pub const SIG_FADT: [u8; 4] = *b"FACP";
 pub const SIG_MADT: [u8; 4] = *b"APIC";
 pub const SIG_MCFG: [u8; 4] = *b"MCFG";
+pub const SIG_VIOT: [u8; 4] = *b"VIOT";
 #[allow(dead_code)]
 pub const SIG_DSDT: [u8; 4] = *b"DSDT";
 
@@ -197,13 +198,53 @@ pub struct AcpiTableMcfg<const N: usize> {
     pub allocations: [AcpiMcfgAllocation; N],
 }
 
+pub const VIOT_REVISION: u8 = 0;
+pub const VIOT_NODE_PCI_RANGE: u8 = 1;
+pub const VIOT_NODE_VIRTIO_PCI_IOMMU: u8 = 3;
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+pub struct AcpiTableViot {
+    pub header: AcpiTableHeader,
+    pub node_count: u16,
+    pub node_offset: u16,
+    pub reserved: [u8; 8],
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+pub struct AcpiViotVirtioPciNode {
+    pub type_: u8,
+    pub reserved: u8,
+    pub length: u16,
+    pub pci_segment: u16,
+    pub bdf_number: u16,
+    pub reserved2: [u8; 8],
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Default, AsBytes, FromBytes, FromZeroes)]
+pub struct AcpiViotPciRangeNode {
+    pub type_: u8,
+    pub reserved: u8,
+    pub length: u16,
+    pub endpoint_start: u32,
+    pub pci_segment_start: u16,
+    pub pci_segment_end: u16,
+    pub bdf_start: u16,
+    pub bdf_end: u16,
+    pub output_node: u16,
+    pub reserved2: [u8; 6],
+}
+
 #[cfg(test)]
 mod test {
     use core::mem::size_of;
 
     use super::{
         AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation, AcpiTableFadt,
-        AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg, AcpiTableRsdp, AcpiTableXsdt,
+        AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg, AcpiTableRsdp, AcpiTableViot, AcpiTableXsdt,
+        AcpiViotPciRangeNode, AcpiViotVirtioPciNode,
     };
 
     #[test]
@@ -217,6 +258,9 @@ mod test {
         assert_eq!(size_of::<AcpiMadtLocalX2apic>(), 16);
         assert_eq!(size_of::<AcpiMcfgAllocation>(), 16);
         assert_eq!(size_of::<AcpiTableMcfg<1>>(), 60);
+        assert_eq!(size_of::<AcpiTableViot>(), 48);
+        assert_eq!(size_of::<AcpiViotVirtioPciNode>(), 16);
+        assert_eq!(size_of::<AcpiViotPciRangeNode>(), 24);
         assert_eq!(size_of::<AcpiTableXsdt<0>>(), 36);
         assert_eq!(size_of::<AcpiTableXsdt<4>>(), 36 + 4 * 8);
     }

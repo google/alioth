@@ -15,10 +15,12 @@
 use std::time::Duration;
 
 use vmm_tests::{
-    TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock, boot_and_shutdown,
-    boot_nested_full_alpine, boot_nested_full_motor_os, boot_nested_linux_initrd,
-    boot_until_autonomous_exit, convert_qcow2_to_raw, copy_sparse_raw, ensure_test_guest_artifacts,
-    linux_blobs_dir, motor_os_release_dir, use_network_tap,
+    L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock, boot_and_shutdown,
+    boot_chv_until_autonomous_exit, boot_nested_full_alpine, boot_nested_full_alpine_with_l0,
+    boot_nested_full_motor_os, boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd,
+    boot_nested_linux_initrd_with_l0, boot_until_autonomous_exit, convert_qcow2_to_raw,
+    copy_sparse_raw, ensure_test_guest_artifacts, linux_blobs_dir, motor_os_release_dir,
+    use_network_tap,
 };
 
 fn run_linux_initrd(mode: VmmMode) {
@@ -236,28 +238,11 @@ fn boot_test_guest_wasm() {
     run_test_guest(VmmMode::Wasm);
 }
 
-fn run_nested_test_guest(mode: VmmMode) {
-    let guest = ensure_test_guest_artifacts();
-    let tmp = TempTestDir::new(&format!("nested-test-guest-{}", mode.as_str()));
-    let cfg = format!(
-        "pvh = \"{}\"\n\
-         initramfs = \"{}\"\n\
-         cmd_line = \"test-guest-nested\"\n\
-         num_cpus = 2\n\
-         mem_size = \"256M\"\n\
-         blk = []\n",
-        guest.kloader.display(),
-        guest.nested_initrd.display(),
+fn assert_nested_test_guest_serial(serial: &str) {
+    assert!(
+        serial.contains("vmm::virtio_iommu: active at "),
+        "missing L1 virtio-iommu activation banner in serial output:\n{serial}"
     );
-
-    let serial = boot_until_autonomous_exit(
-        "nested_test_guest",
-        mode,
-        &tmp,
-        &cfg,
-        Duration::from_secs(30),
-    );
-
     // Verify L1 booted with 2 vCPUs and hardware nested virtualization enabled.
     assert!(
         serial.contains("test-guest: ok | cpus=2")
@@ -285,6 +270,31 @@ fn run_nested_test_guest(mode: VmmMode) {
     );
 }
 
+fn run_nested_test_guest(mode: VmmMode) {
+    let guest = ensure_test_guest_artifacts();
+    let tmp = TempTestDir::new(&format!("nested-test-guest-{}", mode.as_str()));
+    let cfg = format!(
+        "pvh = \"{}\"\n\
+         initramfs = \"{}\"\n\
+         cmd_line = \"test-guest-nested\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n\
+         iommu = true\n\
+         blk = []\n",
+        guest.kloader.display(),
+        guest.nested_initrd.display(),
+    );
+
+    let serial = boot_until_autonomous_exit(
+        "nested_test_guest",
+        mode,
+        &tmp,
+        &cfg,
+        Duration::from_secs(30),
+    );
+    assert_nested_test_guest_serial(&serial);
+}
+
 #[test]
 fn boot_nested_test_guest_cwasm() {
     run_nested_test_guest(VmmMode::Cwasm);
@@ -293,6 +303,23 @@ fn boot_nested_test_guest_cwasm() {
 #[test]
 fn boot_nested_test_guest_wasm() {
     run_nested_test_guest(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_nested_test_guest_chv() {
+    let guest = ensure_test_guest_artifacts();
+    let tmp = TempTestDir::new("nested-test-guest-chv");
+    let serial = boot_chv_until_autonomous_exit(
+        "nested_test_guest_chv",
+        &tmp,
+        2,
+        "256M",
+        &guest.kloader,
+        &guest.nested_initrd,
+        "test-guest-nested",
+        Duration::from_secs(30),
+    );
+    assert_nested_test_guest_serial(&serial);
 }
 
 fn run_nested_motor_os(mode: VmmMode) {
@@ -305,6 +332,16 @@ fn run_nested_motor_os(mode: VmmMode) {
     boot_nested_full_motor_os(mode, &tmp, has_tap);
 }
 
+fn run_nested_motor_os_chv(mode: VmmMode) {
+    let _lock = acquire_motor_os_lock();
+    let has_tap = use_network_tap(
+        "moto-tap",
+        "run ../motor-dev/motor-os/vm_images/release/create-tap.sh",
+    );
+    let tmp = TempTestDir::new(&format!("nested-motor-os-chv-{}", mode.as_str()));
+    boot_nested_full_motor_os_with_l0(L0Engine::Chv, mode, &tmp, has_tap);
+}
+
 #[test]
 fn boot_nested_motor_os_cwasm() {
     run_nested_motor_os(VmmMode::Cwasm);
@@ -315,9 +352,24 @@ fn boot_nested_motor_os_wasm() {
     run_nested_motor_os(VmmMode::Wasm);
 }
 
+#[test]
+fn boot_nested_motor_os_chv_cwasm() {
+    run_nested_motor_os_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_nested_motor_os_chv_wasm() {
+    run_nested_motor_os_chv(VmmMode::Wasm);
+}
+
 fn run_nested_linux_initrd(mode: VmmMode) {
     let tmp = TempTestDir::new(&format!("nested-linux-initrd-{}", mode.as_str()));
     boot_nested_linux_initrd(mode, &tmp);
+}
+
+fn run_nested_linux_initrd_chv(mode: VmmMode) {
+    let tmp = TempTestDir::new(&format!("nested-linux-initrd-chv-{}", mode.as_str()));
+    boot_nested_linux_initrd_with_l0(L0Engine::Chv, mode, &tmp);
 }
 
 #[test]
@@ -330,6 +382,16 @@ fn boot_nested_linux_initrd_wasm() {
     run_nested_linux_initrd(VmmMode::Wasm);
 }
 
+#[test]
+fn boot_nested_linux_initrd_chv_cwasm() {
+    run_nested_linux_initrd_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_nested_linux_initrd_chv_wasm() {
+    run_nested_linux_initrd_chv(VmmMode::Wasm);
+}
+
 fn run_nested_alpine(mode: VmmMode) {
     let _lock = acquire_motor_os_lock();
     let has_tap = use_network_tap(
@@ -340,6 +402,16 @@ fn run_nested_alpine(mode: VmmMode) {
     boot_nested_full_alpine(mode, &tmp, has_tap);
 }
 
+fn run_nested_alpine_chv(mode: VmmMode) {
+    let _lock = acquire_motor_os_lock();
+    let has_tap = use_network_tap(
+        "moto-tap",
+        "run ../motor-dev/motor-os/vm_images/release/create-tap.sh",
+    );
+    let tmp = TempTestDir::new(&format!("nested-alpine-chv-{}", mode.as_str()));
+    boot_nested_full_alpine_with_l0(L0Engine::Chv, mode, &tmp, has_tap);
+}
+
 #[test]
 fn boot_nested_alpine_cwasm() {
     run_nested_alpine(VmmMode::Cwasm);
@@ -348,4 +420,14 @@ fn boot_nested_alpine_cwasm() {
 #[test]
 fn boot_nested_alpine_wasm() {
     run_nested_alpine(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_nested_alpine_chv_cwasm() {
+    run_nested_alpine_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_nested_alpine_chv_wasm() {
+    run_nested_alpine_chv(VmmMode::Wasm);
 }

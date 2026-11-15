@@ -19,9 +19,10 @@ use std::sync::Arc;
 use vmm_io::host::abi::{
     ERR_EOF, ERR_GENERIC, ERR_INTERRUPTED, ERR_WOULD_BLOCK, EXEC_TYPE_LINUX, EXEC_TYPE_PVH,
     IO_BRIDGE_EVENT_POLL, IO_BRIDGE_EVENT_SERIAL_INPUT, IO_BRIDGE_EVENT_SERIAL_TX,
-    IO_BRIDGE_EVENT_SHUTDOWN, IO_BRIDGE_EVENT_VIRTIO_NOTIFY, IO_BRIDGE_EVENT_VIRTIO_RESET,
-    IO_BRIDGE_EVENT_VIRTIO_START, IRQ_KIND_CONFIG, MAX_QUEUES_PER_DEV, RawIoBootConfig,
-    RawIoBridgeEvent, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
+    IO_BRIDGE_EVENT_SHUTDOWN, IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE, IO_BRIDGE_EVENT_VIRTIO_NOTIFY,
+    IO_BRIDGE_EVENT_VIRTIO_RESET, IO_BRIDGE_EVENT_VIRTIO_START, IRQ_KIND_CONFIG,
+    MAX_QUEUES_PER_DEV, RawIoBootConfig, RawIoBridgeEvent, ShmVirtioDeviceSpec,
+    ShmVirtioQueueConfig,
 };
 use vmm_io::host::{
     ExecKind, Handle, Interest, IoBootConfig, IoBridgeEvent, Token, VirtioDeviceSpec,
@@ -543,6 +544,7 @@ where
                         dev: d.dev,
                         name: String::from_utf8_lossy(&d.name[..nlen]).into_owned(),
                         device_id: d.device_id,
+                        pci_bdf: d.pci_bdf,
                         device_features: d.device_features,
                         num_queues: d.num_queues,
                         config_bytes: d.config_bytes[..clen].to_vec(),
@@ -598,6 +600,18 @@ where
                     dev,
                     ..Default::default()
                 },
+                IoBridgeEvent::VirtioConfigWrite { dev, offset, data } => {
+                    let len = data.len().min(40);
+                    let mut raw_ev = RawIoBridgeEvent {
+                        kind: IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE,
+                        dev,
+                        queue_index: offset,
+                        tx_len: len as u8,
+                        ..Default::default()
+                    };
+                    raw_ev.tx_bytes[..len].copy_from_slice(&data[..len]);
+                    raw_ev
+                }
                 IoBridgeEvent::Poll(pe) => RawIoBridgeEvent {
                     kind: IO_BRIDGE_EVENT_POLL,
                     token: pe.token.0,

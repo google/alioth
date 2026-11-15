@@ -26,8 +26,9 @@ use derive_layout::Layout;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::host::abi::{
-    CORE_MSG_VIRTIO_NOTIFY, CORE_MSG_VIRTIO_RESET, CORE_MSG_VIRTIO_START, CoreToIoEntry,
-    MAX_QUEUES_PER_DEV, ShmDeviceMsixRouting, ShmMsiEntry, ShmVirtioQueueConfig,
+    CORE_MSG_VIRTIO_CONFIG_WRITE, CORE_MSG_VIRTIO_NOTIFY, CORE_MSG_VIRTIO_RESET,
+    CORE_MSG_VIRTIO_START, CoreToIoEntry, MAX_QUEUES_PER_DEV, ShmDeviceMsixRouting, ShmMsiEntry,
+    ShmVirtioQueueConfig,
 };
 use crate::host::{
     DoorbellSpec, HostCaps, IoSpace, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore,
@@ -120,18 +121,31 @@ impl PciIrqRouting {
     }
 }
 
-#[derive(Debug)]
 pub struct VirtioDeviceConfigBytes {
-    bytes: Vec<u8>,
+    dev_id: u32,
+    device_id: DeviceId,
+    len: usize,
+    bytes: RwLock<Vec<u8>>,
+    bridge: Arc<dyn VmmCoreBridge>,
+}
+
+impl Debug for VirtioDeviceConfigBytes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VirtioDeviceConfigBytes")
+            .field("dev_id", &self.dev_id)
+            .field("device_id", &self.device_id)
+            .field("len", &self.len)
+            .finish()
+    }
 }
 
 impl Mmio for VirtioDeviceConfigBytes {
     fn size(&self) -> usize {
-        self.bytes.len()
+        self.len
     }
 
     fn read(&self, offset: usize, size: u8) -> mem::Result<u64> {
-        let bytes = &self.bytes;
+        let bytes = self.bytes.read();
         let val = match size {
             1 => bytes.get(offset).map(|b| *b as u64),
             2 => bytes
@@ -139,7 +153,7 @@ impl Mmio for VirtioDeviceConfigBytes {
                 .and_then(|s| u16::read_from_prefix(s).map(|w| w as u64)),
             4 => bytes
                 .get(offset..)
-                .and_then(|s| u32::read_from_prefix(s).map(|d| d as u64)),
+                .and_then(|s| u32::read_from_prefix(s).map(|d| w_u64(d))),
             8 => bytes.get(offset..).and_then(u64::read_from_prefix),
             _ => None,
         };
@@ -154,12 +168,37 @@ impl Mmio for VirtioDeviceConfigBytes {
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
+        // VirtIO v1.2 §5.12.4: `virtio_iommu_config::bypass` at byte offset 36 (1 byte).
+        if self.device_id == DeviceId::Iommu && offset == 36 && size == 1 {
+            let new_bypass = (val as u8) & 1;
+            {
+                let mut bytes = self.bytes.write();
+                if let Some(slot) = bytes.get_mut(offset) {
+                    *slot = new_bypass;
+                }
+            }
+            let mut entry = CoreToIoEntry {
+                msg_type: CORE_MSG_VIRTIO_CONFIG_WRITE,
+                aux_u16: offset as u16,
+                dev: self.dev_id as u64,
+                ..Default::default()
+            };
+            entry.data[0] = size;
+            entry.data[1] = new_bypass;
+            let _ = self.bridge.send_io_cmd(&entry);
+            return Ok(());
+        }
         log::error!(
             "VirtioDeviceConfigBytes: write 0x{val:0width$x} to readonly offset 0x{offset:x}.",
             width = 2 * size as usize
         );
         Ok(())
     }
+}
+
+#[inline]
+fn w_u64(v: u32) -> u64 {
+    v as u64
 }
 
 #[repr(C, align(4))]
@@ -648,6 +687,7 @@ fn get_class(id: DeviceId) -> (u8, u8) {
         DeviceId::FileSystem => (0x01, 0x80),
         DeviceId::Block => (0x01, 0x00),
         DeviceId::Socket => (0x02, 0x80),
+        DeviceId::Iommu => (0x08, 0x06),
         _ => (0xff, 0x00),
     }
 }
@@ -743,8 +783,13 @@ impl VirtioPciDevice {
             ..Default::default()
         };
 
+        let cfg_len = spec.config_bytes.len();
         let device_config = Arc::new(VirtioDeviceConfigBytes {
-            bytes: spec.config_bytes,
+            dev_id: spec.dev,
+            device_id,
+            len: cfg_len,
+            bytes: RwLock::new(spec.config_bytes),
+            bridge: bridge.clone(),
         });
         let num_queues = spec.num_queues as usize;
         let table_entries = num_queues + 1;
@@ -886,8 +931,15 @@ impl VirtioPciDevice {
 
         let cap_list = PciCapList::try_from(caps)?;
 
+        // VirtIO v1.2 §5.12.3.2: virtio-iommu MUST NOT offer `VIRTIO_F_ACCESS_PLATFORM`.
+        let device_feature = if device_id == DeviceId::Iommu {
+            (spec.device_features | VirtioFeature::VERSION_1.bits())
+                & !VirtioFeature::ACCESS_PLATFORM.bits()
+        } else {
+            spec.device_features | VirtioFeature::SUPPORTED.bits()
+        };
         let reg = Arc::new(Register {
-            device_feature: spec.device_features | VirtioFeature::SUPPORTED.bits(),
+            device_feature,
             ..Default::default()
         });
         let queues = Arc::new(
@@ -1006,6 +1058,7 @@ mod tests {
             dev: 2,
             name: "virtio-net-test".to_string(),
             device_id: DeviceId::Net as u16,
+            pci_bdf: 0,
             device_features: 0,
             num_queues: 2,
             config_bytes: vec![0; 8],

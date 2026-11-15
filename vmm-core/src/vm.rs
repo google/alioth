@@ -161,8 +161,12 @@ impl Machine {
     }
 
     pub fn add_pci_dev(&mut self, dev: PciDevice) -> Result<(), Error> {
+        self.add_pci_dev_at(None, dev)
+    }
+
+    pub fn add_pci_dev_at(&mut self, bdf: Option<pci::Bdf>, dev: PciDevice) -> Result<(), Error> {
         let config = dev.dev.config();
-        let bdf = self.board.pci_bus.add(None, config.clone())?;
+        let bdf = self.board.pci_bus.add(bdf, config.clone())?;
         let header = config.get_header();
         header.set_bdf(bdf);
         log::info!("{} located at {bdf}", dev.name);
@@ -174,13 +178,14 @@ impl Machine {
         &mut self,
         spec: VirtioDeviceSpec,
     ) -> Result<Arc<VirtioPciDevice>, Error> {
+        let explicit_bdf = (spec.pci_bdf != 0).then_some(pci::Bdf(spec.pci_bdf));
         let dev = Arc::new(VirtioPciDevice::from_spec(
             spec,
             self.board.hv.clone(),
             self.board.bridge.clone(),
         )?);
         let pci_dev = PciDevice::new(dev.name.clone(), dev.clone());
-        self.add_pci_dev(pci_dev)?;
+        self.add_pci_dev_at(explicit_bdf, pci_dev)?;
         Ok(dev)
     }
 

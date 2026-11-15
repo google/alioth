@@ -235,6 +235,10 @@ pub fn release_low_memory() {
     );
 }
 
+pub fn raw_ram_segments() -> &'static [MemorySegment] {
+    &PhysicalMemory::inst().boot.raw
+}
+
 #[cfg(debug_assertions)]
 pub fn dump_serial() {
     PhysicalMemory::inst().dump_serial();

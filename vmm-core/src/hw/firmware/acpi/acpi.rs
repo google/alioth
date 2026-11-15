@@ -18,7 +18,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::{offset_of, size_of, size_of_val};
 
-use zerocopy::{transmute, AsBytes, FromBytes, FromZeroes};
+use zerocopy::{transmute, AsBytes, FromBytes};
 
 use crate::hw::layout::{APIC_START, IOAPIC_START, PCIE_CONFIG_START};
 use crate::unsafe_impl_zerocopy;
@@ -26,13 +26,15 @@ use crate::unsafe_impl_zerocopy;
 use bindings::{
     AcpiGenericAddress, AcpiMadtIoApic, AcpiMadtLocalX2apic, AcpiMcfgAllocation,
     AcpiSubtableHeader, AcpiTableFadt, AcpiTableHeader, AcpiTableMadt, AcpiTableMcfg,
-    AcpiTableRsdp, AcpiTableXsdt, FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC,
-    MADT_LOCAL_X2APIC, MADT_REVISION, MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG,
-    SIG_RSDP, SIG_XSDT, XSDT_REVISION,
+    AcpiTableRsdp, AcpiTableViot, AcpiTableXsdt, AcpiViotPciRangeNode, AcpiViotVirtioPciNode,
+    FADT_MAJOR_VERSION, FADT_MINOR_VERSION, MADT_IO_APIC, MADT_LOCAL_X2APIC, MADT_REVISION,
+    MCFG_REVISION, RSDP_REVISION, SIG_FADT, SIG_MADT, SIG_MCFG, SIG_RSDP, SIG_VIOT, SIG_XSDT,
+    VIOT_NODE_PCI_RANGE, VIOT_NODE_VIRTIO_PCI_IOMMU, VIOT_REVISION, XSDT_REVISION,
 };
 
 unsafe_impl_zerocopy!(AcpiTableMcfg<1>, FromBytes, FromZeroes, AsBytes);
 unsafe_impl_zerocopy!(AcpiTableXsdt<3>, FromBytes, FromZeroes, AsBytes);
+unsafe_impl_zerocopy!(AcpiTableXsdt<4>, FromBytes, FromZeroes, AsBytes);
 
 const DSDT_DSDTTBL_HEADER: [u8; 324] = [
     0x44, 0x53, 0x44, 0x54, 0x43, 0x01, 0x00, 0x00, 0x02, 0x37, 0x41, 0x4c, 0x49, 0x4f, 0x54, 0x48,
@@ -271,16 +273,68 @@ impl AcpiTable {
     }
 }
 
+fn create_viot(iommu_bdf: u16) -> (AcpiTableViot, AcpiViotVirtioPciNode, AcpiViotPciRangeNode) {
+    let node_offset = size_of::<AcpiTableViot>() as u16;
+    let total_length = size_of::<AcpiTableViot>()
+        + size_of::<AcpiViotVirtioPciNode>()
+        + size_of::<AcpiViotPciRangeNode>();
+    let mut viot = AcpiTableViot {
+        header: AcpiTableHeader {
+            signature: SIG_VIOT,
+            length: total_length as u32,
+            revision: VIOT_REVISION,
+            ..default_header()
+        },
+        node_count: 2,
+        node_offset,
+        reserved: [0; 8],
+    };
+    let iommu_node = AcpiViotVirtioPciNode {
+        type_: VIOT_NODE_VIRTIO_PCI_IOMMU,
+        reserved: 0,
+        length: size_of::<AcpiViotVirtioPciNode>() as u16,
+        pci_segment: 0,
+        bdf_number: iommu_bdf,
+        reserved2: [0; 8],
+    };
+    let range_node = AcpiViotPciRangeNode {
+        type_: VIOT_NODE_PCI_RANGE,
+        reserved: 0,
+        length: size_of::<AcpiViotPciRangeNode>() as u16,
+        endpoint_start: 0,
+        pci_segment_start: 0,
+        pci_segment_end: 0,
+        bdf_start: 0x0000,
+        bdf_end: 0xffff,
+        output_node: node_offset,
+        reserved2: [0; 6],
+    };
+    let mut checksum = 0u8;
+    checksum = checksum.wrapping_sub(wrapping_sum(viot.as_bytes()));
+    checksum = checksum.wrapping_sub(wrapping_sum(iommu_node.as_bytes()));
+    checksum = checksum.wrapping_sub(wrapping_sum(range_node.as_bytes()));
+    viot.header.checksum = checksum;
+    (viot, iommu_node, range_node)
+}
+
 pub fn create_acpi(num_cpu: u32) -> AcpiTable {
+    create_acpi_with_iommu(num_cpu, None)
+}
+
+pub fn create_acpi_with_iommu(num_cpu: u32, iommu_bdf: Option<u16>) -> AcpiTable {
     let mut table_bytes = Vec::new();
     let mut pointers = vec![];
     let mut checksums = vec![];
 
-    let mut xsdt: AcpiTableXsdt<3> = FromZeroes::new_zeroed();
     let offset_xsdt = 0;
-    table_bytes.extend(xsdt.as_bytes());
+    let xsdt_len = if iommu_bdf.is_some() {
+        size_of::<AcpiTableXsdt<4>>()
+    } else {
+        size_of::<AcpiTableXsdt<3>>()
+    };
+    table_bytes.resize(xsdt_len, 0);
 
-    let offset_dsdt = offset_xsdt + size_of_val(&xsdt);
+    let offset_dsdt = offset_xsdt + xsdt_len;
     table_bytes.extend(DSDT_DSDTTBL_HEADER);
 
     let offset_fadt = offset_dsdt + size_of_val(&DSDT_DSDTTBL_HEADER);
@@ -306,13 +360,35 @@ pub fn create_acpi(num_cpu: u32) -> AcpiTable {
     table_bytes.extend(mcfg.as_bytes());
 
     debug_assert_eq!(offset_xsdt % 4, 0);
-    let xsdt_entries = [offset_fadt as u64, offset_madt as u64, offset_mcfg as u64];
-    xsdt = create_xsdt(xsdt_entries);
-    xsdt.write_to_prefix(&mut table_bytes);
-    for index in 0..xsdt_entries.len() {
-        pointers.push(offset_xsdt + offset_of!(AcpiTableXsdt<3>, entries) + index * 8);
+    if let Some(bdf) = iommu_bdf {
+        let offset_viot = offset_mcfg + size_of_val(&mcfg);
+        debug_assert_eq!(offset_viot % 4, 0);
+        let (viot, iommu_node, range_node) = create_viot(bdf);
+        table_bytes.extend(viot.as_bytes());
+        table_bytes.extend(iommu_node.as_bytes());
+        table_bytes.extend(range_node.as_bytes());
+
+        let xsdt_entries = [
+            offset_fadt as u64,
+            offset_madt as u64,
+            offset_mcfg as u64,
+            offset_viot as u64,
+        ];
+        let xsdt = create_xsdt(xsdt_entries);
+        xsdt.write_to_prefix(&mut table_bytes);
+        for index in 0..xsdt_entries.len() {
+            pointers.push(offset_xsdt + offset_of!(AcpiTableXsdt<4>, entries) + index * 8);
+        }
+        checksums.push((offset_xsdt, size_of_val(&xsdt)));
+    } else {
+        let xsdt_entries = [offset_fadt as u64, offset_madt as u64, offset_mcfg as u64];
+        let xsdt = create_xsdt(xsdt_entries);
+        xsdt.write_to_prefix(&mut table_bytes);
+        for index in 0..xsdt_entries.len() {
+            pointers.push(offset_xsdt + offset_of!(AcpiTableXsdt<3>, entries) + index * 8);
+        }
+        checksums.push((offset_xsdt, size_of_val(&xsdt)));
     }
-    checksums.push((offset_xsdt, size_of_val(&xsdt)));
 
     let rsdp = create_rsdp(offset_xsdt as u64);
 

@@ -80,6 +80,7 @@ pub struct VirtioDeviceSpec {
     pub dev: Handle,
     pub name: String,
     pub device_id: u16,
+    pub pci_bdf: u16,
     pub device_features: u64,
     pub num_queues: u16,
     pub config_bytes: Vec<u8>,
@@ -113,6 +114,11 @@ pub enum IoBridgeEvent {
     },
     VirtioReset {
         dev: Handle,
+    },
+    VirtioConfigWrite {
+        dev: Handle,
+        offset: u16,
+        data: Vec<u8>,
     },
     Poll(PollEvent),
     SerialInput,
@@ -229,6 +235,7 @@ pub mod abi {
     pub const IO_BRIDGE_EVENT_SERIAL_INPUT: u32 = 5;
     pub const IO_BRIDGE_EVENT_SHUTDOWN: u32 = 6;
     pub const IO_BRIDGE_EVENT_SERIAL_TX: u32 = 7;
+    pub const IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE: u32 = 8;
 
     pub const IRQ_KIND_CONFIG: u32 = 0;
     pub const IRQ_KIND_QUEUE: u32 = 1;
@@ -274,6 +281,8 @@ pub mod abi {
         pub num_queues: u16,
         pub config_len: u16,
         pub name_len: u16,
+        pub pci_bdf: u16,
+        pub _pad: [u8; 6],
         pub name: [u8; MAX_DEV_NAME_LEN],
         pub config_bytes: [u8; MAX_CONFIG_BYTES],
     }
@@ -287,6 +296,8 @@ pub mod abi {
                 num_queues: 0,
                 config_len: 0,
                 name_len: 0,
+                pci_bdf: 0,
+                _pad: [0; 6],
                 name: [0; MAX_DEV_NAME_LEN],
                 config_bytes: [0; MAX_CONFIG_BYTES],
             }

@@ -65,8 +65,57 @@ pub struct Config {
     pub log_file: PathBuf,
     pub log_level: log::LevelFilter,
     pub mem_size: usize,
+    pub iommu: bool,
+    pub pci: Vec<u16>,
     pub net: BTreeMap<String, NetParam>,
     pub blk: Vec<PathBuf>,
+}
+
+/// Parse `[domain:]bus:dev.func` (e.g. `"00:03.0"` or `"0000:00:03.0"`) into `u16` BDF.
+pub fn parse_pci_bdf(raw: &str) -> Result<u16, String> {
+    let s = raw.trim();
+    let bdf_part = match s.rsplit_once(':') {
+        Some((prefix, dev_fn)) => {
+            let bus_str = match prefix.rsplit_once(':') {
+                Some((dom_str, b_str)) => {
+                    let dom = u16::from_str_radix(dom_str, 16)
+                        .map_err(|_| format!("invalid PCI domain in '{s}'"))?;
+                    if dom != 0 {
+                        return Err(format!("only PCI domain 0000 is supported, got '{s}'"));
+                    }
+                    b_str
+                }
+                None => prefix,
+            };
+            let bus = u8::from_str_radix(bus_str, 16)
+                .map_err(|_| format!("invalid PCI bus in '{s}'"))?;
+            let (dev_str, fn_str) = dev_fn
+                .split_once('.')
+                .ok_or_else(|| format!("expected 'bus:dev.func' in '{s}'"))?;
+            let dev = u8::from_str_radix(dev_str, 16)
+                .map_err(|_| format!("invalid PCI device in '{s}'"))?;
+            let func = u8::from_str_radix(fn_str, 16)
+                .map_err(|_| format!("invalid PCI function in '{s}'"))?;
+            if dev >= 32 || func >= 8 {
+                return Err(format!("PCI dev/func out of range in '{s}'"));
+            }
+            ((bus as u16) << 8) | ((dev as u16) << 3) | (func as u16)
+        }
+        None => return Err(format!("expected '[domain:]bus:dev.func', got '{s}'")),
+    };
+    Ok(bdf_part)
+}
+
+fn parse_bdf_array(val: &str) -> Result<Vec<u16>, String> {
+    let paths = parse_string_array(val)?;
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let s = p
+            .to_str()
+            .ok_or_else(|| format!("non-UTF8 PCI BDF '{p:?}'"))?;
+        out.push(parse_pci_bdf(s)?);
+    }
+    Ok(out)
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -151,6 +200,8 @@ pub fn parse_config(toml_fname: &str) -> Result<Config, Box<dyn std::error::Erro
     let mut log_file: Option<PathBuf> = None;
     let mut log_level: Option<log::LevelFilter> = None;
     let mut mem_size: Option<usize> = None;
+    let mut iommu = false;
+    let mut pci: Option<Vec<u16>> = None;
     let mut blk: Option<Vec<PathBuf>> = None;
     let mut net_partials: BTreeMap<String, PartialNetParam> = BTreeMap::new();
 
@@ -194,6 +245,19 @@ pub fn parse_config(toml_fname: &str) -> Result<Config, Box<dyn std::error::Erro
                     log_level = Some(lvl);
                 }
                 "mem_size" => mem_size = Some(parse_bytes(val)?),
+                "iommu" => {
+                    iommu = match val {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(format!(
+                                "line {line_no}: expected boolean for iommu, got '{val}'"
+                            )
+                            .into());
+                        }
+                    };
+                }
+                "pci" => pci = Some(parse_bdf_array(val)?),
                 "blk" => blk = Some(parse_string_array(val)?),
                 other => {
                     return Err(format!("line {line_no}: unknown config key '{other}'").into());
@@ -262,6 +326,8 @@ pub fn parse_config(toml_fname: &str) -> Result<Config, Box<dyn std::error::Erro
         log_file: log_file.ok_or("missing log_file in config")?,
         log_level: log_level.ok_or("missing log_level in config")?,
         mem_size: mem_size.ok_or("missing mem_size in config")?,
+        iommu,
+        pci: pci.unwrap_or_default(),
         net,
         blk: blk.unwrap_or_default(),
     })

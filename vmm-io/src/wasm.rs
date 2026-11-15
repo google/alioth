@@ -19,9 +19,9 @@ use std::path::Path;
 use crate::host::abi::{
     ERR_EOF, ERR_INTERRUPTED, ERR_WOULD_BLOCK, EXEC_TYPE_LINUX, EXEC_TYPE_NONE, EXEC_TYPE_PVH,
     IO_BRIDGE_EVENT_POLL, IO_BRIDGE_EVENT_SERIAL_INPUT, IO_BRIDGE_EVENT_SERIAL_TX,
-    IO_BRIDGE_EVENT_SHUTDOWN, IO_BRIDGE_EVENT_VIRTIO_NOTIFY, IO_BRIDGE_EVENT_VIRTIO_RESET,
-    IO_BRIDGE_EVENT_VIRTIO_START, IRQ_KIND_CONFIG, IRQ_KIND_QUEUE, RawIoBootConfig,
-    RawIoBridgeEvent, ShmVirtioDeviceSpec,
+    IO_BRIDGE_EVENT_SHUTDOWN, IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE, IO_BRIDGE_EVENT_VIRTIO_NOTIFY,
+    IO_BRIDGE_EVENT_VIRTIO_RESET, IO_BRIDGE_EVENT_VIRTIO_START, IRQ_KIND_CONFIG, IRQ_KIND_QUEUE,
+    RawIoBootConfig, RawIoBridgeEvent, ShmVirtioDeviceSpec,
 };
 use crate::host::{
     BlockBackend, ExecKind, GuestMemAccess, Handle, Interest, IoBootConfig, IoBridgeEvent, IoHost,
@@ -330,6 +330,7 @@ impl IoHost for WasmIoHost {
                 device_features: spec.device_features,
                 device_id: spec.device_id,
                 num_queues: spec.num_queues,
+                pci_bdf: spec.pci_bdf,
                 ..Default::default()
             };
             let nb = spec.name.as_bytes();
@@ -374,6 +375,14 @@ impl IoHost for WasmIoHost {
                 queue_index: raw.queue_index,
             }),
             IO_BRIDGE_EVENT_VIRTIO_RESET => Ok(IoBridgeEvent::VirtioReset { dev: raw.dev }),
+            IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE => {
+                let len = (raw.tx_len as usize).min(raw.tx_bytes.len());
+                Ok(IoBridgeEvent::VirtioConfigWrite {
+                    dev: raw.dev,
+                    offset: raw.queue_index,
+                    data: raw.tx_bytes[..len].to_vec(),
+                })
+            }
             IO_BRIDGE_EVENT_POLL => Ok(IoBridgeEvent::Poll(PollEvent {
                 token: Token(raw.token),
                 is_readable: raw.is_readable != 0,

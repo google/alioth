@@ -47,11 +47,11 @@ pub mod pci;
 pub mod serial;
 
 use firmware::acpi::bindings::AcpiTableRsdp;
-use firmware::acpi::create_acpi;
+use firmware::acpi::create_acpi_with_iommu;
 use ioapic::IoApic;
 use layout::{EBDA_START, IOAPIC_START, PCIE_CONFIG_START};
 use pci::bus::{CONFIG_ADDRESS, PciBus};
-use pci::config::Command;
+use pci::config::{Command, ConfigHeader};
 use pci::{PciBar, PciDevice};
 use serial::Serial;
 
@@ -169,8 +169,21 @@ pub struct Board {
 
 impl Board {
     pub fn create_firmware_data(&self, _init_state: &InitState) -> Result<()> {
+        let iommu_bdf = self.pci_devs.read().iter().find_map(|dev| {
+            let cfg = dev.dev.config();
+            let header = cfg.get_header();
+            let data = header.data.read();
+            match &data.header {
+                ConfigHeader::Device(dh)
+                    if dh.common.vendor == 0x1af4 && dh.common.device == 0x1057 =>
+                {
+                    Some(data.bdf.0)
+                }
+                _ => None,
+            }
+        });
         let ram = self.memory.ram_bus();
-        let mut acpi_table = create_acpi(self.config.num_cpu);
+        let mut acpi_table = create_acpi_with_iommu(self.config.num_cpu, iommu_bdf);
         acpi_table.relocate((EBDA_START + size_of::<AcpiTableRsdp>()) as u64);
         ram.write_range(
             EBDA_START as u64,

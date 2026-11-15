@@ -25,6 +25,7 @@ fi
 LINUX_BLOBS_DIR=$(CDPATH= cd -- "$LINUX_BLOBS_DIR" && pwd)
 
 MODE="cwasm"
+L0_VMM="wasm"
 INITRD_ONLY=0
 L1_SMP="${MOTO_L1_SMP:-4}"
 L1_MEM=""
@@ -34,7 +35,8 @@ NO_NETWORK=0
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 [--cwasm | --wasm] [--initrd] [--l1-cpus N] [--l1-memory SIZE] [--l2-cpus N] [--l2-memory SIZE] [--no-network]
+Usage: $0 [--vmm wasm|chv] [--cwasm | --wasm] [--initrd] [--l1-cpus N] [--l1-memory SIZE] [--l2-cpus N] [--l2-memory SIZE] [--no-network]
+  --vmm wasm|chv     Select L0 hypervisor: Linux Wasm VMM (default) or cloud-hypervisor-static (with virtio-iommu)
   --cwasm            Run precompiled Wasm (.cwasm) in both L0 and L1 (default)
   --wasm             Run Cranelift JIT (.wasm) in both L0 and L1 Ring 3
   --initrd           Boot BusyBox initramfs.cpio.gz instead of full Alpine Linux disk
@@ -48,6 +50,15 @@ EOF
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --vmm)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            L0_VMM="$2"
+            shift 2
+            ;;
+        --vmm=*)
+            L0_VMM="${1#--vmm=}"
+            shift
+            ;;
         --wasm)
             MODE="wasm"
             shift
@@ -95,6 +106,14 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+case "$L0_VMM" in
+    wasm|chv) ;;
+    *)
+        echo "run-nested-linux: invalid --vmm '$L0_VMM' (expected 'wasm' or 'chv')" >&2
+        exit 2
+        ;;
+esac
 
 if [ -z "$L1_MEM" ]; then
     if [ "$INITRD_ONLY" = 1 ]; then
@@ -225,6 +244,7 @@ initramfs = "$MOTO_DIR/initrd"
 cmd_line = "system-tty"
 num_cpus = $L1_SMP
 mem_size = "$L1_MEM"
+iommu = true
 blk = ["$L1_RAW"]
 EOF
 
@@ -238,15 +258,21 @@ if_name = "moto-tap"
 EOF
 fi
 
+if [ "$L0_VMM" = "chv" ]; then
+    L0_EXIT_HINT="exit       -> Type 'exit' in L1 rush to shut down L0 cloud-hypervisor-static"
+else
+    L0_EXIT_HINT="Ctrl-a q   -> Shut down L0 Linux Wasm VMM and return to host shell"
+fi
+
 banner "[Step 3/4] Nested Linux inside Motor OS Quick Reference"
 cat <<EOF
   1. At L1's 'motor-os:/user$' prompt, boot L2 Linux ($MODE mode):
        /user/vm/run-l2.sh
      (runs: $L1_LAUNCH_CMD)
 
-  2. Escape keys:
+  2. Escape / shutdown keys:
        Ctrl-b q   -> Shut down L2 MotorIoHost and return to L1 rush
-       Ctrl-a q   -> Shut down L0 Linux VMM and return to host shell
+       $L0_EXIT_HINT
 EOF
 if [ "$INITRD_ONLY" = 0 ]; then
     cat <<EOF
@@ -257,17 +283,40 @@ if [ "$INITRD_ONLY" = 0 ]; then
 EOF
 fi
 
-banner "[Step 4/4] Launching L0 Linux Wasm VMM -> L1 Motor OS ($MODE)"
-if [ "$MODE" = "wasm" ]; then
-    exec "$HOST_TARGET_DIR/vmm-io-host-wasm" \
-        -c "$L0_CONFIG" \
-        -w "$HOST_TARGET_DIR/vmm-io.wasm" \
-        --core-host "$HOST_TARGET_DIR/vmm-core-host-wasm" \
-        --core-wasm "$HOST_TARGET_DIR/vmm-core.wasm"
+if [ "$L0_VMM" = "chv" ]; then
+    CHV_BIN="${CHV_BIN:-$(command -v cloud-hypervisor-static 2>/dev/null || echo /usr/local/google/home/posk/bin/cloud-hypervisor-static)}"
+    if [ ! -x "$CHV_BIN" ]; then
+        echo "run-nested-linux: cloud-hypervisor-static not found at '$CHV_BIN' (override with CHV_BIN)" >&2
+        exit 1
+    fi
+    banner "[Step 4/4] Launching L0 cloud-hypervisor-static (virtio-iommu) -> L1 Motor OS ($MODE)"
+    set -- \
+        --cpus "boot=$L1_SMP,nested=on" \
+        --memory "size=$L1_MEM,thp=on" \
+        --console off --serial tty \
+        --log-file "$RUNTIME_DIR/chv-l0.log" \
+        --kernel "$TEST_GUEST_DIR/kloader" \
+        --initramfs "$MOTO_DIR/initrd" \
+        --cmdline "system-tty" \
+        --rng "src=/dev/urandom,iommu=virtio,pci_device_id=4" \
+        --disk "path=$L1_RAW,image_type=raw,iommu=virtio,pci_device_id=2"
+    if [ "$NO_NETWORK" = 0 ] && [ "$INITRD_ONLY" = 0 ]; then
+        set -- "$@" --net "tap=moto-tap,mac=a4:a1:c2:00:00:01,iommu=virtio,pci_device_id=3"
+    fi
+    exec "$CHV_BIN" "$@"
 else
-    exec "$HOST_TARGET_DIR/vmm-io-host-cwasm" \
-        -c "$L0_CONFIG" \
-        -w "$HOST_TARGET_DIR/vmm-io.cwasm" \
-        --core-host "$HOST_TARGET_DIR/vmm-core-host-cwasm" \
-        --core-wasm "$HOST_TARGET_DIR/vmm-core.cwasm"
+    banner "[Step 4/4] Launching L0 Linux Wasm VMM (virtio-iommu) -> L1 Motor OS ($MODE)"
+    if [ "$MODE" = "wasm" ]; then
+        exec "$HOST_TARGET_DIR/vmm-io-host-wasm" \
+            -c "$L0_CONFIG" \
+            -w "$HOST_TARGET_DIR/vmm-io.wasm" \
+            --core-host "$HOST_TARGET_DIR/vmm-core-host-wasm" \
+            --core-wasm "$HOST_TARGET_DIR/vmm-core.wasm"
+    else
+        exec "$HOST_TARGET_DIR/vmm-io-host-cwasm" \
+            -c "$L0_CONFIG" \
+            -w "$HOST_TARGET_DIR/vmm-io.cwasm" \
+            --core-host "$HOST_TARGET_DIR/vmm-core-host-cwasm" \
+            --core-wasm "$HOST_TARGET_DIR/vmm-core.cwasm"
+    fi
 fi

@@ -26,16 +26,17 @@ use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, c_void, ftruncate, mma
 use mio::unix::SourceFd;
 use parking_lot::{Mutex, RwLock};
 use vmm_core::host::abi::{
-    BridgeShm, CORE_MSG_SERIAL_TX, CORE_MSG_SHUTDOWN, CORE_MSG_VIRTIO_NOTIFY,
-    CORE_MSG_VIRTIO_RESET, CORE_MSG_VIRTIO_START, IO_MSG_REQUEST_SHUTDOWN, IO_MSG_SERIAL_RX,
-    IO_MSG_VIRTIO_IRQ, IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_RAM_SLOTS, MAX_VIRTIO_DEVS,
-    ShmBootInfo, spin_lock, spin_unlock,
+    BridgeShm, CORE_MSG_SERIAL_TX, CORE_MSG_SHUTDOWN, CORE_MSG_VIRTIO_CONFIG_WRITE,
+    CORE_MSG_VIRTIO_NOTIFY, CORE_MSG_VIRTIO_RESET, CORE_MSG_VIRTIO_START, IO_MSG_REQUEST_SHUTDOWN,
+    IO_MSG_SERIAL_RX, IO_MSG_VIRTIO_IRQ, IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_RAM_SLOTS,
+    MAX_VIRTIO_DEVS, ShmBootInfo, spin_lock, spin_unlock,
 };
 use vmm_io::host::abi::{
     EXEC_TYPE_LINUX, EXEC_TYPE_NONE, EXEC_TYPE_PVH, IO_BRIDGE_EVENT_POLL,
     IO_BRIDGE_EVENT_SERIAL_INPUT, IO_BRIDGE_EVENT_SERIAL_TX, IO_BRIDGE_EVENT_SHUTDOWN,
-    IO_BRIDGE_EVENT_VIRTIO_NOTIFY, IO_BRIDGE_EVENT_VIRTIO_RESET, IO_BRIDGE_EVENT_VIRTIO_START,
-    IRQ_KIND_CONFIG, IRQ_KIND_QUEUE, RawIoBridgeEvent, ShmVirtioQueueConfig,
+    IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE, IO_BRIDGE_EVENT_VIRTIO_NOTIFY,
+    IO_BRIDGE_EVENT_VIRTIO_RESET, IO_BRIDGE_EVENT_VIRTIO_START, IRQ_KIND_CONFIG, IRQ_KIND_QUEUE,
+    RawIoBridgeEvent, ShmVirtioQueueConfig,
 };
 use vmm_io::host::{
     ExecKind, Handle, Interest, IoBootConfig, IoBridgeEvent, PollEvent, SerialConsole, Tap, Token,
@@ -241,6 +242,18 @@ impl LinuxIoHost {
                         dev: entry.dev,
                         ..Default::default()
                     });
+                }
+                CORE_MSG_VIRTIO_CONFIG_WRITE => {
+                    let len = (entry.data[0] as usize).min(8);
+                    let mut raw_ev = RawIoBridgeEvent {
+                        kind: IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE,
+                        dev: entry.dev,
+                        queue_index: entry.aux_u16,
+                        tx_len: len as u8,
+                        ..Default::default()
+                    };
+                    raw_ev.tx_bytes[..len].copy_from_slice(&entry.data[1..1 + len]);
+                    pending.push_back(raw_ev);
                 }
                 CORE_MSG_SERIAL_TX => {
                     let len = (entry.aux_u16 as usize).min(entry.data.len());
@@ -587,6 +600,8 @@ impl VmmHostIo for LinuxIoHost {
                     num_queues: d.num_queues,
                     config_len: 0,
                     name_len: 0,
+                    pci_bdf: d.pci_bdf,
+                    _pad: [0; 6],
                     name: [0; vmm_core::host::abi::MAX_DEV_NAME_LEN],
                     config_bytes: [0; vmm_core::host::abi::MAX_CONFIG_BYTES],
                 };
@@ -626,6 +641,14 @@ impl VmmHostIo for LinuxIoHost {
                 queue_index: raw.queue_index,
             }),
             IO_BRIDGE_EVENT_VIRTIO_RESET => Ok(IoBridgeEvent::VirtioReset { dev: raw.dev }),
+            IO_BRIDGE_EVENT_VIRTIO_CONFIG_WRITE => {
+                let len = (raw.tx_len as usize).min(raw.tx_bytes.len());
+                Ok(IoBridgeEvent::VirtioConfigWrite {
+                    dev: raw.dev,
+                    offset: raw.queue_index,
+                    data: raw.tx_bytes[..len].to_vec(),
+                })
+            }
             IO_BRIDGE_EVENT_POLL => Ok(IoBridgeEvent::Poll(PollEvent {
                 token: Token(raw.token),
                 is_readable: raw.is_readable != 0,

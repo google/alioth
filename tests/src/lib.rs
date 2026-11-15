@@ -24,11 +24,12 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -47,6 +48,49 @@ impl VmmMode {
             Self::Wasm => "wasm",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum L0Engine {
+    Wasm(VmmMode),
+    Chv,
+}
+
+impl L0Engine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wasm(VmmMode::Cwasm) => "wasm-cwasm",
+            Self::Wasm(VmmMode::Wasm) => "wasm-wasm",
+            Self::Chv => "chv",
+        }
+    }
+}
+
+pub fn find_chv_binary() -> PathBuf {
+    if let Some(env_p) = std::env::var_os("CHV_BIN") {
+        let p = PathBuf::from(env_p);
+        assert!(
+            p.is_file(),
+            "CHV_BIN='{}' does not point to an existing binary",
+            p.display()
+        );
+        return p;
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let cand = dir.join("cloud-hypervisor-static");
+            if cand.is_file() {
+                return cand;
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let cand = PathBuf::from(home).join("bin/cloud-hypervisor-static");
+        if cand.is_file() {
+            return cand;
+        }
+    }
+    panic!("cloud-hypervisor-static not found in PATH or ~/bin (set CHV_BIN)");
 }
 
 pub fn repo_root() -> PathBuf {
@@ -1354,6 +1398,390 @@ pub fn boot_until_autonomous_exit(
     String::from_utf8_lossy(&serial_bytes).into_owned()
 }
 
+fn open_raw_pty() -> (File, RawFd) {
+    let mut master_fd: RawFd = -1;
+    let mut slave_fd: RawFd = -1;
+    let rc = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+        )
+    };
+    assert_eq!(
+        rc,
+        0,
+        "openpty failed: {}",
+        std::io::Error::last_os_error()
+    );
+    unsafe {
+        let mut tio: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(slave_fd, &mut tio) == 0 {
+            libc::cfmakeraw(&mut tio);
+            let _ = libc::tcsetattr(slave_fd, libc::TCSANOW, &tio);
+        }
+    }
+    let master = unsafe { File::from_raw_fd(master_fd) };
+    (master, slave_fd)
+}
+
+pub struct L0LaunchSpec<'a> {
+    pub engine: L0Engine,
+    pub tmp: &'a TempTestDir,
+    pub num_cpus: u32,
+    pub mem_size: &'a str,
+    pub pvh_kernel: &'a Path,
+    pub initramfs: &'a Path,
+    pub cmd_line: &'a str,
+    pub iommu: bool,
+    pub disk_raw: Option<&'a Path>,
+    pub tap_if_name: Option<&'a str>,
+}
+
+struct L0Session {
+    engine: L0Engine,
+    desc: String,
+    log_path: PathBuf,
+    guard: ProcessGroupGuard,
+    stdin: Box<dyn Write + Send>,
+    state: Arc<(Mutex<SerialCapture>, Condvar)>,
+    stdout_handle: thread::JoinHandle<()>,
+    stderr_handle: thread::JoinHandle<Vec<u8>>,
+}
+
+impl L0Session {
+    fn spawn(spec: &L0LaunchSpec<'_>) -> Self {
+        let log_path = spec.tmp.path().join("vmm-l0.log");
+        let (child, stdin, mut stdout, mut stderr, desc): (
+            Child,
+            Box<dyn Write + Send>,
+            Box<dyn Read + Send>,
+            std::process::ChildStderr,
+            String,
+        ) = match spec.engine {
+            L0Engine::Wasm(mode) => {
+                let target_dir = ensure_vmm_artifacts();
+                let blk_section = match spec.disk_raw {
+                    Some(d) => format!("blk = [\"{}\"]\n", d.display()),
+                    None => String::from("blk = []\n"),
+                };
+                let net_section = match spec.tap_if_name {
+                    Some(tap) => format!(
+                        "\n[net.dev0]\n\
+                         mac = \"a4:a1:c2:00:00:01\"\n\
+                         mtu = 1500\n\
+                         if_name = \"{tap}\"\n"
+                    ),
+                    None => String::new(),
+                };
+                let iommu_line = if spec.iommu { "iommu = true\n" } else { "" };
+                let config_path = spec.tmp.path().join("vm-l0.toml");
+                let full_config = format!(
+                    "log_file = \"{}\"\n\
+                     log_level = \"info\"\n\
+                     pvh = \"{}\"\n\
+                     initramfs = \"{}\"\n\
+                     cmd_line = \"{}\"\n\
+                     num_cpus = {}\n\
+                     mem_size = \"{}\"\n\
+                     {iommu_line}{blk_section}{net_section}",
+                    log_path.display(),
+                    spec.pvh_kernel.display(),
+                    spec.initramfs.display(),
+                    spec.cmd_line,
+                    spec.num_cpus,
+                    spec.mem_size,
+                );
+                fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
+
+                let (io_host, io_mod, core_host, core_mod) = match mode {
+                    VmmMode::Cwasm => (
+                        target_dir.join("vmm-io-host-cwasm"),
+                        target_dir.join("vmm-io.cwasm"),
+                        target_dir.join("vmm-core-host-cwasm"),
+                        target_dir.join("vmm-core.cwasm"),
+                    ),
+                    VmmMode::Wasm => (
+                        target_dir.join("vmm-io-host-wasm"),
+                        target_dir.join("vmm-io.wasm"),
+                        target_dir.join("vmm-core-host-wasm"),
+                        target_dir.join("vmm-core.wasm"),
+                    ),
+                };
+
+                let mut cmd = Command::new(&io_host);
+                cmd.current_dir(spec.tmp.path())
+                    .arg("-c")
+                    .arg(&config_path)
+                    .arg("-w")
+                    .arg(&io_mod)
+                    .arg("--core-host")
+                    .arg(&core_host)
+                    .arg("--core-wasm")
+                    .arg(&core_mod)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .process_group(0);
+
+                let mut child = cmd
+                    .spawn()
+                    .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
+                let cin = child.stdin.take().expect("piped stdin");
+                let cout = child.stdout.take().expect("piped stdout");
+                let cerr = child.stderr.take().expect("piped stderr");
+                (
+                    child,
+                    Box::new(cin),
+                    Box::new(cout),
+                    cerr,
+                    format!("--- vm-l0.toml ---\n{full_config}"),
+                )
+            }
+            L0Engine::Chv => {
+                let chv_bin = find_chv_binary();
+                let (pty_master, slave_fd) = open_raw_pty();
+                let slave_dup = unsafe { libc::dup(slave_fd) };
+                assert!(slave_dup >= 0, "dup(slave_fd) failed");
+                let slave_in = unsafe { File::from_raw_fd(slave_fd) };
+                let slave_out = unsafe { File::from_raw_fd(slave_dup) };
+                let master_reader = pty_master.try_clone().expect("clone pty_master");
+
+                let mut cmd = Command::new(&chv_bin);
+                cmd.current_dir(spec.tmp.path())
+                    .arg("--cpus")
+                    .arg(format!("boot={},nested=on", spec.num_cpus))
+                    .arg("--memory")
+                    .arg(format!("size={},thp=on", spec.mem_size))
+                    .arg("--console")
+                    .arg("off")
+                    .arg("--serial")
+                    .arg("tty")
+                    .arg("--log-file")
+                    .arg(&log_path)
+                    .arg("--kernel")
+                    .arg(spec.pvh_kernel)
+                    .arg("--initramfs")
+                    .arg(spec.initramfs)
+                    .arg("--cmdline")
+                    .arg(spec.cmd_line);
+
+                let iommu_opt = if spec.iommu { "virtio" } else { "off" };
+                cmd.arg("--rng").arg(format!(
+                    "src=/dev/urandom,iommu={iommu_opt},pci_device_id=4"
+                ));
+                if let Some(disk) = spec.disk_raw {
+                    cmd.arg("--disk").arg(format!(
+                        "path={},image_type=raw,iommu={iommu_opt},pci_device_id=2",
+                        disk.display()
+                    ));
+                }
+                if let Some(tap) = spec.tap_if_name {
+                    cmd.arg("--net").arg(format!(
+                        "tap={tap},mac=a4:a1:c2:00:00:01,iommu={iommu_opt},pci_device_id=3"
+                    ));
+                }
+
+                let cmd_debug = format!("{cmd:?}");
+                cmd.stdin(Stdio::from(slave_in))
+                    .stdout(Stdio::from(slave_out))
+                    .stderr(Stdio::piped())
+                    .process_group(0);
+
+                let mut child = cmd
+                    .spawn()
+                    .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", chv_bin.display()));
+                let cerr = child.stderr.take().expect("piped stderr");
+                (
+                    child,
+                    Box::new(pty_master),
+                    Box::new(master_reader),
+                    cerr,
+                    format!("--- chv command ---\n{cmd_debug}"),
+                )
+            }
+        };
+
+        let guard = ProcessGroupGuard::new(child);
+        let state = Arc::new((
+            Mutex::new(SerialCapture {
+                buf: Vec::with_capacity(65536),
+                eof: false,
+            }),
+            Condvar::new(),
+        ));
+        let state_reader = Arc::clone(&state);
+        let stdout_handle = thread::spawn(move || {
+            let mut chunk = [0u8; 512];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().eof = true;
+                        cvar.notify_all();
+                        break;
+                    }
+                    Ok(n) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
+                        cvar.notify_all();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().eof = true;
+                        cvar.notify_all();
+                        break;
+                    }
+                }
+            }
+        });
+        let stderr_handle = thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stderr.read_to_end(&mut out);
+            out
+        });
+
+        Self {
+            engine: spec.engine,
+            desc,
+            log_path,
+            guard,
+            stdin,
+            state,
+            stdout_handle,
+            stderr_handle,
+        }
+    }
+
+    fn fail(mut self, suite: &str, l1_label: &str, reason: impl AsRef<str>) -> ! {
+        self.guard.kill_group();
+        self.guard.armed = false;
+        drop(self.stdin);
+        let _ = self.stdout_handle.join();
+        let stderr_bytes = self.stderr_handle.join().unwrap_or_default();
+        let serial = self.state.0.lock().unwrap().buf.clone();
+        let vmm_log = fs::read_to_string(&self.log_path).unwrap_or_default();
+        panic!(
+            "[{suite} (l0={}, l1={l1_label})] {}\n{}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            self.engine.as_str(),
+            reason.as_ref(),
+            self.desc,
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    }
+
+    fn finish_from_l1_rush(mut self, suite: &str, l1_label: &str) {
+        match self.engine {
+            L0Engine::Wasm(_) => {
+                let _ = self.stdin.write_all(b"\x01q");
+                let _ = self.stdin.flush();
+            }
+            L0Engine::Chv => {
+                let _ = self.stdin.write_all(b"exit\r");
+                let _ = self.stdin.flush();
+            }
+        }
+        let shutdown_deadline = Instant::now() + Duration::from_secs(12);
+        let exit_status = loop {
+            match self.guard.child.try_wait().expect("try_wait failed") {
+                Some(status) => {
+                    self.guard.armed = false;
+                    break Some(status);
+                }
+                None if Instant::now() >= shutdown_deadline => break None,
+                None => thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        drop(self.stdin);
+        if exit_status.is_none() {
+            self.guard.kill_group();
+            self.guard.armed = false;
+        }
+        let _ = self.stdout_handle.join();
+        let stderr_bytes = self.stderr_handle.join().unwrap_or_default();
+        let serial = self.state.0.lock().unwrap().buf.clone();
+        let vmm_log = fs::read_to_string(&self.log_path).unwrap_or_default();
+
+        let Some(status) = exit_status else {
+            panic!(
+                "[{suite} (l0={}, l1={l1_label})] L0 VM failed to exit within 12s\n{}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+                self.engine.as_str(),
+                self.desc,
+                String::from_utf8_lossy(&serial),
+                String::from_utf8_lossy(&stderr_bytes),
+            );
+        };
+        assert!(
+            status.success(),
+            "[{suite} (l0={}, l1={l1_label})] L0 VM exited with non-zero status: {status}\n{}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            self.engine.as_str(),
+            self.desc,
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    }
+}
+
+/// Boots `cloud-hypervisor-static` (with `virtio-iommu` & `nested=on`) and waits for the
+/// guest to shut itself down autonomously via ACPI S5, returning the captured serial output.
+pub fn boot_chv_until_autonomous_exit(
+    test_name: &str,
+    tmp: &TempTestDir,
+    num_cpus: u32,
+    mem_size: &str,
+    pvh_kernel: &Path,
+    initramfs: &Path,
+    cmd_line: &str,
+    timeout: Duration,
+) -> String {
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: L0Engine::Chv,
+        tmp,
+        num_cpus,
+        mem_size,
+        pvh_kernel,
+        initramfs,
+        cmd_line,
+        iommu: true,
+        disk_raw: None,
+        tap_if_name: None,
+    });
+    let deadline = Instant::now() + timeout;
+    let exit_status = loop {
+        match sess.guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                sess.guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= deadline => break None,
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let Some(status) = exit_status else {
+        sess.fail(
+            test_name,
+            "cwasm",
+            format!("CHV VM did not shut down autonomously within {timeout:?}"),
+        );
+    };
+    if !status.success() {
+        sess.fail(
+            test_name,
+            "cwasm",
+            format!("CHV VM exited with non-zero status: {status}"),
+        );
+    }
+    drop(sess.stdin);
+    let _ = sess.stdout_handle.join();
+    let _ = sess.stderr_handle.join();
+    let serial = sess.state.0.lock().unwrap().buf.clone();
+    String::from_utf8_lossy(&serial).into_owned()
+}
+
 fn wait_for_serial_from(
     state: &(Mutex<SerialCapture>, Condvar),
     start_offset: usize,
@@ -1420,7 +1848,16 @@ fn build_l2_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
 /// verifies ICMP + SSH (when `moto-tap` is active) or console `rush` commands, and verifies
 /// clean L2 -> L1 -> L0 teardown.
 pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap: bool) {
-    let target_dir = ensure_vmm_artifacts();
+    boot_nested_full_motor_os_with_l0(L0Engine::Wasm(mode), mode, tmp, has_host_tap);
+}
+
+pub fn boot_nested_full_motor_os_with_l0(
+    l0: L0Engine,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    has_host_tap: bool,
+) {
+    let _ = ensure_vmm_artifacts();
     let nested = ensure_nested_motor_os_artifacts();
 
     let l1_disk = tmp.path().join("l1-motor-os.raw");
@@ -1431,135 +1868,30 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
     fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
         .expect("failed to chmod 0600 test.key");
 
-    let net_section = if has_host_tap {
-        "\n[net.dev0]\n\
-         mac = \"a4:a1:c2:00:00:01\"\n\
-         mtu = 1500\n\
-         if_name = \"moto-tap\"\n"
-    } else {
-        ""
-    };
-
-    let config_path = tmp.path().join("vm-l0.toml");
-    let log_path = tmp.path().join("vmm-l0.log");
-    let full_config = format!(
-        "log_file = \"{}\"\n\
-         log_level = \"info\"\n\
-         pvh = \"{}\"\n\
-         initramfs = \"{}\"\n\
-         cmd_line = \"system-tty\"\n\
-         num_cpus = 4\n\
-         mem_size = \"1024M\"\n\
-         blk = [\"{}\"]\n\
-         {net_section}",
-        log_path.display(),
-        nested.l1_kloader.display(),
-        nested.l1_initrd.display(),
-        l1_disk.display(),
-    );
-    fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
-
-    let (io_host, io_mod, core_host, core_mod, l1_launch) = match mode {
-        VmmMode::Cwasm => (
-            target_dir.join("vmm-io-host-cwasm"),
-            target_dir.join("vmm-io.cwasm"),
-            target_dir.join("vmm-core-host-cwasm"),
-            target_dir.join("vmm-core.cwasm"),
+    let l1_launch = match mode {
+        VmmMode::Cwasm => {
             "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-        VmmMode::Wasm => (
-            target_dir.join("vmm-io-host-wasm"),
-            target_dir.join("vmm-io.wasm"),
-            target_dir.join("vmm-core-host-wasm"),
-            target_dir.join("vmm-core.wasm"),
-            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-    };
-
-    let mut cmd = Command::new(&io_host);
-    cmd.current_dir(tmp.path())
-        .arg("-c")
-        .arg(&config_path)
-        .arg("-w")
-        .arg(&io_mod)
-        .arg("--core-host")
-        .arg(&core_host)
-        .arg("--core-wasm")
-        .arg(&core_mod)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-
-    let mut child = cmd
-        .spawn()
-        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let mut guard = ProcessGroupGuard::new(child);
-
-    let state = Arc::new((
-        Mutex::new(SerialCapture {
-            buf: Vec::with_capacity(16384),
-            eof: false,
-        }),
-        Condvar::new(),
-    ));
-    let state_reader = Arc::clone(&state);
-    let stdout_handle = thread::spawn(move || {
-        let mut chunk = [0u8; 512];
-        loop {
-            match stdout.read(&mut chunk) {
-                Ok(0) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-                Ok(n) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
-                    cvar.notify_all();
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-            }
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r"
         }
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
-        out
-    });
-
-    let fail_with_diag = |reason: String,
-                          mut guard: ProcessGroupGuard,
-                          stdin: std::process::ChildStdin,
-                          stdout_handle: thread::JoinHandle<()>,
-                          stderr_handle: thread::JoinHandle<Vec<u8>>|
-     -> ! {
-        guard.kill_group();
-        guard.armed = false;
-        drop(stdin);
-        let _ = stdout_handle.join();
-        let stderr_bytes = stderr_handle.join().unwrap_or_default();
-        let serial = state.0.lock().unwrap().buf.clone();
-        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-        panic!(
-            "[nested_motor_os ({})] {reason}\n--- vm-l0.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-            mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
-        );
+        VmmMode::Wasm => {
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r"
+        }
     };
+
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1024M",
+        pvh_kernel: &nested.l1_kloader,
+        initramfs: &nested.l1_initrd,
+        cmd_line: "system-tty",
+        iommu: true,
+        disk_raw: Some(&l1_disk),
+        tap_if_name: has_host_tap.then_some("moto-tap"),
+    });
+    let state = Arc::clone(&sess.state);
 
     let Some(mut cursor) = wait_for_serial_from(
         &state,
@@ -1567,20 +1899,30 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
         b"Starting /system/bin/rush",
         Duration::from_secs(25),
     ) else {
-        fail_with_diag(
-            "L1 Motor OS did not boot to /system/bin/rush within 25s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_motor_os",
+            mode.as_str(),
+            "L1 Motor OS did not boot to /system/bin/rush within 25s",
         );
     };
 
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if !boot_txt.contains("vmm::virtio_iommu: active at ") {
+            sess.fail(
+                "nested_motor_os",
+                mode.as_str(),
+                "L1 kernel did not activate virtio-iommu during boot",
+            );
+        }
+    }
+
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(l1_launch.as_bytes())
         .expect("failed to write L2 launch command to L1 stdin");
-    stdin.flush().expect("failed to flush L1 stdin");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -1588,21 +1930,19 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
         b"Starting /system/bin/rush",
         Duration::from_secs(45),
     ) else {
-        fail_with_diag(
-            "L2 nested full Motor OS did not boot to /system/bin/rush within 45s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_motor_os",
+            mode.as_str(),
+            "L2 nested full Motor OS did not boot to /system/bin/rush within 45s",
         );
     };
     cursor = next_pos;
 
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(b"ping -c 2 192.168.5.1\r")
         .expect("failed to send ping command to L2 console");
-    stdin.flush().expect("failed to flush L2 ping command");
+    sess.stdin.flush().expect("failed to flush L2 ping command");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -1610,12 +1950,10 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
         b"bytes from 192.168.5.1",
         Duration::from_secs(15),
     ) else {
-        fail_with_diag(
-            "L2 failed to receive ICMP echo reply from L1 IpDevice (192.168.5.1)".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_motor_os",
+            mode.as_str(),
+            "L2 failed to receive ICMP echo reply from L1 IpDevice (192.168.5.1)",
         );
     };
     cursor = next_pos;
@@ -1641,21 +1979,17 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
         }
 
         let Some(ssh_out) = ssh_stdout else {
-            fail_with_diag(
+            sess.fail(
+                "nested_motor_os",
+                mode.as_str(),
                 format!("SSH into L2 russhd (192.168.5.2:2222 via L1 192.168.4.2:2222) failed: {last_err}"),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
             );
         };
         if !ssh_out.contains("L2_SSH_OK_Motor OS_2") {
-            fail_with_diag(
+            sess.fail(
+                "nested_motor_os",
+                mode.as_str(),
                 format!("unexpected L2 SSH command output: {ssh_out:?}"),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
             );
         }
 
@@ -1663,48 +1997,43 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
         let Some(next_pos) =
             wait_for_serial_from(&state, cursor, b"vm_exit: bye.", Duration::from_secs(15))
         else {
-            fail_with_diag(
-                "L2 did not emit 'vm_exit: bye.' after SSH shutdown".to_string(),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
+            sess.fail(
+                "nested_motor_os",
+                mode.as_str(),
+                "L2 did not emit 'vm_exit: bye.' after SSH shutdown",
             );
         };
         cursor = next_pos;
     } else {
-        stdin
+        sess.stdin
             .write_all(b"echo L2_RUSH_OK_$(uname -s)_$(nproc)\r")
             .expect("failed to send echo to L2 rush");
-        stdin.flush().expect("failed to flush L2 rush");
+        sess.stdin.flush().expect("failed to flush L2 rush");
         let Some(next_pos) = wait_for_serial_from(
             &state,
             cursor,
             b"L2_RUSH_OK_Motor OS_2",
             Duration::from_secs(15),
         ) else {
-            fail_with_diag(
-                "L2 rush echo check failed in no-host-TAP mode".to_string(),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
+            sess.fail(
+                "nested_motor_os",
+                mode.as_str(),
+                "L2 rush echo check failed in no-host-TAP mode",
             );
         };
         cursor = next_pos;
 
-        // Cleanly exit L2 back to L1 via MotorIoHost's nested escape (`Ctrl-b q`).
-        stdin
+        sess.stdin
             .write_all(b"\x02q")
             .expect("failed to send Ctrl-b q to L2");
-        stdin.flush().expect("failed to flush Ctrl-b q");
+        sess.stdin.flush().expect("failed to flush Ctrl-b q");
     }
 
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(b"echo L1_RESUMED_AFTER_L2_OK\r")
         .expect("failed to send post-L2 check to L1 rush");
-    stdin.flush().expect("failed to flush L1 rush");
+    sess.stdin.flush().expect("failed to flush L1 rush");
 
     if wait_for_serial_from(
         &state,
@@ -1714,189 +2043,51 @@ pub fn boot_nested_full_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap:
     )
     .is_none()
     {
-        fail_with_diag(
-            "L1 rush shell did not resume cleanly after L2 teardown".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
-        );
-    }
-
-    // Request clean L0 VMM shutdown (`Ctrl-a q`).
-    let _ = stdin.write_all(b"\x01q");
-    let _ = stdin.flush();
-    drop(stdin);
-
-    let shutdown_deadline = Instant::now() + Duration::from_secs(10);
-    let exit_status = loop {
-        match guard.child.try_wait().expect("try_wait failed") {
-            Some(status) => {
-                guard.armed = false;
-                break Some(status);
-            }
-            None if Instant::now() >= shutdown_deadline => break None,
-            None => thread::sleep(Duration::from_millis(20)),
-        }
-    };
-
-    if exit_status.is_none() {
-        guard.kill_group();
-        guard.armed = false;
-    }
-    let _ = stdout_handle.join();
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
-    let serial = state.0.lock().unwrap().buf.clone();
-    let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-
-    let Some(status) = exit_status else {
-        panic!(
-            "[nested_motor_os ({})] L0 VM failed to exit within 10s after Ctrl-a q\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+        sess.fail(
+            "nested_motor_os",
             mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
+            "L1 rush shell did not resume cleanly after L2 teardown",
         );
-    };
-    assert!(
-        status.success(),
-        "[nested_motor_os ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-        mode.as_str(),
-        String::from_utf8_lossy(&serial),
-        String::from_utf8_lossy(&stderr_bytes),
-    );
+    }
+
+    sess.finish_from_l1_rush("nested_motor_os", mode.as_str());
 }
 
-/// Boots L1 full Motor OS (`tests/kloader` + stock `initrd` + staged `l1-linux-initrd.raw`),
-/// launches `motor-io-host-{cwasm,wasm}` inside L1 to boot SMP Linux 6.14 + BusyBox
-/// `initramfs.cpio.gz` (`2` vCPUs, `256M` RAM), verifies interactive `ttyS0` (`COM1` IRQ 4)
-/// shell execution (`L2_LINUX_OK_Linux_2`), triggers clean ACPI S5 `poweroff -f` inside L2,
-/// and verifies clean L2 -> L1 `rush` -> L0 teardown.
 pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
-    let target_dir = ensure_vmm_artifacts();
+    boot_nested_linux_initrd_with_l0(L0Engine::Wasm(mode), mode, tmp);
+}
+
+pub fn boot_nested_linux_initrd_with_l0(l0: L0Engine, mode: VmmMode, tmp: &TempTestDir) {
+    let _ = ensure_vmm_artifacts();
     let nested = ensure_nested_linux_initrd_artifacts();
 
     let l1_disk = tmp.path().join("l1-linux-initrd.raw");
     copy_sparse_raw(&nested.l1_template_raw, &l1_disk);
 
-    let config_path = tmp.path().join("vm-l0.toml");
-    let log_path = tmp.path().join("vmm-l0.log");
-    let full_config = format!(
-        "log_file = \"{}\"\n\
-         log_level = \"info\"\n\
-         pvh = \"{}\"\n\
-         initramfs = \"{}\"\n\
-         cmd_line = \"system-tty\"\n\
-         num_cpus = 4\n\
-         mem_size = \"1024M\"\n\
-         blk = [\"{}\"]\n",
-        log_path.display(),
-        nested.l1_kloader.display(),
-        nested.l1_initrd.display(),
-        l1_disk.display(),
-    );
-    fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
-
-    let (io_host, io_mod, core_host, core_mod, l1_launch) = match mode {
-        VmmMode::Cwasm => (
-            target_dir.join("vmm-io-host-cwasm"),
-            target_dir.join("vmm-io.cwasm"),
-            target_dir.join("vmm-core-host-cwasm"),
-            target_dir.join("vmm-core.cwasm"),
+    let l1_launch = match mode {
+        VmmMode::Cwasm => {
             "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-        VmmMode::Wasm => (
-            target_dir.join("vmm-io-host-wasm"),
-            target_dir.join("vmm-io.wasm"),
-            target_dir.join("vmm-core-host-wasm"),
-            target_dir.join("vmm-core.wasm"),
-            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-    };
-
-    let mut cmd = Command::new(&io_host);
-    cmd.current_dir(tmp.path())
-        .arg("-c")
-        .arg(&config_path)
-        .arg("-w")
-        .arg(&io_mod)
-        .arg("--core-host")
-        .arg(&core_host)
-        .arg("--core-wasm")
-        .arg(&core_mod)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-
-    let mut child = cmd
-        .spawn()
-        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let mut guard = ProcessGroupGuard::new(child);
-
-    let state = Arc::new((
-        Mutex::new(SerialCapture {
-            buf: Vec::with_capacity(32768),
-            eof: false,
-        }),
-        Condvar::new(),
-    ));
-    let state_reader = Arc::clone(&state);
-    let stdout_handle = thread::spawn(move || {
-        let mut chunk = [0u8; 512];
-        loop {
-            match stdout.read(&mut chunk) {
-                Ok(0) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-                Ok(n) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
-                    cvar.notify_all();
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-            }
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r"
         }
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
-        out
-    });
-
-    let fail_with_diag = |reason: String,
-                          mut guard: ProcessGroupGuard,
-                          stdin: std::process::ChildStdin,
-                          stdout_handle: thread::JoinHandle<()>,
-                          stderr_handle: thread::JoinHandle<Vec<u8>>|
-     -> ! {
-        guard.kill_group();
-        guard.armed = false;
-        drop(stdin);
-        let _ = stdout_handle.join();
-        let stderr_bytes = stderr_handle.join().unwrap_or_default();
-        let serial = state.0.lock().unwrap().buf.clone();
-        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-        panic!(
-            "[nested_linux_initrd ({})] {reason}\n--- vm-l0.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-            mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
-        );
+        VmmMode::Wasm => {
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r"
+        }
     };
+
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1024M",
+        pvh_kernel: &nested.l1_kloader,
+        initramfs: &nested.l1_initrd,
+        cmd_line: "system-tty",
+        iommu: true,
+        disk_raw: Some(&l1_disk),
+        tap_if_name: None,
+    });
+    let state = Arc::clone(&sess.state);
 
     let Some(mut cursor) = wait_for_serial_from(
         &state,
@@ -1904,20 +2095,30 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
         b"Starting /system/bin/rush",
         Duration::from_secs(25),
     ) else {
-        fail_with_diag(
-            "L1 Motor OS did not boot to /system/bin/rush within 25s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_linux_initrd",
+            mode.as_str(),
+            "L1 Motor OS did not boot to /system/bin/rush within 25s",
         );
     };
 
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if !boot_txt.contains("vmm::virtio_iommu: active at ") {
+            sess.fail(
+                "nested_linux_initrd",
+                mode.as_str(),
+                "L1 kernel did not activate virtio-iommu during boot",
+            );
+        }
+    }
+
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(l1_launch.as_bytes())
         .expect("failed to write L2 Linux launch command to L1 stdin");
-    stdin.flush().expect("failed to flush L1 stdin");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -1925,21 +2126,19 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
         b"BusyBox initramfs booted successfully in WASM VMM!",
         Duration::from_secs(45),
     ) else {
-        fail_with_diag(
-            "L2 Linux 6.14 + initramfs did not reach BusyBox banner within 45s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_linux_initrd",
+            mode.as_str(),
+            "L2 Linux 6.14 + initramfs did not reach BusyBox banner within 45s",
         );
     };
     cursor = next_pos;
 
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(b"echo L2_LINUX_OK_$(uname -s)_$(nproc)\n")
         .expect("failed to send command to L2 BusyBox shell");
-    stdin.flush().expect("failed to flush L2 BusyBox command");
+    sess.stdin.flush().expect("failed to flush L2 BusyBox command");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -1947,20 +2146,18 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
         b"L2_LINUX_OK_Linux_2",
         Duration::from_secs(15),
     ) else {
-        fail_with_diag(
-            "L2 BusyBox shell command over ttyS0 (COM1 IRQ 4) failed".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_linux_initrd",
+            mode.as_str(),
+            "L2 BusyBox shell command over ttyS0 (COM1 IRQ 4) failed",
         );
     };
     cursor = next_pos;
 
-    stdin
+    sess.stdin
         .write_all(b"poweroff -f\n")
         .expect("failed to send poweroff -f to L2 BusyBox shell");
-    stdin.flush().expect("failed to flush poweroff -f");
+    sess.stdin.flush().expect("failed to flush poweroff -f");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -1968,21 +2165,19 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
         b"reboot: Power down",
         Duration::from_secs(15),
     ) else {
-        fail_with_diag(
-            "L2 Linux did not emit 'reboot: Power down' on poweroff -f".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_linux_initrd",
+            mode.as_str(),
+            "L2 Linux did not emit 'reboot: Power down' on poweroff -f",
         );
     };
     cursor = next_pos;
 
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(b"echo L1_RESUMED_AFTER_LINUX_OK\r")
         .expect("failed to send post-L2 check to L1 rush");
-    stdin.flush().expect("failed to flush L1 rush");
+    sess.stdin.flush().expect("failed to flush L1 rush");
 
     if wait_for_serial_from(
         &state,
@@ -1992,55 +2187,14 @@ pub fn boot_nested_linux_initrd(mode: VmmMode, tmp: &TempTestDir) {
     )
     .is_none()
     {
-        fail_with_diag(
-            "L1 rush shell did not resume cleanly after L2 Linux ACPI S5 shutdown".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
-        );
-    }
-
-    let _ = stdin.write_all(b"\x01q");
-    let _ = stdin.flush();
-    drop(stdin);
-
-    let shutdown_deadline = Instant::now() + Duration::from_secs(10);
-    let exit_status = loop {
-        match guard.child.try_wait().expect("try_wait failed") {
-            Some(status) => {
-                guard.armed = false;
-                break Some(status);
-            }
-            None if Instant::now() >= shutdown_deadline => break None,
-            None => thread::sleep(Duration::from_millis(20)),
-        }
-    };
-
-    if exit_status.is_none() {
-        guard.kill_group();
-        guard.armed = false;
-    }
-    let _ = stdout_handle.join();
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
-    let serial = state.0.lock().unwrap().buf.clone();
-    let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-
-    let Some(status) = exit_status else {
-        panic!(
-            "[nested_linux_initrd ({})] L0 VM failed to exit within 10s after Ctrl-a q\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+        sess.fail(
+            "nested_linux_initrd",
             mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
+            "L1 rush shell did not resume cleanly after L2 Linux ACPI S5 shutdown",
         );
-    };
-    assert!(
-        status.success(),
-        "[nested_linux_initrd ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-        mode.as_str(),
-        String::from_utf8_lossy(&serial),
-        String::from_utf8_lossy(&stderr_bytes),
-    );
+    }
+
+    sess.finish_from_l1_rush("nested_linux_initrd", mode.as_str());
 }
 
 fn build_l2_alpine_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
@@ -2081,7 +2235,16 @@ fn build_l2_alpine_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
 /// (`root@192.168.8.2:22` via L1 `russhd`) + clean `poweroff` (`ACPI S5`), and confirms clean
 /// L2 -> L1 `rush` -> L0 teardown.
 pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: bool) {
-    let target_dir = ensure_vmm_artifacts();
+    boot_nested_full_alpine_with_l0(L0Engine::Wasm(mode), mode, tmp, has_host_tap);
+}
+
+pub fn boot_nested_full_alpine_with_l0(
+    l0: L0Engine,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    has_host_tap: bool,
+) {
+    let _ = ensure_vmm_artifacts();
     let nested = ensure_nested_alpine_artifacts();
 
     let l1_disk = tmp.path().join("l1-alpine.raw");
@@ -2092,135 +2255,30 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
     fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
         .expect("failed to chmod 0600 test.key");
 
-    let net_section = if has_host_tap {
-        "\n[net.dev0]\n\
-         mac = \"a4:a1:c2:00:00:01\"\n\
-         mtu = 1500\n\
-         if_name = \"moto-tap\"\n"
-    } else {
-        ""
-    };
-
-    let config_path = tmp.path().join("vm-l0.toml");
-    let log_path = tmp.path().join("vmm-l0.log");
-    let full_config = format!(
-        "log_file = \"{}\"\n\
-         log_level = \"info\"\n\
-         pvh = \"{}\"\n\
-         initramfs = \"{}\"\n\
-         cmd_line = \"system-tty\"\n\
-         num_cpus = 4\n\
-         mem_size = \"1536M\"\n\
-         blk = [\"{}\"]\n\
-         {net_section}",
-        log_path.display(),
-        nested.l1_kloader.display(),
-        nested.l1_initrd.display(),
-        l1_disk.display(),
-    );
-    fs::write(&config_path, &full_config).expect("failed to write L0 vm.toml");
-
-    let (io_host, io_mod, core_host, core_mod, l1_launch) = match mode {
-        VmmMode::Cwasm => (
-            target_dir.join("vmm-io-host-cwasm"),
-            target_dir.join("vmm-io.cwasm"),
-            target_dir.join("vmm-core-host-cwasm"),
-            target_dir.join("vmm-core.cwasm"),
+    let l1_launch = match mode {
+        VmmMode::Cwasm => {
             "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-        VmmMode::Wasm => (
-            target_dir.join("vmm-io-host-wasm"),
-            target_dir.join("vmm-io.wasm"),
-            target_dir.join("vmm-core-host-wasm"),
-            target_dir.join("vmm-core.wasm"),
-            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
-             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r",
-        ),
-    };
-
-    let mut cmd = Command::new(&io_host);
-    cmd.current_dir(tmp.path())
-        .arg("-c")
-        .arg(&config_path)
-        .arg("-w")
-        .arg(&io_mod)
-        .arg("--core-host")
-        .arg(&core_host)
-        .arg("--core-wasm")
-        .arg(&core_mod)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-
-    let mut child = cmd
-        .spawn()
-        .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let mut guard = ProcessGroupGuard::new(child);
-
-    let state = Arc::new((
-        Mutex::new(SerialCapture {
-            buf: Vec::with_capacity(65536),
-            eof: false,
-        }),
-        Condvar::new(),
-    ));
-    let state_reader = Arc::clone(&state);
-    let stdout_handle = thread::spawn(move || {
-        let mut chunk = [0u8; 512];
-        loop {
-            match stdout.read(&mut chunk) {
-                Ok(0) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-                Ok(n) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
-                    cvar.notify_all();
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    let (lock, cvar) = &*state_reader;
-                    lock.lock().unwrap().eof = true;
-                    cvar.notify_all();
-                    break;
-                }
-            }
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r"
         }
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stderr.read_to_end(&mut out);
-        out
-    });
-
-    let fail_with_diag = |reason: String,
-                          mut guard: ProcessGroupGuard,
-                          stdin: std::process::ChildStdin,
-                          stdout_handle: thread::JoinHandle<()>,
-                          stderr_handle: thread::JoinHandle<Vec<u8>>|
-     -> ! {
-        guard.kill_group();
-        guard.armed = false;
-        drop(stdin);
-        let _ = stdout_handle.join();
-        let stderr_bytes = stderr_handle.join().unwrap_or_default();
-        let serial = state.0.lock().unwrap().buf.clone();
-        let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-        panic!(
-            "[nested_alpine ({})] {reason}\n--- vm-l0.toml ---\n{full_config}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-            mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
-        );
+        VmmMode::Wasm => {
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r"
+        }
     };
+
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1536M",
+        pvh_kernel: &nested.l1_kloader,
+        initramfs: &nested.l1_initrd,
+        cmd_line: "system-tty",
+        iommu: true,
+        disk_raw: Some(&l1_disk),
+        tap_if_name: has_host_tap.then_some("moto-tap"),
+    });
+    let state = Arc::clone(&sess.state);
 
     let Some(mut cursor) = wait_for_serial_from(
         &state,
@@ -2228,20 +2286,30 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
         b"Starting /system/bin/rush",
         Duration::from_secs(25),
     ) else {
-        fail_with_diag(
-            "L1 Motor OS did not boot to /system/bin/rush within 25s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_alpine",
+            mode.as_str(),
+            "L1 Motor OS did not boot to /system/bin/rush within 25s",
         );
     };
 
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if !boot_txt.contains("vmm::virtio_iommu: active at ") {
+            sess.fail(
+                "nested_alpine",
+                mode.as_str(),
+                "L1 kernel did not activate virtio-iommu during boot",
+            );
+        }
+    }
+
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(l1_launch.as_bytes())
         .expect("failed to write L2 Alpine launch command to L1 stdin");
-    stdin.flush().expect("failed to flush L1 stdin");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
 
     let Some(next_pos) = wait_for_serial_from(
         &state,
@@ -2249,12 +2317,10 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
         b"alpine-vm login:",
         Duration::from_secs(60),
     ) else {
-        fail_with_diag(
-            "L2 nested full Alpine Linux did not reach 'alpine-vm login:' within 60s".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
+        sess.fail(
+            "nested_alpine",
+            mode.as_str(),
+            "L2 nested full Alpine Linux did not reach 'alpine-vm login:' within 60s",
         );
     };
     cursor = next_pos;
@@ -2281,25 +2347,21 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
         }
 
         let Some(ssh_out) = ssh_stdout else {
-            fail_with_diag(
+            sess.fail(
+                "nested_alpine",
+                mode.as_str(),
                 format!("SSH into L2 Alpine sshd (root@192.168.8.2:22 via L1 192.168.4.2:2222) failed: {last_err}"),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
             );
         };
         if !ssh_out.contains("bytes from 192.168.8.1")
             || !ssh_out.contains("L2_ALPINE_SSH_OK_Linux_2")
         {
-            fail_with_diag(
+            sess.fail(
+                "nested_alpine",
+                mode.as_str(),
                 format!("unexpected L2 Alpine SSH/ping output: {ssh_out:?}"),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
             );
-        }
+        };
 
         let _ = build_l2_alpine_ssh_command(&key_copy, "poweroff").status();
         let Some(next_pos) = wait_for_serial_from(
@@ -2308,27 +2370,25 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
             b"reboot: Power down",
             Duration::from_secs(20),
         ) else {
-            fail_with_diag(
-                "L2 Alpine did not emit 'reboot: Power down' after SSH poweroff".to_string(),
-                guard,
-                stdin,
-                stdout_handle,
-                stderr_handle,
+            sess.fail(
+                "nested_alpine",
+                mode.as_str(),
+                "L2 Alpine did not emit 'reboot: Power down' after SSH poweroff",
             );
         };
         cursor = next_pos;
     } else {
-        stdin
+        sess.stdin
             .write_all(b"\x02q")
             .expect("failed to send Ctrl-b q to L2 Alpine");
-        stdin.flush().expect("failed to flush Ctrl-b q");
+        sess.stdin.flush().expect("failed to flush Ctrl-b q");
     }
 
     thread::sleep(Duration::from_millis(300));
-    stdin
+    sess.stdin
         .write_all(b"echo L1_RESUMED_AFTER_ALPINE_OK\r")
         .expect("failed to send post-L2 check to L1 rush");
-    stdin.flush().expect("failed to flush L1 rush");
+    sess.stdin.flush().expect("failed to flush L1 rush");
 
     if wait_for_serial_from(
         &state,
@@ -2338,55 +2398,14 @@ pub fn boot_nested_full_alpine(mode: VmmMode, tmp: &TempTestDir, has_host_tap: b
     )
     .is_none()
     {
-        fail_with_diag(
-            "L1 rush shell did not resume cleanly after L2 Alpine teardown".to_string(),
-            guard,
-            stdin,
-            stdout_handle,
-            stderr_handle,
-        );
-    }
-
-    let _ = stdin.write_all(b"\x01q");
-    let _ = stdin.flush();
-    drop(stdin);
-
-    let shutdown_deadline = Instant::now() + Duration::from_secs(10);
-    let exit_status = loop {
-        match guard.child.try_wait().expect("try_wait failed") {
-            Some(status) => {
-                guard.armed = false;
-                break Some(status);
-            }
-            None if Instant::now() >= shutdown_deadline => break None,
-            None => thread::sleep(Duration::from_millis(20)),
-        }
-    };
-
-    if exit_status.is_none() {
-        guard.kill_group();
-        guard.armed = false;
-    }
-    let _ = stdout_handle.join();
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
-    let serial = state.0.lock().unwrap().buf.clone();
-    let vmm_log = fs::read_to_string(&log_path).unwrap_or_default();
-
-    let Some(status) = exit_status else {
-        panic!(
-            "[nested_alpine ({})] L0 VM failed to exit within 10s after Ctrl-a q\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+        sess.fail(
+            "nested_alpine",
             mode.as_str(),
-            String::from_utf8_lossy(&serial),
-            String::from_utf8_lossy(&stderr_bytes),
+            "L1 rush shell did not resume cleanly after L2 Alpine teardown",
         );
-    };
-    assert!(
-        status.success(),
-        "[nested_alpine ({})] L0 VM exited with non-zero status: {status}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
-        mode.as_str(),
-        String::from_utf8_lossy(&serial),
-        String::from_utf8_lossy(&stderr_bytes),
-    );
+    }
+
+    sess.finish_from_l1_rush("nested_alpine", mode.as_str());
 }
 
 #[cfg(test)]

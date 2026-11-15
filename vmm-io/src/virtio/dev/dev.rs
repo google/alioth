@@ -24,6 +24,7 @@ use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::{DeviceId, IrqSender, Result, VirtioFeature};
 
 pub mod blk;
+pub mod iommu;
 pub mod net;
 
 pub trait Virtio: Debug + Send + Sync + 'static {
@@ -33,6 +34,7 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn config_bytes(&self) -> Vec<u8>;
     fn feature(&self) -> u64;
     fn activate(&mut self, token: Token, feature: u64) -> Result<()>;
+    fn write_config(&mut self, _offset: u16, _data: &[u8]) {}
     fn handle_queue(
         &mut self,
         index: u16,
@@ -73,6 +75,7 @@ pub trait RuntimeVirtioDevice: Debug + Send + Sync + 'static {
     fn spec(&self) -> VirtioDeviceSpec;
     fn start(&self, driver_features: u64, queues: &[VirtioQueueConfig]) -> Result<()>;
     fn notify_queue(&self, queue_index: u16) -> Result<()>;
+    fn write_config(&self, offset: u16, data: &[u8]);
     fn reset(&self) -> Result<()>;
     fn handle_poll_event(&self, event: &PollEvent) -> Result<()>;
 }
@@ -108,15 +111,34 @@ where
         dev: D,
         host: Arc<dyn IoHost>,
     ) -> Self {
+        let memory: Arc<dyn GuestMemAccess> = host.clone();
+        Self::new_with_memory(dev_handle, name, token, 0, dev, host, memory)
+    }
+
+    pub fn new_with_memory(
+        dev_handle: Handle,
+        name: Arc<String>,
+        token: Token,
+        pci_bdf: u16,
+        dev: D,
+        host: Arc<dyn IoHost>,
+        memory: Arc<dyn GuestMemAccess>,
+    ) -> Self {
+        let device_features = if matches!(dev.device_id(), DeviceId::Iommu) {
+            (dev.feature() | VirtioFeature::SUPPORTED.bits())
+                & !VirtioFeature::ACCESS_PLATFORM.bits()
+        } else {
+            dev.feature() | VirtioFeature::SUPPORTED.bits()
+        };
         let spec = VirtioDeviceSpec {
             dev: dev_handle,
             name: (*name).clone(),
             device_id: dev.device_id() as u16,
-            device_features: dev.feature() | VirtioFeature::SUPPORTED.bits(),
+            pci_bdf,
+            device_features,
             num_queues: dev.num_queues(),
             config_bytes: dev.config_bytes(),
         };
-        let memory: Arc<dyn GuestMemAccess> = host.clone();
         let irq_sender = Arc::new(BridgeIrqSender {
             dev: dev_handle,
             host,
@@ -188,6 +210,11 @@ where
             return Ok(());
         };
         dev.handle_queue(q_index, qs, irq_sender.as_ref())
+    }
+
+    fn write_config(&self, offset: u16, data: &[u8]) {
+        let mut state = self.state.lock();
+        state.dev.write_config(offset, data);
     }
 
     fn reset(&self) -> Result<()> {
