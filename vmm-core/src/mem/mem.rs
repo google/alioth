@@ -21,7 +21,7 @@ use core::fmt::{self, Debug, Display, Formatter};
 
 use crate::sync::Mutex;
 
-use crate::host::{self, VmEntry, VmmHostCore};
+use crate::host::{self, MemProt, VmEntry, VmmHostCore};
 use crate::hw::layout::{MEM_64_START, MMIO_32_END, MMIO_32_START, PAGE_SIZE};
 
 pub mod addressable;
@@ -114,6 +114,9 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 #[derive(Debug)]
 pub enum MemRange {
     Mapped(ArcMemPages),
+    /// Direct Stage-2 MMIO BAR mapping (`gpa_map` with `READ | WRITE`), kept strictly out of
+    /// `RamBus` guest-RAM lookups.
+    DevMem(ArcMemPages),
     Emulated(MmioRange),
     Span(usize),
 }
@@ -121,7 +124,7 @@ pub enum MemRange {
 impl MemRange {
     pub fn size(&self) -> usize {
         match self {
-            MemRange::Mapped(pages) => pages.size(),
+            MemRange::Mapped(pages) | MemRange::DevMem(pages) => pages.size(),
             MemRange::Emulated(range) => range.size(),
             MemRange::Span(size) => *size,
         }
@@ -291,6 +294,13 @@ impl Memory {
             match range {
                 MemRange::Emulated(r) => self.mmio_bus.add(addr + offset, r.clone())?,
                 MemRange::Mapped(r) => self.ram_bus.add(addr + offset, r.clone())?,
+                MemRange::DevMem(r) => self.ram_bus.hv().gpa_map(
+                    addr + offset,
+                    r.size() as u64,
+                    r.mem_obj_id(),
+                    r.mem_obj_offset(),
+                    MemProt::READ | MemProt::WRITE,
+                )?,
                 MemRange::Span(_) => {}
             }
             offset += range.size() as u64;
@@ -311,6 +321,11 @@ impl Memory {
                 }
                 MemRange::Mapped(_) => {
                     self.ram_bus.remove(addr + offset)?;
+                }
+                MemRange::DevMem(r) => {
+                    self.ram_bus
+                        .hv()
+                        .gpa_unmap(addr + offset, r.size() as u64)?;
                 }
                 MemRange::Span(_) => {}
             };
@@ -366,15 +381,23 @@ impl Memory {
 
     pub fn add_io_region(&self, port: Option<u16>, region: Arc<IoRegion>) -> Result<u16, Error> {
         let mut regions = self.io_regions.lock();
-        // TODO: allocate port dynamically
-        regions.add(port.unwrap() as u64, region.clone())?;
+        let assigned_port = match port {
+            Some(p) => {
+                regions.add(p as u64, region.clone())?;
+                p
+            }
+            None => {
+                let align = region.range.size().next_power_of_two().max(4) as u64;
+                regions.add_within(0x1000, 0xffff, align, region.clone())? as u16
+            }
+        };
         self.io_bus
-            .add(port.unwrap() as u64, region.range.clone())?;
+            .add(assigned_port as u64, region.range.clone())?;
         let callbacks = region.callbacks.lock();
         for callback in callbacks.iter() {
-            callback.mapped(port.unwrap() as u64)?;
+            callback.mapped(assigned_port as u64)?;
         }
-        Ok(port.unwrap())
+        Ok(assigned_port)
     }
 
     fn unmap_io_region(&self, port: u16, region: &IoRegion) -> Result<()> {

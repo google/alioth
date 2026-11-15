@@ -1,21 +1,22 @@
 // Ring-0 implementations of `VmmHostCore` (`MotorHvCore`) and `VmmCoreBridge` (`MotorCoreBridge`),
 // plus `#![no_std]` Wasmtime host-import registration with tiny (<128 B) stack frames.
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use vmm_core::host::abi::{
     spin_lock, spin_unlock, BridgeShm, CoreToIoEntry, IoToCoreEntry, RawCpuid, RawDoorbellSpec,
-    RawRegEntry, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
-    CORE_MSG_SHUTDOWN, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS,
+    RawPciBarInfo, RawRegEntry, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec,
+    ShmVirtioQueueConfig, CORE_MSG_SHUTDOWN, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS,
 };
 use vmm_core::host::{
-    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, RegId,
-    RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
+    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, PciBarInfo,
+    PciDevId, RegId, RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
 };
 use wasmtime::{Caller, Linker, SharedMemory};
 use zerocopy::{AsBytes, FromBytes};
@@ -28,6 +29,7 @@ use crate::util::SpinLock;
 use super::arch::{ArchSharedTables, ArchVcpu};
 use super::doorbell::DoorbellTable;
 use super::lapic::{IpiAction, VcpuLapic};
+use super::pci_host::PciHostManager;
 use super::pvclock::PvClockState;
 use super::stage2::Stage2Mmu;
 
@@ -50,25 +52,42 @@ impl VcpuSlot {
 }
 
 pub struct MotorHvCore {
+    pub pci: PciHostManager,
     pub arch_tables: ArchSharedTables,
     pub stage2: Stage2Mmu,
     pub doorbells: DoorbellTable,
     pub pvclock: PvClockState,
     pub vcpus: SpinLock<Vec<Arc<VcpuSlot>>>,
+    vcpu_ptrs: Box<[AtomicUsize; MAX_VM_VCPUS]>,
+    vcpu_count: AtomicU32,
     pub vm_obj: SpinLock<Weak<SysObject>>,
     pub shutting_down: AtomicBool,
+}
+
+impl Drop for MotorHvCore {
+    fn drop(&mut self) {
+        self.pci.teardown_all(&self.stage2);
+    }
 }
 
 impl MotorHvCore {
     pub fn new(shared_ram_pages: Vec<PinnedUserPage>, shm_ptr: u64) -> HvResult<Self> {
         let arch_tables = ArchSharedTables::new()?;
         let stage2 = Stage2Mmu::new(shared_ram_pages, shm_ptr)?;
+        let vcpu_ptrs: Box<[AtomicUsize; MAX_VM_VCPUS]> = (0..MAX_VM_VCPUS)
+            .map(|_| AtomicUsize::new(0))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
         Ok(Self {
+            pci: PciHostManager::new(),
             arch_tables,
             stage2,
             doorbells: DoorbellTable::new(),
             pvclock: PvClockState::new(),
             vcpus: SpinLock::new(Vec::new()),
+            vcpu_ptrs,
+            vcpu_count: AtomicU32::new(0),
             vm_obj: SpinLock::new(Weak::new()),
             shutting_down: AtomicBool::new(false),
         })
@@ -95,7 +114,10 @@ impl MotorHvCore {
         while vcpus.len() <= idx {
             let next_id = vcpus.len() as u32;
             let slot = Arc::new(VcpuSlot::new(next_id, &self.arch_tables, npt_root)?);
+            let raw_ptr = Arc::as_ptr(&slot) as usize;
             vcpus.push(slot);
+            self.vcpu_ptrs[next_id as usize].store(raw_ptr, Ordering::Release);
+            self.vcpu_count.store(next_id + 1, Ordering::Release);
         }
         Ok(vcpus[idx].clone())
     }
@@ -161,6 +183,42 @@ impl MotorHvCore {
             }
             self.wake_vm_obj();
         }
+    }
+
+    /// Lock-free, allocation-free MSI delivery invoked from Ring-0 hardware ISRs (`IF == 0`).
+    pub fn inject_msi_from_irq(&self, addr: u64, data: u32) -> bool {
+        let vector = (data & 0xff) as u8;
+        if vector < 16 {
+            return false;
+        }
+        let dest_mode_logical = ((addr >> 2) & 1) != 0;
+        let dest = (((addr >> 32) as u32) << 8) | (((addr >> 12) & 0xff) as u32);
+        let count = (self.vcpu_count.load(Ordering::Acquire) as usize).min(MAX_VM_VCPUS);
+        let mut woke = false;
+
+        for idx in 0..count {
+            let raw = self.vcpu_ptrs[idx].load(Ordering::Acquire);
+            if raw == 0 {
+                continue;
+            }
+            let slot = unsafe { &*(raw as *const VcpuSlot) };
+            let id = slot.vcpu_id;
+            let matched = if !dest_mode_logical {
+                dest == 0xff || dest == 0xffff_ffff || dest == id
+            } else {
+                let cluster = dest >> 16;
+                let logical_mask = dest & 0xffff;
+                if cluster == 0 && (dest & !0xff) == 0 {
+                    (logical_mask & (1u32 << (id & 0xf))) != 0
+                } else {
+                    cluster == (id >> 4) && (logical_mask & (1u32 << (id & 0xf))) != 0
+                }
+            };
+            if matched && slot.lapic.set_irr_from_irq(vector) {
+                woke = true;
+            }
+        }
+        woke
     }
 }
 
@@ -457,6 +515,50 @@ impl VmmHostCore for MotorHvCore {
 
     fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()> {
         self.doorbells.unregister(space, addr, size)
+    }
+
+    fn pci_attach(&self, host_bdf: u16) -> HvResult<PciDevId> {
+        self.pci.attach(&self.stage2, host_bdf)
+    }
+
+    fn pci_detach(&self, dev: PciDevId) -> HvResult<()> {
+        self.pci.detach(&self.stage2, dev)
+    }
+
+    fn pci_reset(&self, dev: PciDevId) -> HvResult<()> {
+        self.pci.reset(dev)
+    }
+
+    fn pci_read_config(&self, dev: PciDevId, offset: u16, size: u8) -> HvResult<u32> {
+        self.pci.read_config(dev, offset, size)
+    }
+
+    fn pci_write_config(&self, dev: PciDevId, offset: u16, size: u8, val: u32) -> HvResult<()> {
+        self.pci.write_config(dev, offset, size, val)
+    }
+
+    fn pci_bar_info(&self, dev: PciDevId, bar_idx: u8) -> HvResult<PciBarInfo> {
+        self.pci.bar_info(dev, bar_idx)
+    }
+
+    fn pci_bar_io(
+        &self,
+        dev: PciDevId,
+        bar_idx: u8,
+        offset: u64,
+        size: u8,
+        write: Option<u64>,
+    ) -> HvResult<u64> {
+        self.pci.bar_io(dev, bar_idx, offset, size, write)
+    }
+
+    fn pci_configure_msix(
+        &self,
+        dev: PciDevId,
+        entry_idx: u16,
+        guest_msi: Option<(u64, u32)>,
+    ) -> HvResult<()> {
+        self.pci.configure_msix(dev, entry_idx, guest_msi)
     }
 }
 
@@ -941,6 +1043,137 @@ where
                 return HvError::InvalidParam.code();
             }
             unit_rc(ctx.host.unregister_doorbell(io_space, addr, size as u8))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_attach",
+        move |mut caller: Caller<'_, T>, host_bdf: u32| -> i32 {
+            if host_bdf > u16::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            match get_ctx(caller.data_mut()).host.pci_attach(host_bdf as u16) {
+                Ok(id) => id as i32,
+                Err(e) => e.code(),
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_detach",
+        move |mut caller: Caller<'_, T>, dev: u32| -> i32 {
+            unit_rc(get_ctx(caller.data_mut()).host.pci_detach(dev))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_reset",
+        move |mut caller: Caller<'_, T>, dev: u32| -> i32 {
+            unit_rc(get_ctx(caller.data_mut()).host.pci_reset(dev))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_read_config",
+        move |mut caller: Caller<'_, T>, dev: u32, offset: u32, size: u32, out_ptr: u32| -> i32 {
+            if offset > u16::MAX as u32 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.pci_read_config(dev, offset as u16, size as u8) {
+                Ok(v) => v,
+                Err(e) => return e.code(),
+            };
+            unit_rc(write_struct(&ctx.memory, out_ptr, &val))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_write_config",
+        move |mut caller: Caller<'_, T>, dev: u32, offset: u32, size: u32, val: u32| -> i32 {
+            if offset > u16::MAX as u32 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            unit_rc(
+                get_ctx(caller.data_mut())
+                    .host
+                    .pci_write_config(dev, offset as u16, size as u8, val),
+            )
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_bar_info",
+        move |mut caller: Caller<'_, T>, dev: u32, bar_idx: u32, out_ptr: u32| -> i32 {
+            if bar_idx >= 6 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let info = match ctx.host.pci_bar_info(dev, bar_idx as u8) {
+                Ok(i) => RawPciBarInfo::from(i),
+                Err(e) => return e.code(),
+            };
+            unit_rc(write_struct(&ctx.memory, out_ptr, &info))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_bar_io",
+        move |mut caller: Caller<'_, T>,
+              dev: u32,
+              bar_idx: u32,
+              offset: u64,
+              size: u32,
+              is_write: u32,
+              val: u64,
+              out_ptr: u32|
+              -> i32 {
+            if bar_idx >= 6 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let write = (is_write != 0).then_some(val);
+            let res = match ctx
+                .host
+                .pci_bar_io(dev, bar_idx as u8, offset, size as u8, write)
+            {
+                Ok(v) => v,
+                Err(e) => return e.code(),
+            };
+            if is_write == 0 {
+                unit_rc(write_struct(&ctx.memory, out_ptr, &res))
+            } else {
+                0
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_configure_msix",
+        move |mut caller: Caller<'_, T>,
+              dev: u32,
+              entry_idx: u32,
+              enabled: u32,
+              addr: u64,
+              data: u32|
+              -> i32 {
+            if entry_idx > u16::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let msi = (enabled != 0).then_some((addr, data));
+            unit_rc(
+                get_ctx(caller.data_mut())
+                    .host
+                    .pci_configure_msix(dev, entry_idx as u16, msi),
+            )
         },
     )?;
 

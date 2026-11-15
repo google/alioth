@@ -340,6 +340,70 @@ pub fn probe_mmio_bar(bdf: u16, bar_idx: u8) -> Option<(u64, u64, bool, bool)> {
     }
 }
 
+/// Probe a physical PCI I/O-space BAR (`BAR & 1 == 1`) while temporarily masking
+/// `MEM | IO` in `PCI_COMMAND`. Returns `Some((base_port, size))`.
+pub fn probe_pio_bar(bdf: u16, bar_idx: u8) -> Option<(u16, u64)> {
+    if bar_idx >= 6 {
+        return None;
+    }
+    let _g = PCI_CFG_LOCK.lock(line!());
+    let bar_off = 0x10 + (bar_idx << 2);
+    unsafe {
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, 0x04));
+        let orig_cmd = raw_in16(PCI_CONFIG_DATA);
+
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, bar_off));
+        let orig = raw_in32(PCI_CONFIG_DATA);
+        if (orig & 1) == 0 {
+            return None;
+        }
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, 0x04));
+        raw_out16(PCI_CONFIG_DATA, orig_cmd & !0x3);
+
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, bar_off));
+        raw_out32(PCI_CONFIG_DATA, 0xffff_ffff);
+        let mask = (raw_in32(PCI_CONFIG_DATA) & 0x0000_fffc) | 0xffff_0000;
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, bar_off));
+        raw_out32(PCI_CONFIG_DATA, orig);
+
+        raw_out32(PCI_CONFIG_ADDR, make_cfg_addr(bdf, 0x04));
+        raw_out16(PCI_CONFIG_DATA, orig_cmd);
+
+        if mask == 0xffff_0000 {
+            return None;
+        }
+        let size = ((!mask).wrapping_add(1)) as u64;
+        let port = (orig & 0xfffc) as u16;
+        if port == 0 || size == 0 {
+            return None;
+        }
+        Some((port, size))
+    }
+}
+
+pub fn host_pio_read(port: u16, size: u8) -> Option<u64> {
+    unsafe {
+        match size {
+            1 => Some(raw_in8(port) as u64),
+            2 => Some(raw_in16(port) as u64),
+            4 => Some(raw_in32(port) as u64),
+            _ => None,
+        }
+    }
+}
+
+pub fn host_pio_write(port: u16, size: u8, val: u64) -> bool {
+    unsafe {
+        match size {
+            1 => raw_out8(port, val as u8),
+            2 => raw_out16(port, val as u16),
+            4 => raw_out32(port, val as u32),
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Lock-free user virtual byte read over `upt_phys` while `IF = 0` inside `#GP`.
 ///
 /// Safe against concurrent page reclamation because `upt_phys` is the active

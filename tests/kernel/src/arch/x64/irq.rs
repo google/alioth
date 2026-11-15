@@ -28,6 +28,8 @@ const IRQ_SERIAL: u8 = 36;
 
 pub const IRQ_CUSTOM_START: u8 = 64; // config().custom_irqs in total.
 const MAX_CUSTOM_IRQS: u8 = 128;
+pub const IRQ_VMM_START: u8 = 80;
+pub const IRQ_VMM_END: u8 = 111;
 
 const IRQ_APIC_TIMER: u8 = IRQ_CUSTOM_START + MAX_CUSTOM_IRQS; // 192 = 0xc0.
 const IRQ_WAKEUP: u8 = IRQ_APIC_TIMER + 1; // 193 = 0xc1.
@@ -335,7 +337,46 @@ pub fn init() {
                 irq_handler_79 as *const () as usize as u64,
             ));
 
-            for irq in 64..80 {
+            // Ring-0 VMM physical MSI-X -> guest vLAPIC fast-path vectors (80..=111).
+            let vmm_handlers: [unsafe extern "C" fn(); 32] = [
+                irq_handler_80,
+                irq_handler_81,
+                irq_handler_82,
+                irq_handler_83,
+                irq_handler_84,
+                irq_handler_85,
+                irq_handler_86,
+                irq_handler_87,
+                irq_handler_88,
+                irq_handler_89,
+                irq_handler_90,
+                irq_handler_91,
+                irq_handler_92,
+                irq_handler_93,
+                irq_handler_94,
+                irq_handler_95,
+                irq_handler_96,
+                irq_handler_97,
+                irq_handler_98,
+                irq_handler_99,
+                irq_handler_100,
+                irq_handler_101,
+                irq_handler_102,
+                irq_handler_103,
+                irq_handler_104,
+                irq_handler_105,
+                irq_handler_106,
+                irq_handler_107,
+                irq_handler_108,
+                irq_handler_109,
+                irq_handler_110,
+                irq_handler_111,
+            ];
+            for (idx, h) in vmm_handlers.iter().enumerate() {
+                idt[80 + idx].set_handler_addr(x86_64::VirtAddr::new(*h as *const () as usize as u64));
+            }
+
+            for irq in 64..112 {
                 let entry = &mut idt[irq];
                 entry
                     .set_handler_addr(entry.handler_addr())
@@ -546,7 +587,7 @@ unsafe extern "C" fn gpf_handler_asm() {
 const fn is_external_irq(irq_num: u8) -> bool {
     matches!(
         irq_num,
-        IRQ_SERIAL | 64..=79 | IRQ_APIC_TIMER | IRQ_WAKEUP | IRQ_TLB_SHOOTDOWN
+        IRQ_SERIAL | 64..=111 | IRQ_APIC_TIMER | IRQ_WAKEUP | IRQ_TLB_SHOOTDOWN
     )
 }
 
@@ -643,6 +684,24 @@ pub extern "C" fn irq_handler_inner(rsp: u64, irq_num: u64) {
             }
             eoi();
         }
+        80..=111 => {
+            if crate::vmm::pci_host::handle_host_msix_irq(irq_num as u8) {
+                if uspace {
+                    if crate::sched::irq_wake_fast_path_ok() {
+                        crate::xray::stats::kernel_stats()
+                            .adjust_metric(MetricType::IrqFastReturnWake, 1);
+                    } else {
+                        crate::sched::local_wake();
+                        crate::xray::stats::kernel_stats()
+                            .adjust_metric(MetricType::IrqPreemptWake, 1);
+                        ThreadControlBlock::preempt_current_thread_irq(irq_stack);
+                    }
+                } else {
+                    crate::sched::local_wake();
+                }
+            }
+            eoi();
+        }
         IRQ_APIC_TIMER => {
             crate::xray::stats::kernel_stats().adjust_metric(MetricType::IrqTimerFired, 1);
             // Timer.
@@ -718,6 +777,39 @@ naked_irq_handler!(irq_handler_76, 76);
 naked_irq_handler!(irq_handler_77, 77);
 naked_irq_handler!(irq_handler_78, 78);
 naked_irq_handler!(irq_handler_79, 79);
+
+naked_irq_handler!(irq_handler_80, 80);
+naked_irq_handler!(irq_handler_81, 81);
+naked_irq_handler!(irq_handler_82, 82);
+naked_irq_handler!(irq_handler_83, 83);
+naked_irq_handler!(irq_handler_84, 84);
+naked_irq_handler!(irq_handler_85, 85);
+naked_irq_handler!(irq_handler_86, 86);
+naked_irq_handler!(irq_handler_87, 87);
+naked_irq_handler!(irq_handler_88, 88);
+naked_irq_handler!(irq_handler_89, 89);
+naked_irq_handler!(irq_handler_90, 90);
+naked_irq_handler!(irq_handler_91, 91);
+naked_irq_handler!(irq_handler_92, 92);
+naked_irq_handler!(irq_handler_93, 93);
+naked_irq_handler!(irq_handler_94, 94);
+naked_irq_handler!(irq_handler_95, 95);
+naked_irq_handler!(irq_handler_96, 96);
+naked_irq_handler!(irq_handler_97, 97);
+naked_irq_handler!(irq_handler_98, 98);
+naked_irq_handler!(irq_handler_99, 99);
+naked_irq_handler!(irq_handler_100, 100);
+naked_irq_handler!(irq_handler_101, 101);
+naked_irq_handler!(irq_handler_102, 102);
+naked_irq_handler!(irq_handler_103, 103);
+naked_irq_handler!(irq_handler_104, 104);
+naked_irq_handler!(irq_handler_105, 105);
+naked_irq_handler!(irq_handler_106, 106);
+naked_irq_handler!(irq_handler_107, 107);
+naked_irq_handler!(irq_handler_108, 108);
+naked_irq_handler!(irq_handler_109, 109);
+naked_irq_handler!(irq_handler_110, 110);
+naked_irq_handler!(irq_handler_111, 111);
 
 naked_irq_handler!(irq_handler_192, 192); // IRQ_APIC_TIMER.
 naked_irq_handler!(irq_handler_193, 193); // IRQ_WAKEUP.

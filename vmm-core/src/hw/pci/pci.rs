@@ -27,6 +27,7 @@ pub mod bus;
 pub mod cap;
 pub mod config;
 pub mod host_bridge;
+pub mod passthrough;
 pub mod segment;
 
 use config::{HeaderData, PciConfig};

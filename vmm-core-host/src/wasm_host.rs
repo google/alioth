@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use vmm_core::host::abi::{
     CoreToIoEntry, IoToCoreEntry, MAX_QUEUES_PER_DEV, MAX_VIRTIO_DEVS, RawCpuid, RawDoorbellSpec,
-    RawRegEntry, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig,
-    VcpuCommPage,
+    RawPciBarInfo, RawRegEntry, ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec,
+    ShmVirtioQueueConfig, VcpuCommPage,
 };
 pub use vmm_core::host::{VmmCoreBridge, VmmHostCore};
 use vmm_core::host::{
@@ -406,6 +406,137 @@ where
                 return HvError::InvalidParam.code();
             }
             unit_rc(ctx.host.unregister_doorbell(io_space, addr, size as u8))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_attach",
+        move |mut caller: Caller<'_, T>, host_bdf: u32| -> i32 {
+            if host_bdf > u16::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            match get_ctx(caller.data_mut()).host.pci_attach(host_bdf as u16) {
+                Ok(id) => id as i32,
+                Err(e) => e.code(),
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_detach",
+        move |mut caller: Caller<'_, T>, dev: u32| -> i32 {
+            unit_rc(get_ctx(caller.data_mut()).host.pci_detach(dev))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_reset",
+        move |mut caller: Caller<'_, T>, dev: u32| -> i32 {
+            unit_rc(get_ctx(caller.data_mut()).host.pci_reset(dev))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_read_config",
+        move |mut caller: Caller<'_, T>, dev: u32, offset: u32, size: u32, out_ptr: u32| -> i32 {
+            if offset > u16::MAX as u32 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let val = match ctx.host.pci_read_config(dev, offset as u16, size as u8) {
+                Ok(v) => v,
+                Err(e) => return e.code(),
+            };
+            unit_rc(write_struct(&ctx.memory, out_ptr, &val))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_write_config",
+        move |mut caller: Caller<'_, T>, dev: u32, offset: u32, size: u32, val: u32| -> i32 {
+            if offset > u16::MAX as u32 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            unit_rc(
+                get_ctx(caller.data_mut())
+                    .host
+                    .pci_write_config(dev, offset as u16, size as u8, val),
+            )
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_bar_info",
+        move |mut caller: Caller<'_, T>, dev: u32, bar_idx: u32, out_ptr: u32| -> i32 {
+            if bar_idx >= 6 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let info = match ctx.host.pci_bar_info(dev, bar_idx as u8) {
+                Ok(i) => RawPciBarInfo::from(i),
+                Err(e) => return e.code(),
+            };
+            unit_rc(write_struct(&ctx.memory, out_ptr, &info))
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_bar_io",
+        move |mut caller: Caller<'_, T>,
+              dev: u32,
+              bar_idx: u32,
+              offset: u64,
+              size: u32,
+              is_write: u32,
+              val: u64,
+              out_ptr: u32|
+              -> i32 {
+            if bar_idx >= 6 || size > u8::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let ctx = get_ctx(caller.data_mut());
+            let write = (is_write != 0).then_some(val);
+            let res = match ctx
+                .host
+                .pci_bar_io(dev, bar_idx as u8, offset, size as u8, write)
+            {
+                Ok(v) => v,
+                Err(e) => return e.code(),
+            };
+            if is_write == 0 {
+                unit_rc(write_struct(&ctx.memory, out_ptr, &res))
+            } else {
+                0
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "vmm",
+        "hv_pci_configure_msix",
+        move |mut caller: Caller<'_, T>,
+              dev: u32,
+              entry_idx: u32,
+              enabled: u32,
+              addr: u64,
+              data: u32|
+              -> i32 {
+            if entry_idx > u16::MAX as u32 {
+                return HvError::InvalidParam.code();
+            }
+            let msi = (enabled != 0).then_some((addr, data));
+            unit_rc(
+                get_ctx(caller.data_mut())
+                    .host
+                    .pci_configure_msix(dev, entry_idx as u16, msi),
+            )
         },
     )?;
 

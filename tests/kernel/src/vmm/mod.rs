@@ -6,6 +6,7 @@ pub mod host_impl;
 pub mod iommu;
 pub mod lapic;
 pub mod pci_cfg;
+pub mod pci_host;
 pub mod pvclock;
 pub mod stage2;
 pub mod vcpu_thread;
@@ -224,6 +225,7 @@ pub(crate) fn create_vm(
             AllocationFailure::Code(moto_rt::E_NOT_ALLOWED)
         })?,
     );
+    hv.pci.set_self_hv(&hv);
     let bridge = Arc::new(MotorCoreBridge::new(
         shm_mapping.ptr(),
         payload_pages,
@@ -357,6 +359,7 @@ pub fn try_wake(sys_obj: &Arc<SysObject>) -> Result<(), ErrorCode> {
 /// Triggered when the owning process closes its last `vm_handle` or exits.
 pub fn on_drop(sys_obj: &SysObject) {
     if let Some(vm) = sys_obj.owner().downcast_ref::<VmInstance>() {
+        vm.hv.pci.teardown_all(&vm.hv.stage2);
         vm.hv.signal_shutdown();
     }
 }

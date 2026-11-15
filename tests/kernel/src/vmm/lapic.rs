@@ -249,6 +249,30 @@ impl VcpuLapic {
         self.kick();
     }
 
+    /// Lock-free, allocation-free IRR injection safe to call from a hardware ISR (`IF = 0`).
+    pub fn set_irr_from_irq(&self, vector: u8) -> bool {
+        if vector < 16 {
+            return false;
+        }
+        let word = (vector >> 6) as usize;
+        let bit = 1u64 << (vector & 63);
+        self.irr[word].fetch_or(bit, Ordering::AcqRel);
+        if self.mp_state.load(Ordering::Acquire) == MpState::Halted as u32 {
+            let _ = self.mp_state.compare_exchange(
+                MpState::Halted as u32,
+                MpState::Runnable as u32,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
+        }
+        SysObject::wake_irq(&self.kick_obj);
+        let pcpu = self.on_cpu.load(Ordering::Acquire);
+        if pcpu != u32::MAX && pcpu != crate::arch::current_cpu() as u32 {
+            crate::sched::poke_cpu(pcpu);
+        }
+        true
+    }
+
     fn arm_countdown(&self, count: u32) {
         self.init_count.store(count, Ordering::Release);
         let lvt = self.lvt_timer.load(Ordering::Acquire);

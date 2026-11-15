@@ -29,6 +29,43 @@ pub type VcpuId = u32;
 /// Dense host physical memory object identifier returned by [`VmmHostCore::mem_alloc`].
 pub type MemObjId = u32;
 
+/// Dense attached host PCI function identifier returned by [`VmmHostCore::pci_attach`].
+pub type PciDevId = u32;
+
+/// Physical PCI BAR kind reported by [`VmmHostCore::pci_bar_info`].
+#[repr(u8)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub enum PciBarKind {
+    #[default]
+    Empty = 0,
+    Mem32 = 1,
+    Mem64 = 2,
+    Io = 3,
+}
+
+impl PciBarKind {
+    pub const fn from_u8(v: u8) -> HvResult<Self> {
+        match v {
+            0 => Ok(Self::Empty),
+            1 => Ok(Self::Mem32),
+            2 => Ok(Self::Mem64),
+            3 => Ok(Self::Io),
+            _ => Err(HvError::InvalidParam),
+        }
+    }
+}
+
+/// Physical PCI BAR sizing and optional host `MemObjId` returned by [`VmmHostCore::pci_bar_info`].
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct PciBarInfo {
+    pub kind: PciBarKind,
+    pub prefetchable: bool,
+    pub size: u64,
+    /// For 4 KiB-aligned `Mem32` / `Mem64` BARs: host-managed `MemObjId` covering `[0 .. size)`
+    /// of the physical BAR so `vmm-core` can map page-aligned slices via `gpa_map`.
+    pub mem_obj: Option<MemObjId>,
+}
+
 /// Compact `#![no_std]` hypervisor / bridge error code suitable for Ring 0 and Wasm FFI.
 #[repr(i32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -378,6 +415,7 @@ pub struct CoreBootInfo {
     pub kernel_size: u64,
     pub initramfs_size: Option<u64>,
     pub cmd_line: Option<String>,
+    pub pci_devs: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -428,6 +466,65 @@ pub trait VmmHostCore: Send + Sync + 'static {
     fn set_gsi_level(&self, gsi: u32, active: bool) -> HvResult<()>;
     fn register_doorbell(&self, spec: DoorbellSpec) -> HvResult<()>;
     fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()>;
+
+    /// Claim host PCI function `host_bdf`, bind it to this VM's IOMMU domain, and reset it.
+    /// Fails closed with [`HvError::Unsupported`] when no active IOMMU protects host memory.
+    fn pci_attach(&self, _host_bdf: u16) -> HvResult<PciDevId> {
+        Err(HvError::Unsupported)
+    }
+
+    fn pci_detach(&self, _dev: PciDevId) -> HvResult<()> {
+        Err(HvError::Unsupported)
+    }
+
+    fn pci_reset(&self, _dev: PciDevId) -> HvResult<()> {
+        Err(HvError::Unsupported)
+    }
+
+    /// Raw host PCI config-space read (`size` in `{1, 2, 4}`).
+    fn pci_read_config(&self, _dev: PciDevId, _offset: u16, _size: u8) -> HvResult<u32> {
+        Err(HvError::Unsupported)
+    }
+
+    /// Raw host PCI config-space write (`size` in `{1, 2, 4}`).
+    fn pci_write_config(
+        &self,
+        _dev: PciDevId,
+        _offset: u16,
+        _size: u8,
+        _val: u32,
+    ) -> HvResult<()> {
+        Err(HvError::Unsupported)
+    }
+
+    /// Query physical BAR sizing and (for 4 KiB-aligned MMIO BARs) its backing `MemObjId`.
+    fn pci_bar_info(&self, _dev: PciDevId, _bar_idx: u8) -> HvResult<PciBarInfo> {
+        Err(HvError::Unsupported)
+    }
+
+    /// Fallback trapped access for PIO BARs or non-MSI-X bytes sharing a 4 KiB page with an
+    /// MSI-X table/PBA (`write = None` -> read, `Some(val)` -> write).
+    fn pci_bar_io(
+        &self,
+        _dev: PciDevId,
+        _bar_idx: u8,
+        _offset: u64,
+        _size: u8,
+        _write: Option<u64>,
+    ) -> HvResult<u64> {
+        Err(HvError::Unsupported)
+    }
+
+    /// Route physical MSI-X table entry `entry_idx` to `guest_msi = Some((addr, data))` when
+    /// effectively unmasked, or mask it in hardware when `guest_msi = None`.
+    fn pci_configure_msix(
+        &self,
+        _dev: PciDevId,
+        _entry_idx: u16,
+        _guest_msi: Option<(u64, u32)>,
+    ) -> HvResult<()> {
+        Err(HvError::Unsupported)
+    }
 }
 
 /// Separate 100% non-blocking, `#![no_std]`-clean trait for the Core <-> I/O split channel.
@@ -514,6 +611,7 @@ pub mod abi {
     pub const REG_CLASS_MP_STATE: u32 = 5;
 
     pub const MAX_VIRTIO_DEVS: usize = 16;
+    pub const MAX_PASSTHROUGH_DEVS: usize = 8;
     pub const MAX_QUEUES_PER_DEV: usize = 8;
     pub const MAX_CONFIG_BYTES: usize = 256;
     pub const MAX_DEV_NAME_LEN: usize = 64;
@@ -1033,6 +1131,51 @@ pub mod abi {
     const _: () = assert!(core::mem::size_of::<VcpuCommPage>() == 320);
 
     #[repr(C)]
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromZeroes, FromBytes, AsBytes)]
+    pub struct RawPciBarInfo {
+        pub size: u64,
+        pub mem_obj: u32,
+        pub has_mem_obj: u8,
+        pub kind: u8,
+        pub prefetchable: u8,
+        pub _pad: u8,
+    }
+
+    const _: () = assert!(core::mem::size_of::<RawPciBarInfo>() == 16);
+
+    impl From<super::PciBarInfo> for RawPciBarInfo {
+        fn from(info: super::PciBarInfo) -> Self {
+            Self {
+                size: info.size,
+                mem_obj: info.mem_obj.unwrap_or(0),
+                has_mem_obj: u8::from(info.mem_obj.is_some()),
+                kind: info.kind as u8,
+                prefetchable: u8::from(info.prefetchable),
+                _pad: 0,
+            }
+        }
+    }
+
+    impl RawPciBarInfo {
+        pub const fn to_info(&self) -> super::HvResult<super::PciBarInfo> {
+            let kind = match super::PciBarKind::from_u8(self.kind) {
+                Ok(k) => k,
+                Err(e) => return Err(e),
+            };
+            Ok(super::PciBarInfo {
+                kind,
+                prefetchable: self.prefetchable != 0,
+                size: self.size,
+                mem_obj: if self.has_mem_obj != 0 {
+                    Some(self.mem_obj)
+                } else {
+                    None
+                },
+            })
+        }
+    }
+
+    #[repr(C)]
     #[derive(Debug, Copy, Clone, FromZeroes, FromBytes, AsBytes)]
     pub struct ShmBootInfo {
         pub num_cpus: u32,
@@ -1042,6 +1185,9 @@ pub mod abi {
         pub initramfs_size: u64,
         pub cmd_line_len: u32,
         pub num_virtio_devs: u32,
+        pub num_pci_devs: u32,
+        pub _pad_pci: u32,
+        pub pci_devs: [u16; MAX_PASSTHROUGH_DEVS],
         pub cmd_line: [u8; MAX_CMDLINE_LEN],
     }
 
@@ -1055,6 +1201,9 @@ pub mod abi {
                 initramfs_size: 0,
                 cmd_line_len: 0,
                 num_virtio_devs: 0,
+                num_pci_devs: 0,
+                _pad_pci: 0,
+                pci_devs: [0; MAX_PASSTHROUGH_DEVS],
                 cmd_line: [0; MAX_CMDLINE_LEN],
             }
         }

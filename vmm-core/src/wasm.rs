@@ -16,12 +16,12 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::host::abi::{
-    CoreToIoEntry, IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawRegEntry, ShmBootInfo,
-    ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
+    CoreToIoEntry, IoToCoreEntry, RawCpuid, RawDoorbellSpec, RawPciBarInfo, RawRegEntry,
+    ShmBootInfo, ShmDeviceMsixRouting, ShmVirtioDeviceSpec, ShmVirtioQueueConfig, VcpuCommPage,
 };
 use crate::host::{
-    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, RegId,
-    RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
+    DoorbellSpec, HostCaps, HvError, HvResult, IoSpace, MemObjId, MemProt, PayloadKind, PciBarInfo,
+    PciDevId, RegId, RegVal, VcpuId, VmmCoreBridge, VmmHostCore,
 };
 use crate::hw::Board;
 
@@ -46,6 +46,23 @@ unsafe extern "C" {
     fn set_gsi_level(gsi: u32, active: u32) -> i32;
     fn register_doorbell(spec_ptr: u32) -> i32;
     fn unregister_doorbell(space: u32, addr: u64, size: u32) -> i32;
+
+    fn hv_pci_attach(host_bdf: u32) -> i32;
+    fn hv_pci_detach(dev: u32) -> i32;
+    fn hv_pci_reset(dev: u32) -> i32;
+    fn hv_pci_read_config(dev: u32, offset: u32, size: u32, out_ptr: u32) -> i32;
+    fn hv_pci_write_config(dev: u32, offset: u32, size: u32, val: u32) -> i32;
+    fn hv_pci_bar_info(dev: u32, bar_idx: u32, out_ptr: u32) -> i32;
+    fn hv_pci_bar_io(
+        dev: u32,
+        bar_idx: u32,
+        offset: u64,
+        size: u32,
+        is_write: u32,
+        val: u64,
+        out_ptr: u32,
+    ) -> i32;
+    fn hv_pci_configure_msix(dev: u32, entry_idx: u32, enabled: u32, addr: u64, data: u32) -> i32;
 }
 
 #[link(wasm_import_module = "vmm_bridge")]
@@ -176,6 +193,78 @@ impl VmmHostCore for WasmHost {
 
     fn unregister_doorbell(&self, space: IoSpace, addr: u64, size: u8) -> HvResult<()> {
         check_unit(unsafe { unregister_doorbell(space as u32, addr, size as u32) })
+    }
+
+    fn pci_attach(&self, host_bdf: u16) -> HvResult<PciDevId> {
+        check_rc(unsafe { hv_pci_attach(host_bdf as u32) })
+    }
+
+    fn pci_detach(&self, dev: PciDevId) -> HvResult<()> {
+        check_unit(unsafe { hv_pci_detach(dev) })
+    }
+
+    fn pci_reset(&self, dev: PciDevId) -> HvResult<()> {
+        check_unit(unsafe { hv_pci_reset(dev) })
+    }
+
+    fn pci_read_config(&self, dev: PciDevId, offset: u16, size: u8) -> HvResult<u32> {
+        let mut out: u32 = 0;
+        check_unit(unsafe {
+            hv_pci_read_config(dev, offset as u32, size as u32, &mut out as *mut u32 as u32)
+        })?;
+        Ok(out)
+    }
+
+    fn pci_write_config(&self, dev: PciDevId, offset: u16, size: u8, val: u32) -> HvResult<()> {
+        check_unit(unsafe { hv_pci_write_config(dev, offset as u32, size as u32, val) })
+    }
+
+    fn pci_bar_info(&self, dev: PciDevId, bar_idx: u8) -> HvResult<PciBarInfo> {
+        let mut raw = RawPciBarInfo::default();
+        check_unit(unsafe {
+            hv_pci_bar_info(dev, bar_idx as u32, &mut raw as *mut RawPciBarInfo as u32)
+        })?;
+        raw.to_info()
+    }
+
+    fn pci_bar_io(
+        &self,
+        dev: PciDevId,
+        bar_idx: u8,
+        offset: u64,
+        size: u8,
+        write: Option<u64>,
+    ) -> HvResult<u64> {
+        let mut out: u64 = 0;
+        let (is_write, val) = match write {
+            Some(v) => (1u32, v),
+            None => (0u32, 0u64),
+        };
+        check_unit(unsafe {
+            hv_pci_bar_io(
+                dev,
+                bar_idx as u32,
+                offset,
+                size as u32,
+                is_write,
+                val,
+                &mut out as *mut u64 as u32,
+            )
+        })?;
+        Ok(out)
+    }
+
+    fn pci_configure_msix(
+        &self,
+        dev: PciDevId,
+        entry_idx: u16,
+        guest_msi: Option<(u64, u32)>,
+    ) -> HvResult<()> {
+        let (enabled, addr, data) = match guest_msi {
+            Some((a, d)) => (1u32, a, d),
+            None => (0u32, 0u64, 0u32),
+        };
+        check_unit(unsafe { hv_pci_configure_msix(dev, entry_idx as u32, enabled, addr, data) })
     }
 }
 

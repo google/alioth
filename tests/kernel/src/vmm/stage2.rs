@@ -20,6 +20,8 @@ const ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 const NPT_PRESENT: u64 = 1 << 0;
 const NPT_WRITABLE: u64 = 1 << 1;
 const NPT_USER: u64 = 1 << 2;
+const NPT_PWT: u64 = 1 << 3;
+const NPT_PCD: u64 = 1 << 4;
 const NPT_ACCESSED: u64 = 1 << 5;
 const NPT_DIRTY: u64 = 1 << 6;
 const NPT_NX: u64 = 1 << 63;
@@ -51,6 +53,7 @@ impl NptTable {
 enum MemObjBacking {
     SharedArena { start_page: usize, num_pages: usize },
     KernelOwned { pages: Vec<u64> },
+    PciBarMmio { phys_base: u64, num_pages: usize },
 }
 
 struct MemObj {
@@ -69,6 +72,10 @@ struct FreePageRange {
 struct SlotMapping {
     gpa: u64,
     size: u64,
+    obj: MemObjId,
+    offset: u64,
+    prot: MemProt,
+    is_ram: bool,
     in_shm_slots: bool,
 }
 
@@ -76,8 +83,10 @@ struct Stage2Inner {
     l4_phys: u64,
     free_shared: Vec<FreePageRange>,
     next_shared_page: usize,
-    objs: [Option<MemObj>; MAX_MEM_OBJS],
-    slots: [Option<SlotMapping>; MAX_RAM_SLOTS],
+    objs: Vec<Option<MemObj>>,
+    slots: Vec<Option<SlotMapping>>,
+    iommu_domain: Option<u32>,
+    iommu_endpoint_count: u32,
 }
 
 pub struct Stage2Mmu {
@@ -90,14 +99,20 @@ pub struct Stage2Mmu {
 impl Stage2Mmu {
     pub fn new(shared_ram_pages: Vec<PinnedUserPage>, shm_ptr: u64) -> HvResult<Self> {
         let l4_phys = NptTable::alloc()?;
+        let mut objs = Vec::with_capacity(MAX_MEM_OBJS);
+        objs.resize_with(MAX_MEM_OBJS, || None);
+        let mut slots = Vec::with_capacity(MAX_RAM_SLOTS);
+        slots.resize_with(MAX_RAM_SLOTS, || None);
         Ok(Self {
             shared_ram_pages,
             inner: SpinLock::new(Stage2Inner {
                 l4_phys,
                 free_shared: Vec::new(),
                 next_shared_page: 0,
-                objs: [const { None }; MAX_MEM_OBJS],
-                slots: [None; MAX_RAM_SLOTS],
+                objs,
+                slots,
+                iommu_domain: None,
+                iommu_endpoint_count: 0,
             }),
             tlb_gen: AtomicU64::new(1),
             shm_ptr,
@@ -125,6 +140,167 @@ impl Stage2Mmu {
                 Some(self.shared_ram_pages[*start_page + page_idx].phys_addr())
             }
             MemObjBacking::KernelOwned { pages } => pages.get(page_idx).copied(),
+            MemObjBacking::PciBarMmio {
+                phys_base,
+                num_pages,
+            } => {
+                if page_idx >= *num_pages {
+                    return None;
+                }
+                Some(*phys_base + ((page_idx as u64) << 12))
+            }
+        }
+    }
+
+    pub fn register_pci_bar_obj(&self, phys_base: u64, size: u64) -> HvResult<MemObjId> {
+        if size == 0 || (phys_base & 0xfff) != 0 || (size & 0xfff) != 0 {
+            return Err(HvError::InvalidParam);
+        }
+        let num_pages = (size >> 12) as usize;
+        let mut inner = self.inner.lock(line!());
+        let Some(id) = inner.objs.iter().position(Option::is_none) else {
+            return Err(HvError::NoMemory);
+        };
+        inner.objs[id] = Some(MemObj {
+            backing: MemObjBacking::PciBarMmio {
+                phys_base,
+                num_pages,
+            },
+            shm_offset: None,
+            len: size,
+        });
+        Ok(id as MemObjId)
+    }
+
+    pub fn unregister_pci_bar_obj(&self, obj: MemObjId) {
+        let idx = obj as usize;
+        if idx >= MAX_MEM_OBJS {
+            return;
+        }
+        let mut inner = self.inner.lock(line!());
+        if matches!(
+            inner.objs[idx].as_ref().map(|o| &o.backing),
+            Some(MemObjBacking::PciBarMmio { .. })
+        ) {
+            inner.objs[idx] = None;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn map_slot_in_iommu(
+        &self,
+        inner: &Stage2Inner,
+        iommu: &dyn super::iommu::IommuProvider,
+        dom: u32,
+        gpa: u64,
+        size: u64,
+        obj: MemObjId,
+        offset: u64,
+        prot: MemProt,
+    ) -> HvResult<()> {
+        let num_pages = (size >> 12) as usize;
+        if num_pages == 0 {
+            return Ok(());
+        }
+        let first_page_idx = (offset >> 12) as usize;
+        let mut run_gpa = gpa;
+        let mut run_hpa = self
+            .obj_page_phys(inner, obj, first_page_idx)
+            .ok_or(HvError::InvalidParam)?;
+        let mut run_len = 4096u64;
+
+        for i in 1..num_pages {
+            let cur_gpa = gpa + ((i as u64) << 12);
+            let hpa = self
+                .obj_page_phys(inner, obj, first_page_idx + i)
+                .ok_or(HvError::InvalidParam)?;
+            if hpa == run_hpa + run_len {
+                run_len += 4096;
+            } else {
+                if let Err(e) = iommu.map_dma(dom, run_gpa, run_hpa, run_len, prot) {
+                    if run_gpa > gpa {
+                        let _ = iommu.unmap_dma(dom, gpa, run_gpa - gpa);
+                    }
+                    return Err(e);
+                }
+                run_gpa = cur_gpa;
+                run_hpa = hpa;
+                run_len = 4096;
+            }
+        }
+        if let Err(e) = iommu.map_dma(dom, run_gpa, run_hpa, run_len, prot) {
+            if run_gpa > gpa {
+                let _ = iommu.unmap_dma(dom, gpa, run_gpa - gpa);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn attach_iommu_endpoint(&self, host_bdf: u16) -> HvResult<()> {
+        let Some(iommu) = super::iommu::system_iommu() else {
+            return Err(HvError::Unsupported);
+        };
+        let mut inner = self.inner.lock(line!());
+        let dom = match inner.iommu_domain {
+            Some(d) => d,
+            None => {
+                let d = iommu.alloc_domain()?;
+                inner.iommu_domain = Some(d);
+                d
+            }
+        };
+        if let Err(e) = iommu.attach_endpoint(dom, host_bdf) {
+            if inner.iommu_endpoint_count == 0 {
+                inner.iommu_domain = None;
+                iommu.free_domain(dom);
+            }
+            return Err(e);
+        }
+        inner.iommu_endpoint_count += 1;
+        if inner.iommu_endpoint_count == 1 {
+            // Replay any already-mapped Guest RAM slots into the newly created IOMMU domain.
+            let mut mapped_so_far: Vec<(u64, u64)> = Vec::new();
+            for slot in inner.slots.iter().flatten() {
+                if !slot.is_ram {
+                    continue;
+                }
+                if let Err(e) = self.map_slot_in_iommu(
+                    &inner,
+                    iommu,
+                    dom,
+                    slot.gpa,
+                    slot.size,
+                    slot.obj,
+                    slot.offset,
+                    slot.prot,
+                ) {
+                    for (mgpa, msz) in mapped_so_far {
+                        let _ = iommu.unmap_dma(dom, mgpa, msz);
+                    }
+                    inner.iommu_endpoint_count = 0;
+                    let _ = iommu.detach_to_blocked(host_bdf);
+                    inner.iommu_domain = None;
+                    iommu.free_domain(dom);
+                    return Err(e);
+                }
+                mapped_so_far.push((slot.gpa, slot.size));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn detach_iommu_endpoint(&self, host_bdf: u16) {
+        let Some(iommu) = super::iommu::system_iommu() else {
+            return;
+        };
+        let mut inner = self.inner.lock(line!());
+        let _ = iommu.detach_to_blocked(host_bdf);
+        inner.iommu_endpoint_count = inner.iommu_endpoint_count.saturating_sub(1);
+        if inner.iommu_endpoint_count == 0 {
+            if let Some(dom) = inner.iommu_domain.take() {
+                iommu.free_domain(dom);
+            }
         }
     }
 
@@ -212,9 +388,13 @@ impl Stage2Mmu {
         if idx >= MAX_MEM_OBJS {
             return Err(HvError::InvalidParam);
         }
-        let Some(mem_obj) = inner.objs[idx].take() else {
+        let Some(mem_obj) = inner.objs[idx].as_ref() else {
             return Err(HvError::InvalidParam);
         };
+        if matches!(mem_obj.backing, MemObjBacking::PciBarMmio { .. }) {
+            return Ok(());
+        }
+        let mem_obj = inner.objs[idx].take().unwrap();
         match mem_obj.backing {
             MemObjBacking::SharedArena {
                 start_page,
@@ -252,6 +432,7 @@ impl Stage2Mmu {
                     phys_deallocate_frameless(phys, PageType::SmallPage);
                 }
             }
+            MemObjBacking::PciBarMmio { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -261,6 +442,9 @@ impl Stage2Mmu {
         let Some(mem_obj) = inner.objs.get(obj as usize).and_then(Option::as_ref) else {
             return Err(HvError::InvalidParam);
         };
+        if matches!(mem_obj.backing, MemObjBacking::PciBarMmio { .. }) {
+            return Err(HvError::Unsupported);
+        }
         let end = offset
             .checked_add(dst.len() as u64)
             .ok_or(HvError::InvalidParam)?;
@@ -289,6 +473,9 @@ impl Stage2Mmu {
         let Some(mem_obj) = inner.objs.get(obj as usize).and_then(Option::as_ref) else {
             return Err(HvError::InvalidParam);
         };
+        if matches!(mem_obj.backing, MemObjBacking::PciBarMmio { .. }) {
+            return Err(HvError::Unsupported);
+        }
         let end = offset
             .checked_add(src.len() as u64)
             .ok_or(HvError::InvalidParam)?;
@@ -340,7 +527,7 @@ impl Stage2Mmu {
         }
 
         let mut inner = self.inner.lock(line!());
-        let shm_off = {
+        let (shm_off, is_ram) = {
             let Some(mem_obj) = inner.objs.get(obj as usize).and_then(Option::as_ref) else {
                 return Err(HvError::InvalidParam);
             };
@@ -348,8 +535,12 @@ impl Stage2Mmu {
             if end > mem_obj.len {
                 return Err(HvError::InvalidParam);
             }
-            mem_obj.shm_offset.map(|base| base + offset)
+            let is_mmio = matches!(mem_obj.backing, MemObjBacking::PciBarMmio { .. });
+            (mem_obj.shm_offset.map(|base| base + offset), !is_mmio)
         };
+        if !is_ram {
+            leaf_flags |= NPT_PCD | NPT_PWT | NPT_NX;
+        }
 
         for existing in inner.slots.iter().flatten() {
             let ex_end = existing.gpa + existing.size;
@@ -379,10 +570,27 @@ impl Stage2Mmu {
             }
         }
 
+        if is_ram && inner.iommu_endpoint_count > 0 {
+            if let Some(dom) = inner.iommu_domain {
+                if let Some(iommu) = super::iommu::system_iommu() {
+                    if let Err(e) =
+                        self.map_slot_in_iommu(&inner, iommu, dom, gpa, size, obj, offset, prot)
+                    {
+                        Self::unmap_npt_range(l4_phys, gpa, size);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
         let in_shm_slots = shm_off.is_some();
         inner.slots[slot_idx] = Some(SlotMapping {
             gpa,
             size,
+            obj,
+            offset,
+            prot,
+            is_ram,
             in_shm_slots,
         });
         drop(inner);
@@ -415,6 +623,13 @@ impl Stage2Mmu {
             .position(|s| matches!(s, Some(m) if m.gpa == gpa && m.size == size))
             .ok_or(HvError::InvalidParam)?;
         let mapping = inner.slots[slot_idx].take().unwrap();
+        if mapping.is_ram && inner.iommu_endpoint_count > 0 {
+            if let Some(dom) = inner.iommu_domain {
+                if let Some(iommu) = super::iommu::system_iommu() {
+                    let _ = iommu.unmap_dma(dom, gpa, size);
+                }
+            }
+        }
         Self::unmap_npt_range(inner.l4_phys, gpa, size);
         drop(inner);
 

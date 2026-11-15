@@ -24,7 +24,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::host::abi::{
-    EXEC_TYPE_LINUX, EXEC_TYPE_PVH, MAX_VIRTIO_DEVS, ShmBootInfo, ShmVirtioDeviceSpec,
+    EXEC_TYPE_LINUX, EXEC_TYPE_PVH, MAX_PASSTHROUGH_DEVS, MAX_VIRTIO_DEVS, ShmBootInfo,
+    ShmVirtioDeviceSpec,
 };
 use crate::host::{CoreBootInfo, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
 use crate::hw::BoardConfig;
@@ -71,6 +72,8 @@ pub fn read_boot_config(
     } else {
         None
     };
+    let num_pci = (raw_boot.num_pci_devs as usize).min(MAX_PASSTHROUGH_DEVS);
+    let pci_devs = raw_boot.pci_devs[..num_pci].to_vec();
     let boot_info = CoreBootInfo {
         num_cpus: raw_boot.num_cpus,
         mem_size: raw_boot.mem_size as usize,
@@ -78,6 +81,7 @@ pub fn read_boot_config(
         kernel_size: raw_boot.kernel_size,
         initramfs_size,
         cmd_line,
+        pci_devs,
     };
 
     let mut specs = Vec::with_capacity(raw_devs.len());
@@ -129,6 +133,9 @@ pub fn init_machine(
 
     for spec in virtio_specs {
         vm.add_virtio_spec(spec)?;
+    }
+    for host_bdf in boot_info.pci_devs {
+        vm.add_passthrough_dev(host_bdf)?;
     }
 
     vm.init_vm()?;

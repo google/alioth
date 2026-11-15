@@ -22,6 +22,7 @@ use core::sync::atomic::AtomicU8;
 use crate::host::{self, HostCaps, VirtioDeviceSpec, VmmCoreBridge, VmmHostCore};
 use crate::hw::ioapic::IoApic;
 use crate::hw::pci::bus::PciBus;
+use crate::hw::pci::passthrough::PassthroughPciDev;
 use crate::hw::pci::{self, PciDevice};
 use crate::hw::serial::Serial;
 use crate::hw::{
@@ -187,6 +188,11 @@ impl Machine {
         let pci_dev = PciDevice::new(dev.name.clone(), dev.clone());
         self.add_pci_dev_at(explicit_bdf, pci_dev)?;
         Ok(dev)
+    }
+
+    pub fn add_passthrough_dev(&mut self, host_bdf: u16) -> Result<(), Error> {
+        let pci_dev = PassthroughPciDev::new(host_bdf, self.board.hv.clone())?;
+        self.add_pci_dev(pci_dev)
     }
 
     pub fn add_payload(&mut self, payload: Payload) {

@@ -582,7 +582,7 @@ impl VmmHostIo for LinuxIoHost {
             initramfs_size,
             cmd_line_len: 0,
             num_virtio_devs: ndevs as u32,
-            cmd_line: [0; vmm_core::host::abi::MAX_CMDLINE_LEN],
+            ..Default::default()
         };
         if let Some(cmd) = &boot_cfg.cmd_line {
             let bytes = cmd.as_bytes();

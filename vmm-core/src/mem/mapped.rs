@@ -84,6 +84,7 @@ impl ByteWrite for &mut [u8] {
 struct MemObjHandle {
     id: MemObjId,
     total_size: usize,
+    owned: bool,
     hv: Arc<dyn VmmHostCore>,
 }
 
@@ -92,13 +93,16 @@ impl Debug for MemObjHandle {
         f.debug_struct("MemObjHandle")
             .field("id", &self.id)
             .field("total_size", &self.total_size)
+            .field("owned", &self.owned)
             .finish()
     }
 }
 
 impl Drop for MemObjHandle {
     fn drop(&mut self) {
-        let _ = self.hv.mem_free(self.id);
+        if self.owned {
+            let _ = self.hv.mem_free(self.id);
+        }
     }
 }
 
@@ -122,11 +126,27 @@ impl ArcMemPages {
             obj: Arc::new(MemObjHandle {
                 id,
                 total_size: size,
+                owned: true,
                 hv,
             }),
             offset: 0,
             size,
         })
+    }
+
+    /// Wrap a host-managed `MemObjId` (such as a physical PCI MMIO BAR) without calling
+    /// `mem_free` on drop.
+    pub fn from_borrowed(hv: Arc<dyn VmmHostCore>, id: MemObjId, size: usize) -> Self {
+        Self {
+            obj: Arc::new(MemObjHandle {
+                id,
+                total_size: size,
+                owned: false,
+                hv,
+            }),
+            offset: 0,
+            size,
+        }
     }
 
     pub fn subslice(&self, offset: usize, size: usize) -> Result<Self> {
@@ -364,6 +384,10 @@ impl RamBus {
             inner: RwLock::new(Addressable::default()),
             hv,
         }
+    }
+
+    pub fn hv(&self) -> &Arc<dyn VmmHostCore> {
+        &self.hv
     }
 
     pub fn alloc_anon_mem(&self, size: usize) -> Result<ArcMemPages, Error> {
