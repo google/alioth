@@ -93,11 +93,45 @@ int airlock_kapi_eventfd_bind(int fd, airlock_eventfd_cb_t cb, void *opaque,
 void airlock_kapi_eventfd_signal(struct airlock_eventfd *efd);
 void airlock_kapi_eventfd_unbind(struct airlock_eventfd *efd);
 
+/* IOMMU domain & PCI endpoint passthrough (Sub-steps `(l.5)` & `(l.6)`) */
+struct airlock_kapi_bar_desc {
+    u64 phys_start;
+    u64 size;
+    u8  kind;         /* 0 = Empty, 1 = Io, 2 = Mem32, 3 = Mem64 */
+    u8  prefetchable;
+    u8  _pad[6];
+};
+
+struct airlock_iommu_ctx;
+struct airlock_pci_dev;
+
+int airlock_kapi_iommu_alloc_for_bdf(u16 bdf, struct airlock_iommu_ctx **out_ctx);
+int airlock_kapi_iommu_map(struct airlock_iommu_ctx *ctx, u64 iova, u64 paddr,
+                           u64 size, bool readable, bool writable);
+void airlock_kapi_iommu_unmap(struct airlock_iommu_ctx *ctx, u64 iova, u64 size);
+void airlock_kapi_iommu_free(struct airlock_iommu_ctx *ctx);
+
+int airlock_kapi_pci_open(u16 bdf, struct airlock_iommu_ctx *iommu_ctx,
+                          uintptr_t hv_ptr,
+                          struct airlock_kapi_bar_desc out_bars[6],
+                          struct airlock_pci_dev **out_dev);
+void airlock_kapi_pci_close(struct airlock_pci_dev *adev);
+int airlock_kapi_pci_reset(struct airlock_pci_dev *adev);
+int airlock_kapi_pci_read_config(struct airlock_pci_dev *adev, u16 offset,
+                                 u8 size, u32 *out_val);
+int airlock_kapi_pci_write_config(struct airlock_pci_dev *adev, u16 offset,
+                                  u8 size, u32 val);
+int airlock_kapi_pci_bar_io(struct airlock_pci_dev *adev, u8 bar_idx, u64 offset,
+                            u8 size, bool is_write, u64 write_val, u64 *out_val);
+int airlock_kapi_pci_configure_msix(struct airlock_pci_dev *adev, u16 entry_idx,
+                                    bool enabled, u64 guest_addr, u32 guest_data);
+
 /* Rust entrypoints called from `airlock_shim.c` */
 int airlock_rust_init(void);
 void airlock_rust_exit(void);
 u32 airlock_rust_get_caps(void);
 int airlock_rust_vm_create(const struct airlock_create_vm *req, void **out_vm);
 void airlock_rust_vm_destroy(void *vm);
+void airlock_rust_on_msix_irq(uintptr_t hv_ptr, u64 guest_addr, u32 guest_data);
 
 #endif /* _AIRLOCK_KAPI_H_ */

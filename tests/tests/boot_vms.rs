@@ -18,7 +18,8 @@ use vmm_tests::{
     L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock,
     boot_airlock_linux_alpine, boot_airlock_linux_alpine_with_l0, boot_airlock_linux_initrd,
     boot_airlock_linux_initrd_with_l0, boot_airlock_linux_motor_os,
-    boot_airlock_linux_motor_os_with_l0, boot_airlock_linux_test_guest,
+    boot_airlock_linux_motor_os_with_l0, boot_airlock_linux_passthrough_net,
+    boot_airlock_linux_passthrough_net_with_l0, boot_airlock_linux_test_guest,
     boot_airlock_linux_test_guest_with_l0, boot_and_shutdown, boot_chv_until_autonomous_exit,
     boot_nested_full_alpine, boot_nested_full_alpine_with_l0, boot_nested_full_motor_os,
     boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd, boot_nested_linux_initrd_with_l0,
@@ -631,4 +632,48 @@ fn boot_airlock_linux_alpine_chv_cwasm() {
 #[test]
 fn boot_airlock_linux_alpine_chv_wasm() {
     run_airlock_linux_alpine_chv(VmmMode::Wasm);
+}
+
+fn run_airlock_linux_passthrough_net(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    if !use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh") {
+        eprintln!(
+            "skipping boot_airlock_linux_passthrough_net because VMM_TEST_NO_NET is set"
+        );
+        return;
+    }
+    let tmp = TempTestDir::new(&format!("airlock-pt-net-{}", mode.as_str()));
+    boot_airlock_linux_passthrough_net(mode, &tmp);
+}
+
+fn run_airlock_linux_passthrough_net_chv(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    if !use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh") {
+        eprintln!(
+            "skipping boot_airlock_linux_passthrough_net_chv because VMM_TEST_NO_NET is set"
+        );
+        return;
+    }
+    let tmp = TempTestDir::new(&format!("airlock-pt-net-chv-{}", mode.as_str()));
+    boot_airlock_linux_passthrough_net_with_l0(L0Engine::Chv, mode, &tmp);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_net_cwasm() {
+    run_airlock_linux_passthrough_net(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_net_wasm() {
+    run_airlock_linux_passthrough_net(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_net_chv_cwasm() {
+    run_airlock_linux_passthrough_net_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_net_chv_wasm() {
+    run_airlock_linux_passthrough_net_chv(VmmMode::Wasm);
 }

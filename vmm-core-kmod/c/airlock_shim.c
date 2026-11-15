@@ -21,6 +21,7 @@
 #include <linux/highmem.h>
 #include <linux/hrtimer.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/kthread.h>
@@ -28,6 +29,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/percpu.h>
 #include <linux/poll.h>
@@ -888,6 +890,640 @@ void airlock_kapi_eventfd_unbind(struct airlock_eventfd *efd)
     eventfd_ctx_put(efd->ctx);
     fput(efd->file);
     kfree(efd);
+}
+
+/* =========================================================================
+ * IOMMU Domain & PCI Endpoint Passthrough (`virtio-iommu` / AMD-Vi + MSI-X)
+ * ========================================================================= */
+
+#define AIRLOCK_VIRTIO_VENDOR_ID         0x1af4
+#define AIRLOCK_VIRTIO_IOMMU_DEV_ID      0x1057
+#define AIRLOCK_VIRTIO_PCI_CAP_COMMON    1
+#define AIRLOCK_VIRTIO_COMMON_STATUS_OFF 0x14
+#define AIRLOCK_MAX_MSIX_VECS            64
+
+struct airlock_iommu_ctx {
+    struct mutex         lock;
+    struct iommu_domain *domain;
+};
+
+struct airlock_msix_slot {
+    uintptr_t hv_ptr;
+    u64       guest_addr;
+    u32       guest_data;
+    int       linux_irq;
+    bool      requested;
+    char      irq_name[28];
+};
+
+struct airlock_pci_dev {
+    struct mutex              lock;
+    struct pci_dev           *pdev;
+    struct iommu_group       *group;
+    struct airlock_iommu_ctx *iommu_ctx;
+    uintptr_t                 hv_ptr;
+    u16                       bdf;
+    void __iomem             *bar_iomap[6];
+    u64                       bar_size[6];
+    u64                       bar_pio_base[6];
+    u8                        bar_kind[6];
+    bool                      has_virtio_common;
+    u8                        virtio_common_bar;
+    u32                       virtio_common_off;
+    int                       msix_nvec;
+    bool                      msix_allocated;
+    struct airlock_msix_slot  msix_slots[AIRLOCK_MAX_MSIX_VECS];
+};
+
+int airlock_kapi_iommu_alloc_for_bdf(u16 bdf, struct airlock_iommu_ctx **out_ctx)
+{
+    struct pci_dev *pdev;
+    struct iommu_group *grp;
+    struct iommu_domain *dom;
+    struct airlock_iommu_ctx *ctx;
+
+    if (!out_ctx || bdf == 0)
+        return -EINVAL;
+
+    pdev = pci_get_domain_bus_and_slot(0, bdf >> 8, bdf & 0xff);
+    if (!pdev)
+        return -ENODEV;
+
+    grp = iommu_group_get(&pdev->dev);
+    if (!grp) {
+        pci_dev_put(pdev);
+        return -EOPNOTSUPP;
+    }
+    iommu_group_put(grp);
+
+    dom = iommu_paging_domain_alloc(&pdev->dev);
+    pci_dev_put(pdev);
+    if (IS_ERR(dom))
+        return PTR_ERR(dom);
+
+    ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx) {
+        iommu_domain_free(dom);
+        return -ENOMEM;
+    }
+    mutex_init(&ctx->lock);
+    ctx->domain = dom;
+    *out_ctx = ctx;
+    return 0;
+}
+
+int airlock_kapi_iommu_map(struct airlock_iommu_ctx *ctx, u64 iova, u64 paddr,
+                           u64 size, bool readable, bool writable)
+{
+    int prot = IOMMU_CACHE;
+    int ret;
+
+    if (!ctx || !ctx->domain || !size)
+        return -EINVAL;
+    if (readable)
+        prot |= IOMMU_READ;
+    if (writable)
+        prot |= IOMMU_WRITE;
+
+    mutex_lock(&ctx->lock);
+    ret = iommu_map(ctx->domain, (unsigned long)iova, (phys_addr_t)paddr,
+                    (size_t)size, prot, GFP_KERNEL);
+    mutex_unlock(&ctx->lock);
+    return ret;
+}
+
+void airlock_kapi_iommu_unmap(struct airlock_iommu_ctx *ctx, u64 iova, u64 size)
+{
+    if (!ctx || !ctx->domain || !size)
+        return;
+    mutex_lock(&ctx->lock);
+    iommu_unmap(ctx->domain, (unsigned long)iova, (size_t)size);
+    mutex_unlock(&ctx->lock);
+}
+
+void airlock_kapi_iommu_free(struct airlock_iommu_ctx *ctx)
+{
+    if (!ctx)
+        return;
+    if (ctx->domain) {
+        iommu_domain_free(ctx->domain);
+        ctx->domain = NULL;
+    }
+    kfree(ctx);
+}
+
+static irqreturn_t airlock_msix_isr(int irq, void *opaque)
+{
+    const struct airlock_msix_slot *slot = (const struct airlock_msix_slot *)opaque;
+    uintptr_t hv_ptr;
+
+    (void)irq;
+    hv_ptr = READ_ONCE(slot->hv_ptr);
+    if (likely(hv_ptr != 0)) {
+        u64 addr = READ_ONCE(slot->guest_addr);
+        u32 data = READ_ONCE(slot->guest_data);
+
+        airlock_rust_on_msix_irq(hv_ptr, addr, data);
+    }
+    return IRQ_HANDLED;
+}
+
+static void airlock_pci_release_msix_locked(struct airlock_pci_dev *adev)
+{
+    int i;
+
+    if (!adev->msix_allocated)
+        return;
+
+    for (i = 0; i < adev->msix_nvec; i++) {
+        struct airlock_msix_slot *s = &adev->msix_slots[i];
+
+        if (s->requested) {
+            WRITE_ONCE(s->hv_ptr, 0);
+            free_irq(s->linux_irq, s);
+            s->requested = false;
+            s->linux_irq = -1;
+        }
+    }
+    pci_free_irq_vectors(adev->pdev);
+    adev->msix_allocated = false;
+}
+
+static void airlock_pci_probe_virtio_common(struct airlock_pci_dev *adev)
+{
+    struct pci_dev *pdev = adev->pdev;
+    u16 status = 0;
+    u8 pos = 0;
+    u64 visited = 0;
+    int step;
+
+    if (pdev->vendor != AIRLOCK_VIRTIO_VENDOR_ID)
+        return;
+    if (pci_read_config_word(pdev, PCI_STATUS, &status) || !(status & PCI_STATUS_CAP_LIST))
+        return;
+    if (pci_read_config_byte(pdev, PCI_CAPABILITY_LIST, &pos))
+        return;
+    pos &= ~3U;
+
+    for (step = 0; step < 48 && pos >= 0x40; step++) {
+        u8 cap_id = 0, next = 0;
+        u32 bit = (pos - 0x40) >> 2;
+
+        if (bit < 64) {
+            if (visited & (1ULL << bit))
+                break;
+            visited |= (1ULL << bit);
+        }
+        if (pci_read_config_byte(pdev, pos, &cap_id) ||
+            pci_read_config_byte(pdev, pos + 1, &next))
+            break;
+        next &= ~3U;
+
+        if (cap_id == PCI_CAP_ID_VNDR) {
+            u8 cap_len = 0, cfg_type = 0, c_bar = 0;
+            u32 c_off = 0;
+
+            if (!pci_read_config_byte(pdev, pos + 2, &cap_len) &&
+                !pci_read_config_byte(pdev, pos + 3, &cfg_type) &&
+                cfg_type == AIRLOCK_VIRTIO_PCI_CAP_COMMON && cap_len >= 16 &&
+                !pci_read_config_byte(pdev, pos + 4, &c_bar) &&
+                !pci_read_config_dword(pdev, pos + 8, &c_off) &&
+                c_bar < 6 && adev->bar_iomap[c_bar] &&
+                (u64)c_off + AIRLOCK_VIRTIO_COMMON_STATUS_OFF < adev->bar_size[c_bar]) {
+                adev->has_virtio_common = true;
+                adev->virtio_common_bar = c_bar;
+                adev->virtio_common_off = c_off;
+                return;
+            }
+        }
+        pos = next;
+    }
+}
+
+static void airlock_pci_reset_hw_locked(struct airlock_pci_dev *adev)
+{
+    u16 cmd = 0;
+
+    pci_clear_master(adev->pdev);
+    airlock_pci_release_msix_locked(adev);
+
+    pci_intx(adev->pdev, 0);
+    if (!pci_read_config_word(adev->pdev, PCI_COMMAND, &cmd)) {
+        cmd = (cmd & ~PCI_COMMAND_MASTER) |
+              PCI_COMMAND_MEMORY | PCI_COMMAND_IO | PCI_COMMAND_INTX_DISABLE;
+        pci_write_config_word(adev->pdev, PCI_COMMAND, cmd);
+    }
+
+    if (adev->has_virtio_common) {
+        void __iomem *status_reg = (u8 __iomem *)adev->bar_iomap[adev->virtio_common_bar] +
+                                   adev->virtio_common_off + AIRLOCK_VIRTIO_COMMON_STATUS_OFF;
+        int tries;
+
+        iowrite8(0, status_reg);
+        for (tries = 0; tries < 100000; tries++) {
+            if (ioread8(status_reg) == 0)
+                break;
+            cpu_relax();
+        }
+    }
+}
+
+int airlock_kapi_pci_open(u16 bdf, struct airlock_iommu_ctx *iommu_ctx,
+                          uintptr_t hv_ptr,
+                          struct airlock_kapi_bar_desc out_bars[6],
+                          struct airlock_pci_dev **out_dev)
+{
+    struct pci_dev *pdev;
+    struct iommu_group *grp;
+    struct airlock_pci_dev *adev;
+    bool driver_ok;
+    int ret, i, nvec;
+
+    if (!iommu_ctx || !iommu_ctx->domain || !out_bars || !out_dev || bdf == 0)
+        return -EINVAL;
+
+    memset(out_bars, 0, sizeof(struct airlock_kapi_bar_desc) * 6);
+
+    pdev = pci_get_domain_bus_and_slot(0, bdf >> 8, bdf & 0xff);
+    if (!pdev)
+        return -ENODEV;
+
+    if (pdev->vendor == AIRLOCK_VIRTIO_VENDOR_ID &&
+        pdev->device == AIRLOCK_VIRTIO_IOMMU_DEV_ID) {
+        pci_dev_put(pdev);
+        return -EINVAL;
+    }
+
+    device_lock(&pdev->dev);
+    driver_ok = (!pdev->dev.driver ||
+                 strcmp(pdev->dev.driver->name, "pci-stub") == 0);
+    device_unlock(&pdev->dev);
+    if (!driver_ok) {
+        pr_err("BDF 0000:%02x:%02x.%u is still bound to an active L1 driver; unbind or bind pci-stub first\n",
+               bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7);
+        pci_dev_put(pdev);
+        return -EBUSY;
+    }
+
+    grp = iommu_group_get(&pdev->dev);
+    if (!grp) {
+        pr_err("BDF 0000:%02x:%02x.%u has no IOMMU group; refusing un-isolated passthrough\n",
+               bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7);
+        pci_dev_put(pdev);
+        return -EOPNOTSUPP;
+    }
+
+    adev = kzalloc(sizeof(*adev), GFP_KERNEL);
+    if (!adev) {
+        iommu_group_put(grp);
+        pci_dev_put(pdev);
+        return -ENOMEM;
+    }
+    mutex_init(&adev->lock);
+    adev->pdev = pdev;
+    adev->group = grp;
+    adev->iommu_ctx = iommu_ctx;
+    adev->hv_ptr = hv_ptr;
+    adev->bdf = bdf;
+
+    ret = iommu_group_claim_dma_owner(grp, adev);
+    if (ret) {
+        pr_err("BDF 0000:%02x:%02x.%u: iommu_group_claim_dma_owner failed (%d)\n",
+               bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7, ret);
+        goto err_free_adev;
+    }
+
+    ret = iommu_attach_group(iommu_ctx->domain, grp);
+    if (ret) {
+        pr_err("BDF 0000:%02x:%02x.%u: iommu_attach_group failed (%d)\n",
+               bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7, ret);
+        goto err_release_owner;
+    }
+
+    ret = pci_enable_device(pdev);
+    if (ret)
+        goto err_detach_group;
+
+    for (i = 0; i < 6; i++) {
+        unsigned long flags = pci_resource_flags(pdev, i);
+        resource_size_t start = pci_resource_start(pdev, i);
+        resource_size_t len = pci_resource_len(pdev, i);
+
+        if (!len)
+            continue;
+
+        if (flags & IORESOURCE_IO) {
+            adev->bar_kind[i] = 1;
+            adev->bar_pio_base[i] = (u64)start;
+            adev->bar_size[i] = (u64)len;
+            out_bars[i].phys_start = (u64)start;
+            out_bars[i].size = (u64)len;
+            out_bars[i].kind = 1;
+            out_bars[i].prefetchable = 0;
+        } else if (flags & IORESOURCE_MEM) {
+            bool is_64 = (flags & IORESOURCE_MEM_64) != 0;
+            bool pref = (flags & IORESOURCE_PREFETCH) != 0;
+
+            adev->bar_iomap[i] = pci_iomap(pdev, i, 0);
+            if (!adev->bar_iomap[i]) {
+                ret = -ENOMEM;
+                goto err_unmap_bars;
+            }
+            adev->bar_kind[i] = is_64 ? 3 : 2;
+            adev->bar_size[i] = (u64)len;
+            out_bars[i].phys_start = (u64)start;
+            out_bars[i].size = (u64)len;
+            out_bars[i].kind = adev->bar_kind[i];
+            out_bars[i].prefetchable = pref ? 1 : 0;
+            if (is_64 && i + 1 < 6)
+                i++;
+        }
+    }
+
+    nvec = pci_msix_vec_count(pdev);
+    if (nvec > 0)
+        adev->msix_nvec = min_t(int, nvec, AIRLOCK_MAX_MSIX_VECS);
+
+    airlock_pci_probe_virtio_common(adev);
+    airlock_pci_reset_hw_locked(adev);
+
+    pr_info("attached passthrough PCI 0000:%02x:%02x.%u (%04x:%04x, msix_vecs=%d)\n",
+            bdf >> 8, (bdf >> 3) & 0x1f, bdf & 0x7,
+            pdev->vendor, pdev->device, adev->msix_nvec);
+    *out_dev = adev;
+    return 0;
+
+err_unmap_bars:
+    for (i = 0; i < 6; i++) {
+        if (adev->bar_iomap[i]) {
+            pci_iounmap(pdev, adev->bar_iomap[i]);
+            adev->bar_iomap[i] = NULL;
+        }
+    }
+    pci_disable_device(pdev);
+err_detach_group:
+    iommu_detach_group(iommu_ctx->domain, grp);
+err_release_owner:
+    iommu_group_release_dma_owner(grp);
+err_free_adev:
+    iommu_group_put(grp);
+    pci_dev_put(pdev);
+    kfree(adev);
+    return ret;
+}
+
+void airlock_kapi_pci_close(struct airlock_pci_dev *adev)
+{
+    int i;
+
+    if (!adev)
+        return;
+
+    mutex_lock(&adev->lock);
+    airlock_pci_reset_hw_locked(adev);
+    for (i = 0; i < 6; i++) {
+        if (adev->bar_iomap[i]) {
+            pci_iounmap(adev->pdev, adev->bar_iomap[i]);
+            adev->bar_iomap[i] = NULL;
+        }
+    }
+    pci_disable_device(adev->pdev);
+    if (adev->iommu_ctx && adev->iommu_ctx->domain && adev->group)
+        iommu_detach_group(adev->iommu_ctx->domain, adev->group);
+    if (adev->group) {
+        iommu_group_release_dma_owner(adev->group);
+        iommu_group_put(adev->group);
+        adev->group = NULL;
+    }
+    pci_dev_put(adev->pdev);
+    adev->pdev = NULL;
+    mutex_unlock(&adev->lock);
+
+    kfree(adev);
+}
+
+int airlock_kapi_pci_reset(struct airlock_pci_dev *adev)
+{
+    if (!adev)
+        return -EINVAL;
+    mutex_lock(&adev->lock);
+    airlock_pci_reset_hw_locked(adev);
+    mutex_unlock(&adev->lock);
+    return 0;
+}
+
+int airlock_kapi_pci_read_config(struct airlock_pci_dev *adev, u16 offset,
+                                 u8 size, u32 *out_val)
+{
+    int ret;
+
+    if (!adev || !out_val || offset >= 256 || (u32)offset + (u32)size > 256)
+        return -EINVAL;
+
+    *out_val = 0;
+    switch (size) {
+    case 1: {
+        u8 v = 0;
+
+        ret = pci_read_config_byte(adev->pdev, offset, &v);
+        *out_val = v;
+        return ret ? -EIO : 0;
+    }
+    case 2: {
+        u16 v = 0;
+
+        if (offset & 1)
+            return -EINVAL;
+        ret = pci_read_config_word(adev->pdev, offset, &v);
+        *out_val = v;
+        return ret ? -EIO : 0;
+    }
+    case 4: {
+        u32 v = 0;
+
+        if (offset & 3)
+            return -EINVAL;
+        ret = pci_read_config_dword(adev->pdev, offset, &v);
+        *out_val = v;
+        return ret ? -EIO : 0;
+    }
+    default:
+        return -EINVAL;
+    }
+}
+
+int airlock_kapi_pci_write_config(struct airlock_pci_dev *adev, u16 offset,
+                                  u8 size, u32 val)
+{
+    int ret = 0;
+
+    if (!adev || offset >= 256 || (u32)offset + (u32)size > 256)
+        return -EINVAL;
+    /* Never allow guest/Wasm to relocate physical BARs (0x10..=0x27). */
+    if (offset >= 0x10 && offset <= 0x27)
+        return -EINVAL;
+
+    mutex_lock(&adev->lock);
+    switch (size) {
+    case 1:
+        ret = pci_write_config_byte(adev->pdev, offset, (u8)val);
+        break;
+    case 2:
+        if (offset & 1) {
+            ret = -EINVAL;
+            break;
+        }
+        if (offset == PCI_COMMAND) {
+            if (val & PCI_COMMAND_MASTER)
+                pci_set_master(adev->pdev);
+            else
+                pci_clear_master(adev->pdev);
+        } else {
+            ret = pci_write_config_word(adev->pdev, offset, (u16)val);
+        }
+        break;
+    case 4:
+        if (offset & 3) {
+            ret = -EINVAL;
+            break;
+        }
+        ret = pci_write_config_dword(adev->pdev, offset, val);
+        break;
+    default:
+        ret = -EINVAL;
+        break;
+    }
+    mutex_unlock(&adev->lock);
+    return ret ? -EIO : 0;
+}
+
+int airlock_kapi_pci_bar_io(struct airlock_pci_dev *adev, u8 bar_idx, u64 offset,
+                            u8 size, bool is_write, u64 write_val, u64 *out_val)
+{
+    if (!adev || bar_idx >= 6 || !out_val)
+        return -EINVAL;
+    *out_val = 0;
+
+    if (offset > adev->bar_size[bar_idx] ||
+        (u64)size > adev->bar_size[bar_idx] - offset)
+        return -EINVAL;
+
+    if (adev->bar_kind[bar_idx] == 1) {
+        u16 port = (u16)(adev->bar_pio_base[bar_idx] + offset);
+
+        if (is_write) {
+            switch (size) {
+            case 1: outb((u8)write_val, port); return 0;
+            case 2: outw((u16)write_val, port); return 0;
+            case 4: outl((u32)write_val, port); return 0;
+            default: return -EINVAL;
+            }
+        } else {
+            switch (size) {
+            case 1: *out_val = inb(port); return 0;
+            case 2: *out_val = inw(port); return 0;
+            case 4: *out_val = inl(port); return 0;
+            default: return -EINVAL;
+            }
+        }
+    } else if (adev->bar_kind[bar_idx] == 2 || adev->bar_kind[bar_idx] == 3) {
+        void __iomem *addr;
+
+        if (!adev->bar_iomap[bar_idx])
+            return -EINVAL;
+        addr = (u8 __iomem *)adev->bar_iomap[bar_idx] + offset;
+
+        if (is_write) {
+            switch (size) {
+            case 1: iowrite8((u8)write_val, addr); return 0;
+            case 2: iowrite16((u16)write_val, addr); return 0;
+            case 4: iowrite32((u32)write_val, addr); return 0;
+            case 8: writeq(write_val, addr); return 0;
+            default: return -EINVAL;
+            }
+        } else {
+            switch (size) {
+            case 1: *out_val = ioread8(addr); return 0;
+            case 2: *out_val = ioread16(addr); return 0;
+            case 4: *out_val = ioread32(addr); return 0;
+            case 8: *out_val = readq(addr); return 0;
+            default: return -EINVAL;
+            }
+        }
+    }
+    return -EINVAL;
+}
+
+int airlock_kapi_pci_configure_msix(struct airlock_pci_dev *adev, u16 entry_idx,
+                                    bool enabled, u64 guest_addr, u32 guest_data)
+{
+    struct airlock_msix_slot *slot;
+    int ret = 0;
+
+    if (!adev)
+        return -EINVAL;
+
+    mutex_lock(&adev->lock);
+    if (adev->msix_nvec <= 0) {
+        mutex_unlock(&adev->lock);
+        return -EOPNOTSUPP;
+    }
+    if ((int)entry_idx >= adev->msix_nvec) {
+        mutex_unlock(&adev->lock);
+        return -EINVAL;
+    }
+
+    slot = &adev->msix_slots[entry_idx];
+
+    if (enabled) {
+        if (!adev->msix_allocated) {
+            int n = pci_alloc_irq_vectors(adev->pdev, adev->msix_nvec,
+                                          adev->msix_nvec, PCI_IRQ_MSIX);
+            if (n < 0) {
+                mutex_unlock(&adev->lock);
+                return n;
+            }
+            adev->msix_allocated = true;
+        }
+
+        WRITE_ONCE(slot->guest_addr, guest_addr);
+        WRITE_ONCE(slot->guest_data, guest_data);
+        smp_wmb();
+        WRITE_ONCE(slot->hv_ptr, adev->hv_ptr);
+
+        if (!slot->requested) {
+            int irq = pci_irq_vector(adev->pdev, entry_idx);
+
+            if (irq < 0) {
+                WRITE_ONCE(slot->hv_ptr, 0);
+                mutex_unlock(&adev->lock);
+                return irq;
+            }
+            snprintf(slot->irq_name, sizeof(slot->irq_name),
+                     "airlock-%02x:%02x.%u-%u",
+                     adev->bdf >> 8, (adev->bdf >> 3) & 0x1f,
+                     adev->bdf & 0x7, entry_idx);
+            ret = request_irq((unsigned int)irq, airlock_msix_isr, 0,
+                              slot->irq_name, slot);
+            if (ret) {
+                WRITE_ONCE(slot->hv_ptr, 0);
+                mutex_unlock(&adev->lock);
+                return ret;
+            }
+            slot->linux_irq = irq;
+            slot->requested = true;
+        }
+    } else {
+        if (slot->requested) {
+            WRITE_ONCE(slot->hv_ptr, 0);
+            free_irq((unsigned int)slot->linux_irq, slot);
+            slot->requested = false;
+            slot->linux_irq = -1;
+        }
+    }
+
+    mutex_unlock(&adev->lock);
+    return 0;
 }
 
 /* =========================================================================

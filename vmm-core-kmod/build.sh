@@ -160,6 +160,7 @@ airlock_rust_exit
 airlock_rust_get_caps
 airlock_rust_vm_create
 airlock_rust_vm_destroy
+airlock_rust_on_msix_irq
 EOF
 
 ld -r -m elf_x86_64 \
@@ -168,6 +169,7 @@ ld -r -m elf_x86_64 \
     -u airlock_rust_get_caps \
     -u airlock_rust_vm_create \
     -u airlock_rust_vm_destroy \
+    -u airlock_rust_on_msix_irq \
     "$STATICLIB" -o "$RAW_OBJ"
 
 # Mark Wasmtime's inline-asm trap unwinder (`throw`/`raise` SP+FP restore gadget)

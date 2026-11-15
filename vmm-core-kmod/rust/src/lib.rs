@@ -31,7 +31,8 @@ use vmm_core::host::abi::BridgeShm;
 use host_impl::{LinuxCoreBridge, LinuxHvCore};
 use kapi::{
     airlock_kapi_kthread_spawn, airlock_kapi_kthread_stop, AirlockCreateVmReq, AirlockKthread,
-    EventfdBinding, PinnedUserMem, WaitQueue, AIRLOCK_CAP_NPT, AIRLOCK_CAP_SVM, PAGE_SIZE_4K,
+    EventfdBinding, PinnedUserMem, WaitQueue, AIRLOCK_CAP_IOMMU, AIRLOCK_CAP_NPT, AIRLOCK_CAP_SVM,
+    PAGE_SIZE_4K,
 };
 use vcpu_thread::{
     on_i2c_eventfd_wakeup, rx_kthread_main, vcpu_kthread_main, RxRouterCtx, VcpuRunner,
@@ -138,6 +139,7 @@ impl VmInstance {
             -12
         })?;
         let hv = Arc::new(hv);
+        hv.pci.set_self_hv(&hv);
         let bridge = Arc::new(LinuxCoreBridge::new(shm_mem, payload_mem, hv.clone()));
 
         let (wasm, vcpu_workers) =
@@ -256,6 +258,9 @@ impl VmInstance {
         self.vcpu_runners.clear();
         self.rx_ctx = None;
         self.wasm = None;
+
+        // 4. Reset, disable DMA, free MSI-X IRQs, and detach IOMMU groups BEFORE unpinning Guest RAM.
+        self.hv.pci.teardown_all(&self.hv.stage2);
     }
 }
 
@@ -277,7 +282,7 @@ pub unsafe extern "C" fn airlock_rust_init() -> i32 {
         return -5; // -EIO
     }
 
-    let caps = AIRLOCK_CAP_SVM | AIRLOCK_CAP_NPT;
+    let caps = AIRLOCK_CAP_SVM | AIRLOCK_CAP_NPT | AIRLOCK_CAP_IOMMU;
     DETECTED_CAPS.store(caps, Ordering::Release);
     let cpus = unsafe { kapi::airlock_kapi_num_possible_cpus() };
     let tsc = unsafe { kapi::airlock_kapi_tsc_khz() };

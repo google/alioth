@@ -232,58 +232,62 @@ impl Stage2Mmu {
         }
     }
 
-    #[allow(dead_code)]
     pub fn bind_iommu_and_replay(&self, ops: alloc::sync::Arc<dyn Stage2IommuOps>) -> HvResult<()> {
-        let mut inner = self.inner.lock();
-        if inner.iommu_ops.is_some() {
-            return Ok(());
-        }
-        let mut mapped_so_far: Vec<(u64, u64)> = Vec::new();
-        for slot in inner.slots.iter().flatten() {
-            if !slot.is_ram {
-                continue;
+        let replay_runs = {
+            let inner = self.inner.lock();
+            if inner.iommu_ops.is_some() {
+                return Ok(());
             }
-            if let Err(e) = self.map_slot_in_iommu(
-                &inner,
-                ops.as_ref(),
-                slot.gpa,
-                slot.size,
-                slot.obj,
-                slot.offset,
-                slot.prot,
-            ) {
+            let mut runs: Vec<(u64, u64, u64, MemProt)> = Vec::new();
+            for slot in inner.slots.iter().flatten() {
+                if !slot.is_ram {
+                    continue;
+                }
+                let slot_runs =
+                    self.collect_iommu_runs(&inner, slot.gpa, slot.size, slot.obj, slot.offset)?;
+                for (rgpa, rhpa, rlen) in slot_runs {
+                    runs.push((rgpa, rhpa, rlen, slot.prot));
+                }
+            }
+            runs
+        };
+
+        let mut mapped_so_far: Vec<(u64, u64)> = Vec::with_capacity(replay_runs.len());
+        for (rgpa, rhpa, rlen, prot) in replay_runs {
+            if let Err(e) = ops.map_dma(rgpa, rhpa, rlen, prot) {
                 for (mgpa, msz) in mapped_so_far {
                     ops.unmap_dma(mgpa, msz);
                 }
                 return Err(e);
             }
-            mapped_so_far.push((slot.gpa, slot.size));
+            mapped_so_far.push((rgpa, rlen));
         }
-        inner.iommu_ops = Some(ops);
+
+        let mut inner = self.inner.lock();
+        if inner.iommu_ops.is_none() {
+            inner.iommu_ops = Some(ops);
+        }
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn clear_iommu_ops(&self) {
         self.inner.lock().iommu_ops = None;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn map_slot_in_iommu(
+    fn collect_iommu_runs(
         &self,
         inner: &Stage2Inner,
-        iommu: &dyn Stage2IommuOps,
         gpa: u64,
         size: u64,
         obj: MemObjId,
         offset: u64,
-        prot: MemProt,
-    ) -> HvResult<()> {
+    ) -> HvResult<Vec<(u64, u64, u64)>> {
         let num_pages = (size >> 12) as usize;
         if num_pages == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let first_page_idx = (offset >> 12) as usize;
+        let mut out = Vec::new();
         let mut run_gpa = gpa;
         let mut run_hpa = self
             .obj_page_phys(inner, obj, first_page_idx)
@@ -298,24 +302,14 @@ impl Stage2Mmu {
             if hpa == run_hpa + run_len {
                 run_len += PAGE_SIZE_4K;
             } else {
-                if let Err(e) = iommu.map_dma(run_gpa, run_hpa, run_len, prot) {
-                    if run_gpa > gpa {
-                        iommu.unmap_dma(gpa, run_gpa - gpa);
-                    }
-                    return Err(e);
-                }
+                out.push((run_gpa, run_hpa, run_len));
                 run_gpa = cur_gpa;
                 run_hpa = hpa;
                 run_len = PAGE_SIZE_4K;
             }
         }
-        if let Err(e) = iommu.map_dma(run_gpa, run_hpa, run_len, prot) {
-            if run_gpa > gpa {
-                iommu.unmap_dma(gpa, run_gpa - gpa);
-            }
-            return Err(e);
-        }
-        Ok(())
+        out.push((run_gpa, run_hpa, run_len));
+        Ok(out)
     }
 
     pub fn mem_alloc(&self, size: u64) -> HvResult<MemObjId> {
@@ -618,22 +612,22 @@ impl Stage2Mmu {
             i += 1;
         }
 
-        if is_ram {
-            if let Some(iommu) = inner.iommu_ops.clone() {
-                if let Err(e) = self.map_slot_in_iommu(
-                    &inner,
-                    iommu.as_ref(),
-                    gpa,
-                    size,
-                    obj,
-                    offset,
-                    prot,
-                ) {
-                    Self::unmap_npt_range(l4_phys, gpa, size);
-                    return Err(e);
+        let pending_iommu = if is_ram {
+            match inner.iommu_ops.clone() {
+                Some(ops) => {
+                    match self.collect_iommu_runs(&inner, gpa, size, obj, offset) {
+                        Ok(runs) => Some((ops, runs)),
+                        Err(e) => {
+                            Self::unmap_npt_range(l4_phys, gpa, size);
+                            return Err(e);
+                        }
+                    }
                 }
+                None => None,
             }
-        }
+        } else {
+            None
+        };
 
         let in_shm_slots = shm_off.is_some();
         inner.slots[slot_idx] = Some(SlotMapping {
@@ -646,6 +640,22 @@ impl Stage2Mmu {
             in_shm_slots,
         });
         drop(inner);
+
+        if let Some((ops, runs)) = pending_iommu {
+            let mut mapped_so_far: Vec<(u64, u64)> = Vec::with_capacity(runs.len());
+            for (rgpa, rhpa, rlen) in runs {
+                if let Err(e) = ops.map_dma(rgpa, rhpa, rlen, prot) {
+                    for (mgpa, msz) in mapped_so_far {
+                        ops.unmap_dma(mgpa, msz);
+                    }
+                    let mut inner = self.inner.lock();
+                    inner.slots[slot_idx] = None;
+                    Self::unmap_npt_range(inner.l4_phys, gpa, size);
+                    return Err(e);
+                }
+                mapped_so_far.push((rgpa, rlen));
+            }
+        }
 
         if let Some(shm_offset) = shm_off {
             let shm = self.shm_ptr as *mut BridgeShm;
@@ -675,13 +685,17 @@ impl Stage2Mmu {
             .position(|s| matches!(s, Some(m) if m.gpa == gpa && m.size == size))
             .ok_or(HvError::InvalidParam)?;
         let mapping = inner.slots[slot_idx].take().unwrap();
-        if mapping.is_ram {
-            if let Some(iommu) = inner.iommu_ops.as_ref() {
-                iommu.unmap_dma(gpa, size);
-            }
-        }
+        let pending_iommu_unmap = if mapping.is_ram {
+            inner.iommu_ops.clone()
+        } else {
+            None
+        };
         Self::unmap_npt_range(inner.l4_phys, gpa, size);
         drop(inner);
+
+        if let Some(ops) = pending_iommu_unmap {
+            ops.unmap_dma(gpa, size);
+        }
 
         if mapping.in_shm_slots {
             let shm = self.shm_ptr as *mut BridgeShm;

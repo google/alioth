@@ -55,6 +55,26 @@ pub struct AirlockKthread {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub struct AirlockIommuCtx {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct AirlockPciDev {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AirlockKapiBarDesc {
+    pub phys_start: u64,
+    pub size: u64,
+    pub kind: u8,
+    pub prefetchable: u8,
+    pub _pad: [u8; 6],
+}
+
 pub type AirlockEventfdCb = unsafe extern "C" fn(opaque: *mut c_void);
 pub type AirlockKthreadFn = unsafe extern "C" fn(opaque: *mut c_void);
 
@@ -155,6 +175,59 @@ unsafe extern "C" {
     ) -> i32;
     pub fn airlock_kapi_eventfd_signal(efd: *mut AirlockEventfd);
     pub fn airlock_kapi_eventfd_unbind(efd: *mut AirlockEventfd);
+
+    pub fn airlock_kapi_iommu_alloc_for_bdf(
+        bdf: u16,
+        out_ctx: *mut *mut AirlockIommuCtx,
+    ) -> i32;
+    pub fn airlock_kapi_iommu_map(
+        ctx: *mut AirlockIommuCtx,
+        iova: u64,
+        paddr: u64,
+        size: u64,
+        readable: bool,
+        writable: bool,
+    ) -> i32;
+    pub fn airlock_kapi_iommu_unmap(ctx: *mut AirlockIommuCtx, iova: u64, size: u64);
+    pub fn airlock_kapi_iommu_free(ctx: *mut AirlockIommuCtx);
+
+    pub fn airlock_kapi_pci_open(
+        bdf: u16,
+        iommu_ctx: *mut AirlockIommuCtx,
+        hv_ptr: usize,
+        out_bars: *mut AirlockKapiBarDesc,
+        out_dev: *mut *mut AirlockPciDev,
+    ) -> i32;
+    pub fn airlock_kapi_pci_close(adev: *mut AirlockPciDev);
+    pub fn airlock_kapi_pci_reset(adev: *mut AirlockPciDev) -> i32;
+    pub fn airlock_kapi_pci_read_config(
+        adev: *mut AirlockPciDev,
+        offset: u16,
+        size: u8,
+        out_val: *mut u32,
+    ) -> i32;
+    pub fn airlock_kapi_pci_write_config(
+        adev: *mut AirlockPciDev,
+        offset: u16,
+        size: u8,
+        val: u32,
+    ) -> i32;
+    pub fn airlock_kapi_pci_bar_io(
+        adev: *mut AirlockPciDev,
+        bar_idx: u8,
+        offset: u64,
+        size: u8,
+        is_write: bool,
+        write_val: u64,
+        out_val: *mut u64,
+    ) -> i32;
+    pub fn airlock_kapi_pci_configure_msix(
+        adev: *mut AirlockPciDev,
+        entry_idx: u16,
+        enabled: bool,
+        guest_addr: u64,
+        guest_data: u32,
+    ) -> i32;
 }
 
 pub fn log_info_str(s: &str) {
