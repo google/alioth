@@ -14,6 +14,7 @@ exclude = [
     "tests/moto-sys",
     "tests/motor-io-host",
     "tests/test-init",
+    "vmm-core-kmod/rust",
 ]
 
 [workspace.package]

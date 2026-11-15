@@ -1,0 +1,11 @@
+*.o
+*.o_shipped
+*.ko
+*.mod
+*.mod.c
+*.symvers
+*.order
+.*cmd
+.tmp_versions/
+c/*.o
+c/.*cmd

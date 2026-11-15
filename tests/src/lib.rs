@@ -374,6 +374,136 @@ pub fn ensure_test_guest_artifacts() -> &'static TestGuestArtifacts {
 }
 
 #[derive(Debug, Clone)]
+pub struct LinuxAirlockArtifacts {
+    pub dir: PathBuf,
+    pub bzimage: PathBuf,
+    pub airlock_ko: PathBuf,
+    pub irqbypass_ko: PathBuf,
+    pub kvm_ko: PathBuf,
+    pub kvm_amd_ko: PathBuf,
+    pub ioctl_check: PathBuf,
+}
+
+/// Builds the out-of-tree L1 Linux kernel (`target/linux-kbuild` from `../linux-stable`,
+/// leaving `../linux-stable` untouched) plus out-of-tree `airlock.ko` (`vmm-core-kmod/`).
+pub fn build_linux_airlock() -> LinuxAirlockArtifacts {
+    let _ = ensure_vmm_artifacts();
+    let root = repo_root();
+    let out_dir = root.join("target/airlock");
+    let build_script = root.join("vmm-core-kmod/build.sh");
+
+    let mut cmd = Command::new(&build_script);
+    clear_host_rustup_env(&mut cmd);
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("failed to execute '{}': {e}", build_script.display()));
+    assert!(status.success(), "vmm-core-kmod/build.sh failed");
+
+    let bzimage = out_dir.join("bzImage");
+    let airlock_ko = out_dir.join("airlock.ko");
+    let irqbypass_ko = out_dir.join("irqbypass.ko");
+    let kvm_ko = out_dir.join("kvm.ko");
+    let kvm_amd_ko = out_dir.join("kvm-amd.ko");
+    let ioctl_check = out_dir.join("airlock-ioctl-check");
+
+    for artifact in [
+        &bzimage,
+        &airlock_ko,
+        &irqbypass_ko,
+        &kvm_ko,
+        &kvm_amd_ko,
+        &ioctl_check,
+    ] {
+        assert!(
+            artifact.is_file(),
+            "expected Linux airlock artifact '{}' missing",
+            artifact.display()
+        );
+    }
+
+    LinuxAirlockArtifacts {
+        dir: out_dir,
+        bzimage,
+        airlock_ko,
+        irqbypass_ko,
+        kvm_ko,
+        kvm_amd_ko,
+        ioctl_check,
+    }
+}
+
+pub fn ensure_linux_airlock_artifacts() -> &'static LinuxAirlockArtifacts {
+    static AIRLOCK_ARTIFACTS: OnceLock<LinuxAirlockArtifacts> = OnceLock::new();
+    AIRLOCK_ARTIFACTS.get_or_init(build_linux_airlock)
+}
+
+pub enum CpioEntry<'a> {
+    Dir { path: &'a str, mode: u32 },
+    File { path: &'a str, mode: u32, data: &'a [u8] },
+}
+
+/// Packs a sequence of directories and files into a standard SVR4 `newc` (`070701`) cpio archive.
+/// Linux's `init/initramfs.c` natively unpacks multiple concatenated compressed/uncompressed
+/// `newc` archives, allowing fast in-memory overlays onto `initramfs.cpio.gz`.
+pub fn pack_newc_cpio(entries: &[CpioEntry<'_>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut ino: u32 = 300_000;
+
+    let push_record = |out: &mut Vec<u8>, ino: u32, mode: u32, nlink: u32, name: &str, data: &[u8]| {
+        let namesize = name.len() + 1;
+        let hdr = format!(
+            "070701{ino:08x}{mode:08x}{uid:08x}{gid:08x}{nlink:08x}{mtime:08x}{filesize:08x}\
+             {maj:08x}{min:08x}{rmaj:08x}{rmin:08x}{namesize:08x}{chksum:08x}",
+            uid = 0u32,
+            gid = 0u32,
+            mtime = 0u32,
+            filesize = data.len() as u32,
+            maj = 0u32,
+            min = 0u32,
+            rmaj = 0u32,
+            rmin = 0u32,
+            chksum = 0u32,
+        );
+        debug_assert_eq!(hdr.len(), 110);
+        out.extend_from_slice(hdr.as_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        let pad_hdr = (4 - (out.len() % 4)) % 4;
+        out.resize(out.len() + pad_hdr, 0);
+        out.extend_from_slice(data);
+        let pad_data = (4 - (out.len() % 4)) % 4;
+        out.resize(out.len() + pad_data, 0);
+    };
+
+    for entry in entries {
+        ino += 1;
+        match entry {
+            CpioEntry::Dir { path, mode } => {
+                let clean = path.trim_matches('/');
+                push_record(&mut out, ino, 0o040000 | (mode & 0o7777), 2, clean, &[]);
+            }
+            CpioEntry::File { path, mode, data } => {
+                let clean = path.trim_matches('/');
+                push_record(&mut out, ino, 0o100000 | (mode & 0o7777), 1, clean, data);
+            }
+        }
+    }
+
+    push_record(&mut out, 0, 0, 1, "TRAILER!!!", &[]);
+    out
+}
+
+pub fn append_cpio_overlay(base_initramfs: &[u8], entries: &[CpioEntry<'_>]) -> Vec<u8> {
+    let overlay = pack_newc_cpio(entries);
+    let aligned_base = base_initramfs.len().next_multiple_of(4);
+    let mut combined = Vec::with_capacity(aligned_base + overlay.len());
+    combined.extend_from_slice(base_initramfs);
+    combined.resize(aligned_base, 0);
+    combined.extend_from_slice(&overlay);
+    combined
+}
+
+#[derive(Debug, Clone)]
 pub struct NestedMotorOsArtifacts {
     pub l1_kloader: PathBuf,
     pub l1_initrd: PathBuf,
@@ -3044,6 +3174,151 @@ pub fn boot_passthrough_blk_alpine_with_l0(l0: L0Engine, l1_label: &str, tmp: &T
     );
 }
 
+/// Boots L1 Linux (`bzImage` from `../linux-stable`) with L0 `virtio-iommu` active (either
+/// `wasm-vmm` or `cloud-hypervisor-static`), loads and unloads out-of-tree `airlock.ko`, and
+/// verifies `/dev/airlock` both with `kvm` unloaded AND concurrently with `kvm.ko + kvm-amd.ko`.
+pub fn boot_airlock_kmod_smoke_with_l0(l0_engine: L0Engine, tmp: &TempTestDir) {
+    let airlock = ensure_linux_airlock_artifacts();
+    let blobs = linux_blobs_dir();
+    let base_initramfs = fs::read(blobs.join("initramfs.cpio.gz"))
+        .expect("failed to read ../linux-blobs/initramfs.cpio.gz");
+    let airlock_ko = fs::read(&airlock.airlock_ko).expect("failed to read airlock.ko");
+    let irqbypass_ko = fs::read(&airlock.irqbypass_ko).expect("failed to read irqbypass.ko");
+    let kvm_ko = fs::read(&airlock.kvm_ko).expect("failed to read kvm.ko");
+    let kvm_amd_ko = fs::read(&airlock.kvm_amd_ko).expect("failed to read kvm-amd.ko");
+    let ioctl_check = fs::read(&airlock.ioctl_check).expect("failed to read airlock-ioctl-check");
+
+    let init_script = b"#!/bin/sh\n\
+set -e\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true\n\
+echo \"L1_KERNEL_RELEASE=$(uname -r)\"\n\
+dmesg | grep -E 'virtio_iommu|Adding to iommu group' | head -n 6 || true\n\
+# 1. Verify airlock.ko works with zero KVM modules loaded\n\
+insmod /lib/modules/airlock.ko\n\
+/bin/airlock-ioctl-check\n\
+rmmod airlock\n\
+echo \"AIRLOCK_SOLO_UNLOAD_OK\"\n\
+# 2. Load airlock.ko FIRST, then load kvm + kvm-amd and verify KVM_CREATE_VM succeeds\n\
+insmod /lib/modules/airlock.ko\n\
+insmod /lib/modules/irqbypass.ko\n\
+insmod /lib/modules/kvm.ko\n\
+insmod /lib/modules/kvm-amd.ko\n\
+/bin/airlock-ioctl-check --kvm-coexist\n\
+rmmod airlock\n\
+# 3. With kvm + kvm-amd ALREADY loaded, load airlock.ko again and verify coexistence\n\
+insmod /lib/modules/airlock.ko\n\
+/bin/airlock-ioctl-check --kvm-coexist\n\
+rmmod airlock\n\
+rmmod kvm_amd\n\
+rmmod kvm\n\
+rmmod irqbypass\n\
+echo \"AIRLOCK_L1_SMOKE_ALL_OK\"\n\
+poweroff -f\n";
+
+    let overlay_initramfs = append_cpio_overlay(
+        &base_initramfs,
+        &[
+            CpioEntry::Dir {
+                path: "lib",
+                mode: 0o755,
+            },
+            CpioEntry::Dir {
+                path: "lib/modules",
+                mode: 0o755,
+            },
+            CpioEntry::File {
+                path: "lib/modules/airlock.ko",
+                mode: 0o644,
+                data: &airlock_ko,
+            },
+            CpioEntry::File {
+                path: "lib/modules/irqbypass.ko",
+                mode: 0o644,
+                data: &irqbypass_ko,
+            },
+            CpioEntry::File {
+                path: "lib/modules/kvm.ko",
+                mode: 0o644,
+                data: &kvm_ko,
+            },
+            CpioEntry::File {
+                path: "lib/modules/kvm-amd.ko",
+                mode: 0o644,
+                data: &kvm_amd_ko,
+            },
+            CpioEntry::File {
+                path: "bin/airlock-ioctl-check",
+                mode: 0o755,
+                data: &ioctl_check,
+            },
+            CpioEntry::File {
+                path: "init",
+                mode: 0o755,
+                data: init_script,
+            },
+        ],
+    );
+
+    let initrd_path = tmp.path().join("initramfs-airlock-smoke.cpio");
+    fs::write(&initrd_path, &overlay_initramfs).expect("failed to write overlay initramfs");
+
+    let cmdline = "console=ttyS0 rdinit=/init";
+    let serial = match l0_engine {
+        L0Engine::Wasm(mode) => {
+            let cfg = format!(
+                "kernel = \"{}\"\n\
+                 initramfs = \"{}\"\n\
+                 cmd_line = \"{cmdline}\"\n\
+                 num_cpus = 2\n\
+                 mem_size = \"512M\"\n\
+                 iommu = true\n\
+                 blk = []\n",
+                airlock.bzimage.display(),
+                initrd_path.display(),
+            );
+            boot_until_autonomous_exit(
+                "airlock_kmod_smoke",
+                mode,
+                tmp,
+                &cfg,
+                Duration::from_secs(40),
+            )
+        }
+        L0Engine::Chv => boot_chv_until_autonomous_exit(
+            "airlock_kmod_smoke_chv",
+            tmp,
+            2,
+            "512M",
+            &airlock.bzimage,
+            &initrd_path,
+            cmdline,
+            Duration::from_secs(40),
+        ),
+    };
+
+    for expected in [
+        "Adding to iommu group",
+        "airlock: Rust Ring-0 core + #![no_std] Wasmtime ready (svm=1, npt=1,",
+        "airlock: loaded (/dev/airlock ready,",
+        "AIRLOCK_IOCTL_OK ver=1 caps=0x",
+        "AIRLOCK_SOLO_UNLOAD_OK",
+        "AIRLOCK_KVM_COEXIST_OK ver=1 caps=0x",
+        "AIRLOCK_L1_SMOKE_ALL_OK",
+    ] {
+        assert!(
+            serial.contains(expected),
+            "[airlock_kmod_smoke ({})] missing expected marker {expected:?} in serial output:\n{serial}",
+            l0_engine.as_str()
+        );
+    }
+}
+
+pub fn boot_airlock_kmod_smoke(mode: VmmMode, tmp: &TempTestDir) {
+    boot_airlock_kmod_smoke_with_l0(L0Engine::Wasm(mode), tmp);
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -3119,5 +3394,27 @@ mod unit_tests {
         assert_eq!(&image[p1..p1 + cwasm_len], fake_cwasm);
         let p2 = p1 + cwasm_len;
         assert_eq!(&image[p2..p2 + kernel_len], fake_kernel);
+    }
+
+    #[test]
+    fn test_pack_newc_cpio_alignment_and_headers() {
+        let archive = pack_newc_cpio(&[
+            CpioEntry::Dir {
+                path: "/lib/modules",
+                mode: 0o755,
+            },
+            CpioEntry::File {
+                path: "/init",
+                mode: 0o755,
+                data: b"#!/bin/sh\necho hi\n",
+            },
+        ]);
+        assert_eq!(archive.len() % 4, 0);
+        assert_eq!(&archive[0..6], b"070701");
+        assert!(
+            archive
+                .windows(b"TRAILER!!!\0".len())
+                .any(|w| w == b"TRAILER!!!\0")
+        );
     }
 }

@@ -1,0 +1,42 @@
+[package]
+name = "airlock-rust"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only OR Apache-2.0"
+publish = false
+
+[lib]
+name = "airlock_rust"
+crate-type = ["staticlib"]
+
+[dependencies]
+vmm-core = { path = "../../vmm-core" }
+wasmtime = { path = "../../../wasmtime/crates/wasmtime", default-features = false, features = ["runtime", "custom-sync-primitives", "threads"] }
+# Force software SHA-2 in `wasmtime-environ` so `sha2` never emits SSE2/SHA-NI SIMD intrinsics under soft-float.
+sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
+zerocopy = { version = "0.7.32", default-features = false, features = ["derive", "alloc"] }
+bitflags = "2.4.0"
+log = "0.4"
+
+[workspace]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+derive-layout = { path = "../../derive-layout" }
+bitfield = "0.15.0"
+bitflags = "2.4.0"
+log = "0.4"
+zerocopy = { version = "0.7.32", default-features = false, features = ["derive", "alloc"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+codegen-units = 1

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
+obj-m := airlock.o
+airlock-y := c/airlock_shim.o airlock_rust.o
+
+quiet_cmd_shipped_rust = SHIPPED $@
+      cmd_shipped_rust = cp -f $< $@
+
+$(obj)/airlock_rust.o: $(src)/airlock_rust.blob.o FORCE
+	$(call if_changed,shipped_rust)
