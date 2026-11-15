@@ -22,6 +22,7 @@ if [ ! -d "$LINUX_BLOBS_DIR" ]; then
     exit 1
 fi
 LINUX_BLOBS_DIR=$(CDPATH= cd -- "$LINUX_BLOBS_DIR" && pwd)
+LINUX_SSH_KEY="${LINUX_SSH_KEY:-$AIRLOCK_DIR/id_ed25519}"
 
 MODE="cwasm"
 L0_VMM="wasm"
@@ -139,6 +140,11 @@ banner() {
 banner "[Step 1/4] Building L0 Wasm VMM, L1 Linux bzImage, and out-of-tree airlock.ko"
 cargo build --release --target=x86_64-unknown-linux-musl --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-core-host -p vmm-io-host
 "$REPO_ROOT/vmm-core-kmod/build.sh"
+if [ ! -f "$LINUX_SSH_KEY" ]; then
+    mkdir -p "$(dirname -- "$LINUX_SSH_KEY")"
+    ssh-keygen -q -t ed25519 -N "" -C "airlock-linux" -f "$LINUX_SSH_KEY"
+    chmod 600 "$LINUX_SSH_KEY"
+fi
 
 rm -rf "$RUNTIME_DIR"
 mkdir -p "$RUNTIME_DIR/stage"
@@ -370,7 +376,7 @@ cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-tests --bin s
     --dst "$L1_RAW" \
     --stage-dir "$RUNTIME_DIR/stage/ext4" \
     --resize-mib 2048 \
-    --ssh-key "$MOTO_DIR/test.key" \
+    --ssh-key "$LINUX_SSH_KEY" \
     --allow-tcp-forwarding \
     --autologin /opt/airlock/l1-shell.sh \
     $IFACES_ARG \

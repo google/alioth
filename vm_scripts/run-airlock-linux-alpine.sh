@@ -7,20 +7,13 @@ RUNTIME_DIR="$REPO_ROOT/target/vm-runtime/airlock-linux-alpine"
 AIRLOCK_DIR="$REPO_ROOT/target/airlock"
 HOST_TARGET_DIR="$REPO_ROOT/target/x86_64-unknown-linux-musl/release"
 
-MOTO_ROOT="${MOTO_ROOT:-$REPO_ROOT/../motor-dev/motor-os}"
-MOTO_DIR="${MOTO_DIR:-$MOTO_ROOT/vm_images/release}"
-if [ ! -d "$MOTO_DIR" ]; then
-    echo "run-airlock-linux-alpine: Motor OS image directory '$MOTO_DIR' not found (override with MOTO_DIR)" >&2
-    exit 1
-fi
-MOTO_DIR=$(CDPATH= cd -- "$MOTO_DIR" && pwd)
-
 LINUX_BLOBS_DIR="${LINUX_BLOBS_DIR:-$REPO_ROOT/../linux-blobs}"
 if [ ! -d "$LINUX_BLOBS_DIR" ]; then
     echo "run-airlock-linux-alpine: Linux blobs directory '$LINUX_BLOBS_DIR' not found (override with LINUX_BLOBS_DIR)" >&2
     exit 1
 fi
 LINUX_BLOBS_DIR=$(CDPATH= cd -- "$LINUX_BLOBS_DIR" && pwd)
+LINUX_SSH_KEY="${LINUX_SSH_KEY:-$AIRLOCK_DIR/id_ed25519}"
 
 MODE="cwasm"
 L0_VMM="wasm"
@@ -154,6 +147,11 @@ banner() {
 banner "[Step 1/4] Building L0 Wasm VMM, L1 Linux bzImage, and out-of-tree airlock.ko"
 cargo build --release --target=x86_64-unknown-linux-musl --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-core-host -p vmm-io-host
 "$REPO_ROOT/vmm-core-kmod/build.sh"
+if [ ! -f "$LINUX_SSH_KEY" ]; then
+    mkdir -p "$(dirname -- "$LINUX_SSH_KEY")"
+    ssh-keygen -q -t ed25519 -N "" -C "airlock-linux" -f "$LINUX_SSH_KEY"
+    chmod 600 "$LINUX_SSH_KEY"
+fi
 
 rm -rf "$RUNTIME_DIR"
 mkdir -p "$RUNTIME_DIR/stage"
@@ -181,7 +179,7 @@ if [ "$SUB_MODE" = "pt-all" ]; then
         --src "$LINUX_BLOBS_DIR/alpine.raw" \
         --dst "$L2_RAW" \
         --stage-dir "$RUNTIME_DIR/stage/l2-ext4" \
-        --ssh-key "$MOTO_DIR/test.key"
+        --ssh-key "$LINUX_SSH_KEY"
 
     cat > "$RUNTIME_DIR/stage/vm-l2.toml" <<EOF
 log_file = "/tmp/vmm-l2.log"
@@ -326,7 +324,7 @@ EOF
             --src "$LINUX_BLOBS_DIR/alpine.raw" \
             --dst "$L2_RAW" \
             --stage-dir "$RUNTIME_DIR/stage/l2-ext4" \
-            --ssh-key "$MOTO_DIR/test.key"
+            --ssh-key "$LINUX_SSH_KEY"
         L2_PUT_ARG="--put $L2_RAW:/opt/airlock/l2-alpine.raw:0644"
         cat > "$RUNTIME_DIR/stage/l1-interfaces" <<EOF
 auto lo
@@ -364,7 +362,7 @@ EOF
             --src "$LINUX_BLOBS_DIR/alpine.raw" \
             --dst "$L2_RAW" \
             --stage-dir "$RUNTIME_DIR/stage/l2-ext4" \
-            --ssh-key "$MOTO_DIR/test.key" \
+            --ssh-key "$LINUX_SSH_KEY" \
             --interfaces-file "$RUNTIME_DIR/stage/l2-interfaces"
         L2_PUT_ARG="--put $L2_RAW:/opt/airlock/l2-alpine.raw:0644"
         IFACES_ARG=""
@@ -414,7 +412,7 @@ cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -p vmm-tests --bin s
     --dst "$L1_RAW" \
     --stage-dir "$RUNTIME_DIR/stage/l1-ext4" \
     --resize-mib "$L1_RESIZE_MIB" \
-    --ssh-key "$MOTO_DIR/test.key" \
+    --ssh-key "$LINUX_SSH_KEY" \
     --allow-tcp-forwarding \
     --autologin /opt/airlock/l1-shell.sh \
     $IFACES_ARG \

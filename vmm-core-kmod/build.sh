@@ -222,4 +222,8 @@ fi
 cp -f "$KMOD_DIR/airlock.ko" "$OUT_DIR/airlock.ko"
 gcc -static -Os -Wall -Werror "$KMOD_DIR/c/airlock_ioctl_check.c" -o "$OUT_DIR/airlock-ioctl-check"
 strip "$OUT_DIR/airlock-ioctl-check"
+if [[ ! -f "$OUT_DIR/id_ed25519" ]]; then
+    ssh-keygen -q -t ed25519 -N "" -C "airlock-linux" -f "$OUT_DIR/id_ed25519"
+    chmod 600 "$OUT_DIR/id_ed25519"
+fi
 echo "[airlock-build] Ready: $OUT_DIR/airlock.ko"

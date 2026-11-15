@@ -382,6 +382,7 @@ pub struct LinuxAirlockArtifacts {
     pub kvm_ko: PathBuf,
     pub kvm_amd_ko: PathBuf,
     pub ioctl_check: PathBuf,
+    pub ssh_key: PathBuf,
 }
 
 /// Builds the out-of-tree L1 Linux kernel (`target/linux-kbuild` from `../linux-stable`,
@@ -405,6 +406,7 @@ pub fn build_linux_airlock() -> LinuxAirlockArtifacts {
     let kvm_ko = out_dir.join("kvm.ko");
     let kvm_amd_ko = out_dir.join("kvm-amd.ko");
     let ioctl_check = out_dir.join("airlock-ioctl-check");
+    let ssh_key = out_dir.join("id_ed25519");
 
     for artifact in [
         &bzimage,
@@ -413,6 +415,7 @@ pub fn build_linux_airlock() -> LinuxAirlockArtifacts {
         &kvm_ko,
         &kvm_amd_ko,
         &ioctl_check,
+        &ssh_key,
     ] {
         assert!(
             artifact.is_file(),
@@ -429,6 +432,7 @@ pub fn build_linux_airlock() -> LinuxAirlockArtifacts {
         kvm_ko,
         kvm_amd_ko,
         ioctl_check,
+        ssh_key,
     }
 }
 
@@ -4714,10 +4718,9 @@ pub struct AirlockAlpineArtifacts {
 fn build_airlock_alpine_artifacts() -> AirlockAlpineArtifacts {
     let airlock = ensure_linux_airlock_artifacts();
     let vmm_dir = ensure_vmm_artifacts();
-    let moto_dir = motor_os_release_dir();
     let blobs = linux_blobs_dir();
 
-    let ssh_key = moto_dir.join("test.key");
+    let ssh_key = airlock.ssh_key.clone();
     let src_alpine = blobs.join("alpine.raw");
     let l2_bzimage = blobs.join("bzImage");
 
@@ -5131,10 +5134,9 @@ pub struct AirlockPassthroughNetArtifacts {
 fn build_airlock_passthrough_net_artifacts() -> AirlockPassthroughNetArtifacts {
     let airlock = ensure_linux_airlock_artifacts();
     let vmm_dir = ensure_vmm_artifacts();
-    let moto_dir = motor_os_release_dir();
     let blobs = linux_blobs_dir();
 
-    let ssh_key = moto_dir.join("test.key");
+    let ssh_key = airlock.ssh_key.clone();
     let src_alpine = blobs.join("alpine.raw");
     let l2_bzimage = blobs.join("bzImage");
 
@@ -5600,10 +5602,9 @@ pub struct AirlockPassthroughAllAlpineArtifacts {
 fn build_airlock_passthrough_all_alpine_artifacts() -> AirlockPassthroughAllAlpineArtifacts {
     let airlock = ensure_linux_airlock_artifacts();
     let vmm_dir = ensure_vmm_artifacts();
-    let moto_dir = motor_os_release_dir();
     let blobs = linux_blobs_dir();
 
-    let ssh_key = moto_dir.join("test.key");
+    let ssh_key = airlock.ssh_key.clone();
     let src_alpine = blobs.join("alpine.raw");
     let l2_bzimage = blobs.join("bzImage");
     let base_initramfs_path = blobs.join("initramfs.cpio.gz");
