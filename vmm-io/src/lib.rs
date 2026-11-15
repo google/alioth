@@ -116,6 +116,7 @@ pub fn run(
         kernel_path,
         initramfs_path: config.initramfs,
         cmd_line: config.cmd_line,
+        pci_devs: config.pci,
     };
 
     let serial = host.create_serial_console()?;

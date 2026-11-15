@@ -73,6 +73,7 @@ pub struct IoBootConfig {
     pub kernel_path: Option<PathBuf>,
     pub initramfs_path: Option<PathBuf>,
     pub cmd_line: Option<String>,
+    pub pci_devs: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +223,7 @@ pub mod abi {
     pub const EXEC_TYPE_PVH: u32 = 2;
 
     pub const MAX_VIRTIO_DEVS: usize = 16;
+    pub const MAX_PASSTHROUGH_DEVS: usize = 8;
     pub const MAX_QUEUES_PER_DEV: usize = 8;
     pub const MAX_CONFIG_BYTES: usize = 256;
     pub const MAX_DEV_NAME_LEN: usize = 64;
@@ -249,7 +251,8 @@ pub mod abi {
         pub kernel_path_len: u32,
         pub initramfs_path_len: u32,
         pub cmd_line_len: u32,
-        pub _pad: u32,
+        pub num_pci_devs: u32,
+        pub pci_devs: [u16; MAX_PASSTHROUGH_DEVS],
         pub kernel_path: [u8; MAX_PATH_LEN],
         pub initramfs_path: [u8; MAX_PATH_LEN],
         pub cmd_line: [u8; MAX_CMDLINE_LEN],
@@ -264,7 +267,8 @@ pub mod abi {
                 kernel_path_len: 0,
                 initramfs_path_len: 0,
                 cmd_line_len: 0,
-                _pad: 0,
+                num_pci_devs: 0,
+                pci_devs: [0; MAX_PASSTHROUGH_DEVS],
                 kernel_path: [0; MAX_PATH_LEN],
                 initramfs_path: [0; MAX_PATH_LEN],
                 cmd_line: [0; MAX_CMDLINE_LEN],

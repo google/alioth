@@ -322,6 +322,9 @@ impl IoHost for WasmIoHost {
             raw_boot.cmd_line[..len].copy_from_slice(&b[..len]);
             raw_boot.cmd_line_len = len as u32;
         }
+        let npci = boot_cfg.pci_devs.len().min(raw_boot.pci_devs.len());
+        raw_boot.pci_devs[..npci].copy_from_slice(&boot_cfg.pci_devs[..npci]);
+        raw_boot.num_pci_devs = npci as u32;
 
         let mut raw_devs = Vec::with_capacity(virtio_devs.len());
         for spec in virtio_devs {

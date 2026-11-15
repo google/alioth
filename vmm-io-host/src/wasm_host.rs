@@ -523,6 +523,8 @@ where
             } else {
                 None
             };
+            let npci = (raw_boot.num_pci_devs as usize).min(raw_boot.pci_devs.len());
+            let pci_devs = raw_boot.pci_devs[..npci].to_vec();
             let boot_cfg = IoBootConfig {
                 num_cpus: raw_boot.num_cpus,
                 mem_size: raw_boot.mem_size as usize,
@@ -534,6 +536,7 @@ where
                 kernel_path,
                 initramfs_path,
                 cmd_line,
+                pci_devs,
             };
             let specs: Vec<VirtioDeviceSpec> = raw_devs
                 .into_iter()

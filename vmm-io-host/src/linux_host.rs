@@ -590,6 +590,9 @@ impl VmmHostIo for LinuxIoHost {
             boot_info.cmd_line[..n].copy_from_slice(&bytes[..n]);
             boot_info.cmd_line_len = n as u32;
         }
+        let npci = boot_cfg.pci_devs.len().min(boot_info.pci_devs.len());
+        boot_info.pci_devs[..npci].copy_from_slice(&boot_cfg.pci_devs[..npci]);
+        boot_info.num_pci_devs = npci as u32;
         unsafe {
             (*shm).boot_info = boot_info;
             for (i, d) in virtio_devs.iter().enumerate().take(ndevs) {

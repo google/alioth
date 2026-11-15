@@ -2408,6 +2408,350 @@ pub fn boot_nested_full_alpine_with_l0(
     sess.finish_from_l1_rush("nested_alpine", mode.as_str());
 }
 
+#[derive(Debug, Clone)]
+pub struct PassthroughNetAlpineArtifacts {
+    pub l1_kloader: PathBuf,
+    pub l1_initrd: PathBuf,
+    pub l1_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn build_passthrough_net_alpine_artifacts() -> PassthroughNetAlpineArtifacts {
+    let guest = ensure_test_guest_artifacts();
+    let motor_out = ensure_motor_io_host_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+    let imager = moto_dir.join("tools/imager");
+    let qcow2 = moto_dir.join("motor-os.qcow2");
+    let l1_initrd = moto_dir.join("initrd");
+    let ssh_key = moto_dir.join("test.key");
+    let bzimage = blobs.join("bzImage");
+    let src_alpine = blobs.join("alpine.raw");
+
+    for required in [&imager, &qcow2, &l1_initrd, &ssh_key, &bzimage, &src_alpine] {
+        assert!(
+            required.is_file(),
+            "missing required passthrough-net Alpine artifact '{}'",
+            required.display()
+        );
+    }
+
+    let stage_dir = motor_out.join("passthrough-net-alpine-stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    fs::create_dir_all(&stage_dir)
+        .expect("failed to create target/motor/passthrough-net-alpine-stage");
+
+    let l2_alpine = stage_dir.join("alpine.raw");
+    copy_sparse_raw(&src_alpine, &l2_alpine);
+    inject_ssh_pubkey_into_alpine_raw(&l2_alpine, &ssh_key, &stage_dir);
+
+    let l1_template_raw = motor_out.join("l1-passthrough-net-alpine-template.raw");
+    let _ = fs::remove_file(&l1_template_raw);
+    run_imager(
+        &imager,
+        &[
+            "resize",
+            "-i",
+            qcow2.to_str().unwrap(),
+            "-o",
+            l1_template_raw.to_str().unwrap(),
+            "--size",
+            "2G",
+        ],
+    );
+
+    // L1 has zero network devices in Topology A (00:03.0 is passed through to L2),
+    // so start only `sys-tty` and `strobe` in L1.
+    let l1_init_cfg = stage_dir.join("l1-sys-init.cfg");
+    fs::write(
+        &l1_init_cfg,
+        "tty:/system/services/sys-tty\n\
+         strobe:/system/services/strobe\n",
+    )
+    .expect("failed to write l1-sys-init.cfg");
+    run_imager(
+        &imager,
+        &[
+            "put",
+            l1_template_raw.to_str().unwrap(),
+            l1_init_cfg.to_str().unwrap(),
+            "/system/cfg/sys-init.cfg",
+        ],
+    );
+    run_imager(
+        &imager,
+        &[
+            "mkdir",
+            "--mode",
+            "rwxrwxr-x",
+            l1_template_raw.to_str().unwrap(),
+            "/user/vm",
+        ],
+    );
+
+    let vm_l2_toml = stage_dir.join("vm-l2.toml");
+    fs::write(
+        &vm_l2_toml,
+        "log_file = \"/user/tmp/vmm-l2.log\"\n\
+         log_level = \"info\"\n\
+         kernel = \"/user/vm/bzImage\"\n\
+         cmd_line = \"console=ttyS0 root=/dev/vda3 rw\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n\
+         pci = [\"00:03.0\"]\n\
+         blk = [\"/user/vm/alpine.raw\"]\n",
+    )
+    .expect("failed to write vm-l2.toml for passthrough-net Alpine");
+
+    for (src, dst, mode) in [
+        (
+            motor_out.join("motor-io-host-cwasm"),
+            "/user/vm/motor-io-host-cwasm",
+            None,
+        ),
+        (
+            motor_out.join("motor-io-host-wasm"),
+            "/user/vm/motor-io-host-wasm",
+            None,
+        ),
+        (motor_out.join("vmm-core.cwasm"), "/user/vm/vmm-core.cwasm", None),
+        (motor_out.join("vmm-io.cwasm"), "/user/vm/vmm-io.cwasm", None),
+        (motor_out.join("vmm-io.wasm"), "/user/vm/vmm-io.wasm", None),
+        (bzimage, "/user/vm/bzImage", None),
+        (l2_alpine, "/user/vm/alpine.raw", Some("rw-rw-r--")),
+        (vm_l2_toml, "/user/vm/vm-l2.toml", None),
+    ] {
+        let l1_s = l1_template_raw.to_str().unwrap();
+        let src_s = src.to_str().unwrap();
+        if let Some(m) = mode {
+            run_imager(&imager, &["put", "--mode", m, l1_s, src_s, dst]);
+        } else {
+            run_imager(&imager, &["put", l1_s, src_s, dst]);
+        }
+    }
+
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    PassthroughNetAlpineArtifacts {
+        l1_kloader: guest.kloader.clone(),
+        l1_initrd,
+        l1_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_passthrough_net_alpine_artifacts() -> &'static PassthroughNetAlpineArtifacts {
+    static PT_NET_ALPINE: OnceLock<PassthroughNetAlpineArtifacts> = OnceLock::new();
+    PT_NET_ALPINE.get_or_init(build_passthrough_net_alpine_artifacts)
+}
+
+pub fn build_direct_alpine_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-F")
+        .arg("/dev/null")
+        .arg("-o")
+        .arg("ProxyCommand=none")
+        .arg("-o")
+        .arg("IdentitiesOnly=yes")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-i")
+        .arg(key_path)
+        .arg("-p")
+        .arg("22")
+        .arg("root@192.168.8.2")
+        .arg(remote_cmd);
+    cmd
+}
+
+/// Topology A: Boots L1 full Motor OS with `pci_passthrough=00:03.0` while L0 attaches
+/// `puff-tap` (`192.168.8.1/24`) at `00:03.0` behind `virtio-iommu`.
+/// Verifies that L1 `sys-io` sees **zero** network devices, launches L2 Alpine Linux with
+/// `pci = ["00:03.0"]`, connects **directly** from L0 to L2 (`root@192.168.8.2:22`,
+/// `ProxyCommand=none`) over the passed-through `virtio-net` device, verifies ICMP + SSH +
+/// `poweroff`, and verifies clean L2 -> L1 `rush` -> L0 teardown.
+pub fn boot_passthrough_net_alpine(mode: VmmMode, tmp: &TempTestDir) {
+    boot_passthrough_net_alpine_with_l0(L0Engine::Wasm(mode), mode, tmp);
+}
+
+pub fn boot_passthrough_net_alpine_with_l0(l0: L0Engine, mode: VmmMode, tmp: &TempTestDir) {
+    let _ = ensure_vmm_artifacts();
+    let pt = ensure_passthrough_net_alpine_artifacts();
+
+    let l1_disk = tmp.path().join("l1-pt-net-alpine.raw");
+    copy_sparse_raw(&pt.l1_template_raw, &l1_disk);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&pt.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let l1_launch = match mode {
+        VmmMode::Cwasm => {
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-cwasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.cwasm --core-wasm /user/vm/vmm-core.cwasm\r"
+        }
+        VmmMode::Wasm => {
+            "MOTOR_OS_CAPS=0x434c /user/vm/motor-io-host-wasm -c /user/vm/vm-l2.toml \
+             -w /user/vm/vmm-io.wasm --core-wasm /user/vm/vmm-core.cwasm\r"
+        }
+    };
+
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1536M",
+        pvh_kernel: &pt.l1_kloader,
+        initramfs: &pt.l1_initrd,
+        cmd_line: "system-tty pci_passthrough=00:03.0",
+        iommu: true,
+        disk_raw: Some(&l1_disk),
+        tap_if_name: Some("puff-tap"),
+    });
+    let state = Arc::clone(&sess.state);
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"Starting /system/bin/rush",
+        Duration::from_secs(25),
+    ) else {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            "L1 Motor OS did not boot to /system/bin/rush within 25s",
+        );
+    };
+
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if !boot_txt.contains("vmm::pci_cfg: reserved passthrough PCI BDF 00:03.0") {
+            sess.fail(
+                "passthrough_net_alpine",
+                mode.as_str(),
+                "L1 kernel did not reserve passthrough PCI BDF 00:03.0",
+            );
+        }
+        if !boot_txt.contains("vmm::virtio_iommu: active at ") {
+            sess.fail(
+                "passthrough_net_alpine",
+                mode.as_str(),
+                "L1 kernel did not activate virtio-iommu during boot",
+            );
+        }
+        if !boot_txt.contains("Cannot find NET device") {
+            sess.fail(
+                "passthrough_net_alpine",
+                mode.as_str(),
+                "expected L1 sys-io to see zero NET devices when 00:03.0 is hidden for passthrough",
+            );
+        }
+    }
+
+    thread::sleep(Duration::from_millis(300));
+    sess.stdin
+        .write_all(l1_launch.as_bytes())
+        .expect("failed to write L2 passthrough-net launch command to L1 stdin");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"alpine-vm login:",
+        Duration::from_secs(60),
+    ) else {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            "L2 Alpine Linux with passed-through 00:03.0 did not reach 'alpine-vm login:' within 60s",
+        );
+    };
+    cursor = next_pos;
+
+    let ssh_deadline = Instant::now() + Duration::from_secs(25);
+    let mut last_err = String::new();
+    let mut ssh_stdout = None;
+    let verify_cmd = "ping -c 2 192.168.8.1 && echo L2_PASSTHROUGH_NET_OK_$(uname -s)_$(nproc)";
+    while Instant::now() < ssh_deadline {
+        match build_direct_alpine_ssh_command(&key_copy, verify_cmd).output() {
+            Ok(out) if out.status.success() => {
+                ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                break;
+            }
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    let Some(ssh_out) = ssh_stdout else {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            format!("direct L0 -> L2 SSH (root@192.168.8.2:22 over puff-tap, ProxyCommand=none) failed: {last_err}"),
+        );
+    };
+    if !ssh_out.contains("bytes from 192.168.8.1")
+        || !ssh_out.contains("L2_PASSTHROUGH_NET_OK_Linux_2")
+    {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            format!("unexpected L2 direct SSH/ping output: {ssh_out:?}"),
+        );
+    }
+
+    let _ = build_direct_alpine_ssh_command(&key_copy, "poweroff").status();
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"reboot: Power down",
+        Duration::from_secs(20),
+    ) else {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            "L2 Alpine did not emit 'reboot: Power down' after direct SSH poweroff",
+        );
+    };
+    cursor = next_pos;
+
+    thread::sleep(Duration::from_millis(300));
+    sess.stdin
+        .write_all(b"echo L1_RESUMED_AFTER_PT_NET_OK\r")
+        .expect("failed to send post-L2 check to L1 rush");
+    sess.stdin.flush().expect("failed to flush L1 rush");
+
+    if wait_for_serial_from(
+        &state,
+        cursor,
+        b"L1_RESUMED_AFTER_PT_NET_OK",
+        Duration::from_secs(10),
+    )
+    .is_none()
+    {
+        sess.fail(
+            "passthrough_net_alpine",
+            mode.as_str(),
+            "L1 rush shell did not resume cleanly after L2 passthrough-net teardown",
+        );
+    }
+
+    sess.finish_from_l1_rush("passthrough_net_alpine", mode.as_str());
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
