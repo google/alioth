@@ -16,12 +16,13 @@ use std::time::Duration;
 
 use vmm_tests::{
     L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock,
-    boot_airlock_linux_motor_os, boot_airlock_linux_motor_os_with_l0,
-    boot_airlock_linux_test_guest, boot_airlock_linux_test_guest_with_l0, boot_and_shutdown,
-    boot_chv_until_autonomous_exit, boot_nested_full_alpine, boot_nested_full_alpine_with_l0,
-    boot_nested_full_motor_os, boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd,
-    boot_nested_linux_initrd_with_l0, boot_passthrough_blk_alpine,
-    boot_passthrough_blk_alpine_with_l0, boot_passthrough_net_alpine,
+    boot_airlock_linux_alpine, boot_airlock_linux_alpine_with_l0, boot_airlock_linux_initrd,
+    boot_airlock_linux_initrd_with_l0, boot_airlock_linux_motor_os,
+    boot_airlock_linux_motor_os_with_l0, boot_airlock_linux_test_guest,
+    boot_airlock_linux_test_guest_with_l0, boot_and_shutdown, boot_chv_until_autonomous_exit,
+    boot_nested_full_alpine, boot_nested_full_alpine_with_l0, boot_nested_full_motor_os,
+    boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd, boot_nested_linux_initrd_with_l0,
+    boot_passthrough_blk_alpine, boot_passthrough_blk_alpine_with_l0, boot_passthrough_net_alpine,
     boot_passthrough_net_alpine_with_l0, boot_until_autonomous_exit, convert_qcow2_to_raw,
     copy_sparse_raw, ensure_test_guest_artifacts, linux_blobs_dir, motor_os_release_dir,
     use_network_tap,
@@ -566,4 +567,68 @@ fn boot_airlock_linux_motor_os_chv_cwasm() {
 #[test]
 fn boot_airlock_linux_motor_os_chv_wasm() {
     run_airlock_linux_motor_os_chv(VmmMode::Wasm);
+}
+
+fn run_airlock_linux_initrd(mode: VmmMode) {
+    let tmp = TempTestDir::new(&format!("airlock-linux-initrd-{}", mode.as_str()));
+    boot_airlock_linux_initrd(mode, &tmp);
+}
+
+fn run_airlock_linux_initrd_chv(mode: VmmMode) {
+    let tmp = TempTestDir::new(&format!("airlock-linux-initrd-chv-{}", mode.as_str()));
+    boot_airlock_linux_initrd_with_l0(L0Engine::Chv, mode, &tmp);
+}
+
+#[test]
+fn boot_airlock_linux_initrd_cwasm() {
+    run_airlock_linux_initrd(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_initrd_wasm() {
+    run_airlock_linux_initrd(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_initrd_chv_cwasm() {
+    run_airlock_linux_initrd_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_initrd_chv_wasm() {
+    run_airlock_linux_initrd_chv(VmmMode::Wasm);
+}
+
+fn run_airlock_linux_alpine(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    let has_tap = use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh");
+    let tmp = TempTestDir::new(&format!("airlock-linux-alpine-{}", mode.as_str()));
+    boot_airlock_linux_alpine(mode, &tmp, has_tap);
+}
+
+fn run_airlock_linux_alpine_chv(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    let has_tap = use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh");
+    let tmp = TempTestDir::new(&format!("airlock-linux-alpine-chv-{}", mode.as_str()));
+    boot_airlock_linux_alpine_with_l0(L0Engine::Chv, mode, &tmp, has_tap);
+}
+
+#[test]
+fn boot_airlock_linux_alpine_cwasm() {
+    run_airlock_linux_alpine(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_alpine_wasm() {
+    run_airlock_linux_alpine(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_alpine_chv_cwasm() {
+    run_airlock_linux_alpine_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_alpine_chv_wasm() {
+    run_airlock_linux_alpine_chv(VmmMode::Wasm);
 }
