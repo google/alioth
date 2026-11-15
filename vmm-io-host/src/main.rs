@@ -43,12 +43,15 @@ const DEFAULT_CORE_COMPONENT_FILENAME: &str = "vmm-core.wasm";
 #[cfg(not(feature = "compiler"))]
 const DEFAULT_CORE_COMPONENT_FILENAME: &str = "vmm-core.cwasm";
 
+const DEFAULT_AIRLOCK_CORE_CWASM_FILENAME: &str = "vmm-core-motor.cwasm";
+const DEFAULT_AIRLOCK_DEV_PATH: &str = "/dev/airlock";
+
 fn print_usage_and_exit() -> ! {
     let prog = std::env::args()
         .next()
         .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string());
     eprintln!(
-        "Usage: `{prog} -c $CONFIG_FILENAME_TOML [-w $IO_COMPONENT_PATH] [--core-host $CORE_HOST_BIN] [--core-wasm $CORE_COMPONENT_PATH]`."
+        "Usage: `{prog} -c $CONFIG_FILENAME_TOML [-w $IO_COMPONENT_PATH] [--airlock] [--airlock-dev /dev/airlock] [--core-host $CORE_HOST_BIN] [--core-wasm $CORE_COMPONENT_PATH]`."
     );
     std::process::exit(1)
 }
@@ -102,6 +105,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("VMM_CORE_HOST").ok().map(PathBuf::from);
     let mut core_wasm_path: Option<PathBuf> =
         std::env::var("VMM_CORE_WASM").ok().map(PathBuf::from);
+    let mut airlock_mode: bool = std::env::var("VMM_AIRLOCK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let mut airlock_dev_path: PathBuf = std::env::var("VMM_AIRLOCK_DEV")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_AIRLOCK_DEV_PATH));
 
     let mut i = 1;
     while i < args.len() {
@@ -119,6 +128,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print_usage_and_exit();
                 }
                 io_wasm_path = Some(PathBuf::from(&args[i]));
+            }
+            "--airlock" => {
+                airlock_mode = true;
+            }
+            "--airlock-dev" => {
+                i += 1;
+                if i >= args.len() {
+                    print_usage_and_exit();
+                }
+                airlock_mode = true;
+                airlock_dev_path = PathBuf::from(&args[i]);
             }
             "--core-host" => {
                 i += 1;
@@ -151,24 +171,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
 
-    let core_host = core_host_path
-        .or_else(|| find_sibling_file(DEFAULT_CORE_HOST_BIN))
-        .ok_or_else(|| {
-            format!(
-                "Could not find {DEFAULT_CORE_HOST_BIN}; pass --core-host <path/to/{DEFAULT_CORE_HOST_BIN}>"
-            )
-        })?;
-
+    let default_core_filename = if airlock_mode {
+        DEFAULT_AIRLOCK_CORE_CWASM_FILENAME
+    } else {
+        DEFAULT_CORE_COMPONENT_FILENAME
+    };
     let core_component = core_wasm_path
-        .or_else(|| find_sibling_file(DEFAULT_CORE_COMPONENT_FILENAME))
+        .or_else(|| find_sibling_file(default_core_filename))
         .ok_or_else(|| {
             format!(
-                "Could not find {DEFAULT_CORE_COMPONENT_FILENAME}; pass --core-wasm <path/to/{DEFAULT_CORE_COMPONENT_FILENAME}>"
+                "Could not find {default_core_filename}; pass --core-wasm <path/to/{default_core_filename}>"
             )
         })?;
 
     let bridge_fd = create_memfd("vmm_bridge_shm")?;
-    let shm_size = std::mem::size_of::<BridgeShm>();
+    let shm_size = std::mem::size_of::<BridgeShm>().next_multiple_of(4096);
     if unsafe { ftruncate(bridge_fd, shm_size as libc::off_t) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -178,37 +195,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let i2c_fd = create_eventfd(EFD_NONBLOCK)?;
     let cfg_fd = create_eventfd(0)?;
 
-    let io_host = linux_host::LinuxIoHost::new(linux_host::IoBridgeFds {
-        bridge_fd,
-        ram_fd,
-        payload_fd,
-        c2i_fd,
-        i2c_fd,
-        cfg_fd,
-    })?;
+    let airlock_cfg = airlock_mode.then(|| linux_host::AirlockBackendCfg {
+        dev_path: airlock_dev_path,
+        core_cwasm_path: core_component.clone(),
+    });
 
-    let mut core_child = Command::new(&core_host)
-        .arg("--bridge-fd")
-        .arg(bridge_fd.to_string())
-        .arg("--ram-fd")
-        .arg(ram_fd.to_string())
-        .arg("--payload-fd")
-        .arg(payload_fd.to_string())
-        .arg("--c2i-fd")
-        .arg(c2i_fd.to_string())
-        .arg("--i2c-fd")
-        .arg(i2c_fd.to_string())
-        .arg("--cfg-fd")
-        .arg(cfg_fd.to_string())
-        .arg("-w")
-        .arg(&core_component)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn {core_host:?}: {e}"))?;
+    let io_host = linux_host::LinuxIoHost::new(
+        linux_host::IoBridgeFds {
+            bridge_fd,
+            ram_fd,
+            payload_fd,
+            c2i_fd,
+            i2c_fd,
+            cfg_fd,
+        },
+        airlock_cfg,
+    )?;
+
+    let core_child = if airlock_mode {
+        None
+    } else {
+        let core_host = core_host_path
+            .or_else(|| find_sibling_file(DEFAULT_CORE_HOST_BIN))
+            .ok_or_else(|| {
+                format!(
+                    "Could not find {DEFAULT_CORE_HOST_BIN}; pass --core-host <path/to/{DEFAULT_CORE_HOST_BIN}>"
+                )
+            })?;
+        Some(
+            Command::new(&core_host)
+                .arg("--bridge-fd")
+                .arg(bridge_fd.to_string())
+                .arg("--ram-fd")
+                .arg(ram_fd.to_string())
+                .arg("--payload-fd")
+                .arg(payload_fd.to_string())
+                .arg("--c2i-fd")
+                .arg(c2i_fd.to_string())
+                .arg("--i2c-fd")
+                .arg(i2c_fd.to_string())
+                .arg("--cfg-fd")
+                .arg(cfg_fd.to_string())
+                .arg("-w")
+                .arg(&core_component)
+                .spawn()
+                .map_err(|e| format!("Failed to spawn {core_host:?}: {e}"))?,
+        )
+    };
 
     let io_res = wasm_host::run_wasm_io(Path::new(&io_component), &config_filename, io_host.clone());
 
     io_host.shutdown_bridge();
 
-    let _ = core_child.wait();
+    if let Some(mut child) = core_child {
+        let _ = child.wait();
+    }
     io_res
 }

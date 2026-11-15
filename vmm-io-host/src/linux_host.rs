@@ -15,14 +15,17 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, IoSliceMut, Write};
-use std::os::fd::RawFd;
+use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use libc::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, c_void, ftruncate, mmap, read, write};
+use libc::{
+    MAP_FAILED, MAP_POPULATE, MAP_SHARED, PROT_READ, PROT_WRITE, c_void, ftruncate, mmap, munmap,
+    read, write,
+};
 use mio::unix::SourceFd;
 use parking_lot::{Mutex, RwLock};
 use vmm_core::host::abi::{
@@ -97,6 +100,28 @@ pub struct IoBridgeFds {
     pub cfg_fd: RawFd,
 }
 
+#[derive(Clone, Debug)]
+pub struct AirlockBackendCfg {
+    pub dev_path: PathBuf,
+    pub core_cwasm_path: PathBuf,
+}
+
+#[repr(C)]
+pub struct AirlockCreateVm {
+    pub shm_uaddr: u64,
+    pub shm_size: u64,
+    pub ram_uaddr: u64,
+    pub ram_size: u64,
+    pub payload_uaddr: u64,
+    pub payload_size: u64,
+    pub cwasm_uaddr: u64,
+    pub cwasm_size: u64,
+    pub c2i_eventfd: i32,
+    pub i2c_eventfd: i32,
+}
+
+crate::ioctl_write_ptr!(airlock_ioc_create_vm, 0xA4, 0x01, AirlockCreateVm);
+
 struct IoPoller {
     poll: mio::Poll,
     events: mio::Events,
@@ -106,11 +131,15 @@ struct IoPoller {
 /// Linux implementation of [`VmmHostIo`].
 pub struct LinuxIoHost {
     shm: *mut BridgeShm,
+    shm_map_len: usize,
     ram_fd: RawFd,
     payload_fd: RawFd,
     c2i_fd: RawFd,
     i2c_fd: RawFd,
     cfg_fd: RawFd,
+    airlock_cfg: Option<AirlockBackendCfg>,
+    airlock_vm_fd: Mutex<Option<File>>,
+    payload_mmap: Mutex<Option<(usize, usize)>>,
     ram_base: AtomicU64,
     ram_len: AtomicU64,
     registry: mio::Registry,
@@ -126,14 +155,14 @@ unsafe impl Send for LinuxIoHost {}
 unsafe impl Sync for LinuxIoHost {}
 
 impl LinuxIoHost {
-    pub fn new(fds: IoBridgeFds) -> io::Result<Arc<Self>> {
-        let shm_size = std::mem::size_of::<BridgeShm>();
+    pub fn new(fds: IoBridgeFds, airlock_cfg: Option<AirlockBackendCfg>) -> io::Result<Arc<Self>> {
+        let shm_size = std::mem::size_of::<BridgeShm>().next_multiple_of(4096);
         let ptr = unsafe {
             mmap(
                 null_mut(),
                 shm_size,
                 PROT_READ | PROT_WRITE,
-                MAP_SHARED,
+                MAP_SHARED | MAP_POPULATE,
                 fds.bridge_fd,
                 0,
             )
@@ -155,11 +184,15 @@ impl LinuxIoHost {
 
         Ok(Arc::new(Self {
             shm: ptr as *mut BridgeShm,
+            shm_map_len: shm_size,
             ram_fd: fds.ram_fd,
             payload_fd: fds.payload_fd,
             c2i_fd: fds.c2i_fd,
             i2c_fd: fds.i2c_fd,
             cfg_fd: fds.cfg_fd,
+            airlock_cfg,
+            airlock_vm_fd: Mutex::new(None),
+            payload_mmap: Mutex::new(None),
             ram_base: AtomicU64::new(0),
             ram_len: AtomicU64::new(0),
             registry,
@@ -183,6 +216,13 @@ impl LinuxIoHost {
         }
         self.wake_cfg();
         self.wake_core();
+        // Close `airlock-vm` anonymous inode synchronously so Ring-0 kthreads stop and unpin pages.
+        let _ = self.airlock_vm_fd.lock().take();
+        if let Some((addr, len)) = self.payload_mmap.lock().take() {
+            unsafe {
+                let _ = munmap(addr as *mut c_void, len);
+            }
+        }
     }
 
     fn wake_core(&self) {
@@ -500,7 +540,7 @@ impl VmmHostIo for LinuxIoHost {
         boot_cfg: &IoBootConfig,
         virtio_devs: &[VirtioDeviceSpec],
     ) -> io::Result<()> {
-        let arena_size = boot_cfg.mem_size + (64 << 20);
+        let arena_size = (boot_cfg.mem_size + (64 << 20)).next_multiple_of(4096);
         if unsafe { ftruncate(self.ram_fd, arena_size as libc::off_t) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -509,7 +549,7 @@ impl VmmHostIo for LinuxIoHost {
                 null_mut(),
                 arena_size,
                 PROT_READ | PROT_WRITE,
-                MAP_SHARED,
+                MAP_SHARED | MAP_POPULATE,
                 self.ram_fd,
                 0,
             )
@@ -547,8 +587,14 @@ impl VmmHostIo for LinuxIoHost {
             payload_bytes.extend_from_slice(&ib);
         }
 
+        let mut payload_uaddr = 0u64;
         if !payload_bytes.is_empty() {
-            if unsafe { ftruncate(self.payload_fd, payload_bytes.len() as libc::off_t) } != 0 {
+            let file_len = if self.airlock_cfg.is_some() {
+                payload_bytes.len().next_multiple_of(4096)
+            } else {
+                payload_bytes.len()
+            };
+            if unsafe { ftruncate(self.payload_fd, file_len as libc::off_t) } != 0 {
                 return Err(io::Error::last_os_error());
             }
             let mut written = 0;
@@ -565,6 +611,23 @@ impl VmmHostIo for LinuxIoHost {
                     return Err(io::Error::last_os_error());
                 }
                 written += rc as usize;
+            }
+            if self.airlock_cfg.is_some() {
+                let pptr = unsafe {
+                    mmap(
+                        null_mut(),
+                        file_len,
+                        PROT_READ,
+                        MAP_SHARED | MAP_POPULATE,
+                        self.payload_fd,
+                        0,
+                    )
+                };
+                if pptr == MAP_FAILED {
+                    return Err(io::Error::last_os_error());
+                }
+                payload_uaddr = pptr as usize as u64;
+                *self.payload_mmap.lock() = Some((pptr as usize, file_len));
             }
         }
 
@@ -619,7 +682,50 @@ impl VmmHostIo for LinuxIoHost {
             }
             (*shm).config_ready.store(1, Ordering::Release);
         }
-        self.wake_cfg();
+
+        if let Some(airlock) = &self.airlock_cfg {
+            let cwasm_bytes = std::fs::read(&airlock.core_cwasm_path).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "failed to read core cwasm '{}': {e}",
+                        airlock.core_cwasm_path.display()
+                    ),
+                )
+            })?;
+            let dev_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&airlock.dev_path)
+                .map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "failed to open airlock device '{}': {e}",
+                            airlock.dev_path.display()
+                        ),
+                    )
+                })?;
+            let req = AirlockCreateVm {
+                shm_uaddr: self.shm as usize as u64,
+                shm_size: self.shm_map_len as u64,
+                ram_uaddr: rptr as usize as u64,
+                ram_size: arena_size as u64,
+                payload_uaddr,
+                payload_size: payload_bytes.len() as u64,
+                cwasm_uaddr: cwasm_bytes.as_ptr() as usize as u64,
+                cwasm_size: cwasm_bytes.len() as u64,
+                c2i_eventfd: self.c2i_fd,
+                i2c_eventfd: self.i2c_fd,
+            };
+            let vm_fd_raw = unsafe { airlock_ioc_create_vm(&dev_file, &req) }.map_err(|e| {
+                io::Error::new(e.kind(), format!("AIRLOCK_IOC_CREATE_VM failed: {e}"))
+            })?;
+            let vm_file = unsafe { File::from_raw_fd(vm_fd_raw) };
+            *self.airlock_vm_fd.lock() = Some(vm_file);
+        } else {
+            self.wake_cfg();
+        }
         Ok(())
     }
 

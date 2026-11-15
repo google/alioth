@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use vmm_tests::{
     L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock,
-    boot_airlock_kmod_smoke, boot_airlock_kmod_smoke_with_l0, boot_and_shutdown,
+    boot_airlock_linux_test_guest, boot_airlock_linux_test_guest_with_l0, boot_and_shutdown,
     boot_chv_until_autonomous_exit, boot_nested_full_alpine, boot_nested_full_alpine_with_l0,
     boot_nested_full_motor_os, boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd,
     boot_nested_linux_initrd_with_l0, boot_passthrough_blk_alpine,
@@ -516,19 +516,19 @@ fn boot_passthrough_blk_alpine_chv_wasm() {
 }
 
 #[test]
-fn boot_airlock_kmod_smoke_cwasm() {
-    let tmp = TempTestDir::new("airlock-kmod-smoke-cwasm");
-    boot_airlock_kmod_smoke(VmmMode::Cwasm, &tmp);
+fn boot_airlock_linux_test_guest_cwasm() {
+    let tmp = TempTestDir::new("airlock-linux-test-guest-cwasm");
+    boot_airlock_linux_test_guest(VmmMode::Cwasm, &tmp);
 }
 
 #[test]
-fn boot_airlock_kmod_smoke_wasm() {
-    let tmp = TempTestDir::new("airlock-kmod-smoke-wasm");
-    boot_airlock_kmod_smoke(VmmMode::Wasm, &tmp);
+fn boot_airlock_linux_test_guest_wasm() {
+    let tmp = TempTestDir::new("airlock-linux-test-guest-wasm");
+    boot_airlock_linux_test_guest(VmmMode::Wasm, &tmp);
 }
 
 #[test]
-fn boot_airlock_kmod_smoke_chv() {
-    let tmp = TempTestDir::new("airlock-kmod-smoke-chv");
-    boot_airlock_kmod_smoke_with_l0(L0Engine::Chv, &tmp);
+fn boot_airlock_linux_test_guest_chv() {
+    let tmp = TempTestDir::new("airlock-linux-test-guest-chv");
+    boot_airlock_linux_test_guest_with_l0(L0Engine::Chv, VmmMode::Cwasm, &tmp);
 }

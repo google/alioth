@@ -3,14 +3,14 @@
  * Out-of-tree Linux Ring-0 C shim for `airlock.ko` (`vmm-core-host`).
  *
  * Bridges Linux kernel C macros, VFS/miscdevice/anon_inode registration,
- * memory pinning, W^X `.cwasm` PTE permissions, and eventfd waitqueues to the
- * `#![no_std] + alloc` Rust hypervisor core (`libairlock_rust.a`).
- * Zero symbols or Kconfig options from `kvm.ko` are referenced.
+ * memory pinning, W^X `.cwasm` PTE permissions, kthreads, waitqueues, and
+ * KVM-independent per-slice SVM guest entry to `libairlock_rust.a`.
  */
 
 #define pr_fmt(fmt) "airlock: " fmt
 
 #include <linux/anon_inodes.h>
+#include <linux/atomic.h>
 #include <linux/cpufeature.h>
 #include <linux/cpumask.h>
 #include <linux/errno.h>
@@ -23,6 +23,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/kthread.h>
 #include <linux/ktime.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
@@ -30,21 +31,29 @@
 #include <linux/pci.h>
 #include <linux/percpu.h>
 #include <linux/poll.h>
+#include <linux/preempt.h>
 #include <linux/reboot.h>
+#include <linux/sched.h>
 #include <linux/sched/signal.h>
+#include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
+#include <linux/wait.h>
 
+#include <asm/fpu/api.h>
 #include <asm/ibt.h>
 #include <asm/msr.h>
+#include <asm/msr-index.h>
 #include <asm/pgtable.h>
 #include <asm/set_memory.h>
 #include <asm/tlbflush.h>
 #include <asm/tsc.h>
 
 #include "airlock_kapi.h"
+
+extern void airlock_svm_vmrun(u64 *gprs, u64 vmcb_pa, u64 host_vmsave_pa);
 
 /* =========================================================================
  * Logging & Heap Allocation (`#[global_allocator]`)
@@ -63,19 +72,15 @@ void airlock_kapi_log_err(const char *msg, size_t len)
 void *airlock_kapi_alloc(size_t size, size_t align, bool zeroed)
 {
     size_t req = size ? size : 1;
-    gfp_t gfp = GFP_KERNEL | (zeroed ? __GFP_ZERO : 0);
+    gfp_t gfp = (in_atomic() ? GFP_ATOMIC : GFP_KERNEL) | (zeroed ? __GFP_ZERO : 0);
 
-    /*
-     * Rust's `Layout` guarantees `align` is a power of two. For alignments
-     * larger than `ARCH_KMALLOC_MINALIGN`, round `req` up to `align` because
-     * Linux's slab/page allocator naturally aligns power-of-two sizes >=align,
-     * and `kvmalloc` >= PAGE_SIZE is always PAGE_SIZE-aligned.
-     */
     if (align > ARCH_KMALLOC_MINALIGN) {
         if (align > PAGE_SIZE)
             return NULL;
         req = ALIGN(req, align);
     }
+    if (in_atomic())
+        return kmalloc(req, gfp);
     return kvmalloc(req, gfp);
 }
 
@@ -86,13 +91,15 @@ void airlock_kapi_free(void *ptr)
 }
 
 /* =========================================================================
- * CPU / SMP / Time & Per-CPU SVM Save Areas
+ * CPU / SMP / Task / Time & Per-CPU SVM Save Areas
  * ========================================================================= */
 
 static DEFINE_PER_CPU(struct page *, airlock_hsave_page);
 static DEFINE_PER_CPU(struct page *, airlock_host_vmsave_page);
 static DEFINE_PER_CPU(u64, airlock_hsave_pa);
 static DEFINE_PER_CPU(u64, airlock_host_vmsave_pa);
+static DEFINE_PER_CPU(call_single_data_t, airlock_kick_csd);
+static DEFINE_PER_CPU(raw_spinlock_t, airlock_kick_csd_lock);
 
 u32 airlock_kapi_num_possible_cpus(void)
 {
@@ -104,19 +111,19 @@ u32 airlock_kapi_raw_smp_processor_id(void)
     return (u32)raw_smp_processor_id();
 }
 
-u32 airlock_kapi_get_cpu(void)
+uintptr_t airlock_kapi_current_task(void)
 {
-    return (u32)get_cpu();
-}
-
-void airlock_kapi_put_cpu(void)
-{
-    put_cpu();
+    return (uintptr_t)current;
 }
 
 u64 airlock_kapi_ktime_get_ns(void)
 {
     return ktime_get_ns();
+}
+
+u64 airlock_kapi_ktime_get_real_ns(void)
+{
+    return ktime_get_real_ns();
 }
 
 u32 airlock_kapi_tsc_khz(void)
@@ -131,28 +138,31 @@ static void airlock_kick_ipi_noop(void *info)
 
 void airlock_kapi_send_reschedule(u32 cpu)
 {
-    if (cpu < nr_cpu_ids && cpu_online(cpu))
-        smp_call_function_single((int)cpu, airlock_kick_ipi_noop, NULL, 0);
+    unsigned long flags;
+    raw_spinlock_t *lock;
+
+    if (cpu >= nr_cpu_ids || !cpu_online(cpu))
+        return;
+    lock = &per_cpu(airlock_kick_csd_lock, cpu);
+    raw_spin_lock_irqsave(lock, flags);
+    smp_call_function_single_async((int)cpu, &per_cpu(airlock_kick_csd, cpu));
+    raw_spin_unlock_irqrestore(lock, flags);
 }
 
-u64 airlock_kapi_cpu_hsave_pa(u32 cpu)
+void airlock_kapi_cond_resched(void)
 {
-    if (cpu >= nr_cpu_ids)
-        return 0;
-    return per_cpu(airlock_hsave_pa, cpu);
+    cond_resched();
 }
 
-u64 airlock_kapi_cpu_host_vmsave_pa(u32 cpu)
+bool airlock_kapi_signal_pending(void)
 {
-    if (cpu >= nr_cpu_ids)
-        return 0;
-    return per_cpu(airlock_host_vmsave_pa, cpu);
+    return signal_pending(current);
 }
 
 int airlock_kapi_alloc_contig_pages(u32 order, int nid, u64 *out_phys, void **out_virt)
 {
     struct page *p;
-    gfp_t gfp = GFP_KERNEL | __GFP_ZERO;
+    gfp_t gfp = (in_atomic() ? GFP_ATOMIC : GFP_KERNEL) | __GFP_ZERO;
 
     p = (nid < 0) ? alloc_pages(gfp, order) : alloc_pages_node(nid, gfp, order);
     if (!p)
@@ -194,6 +204,8 @@ static int airlock_alloc_percpu_svm_areas(void)
         per_cpu(airlock_host_vmsave_page, cpu) = vms;
         per_cpu(airlock_hsave_pa, cpu) = page_to_phys(hs);
         per_cpu(airlock_host_vmsave_pa, cpu) = page_to_phys(vms);
+        INIT_CSD(&per_cpu(airlock_kick_csd, cpu), airlock_kick_ipi_noop, NULL);
+        raw_spin_lock_init(&per_cpu(airlock_kick_csd_lock, cpu));
     }
     return 0;
 }
@@ -220,6 +232,274 @@ static void airlock_free_percpu_svm_areas(void)
 }
 
 /* =========================================================================
+ * Waitqueues (`airlock_wq`) & Kernel Threads (`airlock_kthread`)
+ * ========================================================================= */
+
+struct airlock_wq {
+    wait_queue_head_t head;
+    atomic_t kicked;
+};
+
+struct airlock_wq *airlock_kapi_wq_alloc(void)
+{
+    struct airlock_wq *wq = kzalloc(sizeof(*wq), GFP_KERNEL);
+
+    if (!wq)
+        return NULL;
+    init_waitqueue_head(&wq->head);
+    atomic_set(&wq->kicked, 0);
+    return wq;
+}
+
+void airlock_kapi_wq_wake(struct airlock_wq *wq)
+{
+    if (!wq)
+        return;
+    atomic_set(&wq->kicked, 1);
+    wake_up_interruptible(&wq->head);
+}
+
+int airlock_kapi_wq_wait_ns(struct airlock_wq *wq, u64 timeout_ns)
+{
+    if (!wq)
+        return -EINVAL;
+    if (atomic_xchg(&wq->kicked, 0))
+        return 0;
+
+    if (timeout_ns == U64_MAX) {
+        long rc = wait_event_interruptible(
+            wq->head,
+            atomic_xchg(&wq->kicked, 0) || kthread_should_stop());
+        return rc < 0 ? (int)rc : 0;
+    } else {
+        ktime_t kt = ns_to_ktime(timeout_ns);
+        long rc = wait_event_interruptible_hrtimeout(
+            wq->head,
+            atomic_xchg(&wq->kicked, 0) || kthread_should_stop(),
+            kt);
+        return (rc < 0 && rc != -ETIME) ? (int)rc : 0;
+    }
+}
+
+void airlock_kapi_wq_free(struct airlock_wq *wq)
+{
+    kfree(wq);
+}
+
+struct airlock_kthread {
+    struct task_struct *task;
+    airlock_kthread_fn_t fn;
+    void *opaque;
+};
+
+static int airlock_kthread_entry(void *arg)
+{
+    struct airlock_kthread *kt = (struct airlock_kthread *)arg;
+
+    kt->fn(kt->opaque);
+
+    /*
+     * Park cleanly if the guest exited autonomously so `kthread_stop()` in
+     * `airlock_kapi_kthread_stop` always joins without races.
+     */
+    while (!kthread_should_stop()) {
+        set_current_state(TASK_INTERRUPTIBLE);
+        if (!kthread_should_stop())
+            schedule();
+    }
+    __set_current_state(TASK_RUNNING);
+    return 0;
+}
+
+int airlock_kapi_kthread_spawn(airlock_kthread_fn_t fn, void *opaque,
+                               const char *name, size_t name_len,
+                               struct airlock_kthread **out_kt)
+{
+    struct airlock_kthread *kt;
+    struct task_struct *task;
+
+    kt = kzalloc(sizeof(*kt), GFP_KERNEL);
+    if (!kt)
+        return -ENOMEM;
+    kt->fn = fn;
+    kt->opaque = opaque;
+
+    task = kthread_create_on_node(airlock_kthread_entry, kt, NUMA_NO_NODE,
+                                  "%.*s", (int)name_len, name);
+    if (IS_ERR(task)) {
+        int err = PTR_ERR(task);
+        kfree(kt);
+        return err;
+    }
+
+    get_task_struct(task);
+    kt->task = task;
+    wake_up_process(task);
+    *out_kt = kt;
+    return 0;
+}
+
+bool airlock_kapi_kthread_should_stop(void)
+{
+    return kthread_should_stop();
+}
+
+void airlock_kapi_kthread_stop(struct airlock_kthread *kt)
+{
+    if (!kt)
+        return;
+    if (kt->task) {
+        kthread_stop(kt->task);
+        put_task_struct(kt->task);
+        kt->task = NULL;
+    }
+    kfree(kt);
+}
+
+/* =========================================================================
+ * KVM-Independent Per-Slice SVM Guest Entry + FPU/XSAVE Context Switch
+ * ========================================================================= */
+
+static __always_inline u64 airlock_xgetbv0(void)
+{
+    u32 eax, edx;
+
+    asm volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+    return ((u64)edx << 32) | eax;
+}
+
+static __always_inline void airlock_xsetbv0(u64 val)
+{
+    u32 eax = (u32)val;
+    u32 edx = (u32)(val >> 32);
+
+    asm volatile("xsetbv" :: "c"(0), "a"(eax), "d"(edx));
+}
+
+static __always_inline void airlock_fpu_restore_guest(const u8 *fpu_buf, bool has_xsave, u32 xmask)
+{
+    if (has_xsave) {
+        u32 hi = 0;
+        asm volatile("xrstor64 %0" :: "m"(*fpu_buf), "a"(xmask), "d"(hi) : "memory");
+    } else {
+        asm volatile("fxrstor64 %0" :: "m"(*fpu_buf) : "memory");
+    }
+}
+
+static __always_inline void airlock_fpu_save_guest(u8 *fpu_buf, bool has_xsave, u32 xmask)
+{
+    if (has_xsave) {
+        u32 hi = 0;
+        asm volatile("xsave64 %0" : "=m"(*fpu_buf) : "a"(xmask), "d"(hi) : "memory");
+    } else {
+        asm volatile("fxsave64 %0" : "=m"(*fpu_buf) :: "memory");
+    }
+}
+
+/* VMCB `control.tlb_ctl` byte lives at offset 0x05c (verified by static_assert in svm.rs). */
+#define AIRLOCK_VMCB_TLB_CTL_OFFSET 0x05c
+#define AIRLOCK_TLB_FLUSH_ASID      3
+
+int airlock_kapi_svm_run_slice(u64 *gprs, u64 vmcb_pa, void *vmcb_va,
+                               u8 *fpu_buf, u64 guest_xcr0, u64 guest_tsc_aux,
+                               const u32 *kick_flag, u32 *on_cpu_slot,
+                               u32 *last_pcpu)
+{
+    bool has_xsave = boot_cpu_has(X86_FEATURE_XSAVE);
+    u64 host_xcr0 = 0;
+    u32 xmask = 0x7;
+    unsigned long irq_flags;
+    int aborted = 0;
+
+    kernel_fpu_begin_mask(0);
+
+    if (has_xsave) {
+        host_xcr0 = airlock_xgetbv0();
+        xmask = (u32)(host_xcr0 & 0x7);
+    }
+
+    /* Restore X87+SSE+AVX with full host XCR0 enabled before narrowing to guest XCR0. */
+    airlock_fpu_restore_guest(fpu_buf, has_xsave, xmask);
+    if (has_xsave && (guest_xcr0 & host_xcr0) == guest_xcr0 && guest_xcr0 != host_xcr0)
+        airlock_xsetbv0(guest_xcr0);
+
+    local_irq_save(irq_flags);
+    {
+        u32 cpu = (u32)raw_smp_processor_id();
+        u8 *tlb_ctl_ptr = (u8 *)vmcb_va + AIRLOCK_VMCB_TLB_CTL_OFFSET;
+
+        WRITE_ONCE(*on_cpu_slot, cpu);
+        smp_mb();
+
+        if (*last_pcpu != cpu) {
+            *last_pcpu = cpu;
+            *tlb_ctl_ptr = AIRLOCK_TLB_FLUSH_ASID;
+        }
+
+        if (need_resched() || signal_pending(current) || kthread_should_stop() ||
+            READ_ONCE(*kick_flag) != 0) {
+            aborted = 1;
+        } else {
+            u64 orig_efer = 0, orig_hsave = 0, host_tsc_aux = 0;
+            u64 my_hsave = per_cpu(airlock_hsave_pa, cpu);
+            u64 my_vmsave = per_cpu(airlock_host_vmsave_pa, cpu);
+            bool has_rdtscp = boot_cpu_has(X86_FEATURE_RDTSCP);
+
+            rdmsrq(MSR_EFER, orig_efer);
+            rdmsrq(MSR_VM_HSAVE_PA, orig_hsave);
+
+            /* If KVM also holds a save area on this CPU, flush our ASID to avoid tag aliasing. */
+            if (orig_hsave != 0 && orig_hsave != my_hsave)
+                *tlb_ctl_ptr = AIRLOCK_TLB_FLUSH_ASID;
+
+            if (!(orig_efer & EFER_SVME))
+                wrmsrq(MSR_EFER, orig_efer | EFER_SVME);
+            if (orig_hsave != my_hsave)
+                wrmsrq(MSR_VM_HSAVE_PA, my_hsave);
+
+            if (has_rdtscp) {
+                rdmsrq(MSR_TSC_AUX, host_tsc_aux);
+                if (host_tsc_aux != guest_tsc_aux)
+                    wrmsrq(MSR_TSC_AUX, guest_tsc_aux);
+            }
+
+            /*
+             * Mask all physical interrupts with GIF=0 (`clgi`) while setting RFLAGS.IF=1
+             * so `VMRUN` records host IF=1 in `VM_HSAVE_PA` (required with `V_INTR_MASKING=1`
+             * so host physical interrupts break out of guest execution even if guest IF=0).
+             */
+            asm volatile("clgi" ::: "memory");
+            raw_local_irq_enable();
+
+            airlock_svm_vmrun(gprs, vmcb_pa, my_vmsave);
+
+            if (cpu_feature_enabled(X86_FEATURE_IBPB_ON_VMEXIT))
+                wrmsrq(MSR_IA32_PRED_CMD, PRED_CMD_IBPB);
+
+            raw_local_irq_disable();
+            asm volatile("stgi" ::: "memory");
+
+            if (has_rdtscp && host_tsc_aux != guest_tsc_aux)
+                wrmsrq(MSR_TSC_AUX, host_tsc_aux);
+            if (orig_hsave != my_hsave)
+                wrmsrq(MSR_VM_HSAVE_PA, orig_hsave);
+            if (!(orig_efer & EFER_SVME))
+                wrmsrq(MSR_EFER, orig_efer);
+        }
+
+        WRITE_ONCE(*on_cpu_slot, U32_MAX);
+    }
+    local_irq_restore(irq_flags);
+
+    if (has_xsave && airlock_xgetbv0() != host_xcr0)
+        airlock_xsetbv0(host_xcr0);
+    airlock_fpu_save_guest(fpu_buf, has_xsave, xmask);
+
+    kernel_fpu_end();
+    return aborted;
+}
+
+/* =========================================================================
  * W^X Executable `.cwasm` Backing (`vmap` 4 KiB PTEs + `lookup_address`)
  * ========================================================================= */
 
@@ -240,7 +520,6 @@ static void airlock_flush_tlb_range_cpu(void *info)
     const struct airlock_tlb_range *r = (const struct airlock_tlb_range *)info;
     unsigned long addr;
 
-    /* `invlpg` invalidates 4 KiB TLB entries even when `_PAGE_GLOBAL` is set. */
     for (addr = r->start; addr < r->end; addr += PAGE_SIZE)
         asm volatile("invlpg (%0)" :: "r"(addr) : "memory");
 }
@@ -284,7 +563,6 @@ int airlock_kapi_exec_alloc_from_user(const void __user *uptr, size_t byte_len,
         rem -= chunk;
     }
 
-    /* `vmap()` maps each `struct page *` with dedicated 4 KiB PTEs (RO + NX). */
     buf->vaddr = vmap(buf->pages, nr_pages, VM_MAP, PAGE_KERNEL_RO);
     if (!buf->vaddr)
         goto err_free;
@@ -307,6 +585,7 @@ int airlock_kapi_exec_set_rx(struct airlock_exec_buf *buf, size_t offset,
                              size_t len, bool executable)
 {
     size_t start_off, end_off, off;
+    struct airlock_tlb_range range;
 
     if (!buf || !len)
         return 0;
@@ -327,18 +606,13 @@ int airlock_kapi_exec_set_rx(struct airlock_exec_buf *buf, size_t offset,
             return -EFAULT;
 
         pfn = pte_pfn(*ptep);
-        /* Strictly W^X: either RO+X (`PAGE_KERNEL_ROX`) or RO+NX (`PAGE_KERNEL_RO`). */
         prot = executable ? PAGE_KERNEL_ROX : PAGE_KERNEL_RO;
         set_pte_atomic(ptep, pfn_pte(pfn, prot));
     }
 
-    {
-        struct airlock_tlb_range range = {
-            .start = (unsigned long)buf->vaddr + start_off,
-            .end   = (unsigned long)buf->vaddr + end_off,
-        };
-        on_each_cpu(airlock_flush_tlb_range_cpu, &range, 1);
-    }
+    range.start = (unsigned long)buf->vaddr + start_off;
+    range.end   = (unsigned long)buf->vaddr + end_off;
+    on_each_cpu(airlock_flush_tlb_range_cpu, &range, 1);
     return 0;
 }
 
@@ -349,7 +623,6 @@ void airlock_kapi_exec_free(struct airlock_exec_buf *buf)
     if (!buf)
         return;
     if (buf->vaddr) {
-        /* Ensure all vmap PTEs are restored to RO+NX before unmapping. */
         airlock_kapi_exec_set_rx(buf, 0, (size_t)buf->nr_pages << PAGE_SHIFT, false);
         vunmap(buf->vaddr);
     }
@@ -362,29 +635,35 @@ void airlock_kapi_exec_free(struct airlock_exec_buf *buf)
 }
 
 /* =========================================================================
- * Kernel CET IBT (`MSR_IA32_S_CET`) Guard for Cranelift `.cwasm` Calls
+ * Kernel CET IBT (`MSR_IA32_S_CET`) Guard Around Cranelift `.cwasm` Calls
  * ========================================================================= */
 
-u64 airlock_kapi_ibt_enter(void)
+u64 airlock_kapi_wasm_call_enter(void)
 {
 #ifdef CONFIG_X86_KERNEL_IBT
     if (cpu_feature_enabled(X86_FEATURE_IBT)) {
         u64 cet = 0;
 
+        preempt_disable();
         rdmsrq(MSR_IA32_S_CET, cet);
         if (cet & CET_ENDBR_EN)
             wrmsrq(MSR_IA32_S_CET, cet & ~CET_ENDBR_EN);
-        return cet;
+        return cet | (1ULL << 63);
     }
 #endif
     return 0;
 }
 
-void airlock_kapi_ibt_exit(u64 saved_cet)
+void airlock_kapi_wasm_call_exit(u64 saved_cet)
 {
 #ifdef CONFIG_X86_KERNEL_IBT
-    if ((saved_cet & CET_ENDBR_EN) && cpu_feature_enabled(X86_FEATURE_IBT))
-        wrmsrq(MSR_IA32_S_CET, saved_cet);
+    if (saved_cet & (1ULL << 63)) {
+        u64 orig = saved_cet & ~(1ULL << 63);
+
+        if (orig & CET_ENDBR_EN)
+            wrmsrq(MSR_IA32_S_CET, orig);
+        preempt_enable();
+    }
 #else
     (void)saved_cet;
 #endif
@@ -526,8 +805,13 @@ static int airlock_eventfd_wakeup(wait_queue_entry_t *wait, unsigned int mode,
 
     (void)mode;
     (void)sync;
-    if ((flags & EPOLLIN) && efd->cb)
-        efd->cb(efd->opaque);
+    if (flags & EPOLLIN) {
+        __u64 cnt = 0;
+
+        eventfd_ctx_do_read(efd->ctx, &cnt);
+        if (efd->cb)
+            efd->cb(efd->opaque);
+    }
     return 0;
 }
 

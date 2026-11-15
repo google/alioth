@@ -3177,8 +3177,14 @@ pub fn boot_passthrough_blk_alpine_with_l0(l0: L0Engine, l1_label: &str, tmp: &T
 /// Boots L1 Linux (`bzImage` from `../linux-stable`) with L0 `virtio-iommu` active (either
 /// `wasm-vmm` or `cloud-hypervisor-static`), loads and unloads out-of-tree `airlock.ko`, and
 /// verifies `/dev/airlock` both with `kvm` unloaded AND concurrently with `kvm.ko + kvm-amd.ko`.
-pub fn boot_airlock_kmod_smoke_with_l0(l0_engine: L0Engine, tmp: &TempTestDir) {
+pub fn boot_airlock_linux_test_guest_with_l0(
+    l0_engine: L0Engine,
+    l1_io_mode: VmmMode,
+    tmp: &TempTestDir,
+) {
     let airlock = ensure_linux_airlock_artifacts();
+    let vmm_dir = ensure_vmm_artifacts();
+    let guest = ensure_test_guest_artifacts();
     let blobs = linux_blobs_dir();
     let base_initramfs = fs::read(blobs.join("initramfs.cpio.gz"))
         .expect("failed to read ../linux-blobs/initramfs.cpio.gz");
@@ -3188,16 +3194,54 @@ pub fn boot_airlock_kmod_smoke_with_l0(l0_engine: L0Engine, tmp: &TempTestDir) {
     let kvm_amd_ko = fs::read(&airlock.kvm_amd_ko).expect("failed to read kvm-amd.ko");
     let ioctl_check = fs::read(&airlock.ioctl_check).expect("failed to read airlock-ioctl-check");
 
-    let init_script = b"#!/bin/sh\n\
+    let (io_host_bin_name, io_mod_name) = match l1_io_mode {
+        VmmMode::Cwasm => ("vmm-io-host-cwasm", "vmm-io.cwasm"),
+        VmmMode::Wasm => ("vmm-io-host-wasm", "vmm-io.wasm"),
+    };
+    let io_host_bin = fs::read(vmm_dir.join(io_host_bin_name))
+        .unwrap_or_else(|e| panic!("failed to read {io_host_bin_name}: {e}"));
+    let io_mod_bytes =
+        fs::read(vmm_dir.join(io_mod_name)).unwrap_or_else(|e| panic!("failed to read {io_mod_name}: {e}"));
+    let core_motor_cwasm = fs::read(vmm_dir.join("vmm-core-motor.cwasm"))
+        .expect("failed to read vmm-core-motor.cwasm");
+    let kloader_bytes = fs::read(&guest.kloader).expect("failed to read test-guest kloader");
+    let l2_initrd_bytes =
+        fs::read(&guest.initrd).expect("failed to read initrd-test-guest");
+
+    let vm_solo_toml = b"log_file = \"/tmp/vmm-l2-solo.log\"\n\
+log_level = \"info\"\n\
+pvh = \"/opt/airlock/kloader\"\n\
+initramfs = \"/opt/airlock/initrd-test-guest\"\n\
+cmd_line = \"test-guest-airlock-solo\"\n\
+num_cpus = 2\n\
+mem_size = \"128M\"\n\
+blk = []\n";
+
+    let vm_coexist_toml = b"log_file = \"/tmp/vmm-l2-coexist.log\"\n\
+log_level = \"info\"\n\
+pvh = \"/opt/airlock/kloader\"\n\
+initramfs = \"/opt/airlock/initrd-test-guest\"\n\
+cmd_line = \"test-guest-airlock-coexist\"\n\
+num_cpus = 2\n\
+mem_size = \"128M\"\n\
+blk = []\n";
+
+    let init_script = format!(
+        "#!/bin/sh\n\
 set -e\n\
 mount -t proc proc /proc\n\
 mount -t sysfs sysfs /sys\n\
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true\n\
+mkdir -p /tmp\n\
+mount -t tmpfs tmpfs /tmp\n\
 echo \"L1_KERNEL_RELEASE=$(uname -r)\"\n\
 dmesg | grep -E 'virtio_iommu|Adding to iommu group' | head -n 6 || true\n\
-# 1. Verify airlock.ko works with zero KVM modules loaded\n\
+dmesg -n 4 2>/dev/null || true\n\
+# 1. Boot SMP L2 test-guest on airlock.ko with ZERO KVM modules loaded (!kvm)\n\
 insmod /lib/modules/airlock.ko\n\
 /bin/airlock-ioctl-check\n\
+/opt/airlock/{io_host_bin_name} --airlock -c /opt/airlock/vm-solo.toml < /dev/null\n\
+echo \"AIRLOCK_SOLO_L2_OK\"\n\
 rmmod airlock\n\
 echo \"AIRLOCK_SOLO_UNLOAD_OK\"\n\
 # 2. Load airlock.ko FIRST, then load kvm + kvm-amd and verify KVM_CREATE_VM succeeds\n\
@@ -3207,15 +3251,23 @@ insmod /lib/modules/kvm.ko\n\
 insmod /lib/modules/kvm-amd.ko\n\
 /bin/airlock-ioctl-check --kvm-coexist\n\
 rmmod airlock\n\
-# 3. With kvm + kvm-amd ALREADY loaded, load airlock.ko again and verify coexistence\n\
+# 3. With kvm + kvm-amd ALREADY loaded, load airlock.ko and boot SMP L2 test-guest concurrently\n\
 insmod /lib/modules/airlock.ko\n\
 /bin/airlock-ioctl-check --kvm-coexist\n\
+/opt/airlock/{io_host_bin_name} --airlock -c /opt/airlock/vm-coexist.toml < /dev/null\n\
+echo \"AIRLOCK_COEXIST_L2_OK\"\n\
 rmmod airlock\n\
 rmmod kvm_amd\n\
 rmmod kvm\n\
 rmmod irqbypass\n\
-echo \"AIRLOCK_L1_SMOKE_ALL_OK\"\n\
-poweroff -f\n";
+dmesg | grep 'airlock:'\n\
+dmesg -n 1 2>/dev/null || true\n\
+echo \"AIRLOCK_L1_TEST_GUEST_ALL_OK\"\n\
+poweroff -f\n"
+    );
+
+    let io_host_cpio_path = format!("opt/airlock/{io_host_bin_name}");
+    let io_mod_cpio_path = format!("opt/airlock/{io_mod_name}");
 
     let overlay_initramfs = append_cpio_overlay(
         &base_initramfs,
@@ -3226,6 +3278,14 @@ poweroff -f\n";
             },
             CpioEntry::Dir {
                 path: "lib/modules",
+                mode: 0o755,
+            },
+            CpioEntry::Dir {
+                path: "opt",
+                mode: 0o755,
+            },
+            CpioEntry::Dir {
+                path: "opt/airlock",
                 mode: 0o755,
             },
             CpioEntry::File {
@@ -3254,14 +3314,49 @@ poweroff -f\n";
                 data: &ioctl_check,
             },
             CpioEntry::File {
+                path: &io_host_cpio_path,
+                mode: 0o755,
+                data: &io_host_bin,
+            },
+            CpioEntry::File {
+                path: &io_mod_cpio_path,
+                mode: 0o644,
+                data: &io_mod_bytes,
+            },
+            CpioEntry::File {
+                path: "opt/airlock/vmm-core-motor.cwasm",
+                mode: 0o644,
+                data: &core_motor_cwasm,
+            },
+            CpioEntry::File {
+                path: "opt/airlock/kloader",
+                mode: 0o644,
+                data: &kloader_bytes,
+            },
+            CpioEntry::File {
+                path: "opt/airlock/initrd-test-guest",
+                mode: 0o644,
+                data: &l2_initrd_bytes,
+            },
+            CpioEntry::File {
+                path: "opt/airlock/vm-solo.toml",
+                mode: 0o644,
+                data: vm_solo_toml,
+            },
+            CpioEntry::File {
+                path: "opt/airlock/vm-coexist.toml",
+                mode: 0o644,
+                data: vm_coexist_toml,
+            },
+            CpioEntry::File {
                 path: "init",
                 mode: 0o755,
-                data: init_script,
+                data: init_script.as_bytes(),
             },
         ],
     );
 
-    let initrd_path = tmp.path().join("initramfs-airlock-smoke.cpio");
+    let initrd_path = tmp.path().join("initramfs-airlock-test-guest.cpio");
     fs::write(&initrd_path, &overlay_initramfs).expect("failed to write overlay initramfs");
 
     let cmdline = "console=ttyS0 rdinit=/init";
@@ -3272,29 +3367,29 @@ poweroff -f\n";
                  initramfs = \"{}\"\n\
                  cmd_line = \"{cmdline}\"\n\
                  num_cpus = 2\n\
-                 mem_size = \"512M\"\n\
+                 mem_size = \"768M\"\n\
                  iommu = true\n\
                  blk = []\n",
                 airlock.bzimage.display(),
                 initrd_path.display(),
             );
             boot_until_autonomous_exit(
-                "airlock_kmod_smoke",
+                "airlock_linux_test_guest",
                 mode,
                 tmp,
                 &cfg,
-                Duration::from_secs(40),
+                Duration::from_secs(60),
             )
         }
         L0Engine::Chv => boot_chv_until_autonomous_exit(
-            "airlock_kmod_smoke_chv",
+            "airlock_linux_test_guest_chv",
             tmp,
             2,
-            "512M",
+            "768M",
             &airlock.bzimage,
             &initrd_path,
             cmdline,
-            Duration::from_secs(40),
+            Duration::from_secs(60),
         ),
     };
 
@@ -3303,20 +3398,33 @@ poweroff -f\n";
         "airlock: Rust Ring-0 core + #![no_std] Wasmtime ready (svm=1, npt=1,",
         "airlock: loaded (/dev/airlock ready,",
         "AIRLOCK_IOCTL_OK ver=1 caps=0x",
+        "test-guest: ok | cpus=2",
+        "cmd=\"test-guest-airlock-solo\"",
+        "AIRLOCK_SOLO_L2_OK",
         "AIRLOCK_SOLO_UNLOAD_OK",
         "AIRLOCK_KVM_COEXIST_OK ver=1 caps=0x",
-        "AIRLOCK_L1_SMOKE_ALL_OK",
+        "cmd=\"test-guest-airlock-coexist\"",
+        "AIRLOCK_COEXIST_L2_OK",
+        "AIRLOCK_L1_TEST_GUEST_ALL_OK",
     ] {
         assert!(
             serial.contains(expected),
-            "[airlock_kmod_smoke ({})] missing expected marker {expected:?} in serial output:\n{serial}",
-            l0_engine.as_str()
+            "[airlock_linux_test_guest (l0={}, l1_io={})] missing expected marker {expected:?} in serial output:\n{serial}",
+            l0_engine.as_str(),
+            l1_io_mode.as_str(),
         );
     }
+    let bye_count = serial.matches("vm_exit: bye.").count();
+    assert!(
+        bye_count >= 2,
+        "[airlock_linux_test_guest (l0={}, l1_io={})] expected >= 2 L2 'vm_exit: bye.' markers, found {bye_count} in:\n{serial}",
+        l0_engine.as_str(),
+        l1_io_mode.as_str(),
+    );
 }
 
-pub fn boot_airlock_kmod_smoke(mode: VmmMode, tmp: &TempTestDir) {
-    boot_airlock_kmod_smoke_with_l0(L0Engine::Wasm(mode), tmp);
+pub fn boot_airlock_linux_test_guest(mode: VmmMode, tmp: &TempTestDir) {
+    boot_airlock_linux_test_guest_with_l0(L0Engine::Wasm(mode), mode, tmp);
 }
 
 #[cfg(test)]

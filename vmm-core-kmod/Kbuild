@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 obj-m := airlock.o
-airlock-y := c/airlock_shim.o airlock_rust.o
+airlock-y := c/airlock_shim.o c/svm_enter.o airlock_rust.o
 
 quiet_cmd_shipped_rust = SHIPPED $@
       cmd_shipped_rust = cp -f $< $@

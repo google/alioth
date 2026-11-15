@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 //! Safe `#![no_std] + alloc` wrappers around `airlock_shim.c` (`airlock_kapi_*`),
-//! global kernel heap allocator, logging macros, spinlocks, and Wasmtime C-ABI hooks.
+//! global kernel heap allocator, logging, spinlocks, waitqueues, kthreads, and Wasmtime TLS/sync.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::ops::{Deref, DerefMut};
+use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const AIRLOCK_CAP_SVM: u32 = 1 << 0;
 pub const AIRLOCK_CAP_NPT: u32 = 1 << 1;
 pub const AIRLOCK_CAP_IOMMU: u32 = 1 << 2;
 
-pub const MAX_KERNEL_CPUS: usize = 512;
+pub const PAGE_SIZE_4K: u64 = 4096;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +45,18 @@ pub struct AirlockEventfd {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub struct AirlockWq {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+pub struct AirlockKthread {
+    _opaque: [u8; 0],
+}
+
 pub type AirlockEventfdCb = unsafe extern "C" fn(opaque: *mut c_void);
+pub type AirlockKthreadFn = unsafe extern "C" fn(opaque: *mut c_void);
 
 #[allow(dead_code)]
 unsafe extern "C" {
@@ -56,11 +68,13 @@ unsafe extern "C" {
 
     pub fn airlock_kapi_num_possible_cpus() -> u32;
     pub fn airlock_kapi_raw_smp_processor_id() -> u32;
-    pub fn airlock_kapi_get_cpu() -> u32;
-    pub fn airlock_kapi_put_cpu();
+    pub fn airlock_kapi_current_task() -> usize;
     pub fn airlock_kapi_ktime_get_ns() -> u64;
+    pub fn airlock_kapi_ktime_get_real_ns() -> u64;
     pub fn airlock_kapi_tsc_khz() -> u32;
     pub fn airlock_kapi_send_reschedule(cpu: u32);
+    pub fn airlock_kapi_cond_resched();
+    pub fn airlock_kapi_signal_pending() -> bool;
 
     pub fn airlock_kapi_alloc_contig_pages(
         order: u32,
@@ -71,8 +85,32 @@ unsafe extern "C" {
     pub fn airlock_kapi_free_contig_pages(phys: u64, order: u32);
     pub fn airlock_kapi_phys_to_virt(phys: u64) -> *mut u8;
 
-    pub fn airlock_kapi_cpu_hsave_pa(cpu: u32) -> u64;
-    pub fn airlock_kapi_cpu_host_vmsave_pa(cpu: u32) -> u64;
+    pub fn airlock_kapi_wq_alloc() -> *mut AirlockWq;
+    pub fn airlock_kapi_wq_wake(wq: *mut AirlockWq);
+    pub fn airlock_kapi_wq_wait_ns(wq: *mut AirlockWq, timeout_ns: u64) -> i32;
+    pub fn airlock_kapi_wq_free(wq: *mut AirlockWq);
+
+    pub fn airlock_kapi_kthread_spawn(
+        func: AirlockKthreadFn,
+        opaque: *mut c_void,
+        name: *const u8,
+        name_len: usize,
+        out_kt: *mut *mut AirlockKthread,
+    ) -> i32;
+    pub fn airlock_kapi_kthread_should_stop() -> bool;
+    pub fn airlock_kapi_kthread_stop(kt: *mut AirlockKthread);
+
+    pub fn airlock_kapi_svm_run_slice(
+        gprs: *mut u64,
+        vmcb_pa: u64,
+        vmcb_va: *mut c_void,
+        fpu_buf: *mut u8,
+        guest_xcr0: u64,
+        guest_tsc_aux: u64,
+        kick_flag: *const u32,
+        on_cpu_slot: *mut u32,
+        last_pcpu: *mut u32,
+    ) -> i32;
 
     pub fn airlock_kapi_exec_alloc_from_user(
         uptr: *const u8,
@@ -88,8 +126,8 @@ unsafe extern "C" {
     ) -> i32;
     pub fn airlock_kapi_exec_free(buf: *mut AirlockExecBuf);
 
-    pub fn airlock_kapi_ibt_enter() -> u64;
-    pub fn airlock_kapi_ibt_exit(saved_cet: u64);
+    pub fn airlock_kapi_wasm_call_enter() -> u64;
+    pub fn airlock_kapi_wasm_call_exit(saved_state: u64);
 
     pub fn airlock_kapi_pin_user_mem(
         uaddr: u64,
@@ -148,6 +186,260 @@ macro_rules! kerr {
 }
 
 // ============================================================================
+// TSC & Paravirtual Clock Helpers
+// ============================================================================
+
+#[inline]
+pub fn rdtsc_now() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+#[inline]
+pub fn tsc_khz() -> u32 {
+    let khz = unsafe { airlock_kapi_tsc_khz() };
+    if khz == 0 { 3_000_000 } else { khz }
+}
+
+#[inline]
+pub fn nanos_to_tsc_delta(nanos: u64) -> u64 {
+    let khz = tsc_khz() as u128;
+    (((nanos as u128) * khz) / 1_000_000u128) as u64
+}
+
+#[inline]
+pub fn tsc_delta_to_nanos(delta_tsc: u64) -> u64 {
+    let khz = tsc_khz() as u128;
+    (((delta_tsc as u128) * 1_000_000u128) / khz) as u64
+}
+
+/// Returns `(wall_clock_ns, system_time_ns, tsc_timestamp, tsc_to_system_mul, tsc_shift)`.
+pub fn pvclock_snapshot() -> (u64, u64, u64, u32, i8) {
+    let tsc_ts = rdtsc_now();
+    let mono_ns = unsafe { airlock_kapi_ktime_get_ns() };
+    let real_ns = unsafe { airlock_kapi_ktime_get_real_ns() };
+    let boot_wall_ns = real_ns.saturating_sub(mono_ns);
+
+    let hz = (tsc_khz() as u128) * 1000u128;
+    let mut shift: i8 = 0;
+    let mut scaled_ns: u128 = 1_000_000_000u128 << 32;
+    while scaled_ns < (hz << 31) && shift > -31 {
+        scaled_ns <<= 1;
+        shift -= 1;
+    }
+    while (scaled_ns >> 32) >= hz && shift < 31 {
+        scaled_ns >>= 1;
+        shift += 1;
+    }
+    let mul = (scaled_ns / hz) as u32;
+    (boot_wall_ns, mono_ns, tsc_ts, mul, shift)
+}
+
+// ============================================================================
+// RAII Wrappers for Contiguous Kernel Pages, Pinned User Memory, WaitQueue, Eventfd
+// ============================================================================
+
+pub struct ContigPages {
+    phys: u64,
+    virt: *mut u8,
+    order: u32,
+}
+
+unsafe impl Send for ContigPages {}
+unsafe impl Sync for ContigPages {}
+
+impl ContigPages {
+    pub fn alloc_order(order: u32) -> Result<Self, i32> {
+        let mut phys = 0u64;
+        let mut virt = null_mut();
+        let rc = unsafe { airlock_kapi_alloc_contig_pages(order, -1, &mut phys, &mut virt) };
+        if rc < 0 {
+            return Err(rc);
+        }
+        Ok(Self { phys, virt, order })
+    }
+
+    #[inline]
+    pub fn phys(&self) -> u64 {
+        self.phys
+    }
+
+    #[inline]
+    pub fn virt(&self) -> *mut u8 {
+        self.virt
+    }
+
+    #[inline]
+    pub fn byte_len(&self) -> usize {
+        4096usize << self.order
+    }
+}
+
+impl Drop for ContigPages {
+    fn drop(&mut self) {
+        if self.phys != 0 {
+            unsafe { airlock_kapi_free_contig_pages(self.phys, self.order) };
+            self.phys = 0;
+        }
+    }
+}
+
+pub struct PinnedUserMem {
+    raw: *mut AirlockPinnedMem,
+    kva: *mut u8,
+    byte_len: u64,
+}
+
+unsafe impl Send for PinnedUserMem {}
+unsafe impl Sync for PinnedUserMem {}
+
+impl PinnedUserMem {
+    pub fn pin(uaddr: u64, byte_len: u64, writable: bool, map_kva: bool) -> Result<Self, i32> {
+        let mut raw = null_mut();
+        let mut kva = null_mut();
+        let rc = unsafe {
+            airlock_kapi_pin_user_mem(uaddr, byte_len, writable, map_kva, &mut raw, &mut kva)
+        };
+        if rc < 0 {
+            return Err(rc);
+        }
+        Ok(Self { raw, kva, byte_len })
+    }
+
+    #[inline]
+    pub fn kva(&self) -> *mut u8 {
+        self.kva
+    }
+
+    #[inline]
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    #[inline]
+    pub fn num_pages(&self) -> usize {
+        unsafe { airlock_kapi_pinned_num_pages(self.raw) as usize }
+    }
+
+    #[inline]
+    pub fn page_phys(&self, page_idx: usize) -> Option<u64> {
+        let pa = unsafe { airlock_kapi_pinned_page_phys(self.raw, page_idx as u64) };
+        (pa != 0).then_some(pa)
+    }
+
+    pub fn copy_to_slice(&self, offset: u64, dst: &mut [u8]) -> Result<(), i32> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let rc =
+            unsafe { airlock_kapi_copy_from_pinned(self.raw, offset, dst.as_mut_ptr(), dst.len()) };
+        if rc < 0 { Err(rc) } else { Ok(()) }
+    }
+}
+
+impl Drop for PinnedUserMem {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { airlock_kapi_unpin_user_mem(self.raw) };
+            self.raw = null_mut();
+        }
+    }
+}
+
+pub struct WaitQueue {
+    raw: *mut AirlockWq,
+}
+
+unsafe impl Send for WaitQueue {}
+unsafe impl Sync for WaitQueue {}
+
+impl WaitQueue {
+    pub fn new() -> Result<Self, i32> {
+        let raw = unsafe { airlock_kapi_wq_alloc() };
+        if raw.is_null() {
+            return Err(-12); // -ENOMEM
+        }
+        Ok(Self { raw })
+    }
+
+    #[inline]
+    pub fn wake(&self) {
+        unsafe { airlock_kapi_wq_wake(self.raw) };
+    }
+
+    #[inline]
+    pub fn wait_timeout_ns(&self, timeout_ns: Option<u64>) {
+        let ns = timeout_ns.unwrap_or(u64::MAX);
+        unsafe {
+            let _ = airlock_kapi_wq_wait_ns(self.raw, ns);
+        }
+    }
+}
+
+impl Drop for WaitQueue {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { airlock_kapi_wq_free(self.raw) };
+            self.raw = null_mut();
+        }
+    }
+}
+
+pub struct EventfdBinding {
+    raw: *mut AirlockEventfd,
+}
+
+unsafe impl Send for EventfdBinding {}
+unsafe impl Sync for EventfdBinding {}
+
+impl EventfdBinding {
+    pub fn bind(
+        fd: i32,
+        cb: Option<AirlockEventfdCb>,
+        opaque: *mut c_void,
+    ) -> Result<Self, i32> {
+        let mut raw = null_mut();
+        let rc = unsafe { airlock_kapi_eventfd_bind(fd, cb, opaque, &mut raw) };
+        if rc < 0 {
+            return Err(rc);
+        }
+        Ok(Self { raw })
+    }
+
+    #[inline]
+    pub fn signal(&self) {
+        unsafe { airlock_kapi_eventfd_signal(self.raw) };
+    }
+}
+
+impl Drop for EventfdBinding {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { airlock_kapi_eventfd_unbind(self.raw) };
+            self.raw = null_mut();
+        }
+    }
+}
+
+pub struct WasmCallGuard {
+    saved_cet: u64,
+}
+
+impl WasmCallGuard {
+    #[inline]
+    pub fn enter() -> Self {
+        let saved_cet = unsafe { airlock_kapi_wasm_call_enter() };
+        Self { saved_cet }
+    }
+}
+
+impl Drop for WasmCallGuard {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe { airlock_kapi_wasm_call_exit(self.saved_cet) };
+    }
+}
+
+// ============================================================================
 // Global Kernel Heap Allocator (`kvmalloc` / `kvfree`)
 // ============================================================================
 
@@ -171,7 +463,7 @@ unsafe impl GlobalAlloc for LinuxKernelAllocator {
 static GLOBAL_ALLOCATOR: LinuxKernelAllocator = LinuxKernelAllocator;
 
 // ============================================================================
-// Ticket / Atomic SpinLock
+// Atomic SpinLock
 // ============================================================================
 
 pub struct SpinLock<T> {
@@ -190,6 +482,7 @@ impl<T> SpinLock<T> {
         }
     }
 
+    #[inline]
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
         while self
             .locked
@@ -226,27 +519,81 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 }
 
 // ============================================================================
-// Wasmtime `no_std` + `custom-sync-primitives` Platform C-ABI Hooks
+// Task-Indexed Wasmtime `no_std` TLS + Custom Sync Primitives
 // ============================================================================
 
-static WASMTIME_TLS: [[AtomicUsize; 2]; MAX_KERNEL_CPUS] =
-    [const { [AtomicUsize::new(0), AtomicUsize::new(0)] }; MAX_KERNEL_CPUS];
+const MAX_CONCURRENT_WASM_TASKS: usize = 256;
+
+struct TaskTlsEntry {
+    task: AtomicUsize,
+    slots: [AtomicUsize; 2],
+}
+
+impl TaskTlsEntry {
+    const fn empty() -> Self {
+        Self {
+            task: AtomicUsize::new(0),
+            slots: [AtomicUsize::new(0), AtomicUsize::new(0)],
+        }
+    }
+}
+
+static WASMTIME_TASK_TLS: [TaskTlsEntry; MAX_CONCURRENT_WASM_TASKS] =
+    [const { TaskTlsEntry::empty() }; MAX_CONCURRENT_WASM_TASKS];
 
 #[no_mangle]
 pub unsafe extern "C" fn wasmtime_tls_get(slot: usize) -> *mut u8 {
-    let cpu = unsafe { airlock_kapi_raw_smp_processor_id() } as usize;
-    if cpu < WASMTIME_TLS.len() && slot < 2 {
-        WASMTIME_TLS[cpu][slot].load(Ordering::Relaxed) as *mut u8
-    } else {
-        core::ptr::null_mut()
+    if slot >= 2 {
+        return null_mut();
     }
+    let me = unsafe { airlock_kapi_current_task() };
+    let start = (me >> 6) % MAX_CONCURRENT_WASM_TASKS;
+    for step in 0..MAX_CONCURRENT_WASM_TASKS {
+        let idx = (start + step) % MAX_CONCURRENT_WASM_TASKS;
+        if WASMTIME_TASK_TLS[idx].task.load(Ordering::Acquire) == me {
+            return WASMTIME_TASK_TLS[idx].slots[slot].load(Ordering::Relaxed) as *mut u8;
+        }
+    }
+    null_mut()
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn wasmtime_tls_set(slot: usize, ptr: *mut u8) {
-    let cpu = unsafe { airlock_kapi_raw_smp_processor_id() } as usize;
-    if cpu < WASMTIME_TLS.len() && slot < 2 {
-        WASMTIME_TLS[cpu][slot].store(ptr as usize, Ordering::Relaxed);
+    if slot >= 2 {
+        return;
+    }
+    let me = unsafe { airlock_kapi_current_task() };
+    let start = (me >> 6) % MAX_CONCURRENT_WASM_TASKS;
+
+    for step in 0..MAX_CONCURRENT_WASM_TASKS {
+        let idx = (start + step) % MAX_CONCURRENT_WASM_TASKS;
+        let e = &WASMTIME_TASK_TLS[idx];
+        if e.task.load(Ordering::Acquire) == me {
+            e.slots[slot].store(ptr as usize, Ordering::Relaxed);
+            if ptr.is_null()
+                && e.slots[0].load(Ordering::Relaxed) == 0
+                && e.slots[1].load(Ordering::Relaxed) == 0
+            {
+                e.task.store(0, Ordering::Release);
+            }
+            return;
+        }
+    }
+
+    if ptr.is_null() {
+        return;
+    }
+
+    for step in 0..MAX_CONCURRENT_WASM_TASKS {
+        let idx = (start + step) % MAX_CONCURRENT_WASM_TASKS;
+        let e = &WASMTIME_TASK_TLS[idx];
+        if e.task
+            .compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            e.slots[slot].store(ptr as usize, Ordering::Relaxed);
+            return;
+        }
     }
 }
 
