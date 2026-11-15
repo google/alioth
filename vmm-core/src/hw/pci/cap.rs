@@ -230,10 +230,15 @@ impl Mmio for MsixCapMmio {
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
-        if offset == 2 && size == 2 {
+        let ctrl_val = match (offset, size) {
+            (2, 2) => Some(val as u16),
+            (0, 4) => Some((val >> 16) as u16),
+            _ => None,
+        };
+        if let Some(raw_ctrl) = ctrl_val {
             {
                 let mut cap = self.cap.write();
-                let control = MsixMsgCtrl(val as u16);
+                let control = MsixMsgCtrl(raw_ctrl);
                 cap.control.set_enabled(control.enabled());
                 cap.control.set_masked(control.masked());
             }

@@ -36,7 +36,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::host::{HvError, PciBarKind, PciDevId, VmmHostCore};
 use crate::hw::pci::cap::{
@@ -54,7 +54,16 @@ use crate::mem::{self, IoRegion, MemRange, MemRegion, MemRegionEntry, MemRegionT
 use crate::sync::{Mutex, RwLock};
 
 const PCI_CAP_ID_EXP: u8 = 0x10;
+const VIRTIO_VENDOR_ID: u16 = 0x1af4;
+const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5;
+const VIRTIO_COMMON_DFSELECT_OFF: usize = 0x00;
+const VIRTIO_COMMON_DF_OFF: usize = 0x04;
+const VIRTIO_COMMON_GFSELECT_OFF: usize = 0x08;
+const VIRTIO_COMMON_GF_OFF: usize = 0x0c;
+const VIRTIO_COMMON_STATUS_OFF: usize = 0x14;
+const VIRTIO_F_VERSION_1_WORD1: u32 = 1 << 0;
+const VIRTIO_F_ACCESS_PLATFORM_WORD1: u32 = 1 << 1;
 const PCIE_DEVCTL_OFFSET: usize = 0x08;
 const PCIE_DEVCTL_BCR_FLR: u16 = 1 << 15;
 
@@ -235,6 +244,24 @@ impl PassthroughMsixState {
 }
 
 #[derive(Debug)]
+struct VirtioCommonIommuFilter {
+    bar: u8,
+    offset: usize,
+    length: usize,
+    dev_feat_sel: AtomicU32,
+    guest_feat_sel: AtomicU32,
+    offered_access_platform: AtomicBool,
+}
+
+impl VirtioCommonIommuFilter {
+    fn reset_state(&self) {
+        self.dev_feat_sel.store(0, Ordering::Release);
+        self.guest_feat_sel.store(0, Ordering::Release);
+        self.offered_access_platform.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
 struct TrappedBarRegionMmio {
     guard: Arc<AttachedPciGuard>,
     bar_idx: u8,
@@ -242,6 +269,7 @@ struct TrappedBarRegionMmio {
     region_size: usize,
     msix_table: Option<(usize, usize, MsixTableMmio)>,
     msix_pba: Option<(usize, usize)>,
+    virtio_common: Option<Arc<VirtioCommonIommuFilter>>,
 }
 
 impl Mmio for TrappedBarRegionMmio {
@@ -267,10 +295,21 @@ impl Mmio for TrappedBarRegionMmio {
         {
             return Ok(0);
         }
-        Ok(self
-            .guard
-            .hv
-            .pci_bar_io(self.guard.dev_id, self.bar_idx, abs as u64, size, None)?)
+        let val =
+            self.guard
+                .hv
+                .pci_bar_io(self.guard.dev_id, self.bar_idx, abs as u64, size, None)?;
+        if let Some(ref vc) = self.virtio_common
+            && abs == vc.offset + VIRTIO_COMMON_DF_OFF
+            && size == 4
+            && vc.dev_feat_sel.load(Ordering::Acquire) == 1
+        {
+            vc.offered_access_platform.store(
+                ((val as u32) & VIRTIO_F_ACCESS_PLATFORM_WORD1) != 0,
+                Ordering::Release,
+            );
+        }
+        Ok(val)
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> mem::Result<()> {
@@ -291,12 +330,33 @@ impl Mmio for TrappedBarRegionMmio {
         {
             return Ok(());
         }
+        let mut forward_val = val;
+        if let Some(ref vc) = self.virtio_common {
+            if abs == vc.offset + VIRTIO_COMMON_STATUS_OFF && size == 1 && (val as u8) == 0 {
+                vc.reset_state();
+            } else if abs == vc.offset + VIRTIO_COMMON_DFSELECT_OFF && size == 4 {
+                vc.dev_feat_sel.store(val as u32, Ordering::Release);
+            } else if abs == vc.offset + VIRTIO_COMMON_GFSELECT_OFF && size == 4 {
+                vc.guest_feat_sel.store(val as u32, Ordering::Release);
+            } else if abs == vc.offset + VIRTIO_COMMON_GF_OFF
+                && size == 4
+                && vc.guest_feat_sel.load(Ordering::Acquire) == 1
+                && vc.offered_access_platform.load(Ordering::Acquire)
+                && ((val as u32) & VIRTIO_F_VERSION_1_WORD1) != 0
+            {
+                // L1 manages the host/L0 IOMMU domain transparently on L2's behalf, while L2
+                // sees no IOMMU (`VIOT` is omitted). Ensure `VIRTIO_F_ACCESS_PLATFORM` stays
+                // acknowledged when L0 offers it for IOMMU-translated virtqueue access even
+                // if L2's guest driver (e.g. Motor OS) omits bit 33.
+                forward_val = val | (VIRTIO_F_ACCESS_PLATFORM_WORD1 as u64);
+            }
+        }
         self.guard.hv.pci_bar_io(
             self.guard.dev_id,
             self.bar_idx,
             abs as u64,
             size,
-            Some(val),
+            Some(forward_val),
         )?;
         Ok(())
     }
@@ -363,6 +423,7 @@ pub struct PassthroughPciDev {
     guard: Arc<AttachedPciGuard>,
     config: Arc<PassthroughPciConfig>,
     msix: Option<Arc<PassthroughMsixState>>,
+    virtio_common: Option<Arc<VirtioCommonIommuFilter>>,
 }
 
 struct ParsedMsixInfo {
@@ -445,6 +506,7 @@ impl PassthroughPciDev {
         let mut caps: Vec<Box<dyn PciCap>> = Vec::new();
         let mut parsed_msix: Option<ParsedMsixInfo> = None;
         let mut pcie_cap_pos_and_bytes: Option<Vec<u8>> = None;
+        let mut virtio_common_loc: Option<(u8, usize, usize)> = None;
 
         if (phys_status & Status::CAP.bits()) != 0 {
             let mut pos =
@@ -483,6 +545,19 @@ impl PassthroughPciDev {
                     {
                         let bytes = read_cfg_bytes(hv.as_ref(), dev_id, pos as u16, cap_len as usize)
                             .map_err(mem::Error::Hv)?;
+                        if vendor == VIRTIO_VENDOR_ID && bytes.len() >= 16 {
+                            let c_bar = bytes[4];
+                            let c_off =
+                                u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+                            let c_len =
+                                u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+                            if cfg_type == VIRTIO_PCI_CAP_COMMON_CFG
+                                && c_len >= 0x18
+                                && virtio_common_loc.is_none()
+                            {
+                                virtio_common_loc = Some((c_bar, c_off, c_len));
+                            }
+                        }
                         caps.push(Box::new(RawReadOnlyPciCap { bytes }));
                     }
                 } else if cap_id == PciCapId::Msix as u8 && parsed_msix.is_none() {
@@ -574,14 +649,30 @@ impl PassthroughPciDev {
 
         let msix_state_opt = parsed_msix.as_ref().map(|m| m.state.clone());
 
+        let virtio_common_opt: Option<Arc<VirtioCommonIommuFilter>> =
+            virtio_common_loc.map(|(c_bar, c_off, c_len)| {
+                Arc::new(VirtioCommonIommuFilter {
+                    bar: c_bar,
+                    offset: c_off,
+                    length: c_len,
+                    dev_feat_sel: AtomicU32::new(0),
+                    guest_feat_sel: AtomicU32::new(0),
+                    offered_access_platform: AtomicBool::new(false),
+                })
+            });
+
         if let Some(pcie_bytes) = pcie_cap_pos_and_bytes {
             let guard_flr = guard.clone();
             let msix_flr = msix_state_opt.clone();
+            let vc_flr = virtio_common_opt.clone();
             caps.push(Box::new(PcieEndpointCapMmio {
                 bytes: RwLock::new(pcie_bytes),
                 on_flr: Arc::new(move || {
                     if let Some(ref m) = msix_flr {
                         m.reset_state();
+                    }
+                    if let Some(ref vc) = vc_flr {
+                        vc.reset_state();
                     }
                     let _ = guard_flr.hv.pci_reset(guard_flr.dev_id);
                 }),
@@ -611,6 +702,7 @@ impl PassthroughPciDev {
                         region_size: io_size,
                         msix_table: None,
                         msix_pba: None,
+                        virtio_common: None,
                     });
                     bars[bar_idx as usize] = PciBar::Io(Arc::new(IoRegion::new(io_mmio)));
                     bar_masks[bar_idx as usize] = !((io_size as u32) - 1);
@@ -638,6 +730,11 @@ impl PassthroughPciDev {
                         .filter(|m| m.pba_bar == bar_idx)
                         .map(|m| (m.pba_offset, m.pba_offset + m.pba_size));
 
+                    let bar_virtio_common = virtio_common_opt
+                        .as_ref()
+                        .filter(|vc| vc.bar == bar_idx)
+                        .cloned();
+
                     let mut ranges: Vec<MemRange> = Vec::new();
                     if let Some(mem_obj_id) = info.mem_obj
                         && info.size >= 4096
@@ -657,8 +754,11 @@ impl PassthroughPciDev {
                             let overlaps_pba = bar_msix_pba
                                 .as_ref()
                                 .is_some_and(|(s, e)| page_off < *e && page_end > *s);
+                            let overlaps_common = bar_virtio_common.as_ref().is_some_and(|vc| {
+                                page_off < vc.offset + vc.length && page_end > vc.offset
+                            });
 
-                            if overlaps_tbl || overlaps_pba {
+                            if overlaps_tbl || overlaps_pba || overlaps_common {
                                 if let Some(rs) = run_start.take() {
                                     ranges.push(MemRange::DevMem(
                                         borrowed.subslice(rs, page_off - rs)?,
@@ -671,6 +771,7 @@ impl PassthroughPciDev {
                                     region_size: 4096,
                                     msix_table: bar_msix_tbl.clone(),
                                     msix_pba: bar_msix_pba,
+                                    virtio_common: bar_virtio_common.clone(),
                                 })));
                             } else if run_start.is_none() {
                                 run_start = Some(page_off);
@@ -690,6 +791,7 @@ impl PassthroughPciDev {
                             region_size: raw_size,
                             msix_table: bar_msix_tbl,
                             msix_pba: bar_msix_pba,
+                            virtio_common: bar_virtio_common,
                         })));
                     }
 
@@ -733,6 +835,7 @@ impl PassthroughPciDev {
             guard,
             config,
             msix: msix_state_opt,
+            virtio_common: virtio_common_opt,
         });
         let name: Arc<String> = Arc::new(format!("pci-passthrough-{}", Bdf(host_bdf)));
         Ok(PciDevice::new(name, dev))
@@ -763,10 +866,15 @@ impl Mmio for SharedMsixCapMmio {
     }
 
     fn write(&self, offset: usize, size: u8, val: u64) -> Result<(), mem::Error> {
-        if offset == 2 && size == 2 {
+        let ctrl_val = match (offset, size) {
+            (2, 2) => Some(val as u16),
+            (0, 4) => Some((val >> 16) as u16),
+            _ => None,
+        };
+        if let Some(raw_ctrl) = ctrl_val {
             {
                 let mut cap = self.cap.write();
-                let ctrl = MsixMsgCtrl(val as u16);
+                let ctrl = MsixMsgCtrl(raw_ctrl);
                 cap.control.set_enabled(ctrl.enabled());
                 cap.control.set_masked(ctrl.masked());
             }
@@ -793,6 +901,9 @@ impl Pci for PassthroughPciDev {
             .store(false, Ordering::Release);
         if let Some(ref msix) = self.msix {
             msix.reset_state();
+        }
+        if let Some(ref vc) = self.virtio_common {
+            vc.reset_state();
         }
         self.guard
             .hv
@@ -852,19 +963,19 @@ mod tests {
             cfg[0x44..0x48].copy_from_slice(&0x0000u32.to_le_bytes());
             cfg[0x48..0x4c].copy_from_slice(&0x2000u32.to_le_bytes());
 
-            // Cap 2 @ 0x50: VirtIO CommonCfg (cfg_type = 1), next = 0x60, len = 16, BAR0 + 0x3000
+            // Cap 2 @ 0x50: VirtIO NotifyCfg (cfg_type = 2), next = 0x60, len = 20, BAR0 + 0x3000
             cfg[0x50] = 0x09;
             cfg[0x51] = 0x60;
-            cfg[0x52] = 16;
-            cfg[0x53] = 1;
+            cfg[0x52] = 20;
+            cfg[0x53] = 2;
             cfg[0x54] = 0;
             cfg[0x58..0x5c].copy_from_slice(&0x3000u32.to_le_bytes());
-            cfg[0x5c..0x60].copy_from_slice(&0x0038u32.to_le_bytes());
+            cfg[0x5c..0x60].copy_from_slice(&0x0100u32.to_le_bytes());
 
-            // Cap 3 @ 0x60: VirtIO PCI_CFG backdoor (cfg_type = 5), next = 0x00, len = 20 -> MUST BE STRIPPED!
+            // Cap 3 @ 0x60: VirtIO PCI_CFG backdoor (cfg_type = 5), next = 0x00, len = 16 -> MUST BE STRIPPED!
             cfg[0x60] = 0x09;
             cfg[0x61] = 0x00;
-            cfg[0x62] = 20;
+            cfg[0x62] = 16;
             cfg[0x63] = 5;
 
             Arc::new(Self {
@@ -917,6 +1028,10 @@ mod tests {
             offset: u64,
             prot: MemProt,
         ) -> HvResult<()> {
+            let end = gpa.checked_add(size).ok_or(HvError::InvalidParam)?;
+            if end > (1u64 << 48) {
+                return Err(HvError::InvalidParam);
+            }
             self.gpa_mappings
                 .lock()
                 .insert(gpa, (size, obj, offset, prot));
@@ -1004,6 +1119,16 @@ mod tests {
             write: Option<u64>,
         ) -> HvResult<u64> {
             assert_eq!(dev, 7);
+            if offset >= 0x1000 && offset < 0x1008 {
+                return Ok(if write.is_none() && offset == 0x1004 {
+                    0x3
+                } else {
+                    0
+                });
+            }
+            if offset >= 0x3000 && offset < 0x3008 {
+                return Ok(0);
+            }
             self.bar_io_log.lock().push((bar_idx, offset, size, write));
             Ok(0xdead_beef)
         }
@@ -1036,7 +1161,7 @@ mod tests {
         let cap1_ptr = cfg.read(cap0_ptr + 1, 1).unwrap() as usize;
         assert!(cap1_ptr >= 0x4c);
         assert_eq!(cfg.read(cap1_ptr, 1).unwrap(), 0x09);
-        assert_eq!(cfg.read(cap1_ptr + 3, 1).unwrap(), 1);
+        assert_eq!(cfg.read(cap1_ptr + 3, 1).unwrap(), 2);
         assert_eq!(cfg.read(cap1_ptr + 1, 1).unwrap(), 0); // End of chain: type 5 stripped!
 
         // 2. Map BAR0 (16 KiB) into Memory and verify 4 KiB carving:
@@ -1102,5 +1227,189 @@ mod tests {
         drop(cfg);
         drop(pci_dev);
         assert!(host.detached.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_passthrough_pci_legacy_pio_bar_sizing_and_dword_cmd_msix() {
+        use crate::hw::pci::bus::{CONFIG_ADDRESS, CONFIG_DATA, PciBus};
+
+        let host = MockPassthroughHost::new();
+        let hv: Arc<dyn VmmHostCore> = host.clone();
+        let memory = Memory::new(hv.clone());
+        let pci_bus = PciBus::new();
+        memory
+            .add_io_dev(Some(CONFIG_ADDRESS), pci_bus.io_bus.clone())
+            .unwrap();
+
+        let pci_dev = PassthroughPciDev::new(0x0018, hv).unwrap();
+        let cfg = pci_dev.dev.config();
+        let bdf = pci_bus.add(Some(Bdf(0x0010)), cfg.clone()).unwrap();
+        assert_eq!(bdf.0, 0x0010); // 00:02.0
+
+        let PciBar::Mem64(bar0_region) = &cfg.get_header().bars[0] else {
+            panic!("expected Mem64 BAR0");
+        };
+        let orig_gpa = memory
+            .add_region(AddrOpt::Above4G, bar0_region.clone())
+            .unwrap();
+        cfg.get_header().set_command(Command::MEM | Command::IO);
+        assert_eq!(host.gpa_mappings.lock().len(), 2);
+
+        let pio_cfg_addr = |reg: u8| -> u32 { 0x8000_0000 | ((bdf.0 as u32) << 8) | (reg as u32) };
+
+        // Size 64-bit BAR0/BAR1 via 0xCF8/0xCFC WITHOUT clearing Command::MEM first!
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x10)), 4)
+            .unwrap();
+        let VmEntry::Io { data: orig_lo } = memory.handle_io(CONFIG_DATA, None, 4).unwrap() else {
+            panic!();
+        };
+        memory
+            .handle_io(CONFIG_DATA, Some(0xffff_ffff), 4)
+            .unwrap();
+        let VmEntry::Io { data: mask_lo } = memory.handle_io(CONFIG_DATA, None, 4).unwrap() else {
+            panic!();
+        };
+        assert_eq!(mask_lo & !0xf, 0xffff_c000);
+        // BAR must be cleanly unmapped from Stage-2 NPT during the all-ones probe:
+        assert!(host.gpa_mappings.lock().is_empty());
+
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x14)), 4)
+            .unwrap();
+        let VmEntry::Io { data: orig_hi } = memory.handle_io(CONFIG_DATA, None, 4).unwrap() else {
+            panic!();
+        };
+        memory
+            .handle_io(CONFIG_DATA, Some(0xffff_ffff), 4)
+            .unwrap();
+        let VmEntry::Io { data: mask_hi } = memory.handle_io(CONFIG_DATA, None, 4).unwrap() else {
+            panic!();
+        };
+        assert_eq!(mask_hi, 0xffff_ffff);
+        assert!(host.gpa_mappings.lock().is_empty());
+
+        // Restore BAR0 lo then BAR1 hi:
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x10)), 4)
+            .unwrap();
+        memory.handle_io(CONFIG_DATA, Some(orig_lo), 4).unwrap();
+        assert!(host.gpa_mappings.lock().is_empty());
+
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x14)), 4)
+            .unwrap();
+        memory.handle_io(CONFIG_DATA, Some(orig_hi), 4).unwrap();
+        assert_eq!(host.gpa_mappings.lock().len(), 2);
+        assert!(host.gpa_mappings.lock().contains_key(&(orig_gpa + 0x1000)));
+
+        // Enable BUS_MASTER via 32-bit dword write to 0x04 over 0xCF8/0xCFC:
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x04)), 4)
+            .unwrap();
+        memory
+            .handle_io(
+                CONFIG_DATA,
+                Some((Command::IO | Command::MEM | Command::BUS_MASTER).bits() as u32),
+                4,
+            )
+            .unwrap();
+        let phys_cmd = u16::from_le_bytes(host.cfg.lock()[0x04..0x06].try_into().unwrap());
+        assert_ne!(phys_cmd & (HOST_CMD_BUS_MASTER as u16), 0);
+
+        // Enable MSI-X via 32-bit dword write at cap_offset + 0 over 0xCF8/0xCFC:
+        memory
+            .handle_mmio(orig_gpa + 0x10, Some(0xfee0_2000), 4)
+            .unwrap();
+        memory.handle_mmio(orig_gpa + 0x14, Some(0), 4).unwrap();
+        memory.handle_mmio(orig_gpa + 0x18, Some(0x51), 4).unwrap();
+        memory.handle_mmio(orig_gpa + 0x1c, Some(0), 4).unwrap();
+        memory
+            .handle_io(CONFIG_ADDRESS, Some(pio_cfg_addr(0x40)), 4)
+            .unwrap();
+        memory
+            .handle_io(CONFIG_DATA, Some(0x8000_0000), 4)
+            .unwrap();
+        assert_eq!(
+            host.msix_routes.lock().get(&1),
+            Some(&Some((0xfee0_2000, 0x51)))
+        );
+    }
+
+    #[test]
+    fn test_passthrough_virtio_common_cfg_auto_acks_access_platform() {
+        let host = MockPassthroughHost::new();
+        {
+            // Model Cloud Hypervisor's VirtIO layout: CommonCfg @ 0x1000, NotifyCfg @ 0x3000,
+            // with `VIRTIO_F_ACCESS_PLATFORM` offered in word 1 (`0x1004` returns `0x3`).
+            let mut cfg = host.cfg.lock();
+            cfg[0x52] = 16;
+            cfg[0x53] = 1; // CommonCfg
+            cfg[0x58..0x5c].copy_from_slice(&0x1000u32.to_le_bytes());
+            cfg[0x5c..0x60].copy_from_slice(&0x0038u32.to_le_bytes());
+            cfg[0x60] = 0x09;
+            cfg[0x61] = 0x00;
+            cfg[0x62] = 20;
+            cfg[0x63] = 2; // NotifyCfg
+            cfg[0x64] = 0;
+            cfg[0x68..0x6c].copy_from_slice(&0x3000u32.to_le_bytes());
+            cfg[0x6c..0x70].copy_from_slice(&0x0100u32.to_le_bytes());
+        }
+        let hv: Arc<dyn VmmHostCore> = host.clone();
+        let memory = Memory::new(hv.clone());
+
+        let pci_dev = PassthroughPciDev::new(0x0018, hv).unwrap();
+        let cfg = pci_dev.dev.config();
+        let PciBar::Mem64(bar0_region) = &cfg.get_header().bars[0] else {
+            panic!("expected Mem64 BAR0");
+        };
+        let bar_gpa = memory
+            .add_region(AddrOpt::Above4G, bar0_region.clone())
+            .unwrap();
+        cfg.get_header().set_command(Command::MEM);
+
+        // NotifyCfg page (0x3000..0x4000) stays Stage-2 NPT mapped (0 exits on QueueNotify!),
+        // while CommonCfg page (0x1000..0x2000) is trapped to upgrade `driver_feature[1]`:
+        {
+            let maps = host.gpa_mappings.lock();
+            assert!(!maps.contains_key(&(bar_gpa + 0x1000)));
+            assert!(maps.contains_key(&(bar_gpa + 0x3000)));
+        }
+        host.bar_io_log.lock().clear();
+
+        // Simulate guest reading `device_feature[1]` (`0x3`) after `ACKNOWLEDGE | DRIVER`,
+        // then Motor OS writing `driver_feature_select = 0, driver_feature = 0x24`,
+        // then `driver_feature_select = 1, driver_feature = 0x1` (`VERSION_1` only):
+        memory
+            .handle_mmio(bar_gpa + 0x1000, Some(1), 4)
+            .unwrap();
+        let VmEntry::Mmio { data: df1 } = memory.handle_mmio(bar_gpa + 0x1004, None, 4).unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(df1, 0x3);
+        memory
+            .handle_mmio(bar_gpa + 0x1008, Some(0), 4)
+            .unwrap();
+        memory
+            .handle_mmio(bar_gpa + 0x100c, Some(0x24), 4)
+            .unwrap();
+        memory
+            .handle_mmio(bar_gpa + 0x1008, Some(1), 4)
+            .unwrap();
+        memory
+            .handle_mmio(bar_gpa + 0x100c, Some(0x1), 4)
+            .unwrap();
+
+        let log = host.bar_io_log.lock().clone();
+        assert_eq!(
+            log,
+            vec![
+                (0, 0x1008, 4, Some(0)),
+                (0, 0x100c, 4, Some(0x24)),
+                (0, 0x1008, 4, Some(1)),
+                (0, 0x100c, 4, Some(0x3)), // Upgraded `0x1 -> 0x3` (`VERSION_1 | ACCESS_PLATFORM`)!
+            ]
+        );
     }
 }

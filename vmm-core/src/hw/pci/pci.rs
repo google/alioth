@@ -107,14 +107,18 @@ struct BarCallback {
 
 impl MemRegionCallback for BarCallback {
     fn mapped(&self, addr: u64) -> mem::Result<()> {
-        self.header
-            .write()
-            .set_bar(self.index as usize, addr as u32);
+        let mut hdr = self.header.write();
+        let idx = self.index as usize;
+        hdr.set_bar(idx, addr as u32);
         if self.is_64 {
-            self.header
-                .write()
-                .set_bar(self.index as usize + 1, (addr >> 32) as u32);
+            hdr.set_bar(idx + 1, (addr >> 32) as u32);
         }
+        hdr.mapped_bars[idx] = Some(addr);
+        Ok(())
+    }
+
+    fn unmapped(&self) -> mem::Result<()> {
+        self.header.write().mapped_bars[self.index as usize] = None;
         Ok(())
     }
 }

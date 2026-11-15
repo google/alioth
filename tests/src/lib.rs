@@ -437,6 +437,7 @@ pub fn ensure_linux_airlock_artifacts() -> &'static LinuxAirlockArtifacts {
     AIRLOCK_ARTIFACTS.get_or_init(build_linux_airlock)
 }
 
+#[derive(Clone, Copy)]
 pub enum CpioEntry<'a> {
     Dir { path: &'a str, mode: u32 },
     File { path: &'a str, mode: u32, data: &'a [u8] },
@@ -5455,6 +5456,798 @@ pub fn boot_airlock_linux_passthrough_net_with_l0(l0: L0Engine, mode: VmmMode, t
     }
 
     sess.finish_from_l1_linux("airlock_linux_passthrough_net", mode.as_str());
+}
+
+pub fn build_direct_motor_os_ssh_command_at(
+    host_ip: &str,
+    key_path: &Path,
+    remote_cmd: &str,
+) -> Command {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-F")
+        .arg("/dev/null")
+        .arg("-o")
+        .arg("ProxyCommand=none")
+        .arg("-o")
+        .arg("IdentitiesOnly=yes")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-i")
+        .arg(key_path)
+        .arg("-p")
+        .arg("2222")
+        .arg(format!("motor@{host_ip}"))
+        .arg(remote_cmd);
+    cmd
+}
+
+pub fn build_direct_motor_os_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
+    build_direct_motor_os_ssh_command_at("192.168.4.2", key_path, remote_cmd)
+}
+
+fn pack_airlock_pt_all_initramfs(
+    base_initramfs: &[u8],
+    airlock_ko: &[u8],
+    core_motor_cwasm: &[u8],
+    mode: VmmMode,
+    vmm_dir: &Path,
+    vm_l2_toml: &[u8],
+    clean_exit_marker: &str,
+    extra_entries: &[CpioEntry<'_>],
+) -> Vec<u8> {
+    let (io_host_bin_name, io_mod_name) = match mode {
+        VmmMode::Cwasm => ("vmm-io-host-cwasm", "vmm-io.cwasm"),
+        VmmMode::Wasm => ("vmm-io-host-wasm", "vmm-io.wasm"),
+    };
+    let io_host_bin = fs::read(vmm_dir.join(io_host_bin_name))
+        .unwrap_or_else(|e| panic!("failed to read {io_host_bin_name}: {e}"));
+    let io_mod_bytes = fs::read(vmm_dir.join(io_mod_name))
+        .unwrap_or_else(|e| panic!("failed to read {io_mod_name}: {e}"));
+
+    let init_script = format!(
+        "#!/bin/sh\n\
+set -e\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true\n\
+dmesg -n 4 2>/dev/null || true\n\
+if [ -c /dev/ttyS0 ]; then\n\
+    exec < /dev/ttyS0 > /dev/ttyS0 2>&1\n\
+fi\n\
+mkdir -p /tmp\n\
+mount -t tmpfs tmpfs /tmp\n\
+dmesg | grep -q virtio_iommu\n\
+! lsmod | grep -q '^kvm'\n\
+case \"$(readlink /sys/bus/pci/devices/0000:00:02.0/driver)\" in */pci-stub) ;; *) exit 1 ;; esac\n\
+case \"$(readlink /sys/bus/pci/devices/0000:00:03.0/driver)\" in */pci-stub) ;; *) exit 1 ;; esac\n\
+! test -e /dev/vda\n\
+! ip link show eth0 >/dev/null 2>&1\n\
+printf '\\nAIRLOCK_PT_ALL_L1_ZERO_PCI_DEVS_OK\\n'\n\
+insmod /opt/airlock/airlock.ko\n\
+/opt/airlock/{io_host_bin_name} --airlock -c /opt/airlock/vm-l2.toml\n\
+dmesg | grep -q 'airlock: attached passthrough PCI 0000:00:02.0'\n\
+dmesg | grep -q 'airlock: attached passthrough PCI 0000:00:03.0'\n\
+rmmod airlock\n\
+dmesg -n 1 2>/dev/null || true\n\
+printf '\\n{clean_exit_marker}\\n'\n\
+sleep 1\n\
+poweroff -f\n"
+    );
+
+    let io_host_cpio_path = format!("opt/airlock/{io_host_bin_name}");
+    let io_mod_cpio_path = format!("opt/airlock/{io_mod_name}");
+
+    let mut entries = vec![
+        CpioEntry::Dir {
+            path: "opt",
+            mode: 0o755,
+        },
+        CpioEntry::Dir {
+            path: "opt/airlock",
+            mode: 0o755,
+        },
+        CpioEntry::File {
+            path: "opt/airlock/airlock.ko",
+            mode: 0o644,
+            data: airlock_ko,
+        },
+        CpioEntry::File {
+            path: &io_host_cpio_path,
+            mode: 0o755,
+            data: &io_host_bin,
+        },
+        CpioEntry::File {
+            path: &io_mod_cpio_path,
+            mode: 0o644,
+            data: &io_mod_bytes,
+        },
+        CpioEntry::File {
+            path: "opt/airlock/vmm-core-motor.cwasm",
+            mode: 0o644,
+            data: core_motor_cwasm,
+        },
+        CpioEntry::File {
+            path: "opt/airlock/vm-l2.toml",
+            mode: 0o644,
+            data: vm_l2_toml,
+        },
+    ];
+    entries.extend_from_slice(extra_entries);
+    entries.push(CpioEntry::File {
+        path: "init",
+        mode: 0o755,
+        data: init_script.as_bytes(),
+    });
+
+    append_cpio_overlay(base_initramfs, &entries)
+}
+
+#[derive(Debug, Clone)]
+pub struct AirlockPassthroughAllAlpineArtifacts {
+    pub l1_bzimage: PathBuf,
+    pub l1_initrd_cwasm: PathBuf,
+    pub l1_initrd_wasm: PathBuf,
+    pub alpine_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn build_airlock_passthrough_all_alpine_artifacts() -> AirlockPassthroughAllAlpineArtifacts {
+    let airlock = ensure_linux_airlock_artifacts();
+    let vmm_dir = ensure_vmm_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+
+    let ssh_key = moto_dir.join("test.key");
+    let src_alpine = blobs.join("alpine.raw");
+    let l2_bzimage = blobs.join("bzImage");
+    let base_initramfs_path = blobs.join("initramfs.cpio.gz");
+
+    for required in [&ssh_key, &src_alpine, &l2_bzimage, &base_initramfs_path] {
+        assert!(
+            required.is_file(),
+            "missing required Airlock passthrough-all Alpine artifact '{}'",
+            required.display()
+        );
+    }
+
+    let stage_dir = airlock.dir.join("airlock-pt-all-alpine-stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    fs::create_dir_all(&stage_dir)
+        .expect("failed to create target/airlock/airlock-pt-all-alpine-stage");
+
+    let alpine_template_raw = airlock.dir.join("alpine-pt-all-template.raw");
+    stage_alpine_raw(
+        &AlpineStageSpec {
+            src_alpine_raw: &src_alpine,
+            dst_alpine_raw: &alpine_template_raw,
+            resize_bytes: None,
+            ssh_priv_key: Some(&ssh_key),
+            allow_tcp_forwarding: false,
+            autologin_shell_script: None,
+            custom_interfaces: None,
+            extra_dirs: &[],
+            extra_files: &[],
+        },
+        &stage_dir,
+    );
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    let base_initramfs =
+        fs::read(&base_initramfs_path).expect("failed to read initramfs.cpio.gz");
+    let airlock_ko = fs::read(&airlock.airlock_ko).expect("failed to read airlock.ko");
+    let core_motor_cwasm = fs::read(vmm_dir.join("vmm-core-motor.cwasm"))
+        .expect("failed to read vmm-core-motor.cwasm");
+    let l2_bzimage_bytes = fs::read(&l2_bzimage).expect("failed to read L2 bzImage");
+
+    let vm_l2_toml = b"log_file = \"/tmp/vmm-l2.log\"\n\
+log_level = \"info\"\n\
+kernel = \"/opt/airlock/bzImage\"\n\
+cmd_line = \"console=ttyS0 root=/dev/vda3 rw\"\n\
+num_cpus = 2\n\
+mem_size = \"256M\"\n\
+pci = [\"00:02.0\", \"00:03.0\"]\n\
+blk = []\n";
+
+    let extra = [CpioEntry::File {
+        path: "opt/airlock/bzImage",
+        mode: 0o644,
+        data: &l2_bzimage_bytes,
+    }];
+
+    let cwasm_cpio = pack_airlock_pt_all_initramfs(
+        &base_initramfs,
+        &airlock_ko,
+        &core_motor_cwasm,
+        VmmMode::Cwasm,
+        &vmm_dir,
+        vm_l2_toml,
+        "AIRLOCK_PT_ALL_ALPINE_CLEAN_EXIT",
+        &extra,
+    );
+    let wasm_cpio = pack_airlock_pt_all_initramfs(
+        &base_initramfs,
+        &airlock_ko,
+        &core_motor_cwasm,
+        VmmMode::Wasm,
+        &vmm_dir,
+        vm_l2_toml,
+        "AIRLOCK_PT_ALL_ALPINE_CLEAN_EXIT",
+        &extra,
+    );
+
+    let l1_initrd_cwasm = airlock.dir.join("initramfs-airlock-pt-all-alpine-cwasm.cpio");
+    let l1_initrd_wasm = airlock.dir.join("initramfs-airlock-pt-all-alpine-wasm.cpio");
+    fs::write(&l1_initrd_cwasm, &cwasm_cpio)
+        .expect("failed to write initramfs-airlock-pt-all-alpine-cwasm.cpio");
+    fs::write(&l1_initrd_wasm, &wasm_cpio)
+        .expect("failed to write initramfs-airlock-pt-all-alpine-wasm.cpio");
+
+    AirlockPassthroughAllAlpineArtifacts {
+        l1_bzimage: airlock.bzimage.clone(),
+        l1_initrd_cwasm,
+        l1_initrd_wasm,
+        alpine_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_airlock_passthrough_all_alpine_artifacts()
+-> &'static AirlockPassthroughAllAlpineArtifacts {
+    static AIRLOCK_PT_ALL_ALPINE: OnceLock<AirlockPassthroughAllAlpineArtifacts> = OnceLock::new();
+    AIRLOCK_PT_ALL_ALPINE.get_or_init(build_airlock_passthrough_all_alpine_artifacts)
+}
+
+/// Sub-step `(l.6)` Scenario 6: Boots diskless (`initramfs`-only) L1 Linux (`pci-stub` claims
+/// both `00:02.0` `virtio-blk` and `00:03.0` `virtio-net`, leaving zero L1-owned PCI endpoints),
+/// loads `airlock.ko` (`!kvm`), passes ALL PCI endpoints straight through to L2 Alpine Linux
+/// behind L1's `virtio-iommu` (`zero` emulated VirtIO devices -> `zero` steady-state L1 Ring-3
+/// VM-exits), verifies direct L0 -> L2 SSH (`root@192.168.8.2:22`), ext4 `/dev/vda3` rootfs,
+/// ICMP ping, interactive COM1 RX forwarding, and autonomous `L2 -> L1 (rmmod airlock) -> L0`
+/// shutdown.
+pub fn boot_airlock_linux_passthrough_all_alpine(mode: VmmMode, tmp: &TempTestDir) {
+    boot_airlock_linux_passthrough_all_alpine_with_l0(L0Engine::Wasm(mode), mode, tmp);
+}
+
+pub fn boot_airlock_linux_passthrough_all_alpine_with_l0(
+    l0: L0Engine,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+) {
+    if matches!(l0, L0Engine::Wasm(_)) {
+        let _ = ensure_vmm_artifacts();
+    }
+    let art = ensure_airlock_passthrough_all_alpine_artifacts();
+
+    let scratch_alpine = tmp.path().join("alpine.raw");
+    copy_sparse_raw(&art.alpine_template_raw, &scratch_alpine);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&art.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let l1_initrd = match mode {
+        VmmMode::Cwasm => &art.l1_initrd_cwasm,
+        VmmMode::Wasm => &art.l1_initrd_wasm,
+    };
+
+    let mut sess = L0Session::spawn_linux(&L0LinuxLaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1024M",
+        bzimage: &art.l1_bzimage,
+        initramfs: Some(l1_initrd),
+        cmd_line: "console=ttyS0 loglevel=4 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041,1af4:1044",
+        iommu: true,
+        chv_rng: false,
+        disk_raw: Some(&scratch_alpine),
+        tap_if_name: Some("puff-tap"),
+    });
+    let state = Arc::clone(&sess.state);
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"alpine-vm login:",
+        Duration::from_secs(60),
+    ) else {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            "L2 Alpine Linux booting from passed-through 00:02.0 + 00:03.0 on airlock.ko did not reach 'alpine-vm login:' within 60s",
+        );
+    };
+
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if boot_txt.contains("iommu_setup_default_domain") {
+            sess.fail(
+                "airlock_linux_passthrough_all_alpine",
+                mode.as_str(),
+                "unexpected VIOT/IOMMU default domain warning during L1 boot",
+            );
+        }
+        if !boot_txt.contains("AIRLOCK_PT_ALL_L1_ZERO_PCI_DEVS_OK") {
+            sess.fail(
+                "airlock_linux_passthrough_all_alpine",
+                mode.as_str(),
+                "missing AIRLOCK_PT_ALL_L1_ZERO_PCI_DEVS_OK marker from initramfs-only L1",
+            );
+        }
+    }
+
+    let ssh_deadline = Instant::now() + Duration::from_secs(25);
+    let mut last_err = String::new();
+    let mut ssh_stdout = None;
+    let verify_cmd =
+        "ping -c 2 192.168.8.1 && test -b /dev/vda3 && df -T / && echo L2_AIRLOCK_PT_ALL_ALPINE_OK_$(uname -s)_$(nproc)";
+    while Instant::now() < ssh_deadline {
+        match build_direct_alpine_ssh_command(&key_copy, verify_cmd).output() {
+            Ok(out) if out.status.success() => {
+                ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                break;
+            }
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    let Some(ssh_out) = ssh_stdout else {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            format!(
+                "direct L0 -> L2 SSH (root@192.168.8.2:22 over passed-through 00:03.0) failed: {last_err}"
+            ),
+        );
+    };
+    if !ssh_out.contains("bytes from 192.168.8.1")
+        || !ssh_out.contains("ext4")
+        || !ssh_out.contains("L2_AIRLOCK_PT_ALL_ALPINE_OK_Linux_2")
+    {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            format!("unexpected L2 direct SSH/df/ping output: {ssh_out:?}"),
+        );
+    }
+
+    sess.stdin
+        .write_all(b"\r")
+        .expect("failed to send CR over COM1 to L2 ttyS0");
+    sess.stdin.flush().expect("failed to flush CR over COM1");
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"alpine-vm login:",
+        Duration::from_secs(10),
+    ) else {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            "interactive COM1 RX forwarding (L0 -> L1 -> L2 ttyS0) did not echo login prompt",
+        );
+    };
+    cursor = next_pos;
+
+    let _ = build_direct_alpine_ssh_command(&key_copy, "poweroff").status();
+    if wait_for_serial_from(&state, cursor, b"reboot: Power down", Duration::from_secs(20))
+        .is_none()
+    {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            "L2 Alpine did not emit 'reboot: Power down' after direct SSH poweroff",
+        );
+    }
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(20);
+    let exit_status = loop {
+        match sess.guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                sess.guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= shutdown_deadline => break None,
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let Some(status) = exit_status else {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            "L1/L0 did not shut down autonomously within 20s after L2 poweroff",
+        );
+    };
+    if !status.success() {
+        sess.fail(
+            "airlock_linux_passthrough_all_alpine",
+            mode.as_str(),
+            format!("L0 exited with non-zero status: {status}"),
+        );
+    }
+
+    drop(sess.stdin);
+    let _ = sess.stdout_handle.join();
+    let _ = sess.stderr_handle.join();
+    let serial_bytes = sess.state.0.lock().unwrap().buf.clone();
+    let full_serial = String::from_utf8_lossy(&serial_bytes);
+    assert!(
+        full_serial.contains("AIRLOCK_PT_ALL_ALPINE_CLEAN_EXIT"),
+        "missing L1 rmmod+clean-exit marker in serial output:\n{full_serial}"
+    );
+}
+
+#[derive(Debug, Clone)]
+pub struct AirlockPassthroughAllMotorOsArtifacts {
+    pub l1_bzimage: PathBuf,
+    pub l1_initrd_cwasm: PathBuf,
+    pub l1_initrd_wasm: PathBuf,
+    pub motor_template_raw: PathBuf,
+    pub motor_puff_tap_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn build_airlock_passthrough_all_motor_os_artifacts() -> AirlockPassthroughAllMotorOsArtifacts {
+    let airlock = ensure_linux_airlock_artifacts();
+    let vmm_dir = ensure_vmm_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+
+    let imager = moto_dir.join("tools/imager");
+    let qcow2 = moto_dir.join("motor-os.qcow2");
+    let stock_kloader = moto_dir.join("kloader");
+    let stock_initrd = moto_dir.join("initrd");
+    let ssh_key = moto_dir.join("test.key");
+    let base_initramfs_path = blobs.join("initramfs.cpio.gz");
+
+    for required in [
+        &imager,
+        &qcow2,
+        &stock_kloader,
+        &stock_initrd,
+        &ssh_key,
+        &base_initramfs_path,
+    ] {
+        assert!(
+            required.is_file(),
+            "missing required Airlock passthrough-all Motor OS artifact '{}'",
+            required.display()
+        );
+    }
+
+    let motor_template_raw = airlock.dir.join("motor-os-pt-all-template.raw");
+    let _ = fs::remove_file(&motor_template_raw);
+    convert_qcow2_to_raw(&qcow2, &motor_template_raw);
+
+    let motor_puff_tap_template_raw = airlock.dir.join("motor-os-pt-all-puff-tap-template.raw");
+    let _ = fs::remove_file(&motor_puff_tap_template_raw);
+    copy_sparse_raw(&motor_template_raw, &motor_puff_tap_template_raw);
+    let puff_net_toml = airlock.dir.join("motor-os-pt-all-puff-sys-net.toml");
+    fs::write(
+        &puff_net_toml,
+        "auto_icmp_echo_reply = true\n\
+         loopback = true\n\
+         max_icmp_error_rate = 200\n\
+         max_rst_rate = 200\n\
+         max_syn_cookie_rate = 1000\n\n\
+         [devices.net0]\n\
+         mac = \"a4:a1:c2:00:00:01\"\n\
+         cidrs = [\"192.168.8.2/24\"]\n\
+         dns_servers = [\"8.8.8.8\"]\n\n\
+         [[devices.net0.routes]]\n\
+         ip_network = \"0.0.0.0/0\"\n\
+         gateway = \"192.168.8.1\"\n",
+    )
+    .expect("failed to write motor-os-pt-all-puff-sys-net.toml");
+    run_imager(
+        &imager,
+        &[
+            "put",
+            motor_puff_tap_template_raw.to_str().unwrap(),
+            puff_net_toml.to_str().unwrap(),
+            "/system/cfg/sys-net.toml",
+        ],
+    );
+    let _ = fs::remove_file(&puff_net_toml);
+
+    let base_initramfs =
+        fs::read(&base_initramfs_path).expect("failed to read initramfs.cpio.gz");
+    let airlock_ko = fs::read(&airlock.airlock_ko).expect("failed to read airlock.ko");
+    let core_motor_cwasm = fs::read(vmm_dir.join("vmm-core-motor.cwasm"))
+        .expect("failed to read vmm-core-motor.cwasm");
+    let kloader_bytes = fs::read(&stock_kloader).expect("failed to read Motor OS kloader");
+    let moto_initrd_bytes = fs::read(&stock_initrd).expect("failed to read Motor OS initrd");
+
+    let vm_l2_toml = b"log_file = \"/tmp/vmm-l2.log\"\n\
+log_level = \"info\"\n\
+pvh = \"/opt/airlock/kloader\"\n\
+initramfs = \"/opt/airlock/initrd\"\n\
+cmd_line = \"system-tty\"\n\
+num_cpus = 2\n\
+mem_size = \"256M\"\n\
+pci = [\"00:02.0\", \"00:03.0\"]\n\
+blk = []\n";
+
+    let extra = [
+        CpioEntry::File {
+            path: "opt/airlock/kloader",
+            mode: 0o644,
+            data: &kloader_bytes,
+        },
+        CpioEntry::File {
+            path: "opt/airlock/initrd",
+            mode: 0o644,
+            data: &moto_initrd_bytes,
+        },
+    ];
+
+    let cwasm_cpio = pack_airlock_pt_all_initramfs(
+        &base_initramfs,
+        &airlock_ko,
+        &core_motor_cwasm,
+        VmmMode::Cwasm,
+        &vmm_dir,
+        vm_l2_toml,
+        "AIRLOCK_PT_ALL_MOTO_CLEAN_EXIT",
+        &extra,
+    );
+    let wasm_cpio = pack_airlock_pt_all_initramfs(
+        &base_initramfs,
+        &airlock_ko,
+        &core_motor_cwasm,
+        VmmMode::Wasm,
+        &vmm_dir,
+        vm_l2_toml,
+        "AIRLOCK_PT_ALL_MOTO_CLEAN_EXIT",
+        &extra,
+    );
+
+    let l1_initrd_cwasm = airlock
+        .dir
+        .join("initramfs-airlock-pt-all-motor-os-cwasm.cpio");
+    let l1_initrd_wasm = airlock
+        .dir
+        .join("initramfs-airlock-pt-all-motor-os-wasm.cpio");
+    fs::write(&l1_initrd_cwasm, &cwasm_cpio)
+        .expect("failed to write initramfs-airlock-pt-all-motor-os-cwasm.cpio");
+    fs::write(&l1_initrd_wasm, &wasm_cpio)
+        .expect("failed to write initramfs-airlock-pt-all-motor-os-wasm.cpio");
+
+    AirlockPassthroughAllMotorOsArtifacts {
+        l1_bzimage: airlock.bzimage.clone(),
+        l1_initrd_cwasm,
+        l1_initrd_wasm,
+        motor_template_raw,
+        motor_puff_tap_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_airlock_passthrough_all_motor_os_artifacts()
+-> &'static AirlockPassthroughAllMotorOsArtifacts {
+    static AIRLOCK_PT_ALL_MOTO: OnceLock<AirlockPassthroughAllMotorOsArtifacts> = OnceLock::new();
+    AIRLOCK_PT_ALL_MOTO.get_or_init(build_airlock_passthrough_all_motor_os_artifacts)
+}
+
+/// Sub-step `(l.6)` Scenario 7: Boots diskless (`initramfs`-only) L1 Linux (`pci-stub` claims
+/// both `00:02.0` `virtio-blk` `motor-os.raw` and `00:03.0` `virtio-net`, leaving zero
+/// L1-owned PCI endpoints), loads `airlock.ko` (`!kvm`), passes ALL PCI endpoints straight
+/// through to L2 Motor OS behind L1's `virtio-iommu` (`zero` emulated VirtIO devices -> `zero`
+/// steady-state L1 Ring-3 VM-exits), verifies interactive COM1 + ICMP ping, direct L0 -> L2
+/// `russhd` SSH, and autonomous `L2 -> L1 (rmmod airlock) -> L0` shutdown.
+pub fn boot_airlock_linux_passthrough_all_motor_os(
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    tap_if_name: &str,
+) {
+    boot_airlock_linux_passthrough_all_motor_os_with_l0(
+        L0Engine::Wasm(mode),
+        mode,
+        tmp,
+        tap_if_name,
+    );
+}
+
+pub fn boot_airlock_linux_passthrough_all_motor_os_with_l0(
+    l0: L0Engine,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    tap_if_name: &str,
+) {
+    if matches!(l0, L0Engine::Wasm(_)) {
+        let _ = ensure_vmm_artifacts();
+    }
+    let art = ensure_airlock_passthrough_all_motor_os_artifacts();
+
+    let (src_template, gw_ip, guest_ip) = if tap_if_name == "puff-tap" {
+        (
+            &art.motor_puff_tap_template_raw,
+            "192.168.8.1",
+            "192.168.8.2",
+        )
+    } else {
+        (&art.motor_template_raw, "192.168.4.1", "192.168.4.2")
+    };
+
+    let scratch_motor = tmp.path().join("motor-os.raw");
+    copy_sparse_raw(src_template, &scratch_motor);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&art.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let l1_initrd = match mode {
+        VmmMode::Cwasm => &art.l1_initrd_cwasm,
+        VmmMode::Wasm => &art.l1_initrd_wasm,
+    };
+
+    let mut sess = L0Session::spawn_linux(&L0LinuxLaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1024M",
+        bzimage: &art.l1_bzimage,
+        initramfs: Some(l1_initrd),
+        cmd_line: "console=ttyS0 loglevel=4 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041,1af4:1044",
+        iommu: true,
+        chv_rng: false,
+        disk_raw: Some(&scratch_motor),
+        tap_if_name: Some(tap_if_name),
+    });
+    let state = Arc::clone(&sess.state);
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"Starting /system/bin/rush",
+        Duration::from_secs(60),
+    ) else {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            "L2 Motor OS booting from passed-through 00:02.0 + 00:03.0 on airlock.ko did not reach 'Starting /system/bin/rush' within 60s",
+        );
+    };
+
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        if boot_txt.contains("iommu_setup_default_domain") {
+            sess.fail(
+                "airlock_linux_passthrough_all_motor_os",
+                mode.as_str(),
+                "unexpected VIOT/IOMMU default domain warning during L1 boot",
+            );
+        }
+        if !boot_txt.contains("AIRLOCK_PT_ALL_L1_ZERO_PCI_DEVS_OK") {
+            sess.fail(
+                "airlock_linux_passthrough_all_motor_os",
+                mode.as_str(),
+                "missing AIRLOCK_PT_ALL_L1_ZERO_PCI_DEVS_OK marker from initramfs-only L1",
+            );
+        }
+    }
+
+    thread::sleep(Duration::from_millis(300));
+    let ping_cmd = format!("ping -c 2 {gw_ip}\r");
+    let expected_pong = format!("bytes from {gw_ip}");
+    sess.stdin
+        .write_all(ping_cmd.as_bytes())
+        .expect("failed to send ping command to L2 Motor OS console");
+    sess.stdin.flush().expect("failed to flush L2 ping command");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        expected_pong.as_bytes(),
+        Duration::from_secs(15),
+    ) else {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            format!(
+                "L2 Motor OS failed to receive ICMP echo reply from host {tap_if_name} ({gw_ip}) over passed-through 00:03.0"
+            ),
+        );
+    };
+    cursor = next_pos;
+
+    let ssh_deadline = Instant::now() + Duration::from_secs(25);
+    let mut last_err = String::new();
+    let mut ssh_stdout = None;
+    let verify_cmd = "echo L2_AIRLOCK_PT_ALL_MOTO_OK_$(uname -s)_$(nproc)";
+    while Instant::now() < ssh_deadline {
+        match build_direct_motor_os_ssh_command_at(guest_ip, &key_copy, verify_cmd).output() {
+            Ok(out) if out.status.success() => {
+                ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                break;
+            }
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    let Some(ssh_out) = ssh_stdout else {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            format!(
+                "direct L0 -> L2 Motor OS russhd SSH (motor@{guest_ip}:2222 over passed-through 00:03.0) failed: {last_err}"
+            ),
+        );
+    };
+    if !ssh_out.contains("L2_AIRLOCK_PT_ALL_MOTO_OK_Motor OS_2") {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            format!("unexpected L2 Motor OS direct SSH output: {ssh_out:?}"),
+        );
+    }
+
+    let _ = build_direct_motor_os_ssh_command_at(guest_ip, &key_copy, "shutdown").status();
+    if wait_for_serial_from(&state, cursor, b"vm_exit: bye.", Duration::from_secs(15)).is_none() {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            "L2 Motor OS did not emit 'vm_exit: bye.' after direct SSH shutdown",
+        );
+    }
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(20);
+    let exit_status = loop {
+        match sess.guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                sess.guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= shutdown_deadline => break None,
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let Some(status) = exit_status else {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            "L1/L0 did not shut down autonomously within 20s after L2 Motor OS shutdown",
+        );
+    };
+    if !status.success() {
+        sess.fail(
+            "airlock_linux_passthrough_all_motor_os",
+            mode.as_str(),
+            format!("L0 exited with non-zero status: {status}"),
+        );
+    }
+
+    drop(sess.stdin);
+    let _ = sess.stdout_handle.join();
+    let _ = sess.stderr_handle.join();
+    let serial_bytes = sess.state.0.lock().unwrap().buf.clone();
+    let full_serial = String::from_utf8_lossy(&serial_bytes);
+    assert!(
+        full_serial.contains("AIRLOCK_PT_ALL_MOTO_CLEAN_EXIT"),
+        "missing L1 rmmod+clean-exit marker in serial output:\n{full_serial}"
+    );
 }
 
 #[cfg(test)]

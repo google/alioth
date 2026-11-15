@@ -18,7 +18,10 @@ use vmm_tests::{
     L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock,
     boot_airlock_linux_alpine, boot_airlock_linux_alpine_with_l0, boot_airlock_linux_initrd,
     boot_airlock_linux_initrd_with_l0, boot_airlock_linux_motor_os,
-    boot_airlock_linux_motor_os_with_l0, boot_airlock_linux_passthrough_net,
+    boot_airlock_linux_motor_os_with_l0, boot_airlock_linux_passthrough_all_alpine,
+    boot_airlock_linux_passthrough_all_alpine_with_l0,
+    boot_airlock_linux_passthrough_all_motor_os,
+    boot_airlock_linux_passthrough_all_motor_os_with_l0, boot_airlock_linux_passthrough_net,
     boot_airlock_linux_passthrough_net_with_l0, boot_airlock_linux_test_guest,
     boot_airlock_linux_test_guest_with_l0, boot_and_shutdown, boot_chv_until_autonomous_exit,
     boot_nested_full_alpine, boot_nested_full_alpine_with_l0, boot_nested_full_motor_os,
@@ -676,4 +679,108 @@ fn boot_airlock_linux_passthrough_net_chv_cwasm() {
 #[test]
 fn boot_airlock_linux_passthrough_net_chv_wasm() {
     run_airlock_linux_passthrough_net_chv(VmmMode::Wasm);
+}
+
+fn run_airlock_linux_passthrough_all_alpine(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    if !use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh") {
+        eprintln!(
+            "skipping boot_airlock_linux_passthrough_all_alpine because VMM_TEST_NO_NET is set"
+        );
+        return;
+    }
+    let tmp = TempTestDir::new(&format!("airlock-pt-all-alpine-{}", mode.as_str()));
+    boot_airlock_linux_passthrough_all_alpine(mode, &tmp);
+}
+
+fn run_airlock_linux_passthrough_all_alpine_chv(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    if !use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh") {
+        eprintln!(
+            "skipping boot_airlock_linux_passthrough_all_alpine_chv because VMM_TEST_NO_NET is set"
+        );
+        return;
+    }
+    let tmp = TempTestDir::new(&format!("airlock-pt-all-alpine-chv-{}", mode.as_str()));
+    boot_airlock_linux_passthrough_all_alpine_with_l0(L0Engine::Chv, mode, &tmp);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_alpine_cwasm() {
+    run_airlock_linux_passthrough_all_alpine(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_alpine_wasm() {
+    run_airlock_linux_passthrough_all_alpine(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_alpine_chv_cwasm() {
+    run_airlock_linux_passthrough_all_alpine_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_alpine_chv_wasm() {
+    run_airlock_linux_passthrough_all_alpine_chv(VmmMode::Wasm);
+}
+
+fn run_airlock_linux_passthrough_all_motor_os_impl(l0: Option<L0Engine>, mode: VmmMode) {
+    let _motor_lock = acquire_motor_os_lock();
+    if std::env::var_os("VMM_TEST_NO_NET").is_some() {
+        eprintln!(
+            "skipping boot_airlock_linux_passthrough_all_motor_os because VMM_TEST_NO_NET is set"
+        );
+        return;
+    }
+    let (_linux_lock, tap_name) = if std::path::Path::new("/sys/class/net/moto-tap").exists() {
+        (None, "moto-tap")
+    } else if std::path::Path::new("/sys/class/net/puff-tap").exists() {
+        (Some(acquire_linux_lock()), "puff-tap")
+    } else {
+        let _ = use_network_tap(
+            "moto-tap",
+            "run ../motor-dev/motor-os/vm_images/release/create-tap.sh",
+        );
+        unreachable!();
+    };
+    let tag = match l0 {
+        Some(L0Engine::Chv) => format!("airlock-pt-all-motor-os-chv-{}", mode.as_str()),
+        _ => format!("airlock-pt-all-motor-os-{}", mode.as_str()),
+    };
+    let tmp = TempTestDir::new(&tag);
+    match l0 {
+        Some(engine) => {
+            boot_airlock_linux_passthrough_all_motor_os_with_l0(engine, mode, &tmp, tap_name)
+        }
+        None => boot_airlock_linux_passthrough_all_motor_os(mode, &tmp, tap_name),
+    }
+}
+
+fn run_airlock_linux_passthrough_all_motor_os(mode: VmmMode) {
+    run_airlock_linux_passthrough_all_motor_os_impl(None, mode);
+}
+
+fn run_airlock_linux_passthrough_all_motor_os_chv(mode: VmmMode) {
+    run_airlock_linux_passthrough_all_motor_os_impl(Some(L0Engine::Chv), mode);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_motor_os_cwasm() {
+    run_airlock_linux_passthrough_all_motor_os(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_motor_os_wasm() {
+    run_airlock_linux_passthrough_all_motor_os(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_motor_os_chv_cwasm() {
+    run_airlock_linux_passthrough_all_motor_os_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_passthrough_all_motor_os_chv_wasm() {
+    run_airlock_linux_passthrough_all_motor_os_chv(VmmMode::Wasm);
 }

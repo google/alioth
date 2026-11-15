@@ -181,9 +181,12 @@ set -e
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+dmesg -n 4 2>/dev/null || true
+if [ -c /dev/ttyS0 ]; then
+    exec < /dev/ttyS0 > /dev/ttyS0 2>&1
+fi
 mkdir -p /tmp
 mount -t tmpfs tmpfs /tmp
-dmesg -n 4 2>/dev/null || true
 $KVM_LOAD_CMDS
 insmod /opt/airlock/airlock.ko
 echo "airlock-l1 (initramfs-only): passing ALL PCI devices [00:02.0, 00:03.0] to L2 Motor OS..."
@@ -212,9 +215,10 @@ EOF
         --put "$RUNTIME_DIR/stage/vm-l2.toml:opt/airlock/vm-l2.toml:0644" \
         --put "$RUNTIME_DIR/stage/init:init:0755"
 
-    L1_CMDLINE="console=ttyS0 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041"
+    L1_CMDLINE="console=ttyS0 rdinit=/init pci-stub.ids=1af4:1042,1af4:1041,1af4:1044"
     L0_DISK="$L2_RAW"
     L0_TAP="moto-tap"
+    rm -rf "$RUNTIME_DIR/stage"
 
     banner "[Step 3/4] All-PCI Passthrough Motor OS Quick Reference"
     cat <<EOF

@@ -14,7 +14,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::iter::zip;
+use alloc::vec::Vec;
 use core::mem::size_of;
 
 use bitflags::bitflags;
@@ -22,6 +22,7 @@ use derive_layout::Layout;
 use crate::sync::RwLock;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
+use crate::mem::addressable::SlotBackend;
 use crate::mem::mmio::Mmio;
 use crate::mem::{AddrOpt, ChangeLayout};
 use crate::hw::pci::cap::PciCapList;
@@ -126,42 +127,47 @@ pub enum ConfigHeader {
     Device(DeviceHeader),
 }
 
+const MAX_GUEST_PA_END: u64 = 1u64 << 46;
+
 #[derive(Debug)]
-struct UpdateCommandCallback {
-    pci_bars: [PciBar; 6],
-    bars: [u32; 6],
-    changed: Command,
-    current: Command,
+struct BarTransition {
+    pci_bar: PciBar,
+    old_addr: Option<u64>,
+    new_addr: Option<u64>,
 }
 
-impl ChangeLayout for UpdateCommandCallback {
+#[derive(Debug)]
+struct SyncBarsCallback {
+    bdf: Bdf,
+    transitions: Vec<BarTransition>,
+}
+
+impl ChangeLayout for SyncBarsCallback {
     fn change(&self, memory: &mem::Memory) -> mem::Result<()> {
-        for (i, (pci_bar, bar)) in zip(&self.pci_bars, self.bars).enumerate() {
-            match pci_bar {
-                PciBar::Empty => {}
-                PciBar::Mem32(region) | PciBar::Mem64(region) => {
-                    if !self.changed.contains(Command::MEM) {
-                        continue;
+        for t in &self.transitions {
+            if let Some(src) = t.old_addr {
+                log::debug!("{}: unmapping BAR at {src:#x}", self.bdf);
+                match &t.pci_bar {
+                    PciBar::Empty => {}
+                    PciBar::Io(_) => {
+                        memory.remove_io_region(src as u16)?;
                     }
-                    let mut addr = (bar & !BAR_MEM_MASK) as u64;
-                    if matches!(pci_bar, PciBar::Mem64(_)) {
-                        addr |= (self.bars[i + 1] as u64) << 32;
-                    }
-                    if self.current.contains(Command::MEM) {
-                        memory.add_region(AddrOpt::Fixed(addr), region.clone())?;
-                    } else {
-                        memory.remove_region(addr)?;
+                    PciBar::Mem32(_) | PciBar::Mem64(_) => {
+                        memory.remove_region(src)?;
                     }
                 }
-                PciBar::Io(region) => {
-                    if !self.changed.contains(Command::IO) {
-                        continue;
+            }
+        }
+        for t in &self.transitions {
+            if let Some(dst) = t.new_addr {
+                log::debug!("{}: mapping BAR at {dst:#x}", self.bdf);
+                match &t.pci_bar {
+                    PciBar::Empty => {}
+                    PciBar::Io(region) => {
+                        memory.add_io_region(Some(dst as u16), region.clone())?;
                     }
-                    let port = (bar & !BAR_IO_MASK) as u16;
-                    if self.current.contains(Command::IO) {
-                        memory.add_io_region(Some(port), region.clone())?;
-                    } else {
-                        memory.remove_io_region(port)?;
+                    PciBar::Mem32(region) | PciBar::Mem64(region) => {
+                        memory.add_region(AddrOpt::Fixed(dst), region.clone())?;
                     }
                 }
             }
@@ -170,33 +176,70 @@ impl ChangeLayout for UpdateCommandCallback {
     }
 }
 
-#[derive(Debug)]
-struct MoveBarCallback {
-    bdf: Bdf,
-    src: u64,
-    dst: u64,
-}
-
-impl ChangeLayout for MoveBarCallback {
-    fn change(&self, memory: &mem::Memory) -> mem::Result<()> {
-        log::debug!(
-            "{}: moving bar from {:#x} to {:#x}...",
-            self.bdf,
-            self.src,
-            self.dst
-        );
-        if self.src as u32 & BAR_IO == BAR_IO {
-            let src_port = self.src & !(BAR_IO_MASK as u64);
-            let dst_port = self.dst & !(BAR_IO_MASK as u64);
-            let region = memory.remove_io_region(src_port as u16)?;
-            memory.add_io_region(Some(dst_port as u16), region)?;
-        } else {
-            let src_addr = self.src & !(BAR_MEM_MASK as u64);
-            let dst_addr = self.dst & !(BAR_MEM_MASK as u64);
-            let region = memory.remove_region(src_addr)?;
-            memory.add_region(AddrOpt::Fixed(dst_addr), region)?;
+fn desired_bar_addr(
+    bars: &[u32; 6],
+    bar_masks: &[u32; 6],
+    command: Command,
+    index: usize,
+    pci_bar: &PciBar,
+) -> Option<u64> {
+    match pci_bar {
+        PciBar::Empty => None,
+        PciBar::Io(region) => {
+            if !command.contains(Command::IO) {
+                return None;
+            }
+            let mask = bar_masks[index];
+            let masked = bars[index] & mask;
+            if mask != 0 && masked == mask {
+                return None;
+            }
+            let port = (bars[index] & !BAR_IO_MASK) as u16;
+            if port == 0
+                || (port as usize)
+                    .checked_add(region.size())
+                    .is_none_or(|end| end > (u16::MAX as usize) + 1)
+            {
+                return None;
+            }
+            Some(port as u64)
         }
-        Ok(())
+        PciBar::Mem32(region) => {
+            if !command.contains(Command::MEM) {
+                return None;
+            }
+            let mask = bar_masks[index];
+            let masked = bars[index] & mask;
+            if mask != 0 && masked == mask {
+                return None;
+            }
+            let addr = (bars[index] & !BAR_MEM_MASK) as u32;
+            if addr == 0 || addr.checked_add(region.size() as u32).is_none() {
+                return None;
+            }
+            Some(addr as u64)
+        }
+        PciBar::Mem64(region) => {
+            if !command.contains(Command::MEM) {
+                return None;
+            }
+            let mask_lo = bar_masks[index];
+            let masked_lo = bars[index] & mask_lo;
+            if mask_lo != 0 && masked_lo == mask_lo {
+                return None;
+            }
+            let lo = (bars[index] & !BAR_MEM_MASK) as u64;
+            let hi = (bars[index + 1] as u64) << 32;
+            let addr = hi | lo;
+            if addr == 0
+                || addr
+                    .checked_add(region.size() as u64)
+                    .is_none_or(|end| end > MAX_GUEST_PA_END)
+            {
+                return None;
+            }
+            Some(addr)
+        }
     }
 }
 
@@ -204,6 +247,7 @@ impl ChangeLayout for MoveBarCallback {
 pub struct HeaderData {
     pub header: ConfigHeader,
     pub bar_masks: [u32; 6],
+    pub mapped_bars: [Option<u64>; 6],
     pub bdf: Bdf,
 }
 
@@ -230,6 +274,36 @@ impl HeaderData {
         }
     }
 
+    fn reconcile_bars(&mut self, pci_bars: &[PciBar; 6]) -> Option<Box<dyn ChangeLayout>> {
+        let ConfigHeader::Device(header) = &self.header;
+        let mut transitions = Vec::new();
+        for (i, pci_bar) in pci_bars.iter().enumerate() {
+            let want = desired_bar_addr(
+                &header.bars,
+                &self.bar_masks,
+                header.common.command,
+                i,
+                pci_bar,
+            );
+            if self.mapped_bars[i] != want {
+                transitions.push(BarTransition {
+                    pci_bar: pci_bar.clone(),
+                    old_addr: self.mapped_bars[i],
+                    new_addr: want,
+                });
+                self.mapped_bars[i] = want;
+            }
+        }
+        if transitions.is_empty() {
+            None
+        } else {
+            Some(Box::new(SyncBarsCallback {
+                bdf: self.bdf,
+                transitions,
+            }))
+        }
+    }
+
     fn write_header(
         &mut self,
         offset: usize,
@@ -238,100 +312,79 @@ impl HeaderData {
         pci_bars: &[PciBar; 6],
     ) -> Option<Box<dyn ChangeLayout>> {
         let bdf = self.bdf;
-        match &mut self.header {
-            ConfigHeader::Device(header) => match (offset, size as usize) {
-                CommonHeader::LAYOUT_COMMAND => {
-                    let val = Command::from_bits_retain(val as u16);
+        match (offset, size as usize) {
+            CommonHeader::LAYOUT_COMMAND => {
+                let cmd_in = Command::from_bits_retain(val as u16);
+                let changed = {
+                    let ConfigHeader::Device(header) = &mut self.header;
                     let old = header.common.command;
-                    assign_bits!(header.common.command, val, Command::WRITABLE_BITS);
+                    assign_bits!(header.common.command, cmd_in, Command::WRITABLE_BITS);
                     let current = header.common.command;
-                    log::trace!("{bdf}: write command: {val:x?}\n   {old:x?}\n-> {current:x?}",);
-                    let changed = old ^ current;
-                    if !(changed & (Command::MEM | Command::IO)).is_empty() {
-                        Some(Box::new(UpdateCommandCallback {
-                            pci_bars: pci_bars.clone(),
-                            bars: header.bars,
-                            changed,
-                            current,
-                        }))
-                    } else {
-                        None
-                    }
-                }
-                CommonHeader::LAYOUT_STATUS => {
-                    let val = Status::from_bits_retain(val as u16);
-                    let old = header.common.status;
-                    header.common.status &= !(val & Status::RW1C_BITS);
-                    log::trace!(
-                        "{bdf}: write status: {val:x?}\n   {old:x?}\n-> {:x?}",
-                        header.common.status,
-                    );
+                    log::trace!("{bdf}: write command: {cmd_in:x?}\n   {old:x?}\n-> {current:x?}");
+                    old ^ current
+                };
+                if !(changed & (Command::MEM | Command::IO)).is_empty() {
+                    self.reconcile_bars(pci_bars)
+                } else {
                     None
                 }
-                (OFFSET_BAR0..=OFFSET_BAR5, 4) => {
-                    let bar_index = (offset - OFFSET_BAR0) >> 2;
-
-                    let mask = self.bar_masks[bar_index];
+            }
+            (CommonHeader::OFFSET_COMMAND, 4) => {
+                let cmd_in = Command::from_bits_retain(val as u16);
+                let status_in = Status::from_bits_retain((val >> 16) as u16);
+                let changed = {
+                    let ConfigHeader::Device(header) = &mut self.header;
+                    let old = header.common.command;
+                    assign_bits!(header.common.command, cmd_in, Command::WRITABLE_BITS);
+                    header.common.status &= !(status_in & Status::RW1C_BITS);
+                    old ^ header.common.command
+                };
+                if !(changed & (Command::MEM | Command::IO)).is_empty() {
+                    self.reconcile_bars(pci_bars)
+                } else {
+                    None
+                }
+            }
+            CommonHeader::LAYOUT_STATUS => {
+                let ConfigHeader::Device(header) = &mut self.header;
+                let val = Status::from_bits_retain(val as u16);
+                let old = header.common.status;
+                header.common.status &= !(val & Status::RW1C_BITS);
+                log::trace!(
+                    "{bdf}: write status: {val:x?}\n   {old:x?}\n-> {:x?}",
+                    header.common.status,
+                );
+                None
+            }
+            (OFFSET_BAR0..=OFFSET_BAR5, 4) => {
+                let bar_index = (offset - OFFSET_BAR0) >> 2;
+                let mask = self.bar_masks[bar_index];
+                let updated = {
+                    let ConfigHeader::Device(header) = &mut self.header;
                     let old_val = header.bars[bar_index];
                     let masked_val = mask_bits!(old_val, val as u32, mask);
                     if old_val == masked_val {
-                        return None;
+                        false
+                    } else {
+                        header.bars[bar_index] = masked_val;
+                        log::info!(
+                            "{bdf}: bar {bar_index}: write {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}"
+                        );
+                        true
                     }
-                    log::info!(
-                        "{bdf}: updating bar {bar_index}: {old_val:#010x} -> {masked_val:#010x}, mask={mask:#010x}",
-                    );
-                    let command = header.common.command;
-                    match &pci_bars[bar_index] {
-                        PciBar::Io(_) if command.contains(Command::IO) => {
-                            Some(Box::new(MoveBarCallback {
-                                bdf,
-                                src: old_val as u64,
-                                dst: masked_val as u64,
-                            }))
-                        }
-                        PciBar::Mem32(_) if command.contains(Command::MEM) => {
-                            Some(Box::new(MoveBarCallback {
-                                bdf,
-                                src: old_val as u64,
-                                dst: masked_val as u64,
-                            }))
-                        }
-                        PciBar::Mem64(_) if command.contains(Command::MEM) => {
-                            let hi_32 = (header.bars[bar_index + 1] as u64) << 32;
-                            Some(Box::new(MoveBarCallback {
-                                bdf,
-                                src: old_val as u64 | hi_32,
-                                dst: masked_val as u64 | hi_32,
-                            }))
-                        }
-                        PciBar::Empty
-                            if command.contains(Command::MEM)
-                                && bar_index > 0
-                                && matches!(&pci_bars[bar_index - 1], PciBar::Mem64(_)) =>
-                        {
-                            let lo_32 = header.bars[bar_index - 1] as u64;
-                            Some(Box::new(MoveBarCallback {
-                                bdf,
-                                src: lo_32 | (old_val as u64) << 32,
-                                dst: lo_32 | (masked_val as u64) << 32,
-                            }))
-                        }
-                        _ => {
-                            header.bars[bar_index] = masked_val;
-                            log::info!(
-                                "{bdf}: bar {bar_index}: write {val:#010x}, update: {old_val:#010x} -> {masked_val:#010x}"
-                            );
-                            None
-                        }
-                    }
-                }
-                _ => {
-                    log::warn!(
-                        "{bdf}: unaligned write offset = {offset:#x}, size = {size}, val = {val:#x}"
-                    );
+                };
+                if updated {
+                    self.reconcile_bars(pci_bars)
+                } else {
                     None
                 }
-            },
+            }
+            _ => {
+                log::warn!(
+                    "{bdf}: unaligned write offset = {offset:#x}, size = {size}, val = {val:#x}"
+                );
+                None
+            }
         }
     }
 }
@@ -430,6 +483,7 @@ impl EmulatedConfig {
             data: Arc::new(RwLock::new(HeaderData {
                 header: ConfigHeader::Device(header),
                 bar_masks,
+                mapped_bars: [None; 6],
                 bdf: Bdf(0),
             })),
             bars,
