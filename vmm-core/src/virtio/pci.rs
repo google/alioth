@@ -443,20 +443,20 @@ impl Mmio for VirtioPciRegisterMmio {
                 reg.device_feature_sel.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_DEVICE_FEATURE => {
-                if reg.device_feature_sel.load(Ordering::Acquire) > 0 {
-                    get_high32(reg.device_feature) as u64
-                } else {
-                    get_low32(reg.device_feature) as u64
+                match reg.device_feature_sel.load(Ordering::Acquire) {
+                    0 => get_low32(reg.device_feature) as u64,
+                    1 => get_high32(reg.device_feature) as u64,
+                    _ => 0,
                 }
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT => {
                 reg.driver_feature_sel.load(Ordering::Acquire) as u64
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
-                if reg.driver_feature_sel.load(Ordering::Acquire) > 0 {
-                    get_atomic_high32(&reg.driver_feature) as u64
-                } else {
-                    get_atomic_low32(&reg.driver_feature) as u64
+                match reg.driver_feature_sel.load(Ordering::Acquire) {
+                    0 => get_atomic_low32(&reg.driver_feature) as u64,
+                    1 => get_atomic_high32(&reg.driver_feature) as u64,
+                    _ => 0,
                 }
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
@@ -512,7 +512,7 @@ impl Mmio for VirtioPciRegisterMmio {
             VirtioCommonCfg::LAYOUT_QUEUE_DRIVER_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    get_atomic_high32(&q.driver) as u64
+                    get_atomic_low32(&q.driver) as u64
                 } else {
                     0
                 }
@@ -528,7 +528,7 @@ impl Mmio for VirtioPciRegisterMmio {
             VirtioCommonCfg::LAYOUT_QUEUE_DEVICE_LO => {
                 let q_sel = reg.queue_sel.load(Ordering::Relaxed);
                 if let Some(q) = self.queues.get(q_sel as usize) {
-                    get_atomic_high32(&q.device) as u64
+                    get_atomic_low32(&q.device) as u64
                 } else {
                     0
                 }
@@ -568,10 +568,10 @@ impl Mmio for VirtioPciRegisterMmio {
                 reg.driver_feature_sel.store(val as u8, Ordering::Release);
             }
             VirtioCommonCfg::LAYOUT_DRIVER_FEATURE => {
-                if reg.driver_feature_sel.load(Ordering::Relaxed) > 0 {
-                    set_atomic_high32(&reg.driver_feature, val as u32)
-                } else {
-                    set_atomic_low32(&reg.driver_feature, val as u32)
+                match reg.driver_feature_sel.load(Ordering::Relaxed) {
+                    0 => set_atomic_low32(&reg.driver_feature, val as u32),
+                    1 => set_atomic_high32(&reg.driver_feature, val as u32),
+                    _ => {}
                 }
             }
             VirtioCommonCfg::LAYOUT_CONFIG_MSIX_VECTOR => {
@@ -1117,5 +1117,64 @@ mod tests {
         // Resetting device unregisters doorbells.
         dev.reset().unwrap();
         assert!(host.doorbells().is_empty());
+    }
+
+    #[test]
+    fn test_virtio_pci_128bit_feature_select_does_not_alias_word1() {
+        let host = Arc::new(FakeHost::default());
+        let spec = VirtioDeviceSpec {
+            dev: 1,
+            name: "virtio-net-test".to_string(),
+            device_id: DeviceId::Net as u16,
+            pci_bdf: 0x0018,
+            device_features: 0x29,
+            num_queues: 2,
+            config_bytes: vec![0; 8],
+        };
+        let dev = VirtioPciDevice::from_spec(spec, host, Arc::new(NoopBridge)).unwrap();
+
+        dev.registers
+            .write(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT.0, 4, 1)
+            .unwrap();
+        let word1 = dev
+            .registers
+            .read(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE.0, 4)
+            .unwrap();
+        assert_ne!(word1, 0);
+
+        for sel in [2u64, 3u64] {
+            dev.registers
+                .write(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE_SELECT.0, 4, sel)
+                .unwrap();
+            assert_eq!(
+                dev.registers
+                    .read(VirtioCommonCfg::LAYOUT_DEVICE_FEATURE.0, 4)
+                    .unwrap(),
+                0
+            );
+        }
+
+        dev.registers
+            .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0, 4, 0)
+            .unwrap();
+        dev.registers
+            .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0, 4, 0x29)
+            .unwrap();
+        dev.registers
+            .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0, 4, 1)
+            .unwrap();
+        dev.registers
+            .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0, 4, 0x3)
+            .unwrap();
+        // Linux 7.x writes `driver_feature_select = 2, 3` with `0`; word 1 must remain `0x3`.
+        for sel in [2u64, 3u64] {
+            dev.registers
+                .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE_SELECT.0, 4, sel)
+                .unwrap();
+            dev.registers
+                .write(VirtioCommonCfg::LAYOUT_DRIVER_FEATURE.0, 4, 0)
+                .unwrap();
+        }
+        assert_eq!(dev.reg.driver_feature.load(Ordering::Acquire), 0x3_0000_0029);
     }
 }

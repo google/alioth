@@ -297,14 +297,15 @@ fn create_viot(iommu_bdf: u16) -> (AcpiTableViot, AcpiViotVirtioPciNode, AcpiVio
         bdf_number: iommu_bdf,
         reserved2: [0; 8],
     };
+    let first_managed_bdf = iommu_bdf.saturating_add(8);
     let range_node = AcpiViotPciRangeNode {
         type_: VIOT_NODE_PCI_RANGE,
         reserved: 0,
         length: size_of::<AcpiViotPciRangeNode>() as u16,
-        endpoint_start: 0,
+        endpoint_start: first_managed_bdf as u32,
         pci_segment_start: 0,
         pci_segment_end: 0,
-        bdf_start: 0x0000,
+        bdf_start: first_managed_bdf,
         bdf_end: 0xffff,
         output_node: node_offset,
         reserved2: [0; 6],

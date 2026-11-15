@@ -1891,6 +1891,274 @@ impl L0Session {
             String::from_utf8_lossy(&stderr_bytes),
         );
     }
+
+    fn finish_from_l1_linux(mut self, suite: &str, l1_label: &str) {
+        let _ = self.stdin.write_all(b"poweroff -f\n");
+        let _ = self.stdin.flush();
+        let shutdown_deadline = Instant::now() + Duration::from_secs(15);
+        let exit_status = loop {
+            match self.guard.child.try_wait().expect("try_wait failed") {
+                Some(status) => {
+                    self.guard.armed = false;
+                    break Some(status);
+                }
+                None if Instant::now() >= shutdown_deadline => break None,
+                None => thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        drop(self.stdin);
+        if exit_status.is_none() {
+            self.guard.kill_group();
+            self.guard.armed = false;
+        }
+        let _ = self.stdout_handle.join();
+        let stderr_bytes = self.stderr_handle.join().unwrap_or_default();
+        let serial = self.state.0.lock().unwrap().buf.clone();
+        let vmm_log = fs::read_to_string(&self.log_path).unwrap_or_default();
+
+        let Some(status) = exit_status else {
+            panic!(
+                "[{suite} (l0={}, l1={l1_label})] L0 Linux VM failed to exit within 15s after poweroff -f\n{}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+                self.engine.as_str(),
+                self.desc,
+                String::from_utf8_lossy(&serial),
+                String::from_utf8_lossy(&stderr_bytes),
+            );
+        };
+        assert!(
+            status.success(),
+            "[{suite} (l0={}, l1={l1_label})] L0 Linux VM exited with non-zero status: {status}\n{}\n--- serial stdout ---\n{}\n--- stderr ---\n{}\n--- vmm-l0.log ---\n{vmm_log}",
+            self.engine.as_str(),
+            self.desc,
+            String::from_utf8_lossy(&serial),
+            String::from_utf8_lossy(&stderr_bytes),
+        );
+    }
+}
+
+pub struct L0LinuxLaunchSpec<'a> {
+    pub engine: L0Engine,
+    pub tmp: &'a TempTestDir,
+    pub num_cpus: u32,
+    pub mem_size: &'a str,
+    pub bzimage: &'a Path,
+    pub initramfs: Option<&'a Path>,
+    pub cmd_line: &'a str,
+    pub iommu: bool,
+    pub chv_rng: bool,
+    pub disk_raw: Option<&'a Path>,
+    pub tap_if_name: Option<&'a str>,
+}
+
+impl L0Session {
+    fn spawn_linux(spec: &L0LinuxLaunchSpec<'_>) -> Self {
+        let log_path = spec.tmp.path().join("vmm-l0.log");
+        let (child, stdin, mut stdout, mut stderr, desc): (
+            Child,
+            Box<dyn Write + Send>,
+            Box<dyn Read + Send>,
+            std::process::ChildStderr,
+            String,
+        ) = match spec.engine {
+            L0Engine::Wasm(mode) => {
+                let target_dir = ensure_vmm_artifacts();
+                let initramfs_line = match spec.initramfs {
+                    Some(p) => format!("initramfs = \"{}\"\n", p.display()),
+                    None => String::new(),
+                };
+                let blk_section = match spec.disk_raw {
+                    Some(d) => format!("blk = [\"{}\"]\n", d.display()),
+                    None => String::from("blk = []\n"),
+                };
+                let net_section = match spec.tap_if_name {
+                    Some(tap) => format!(
+                        "\n[net.dev0]\n\
+                         mac = \"a4:a1:c2:00:00:01\"\n\
+                         mtu = 1500\n\
+                         if_name = \"{tap}\"\n"
+                    ),
+                    None => String::new(),
+                };
+                let iommu_line = if spec.iommu { "iommu = true\n" } else { "" };
+                let config_path = spec.tmp.path().join("vm-l0.toml");
+                let full_config = format!(
+                    "log_file = \"{}\"\n\
+                     log_level = \"info\"\n\
+                     kernel = \"{}\"\n\
+                     {initramfs_line}\
+                     cmd_line = \"{}\"\n\
+                     num_cpus = {}\n\
+                     mem_size = \"{}\"\n\
+                     {iommu_line}{blk_section}{net_section}",
+                    log_path.display(),
+                    spec.bzimage.display(),
+                    spec.cmd_line,
+                    spec.num_cpus,
+                    spec.mem_size,
+                );
+                fs::write(&config_path, &full_config).expect("failed to write L0 Linux vm.toml");
+
+                let (io_host, io_mod, core_host, core_mod) = match mode {
+                    VmmMode::Cwasm => (
+                        target_dir.join("vmm-io-host-cwasm"),
+                        target_dir.join("vmm-io.cwasm"),
+                        target_dir.join("vmm-core-host-cwasm"),
+                        target_dir.join("vmm-core.cwasm"),
+                    ),
+                    VmmMode::Wasm => (
+                        target_dir.join("vmm-io-host-wasm"),
+                        target_dir.join("vmm-io.wasm"),
+                        target_dir.join("vmm-core-host-wasm"),
+                        target_dir.join("vmm-core.wasm"),
+                    ),
+                };
+
+                let mut cmd = Command::new(&io_host);
+                cmd.current_dir(spec.tmp.path())
+                    .arg("-c")
+                    .arg(&config_path)
+                    .arg("-w")
+                    .arg(&io_mod)
+                    .arg("--core-host")
+                    .arg(&core_host)
+                    .arg("--core-wasm")
+                    .arg(&core_mod)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .process_group(0);
+
+                let mut child = cmd
+                    .spawn()
+                    .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", io_host.display()));
+                let cin = child.stdin.take().expect("piped stdin");
+                let cout = child.stdout.take().expect("piped stdout");
+                let cerr = child.stderr.take().expect("piped stderr");
+                (
+                    child,
+                    Box::new(cin),
+                    Box::new(cout),
+                    cerr,
+                    format!("--- vm-l0.toml ---\n{full_config}"),
+                )
+            }
+            L0Engine::Chv => {
+                let chv_bin = find_chv_binary();
+                let (pty_master, slave_fd) = open_raw_pty();
+                let slave_dup = unsafe { libc::dup(slave_fd) };
+                assert!(slave_dup >= 0, "dup(slave_fd) failed");
+                let slave_in = unsafe { File::from_raw_fd(slave_fd) };
+                let slave_out = unsafe { File::from_raw_fd(slave_dup) };
+                let master_reader = pty_master.try_clone().expect("clone pty_master");
+
+                let mut cmd = Command::new(&chv_bin);
+                cmd.current_dir(spec.tmp.path())
+                    .arg("--cpus")
+                    .arg(format!("boot={},nested=on", spec.num_cpus))
+                    .arg("--memory")
+                    .arg(format!("size={},thp=on", spec.mem_size))
+                    .arg("--console")
+                    .arg("off")
+                    .arg("--serial")
+                    .arg("tty")
+                    .arg("--log-file")
+                    .arg(&log_path)
+                    .arg("--kernel")
+                    .arg(spec.bzimage);
+                if let Some(initramfs) = spec.initramfs {
+                    cmd.arg("--initramfs").arg(initramfs);
+                }
+                cmd.arg("--cmdline").arg(spec.cmd_line);
+
+                let iommu_opt = if spec.iommu { "virtio" } else { "off" };
+                if spec.chv_rng {
+                    cmd.arg("--rng").arg(format!(
+                        "src=/dev/urandom,iommu={iommu_opt},pci_device_id=4"
+                    ));
+                }
+                if let Some(disk) = spec.disk_raw {
+                    cmd.arg("--disk").arg(format!(
+                        "path={},image_type=raw,iommu={iommu_opt},pci_device_id=2",
+                        disk.display()
+                    ));
+                }
+                if let Some(tap) = spec.tap_if_name {
+                    cmd.arg("--net").arg(format!(
+                        "tap={tap},mac=a4:a1:c2:00:00:01,iommu={iommu_opt},pci_device_id=3"
+                    ));
+                }
+
+                let cmd_debug = format!("{cmd:?}");
+                cmd.stdin(Stdio::from(slave_in))
+                    .stdout(Stdio::from(slave_out))
+                    .stderr(Stdio::piped())
+                    .process_group(0);
+
+                let mut child = cmd
+                    .spawn()
+                    .unwrap_or_else(|e| panic!("failed to spawn '{}': {e}", chv_bin.display()));
+                let cerr = child.stderr.take().expect("piped stderr");
+                (
+                    child,
+                    Box::new(pty_master),
+                    Box::new(master_reader),
+                    cerr,
+                    format!("--- chv command ---\n{cmd_debug}"),
+                )
+            }
+        };
+
+        let guard = ProcessGroupGuard::new(child);
+        let state = Arc::new((
+            Mutex::new(SerialCapture {
+                buf: Vec::with_capacity(65536),
+                eof: false,
+            }),
+            Condvar::new(),
+        ));
+        let state_reader = Arc::clone(&state);
+        let stdout_handle = thread::spawn(move || {
+            let mut chunk = [0u8; 512];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().eof = true;
+                        cvar.notify_all();
+                        break;
+                    }
+                    Ok(n) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().buf.extend_from_slice(&chunk[..n]);
+                        cvar.notify_all();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        let (lock, cvar) = &*state_reader;
+                        lock.lock().unwrap().eof = true;
+                        cvar.notify_all();
+                        break;
+                    }
+                }
+            }
+        });
+        let stderr_handle = thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stderr.read_to_end(&mut out);
+            out
+        });
+
+        Self {
+            engine: spec.engine,
+            desc,
+            log_path,
+            guard,
+            stdin,
+            state,
+            stdout_handle,
+            stderr_handle,
+        }
+    }
 }
 
 /// Boots `cloud-hypervisor-static` (with `virtio-iommu` & `nested=on`) and waits for the
@@ -3393,8 +3661,14 @@ poweroff -f\n"
         ),
     };
 
+    assert!(
+        !serial.contains("iommu_setup_default_domain"),
+        "[airlock_linux_test_guest (l0={}, l1_io={})] unexpected VIOT/IOMMU default domain warning in serial output:\n{serial}",
+        l0_engine.as_str(),
+        l1_io_mode.as_str(),
+    );
     for expected in [
-        "Adding to iommu group",
+        "virtio_iommu",
         "airlock: Rust Ring-0 core + #![no_std] Wasmtime ready (svm=1, npt=1,",
         "airlock: loaded (/dev/airlock ready,",
         "AIRLOCK_IOCTL_OK ver=1 caps=0x",
@@ -3425,6 +3699,715 @@ poweroff -f\n"
 
 pub fn boot_airlock_linux_test_guest(mode: VmmMode, tmp: &TempTestDir) {
     boot_airlock_linux_test_guest_with_l0(L0Engine::Wasm(mode), mode, tmp);
+}
+
+pub struct AlpineStageFile<'a> {
+    pub src: &'a Path,
+    pub dst_in_guest: &'a str,
+    pub mode_octal: u32,
+}
+
+pub struct AlpineStageSpec<'a> {
+    pub src_alpine_raw: &'a Path,
+    pub dst_alpine_raw: &'a Path,
+    pub resize_bytes: Option<u64>,
+    pub ssh_priv_key: Option<&'a Path>,
+    pub allow_tcp_forwarding: bool,
+    pub autologin_shell_script: Option<&'a str>,
+    pub custom_interfaces: Option<&'a str>,
+    pub extra_dirs: &'a [&'a str],
+    pub extra_files: &'a [AlpineStageFile<'a>],
+}
+
+/// Copies `spec.src_alpine_raw` sparsely to `spec.dst_alpine_raw`, optionally grows MBR
+/// partition 3 (`part3.ext4`) via `e2fsck` + `resize2fs`, and injects SSH keys, `sshd_config`,
+/// autologin `inittab`, custom `/etc/network/interfaces`, and arbitrary files via `debugfs -w`
+/// without requiring root privileges or loop mounts.
+pub fn stage_alpine_raw(spec: &AlpineStageSpec<'_>, stage_dir: &Path) {
+    fs::create_dir_all(stage_dir).expect("failed to create stage_alpine_raw stage_dir");
+    let _ = fs::remove_file(spec.dst_alpine_raw);
+    copy_sparse_raw(spec.src_alpine_raw, spec.dst_alpine_raw);
+
+    let raw_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(spec.dst_alpine_raw)
+        .expect("failed to open scratch dst_alpine_raw");
+    let orig_total_bytes = raw_file.metadata().expect("stat dst_alpine_raw").len();
+
+    let mut part_entry = [0u8; 8];
+    raw_file
+        .read_exact_at(&mut part_entry, 0x1be + 2 * 16 + 8)
+        .expect("failed to read MBR partition 3 entry");
+    let start_sec = u32::from_le_bytes(part_entry[0..4].try_into().unwrap()) as u64;
+    let orig_num_sec = u32::from_le_bytes(part_entry[4..8].try_into().unwrap()) as u64;
+    let part_off = (start_sec * 512) as i64;
+    let orig_part_len = (orig_num_sec * 512) as usize;
+
+    let part3_path = stage_dir.join("part3.ext4");
+    {
+        let part3_out = File::create(&part3_path).expect("failed to create part3.ext4");
+        copy_file_slice(&raw_file, part_off, &part3_out, 0, orig_part_len);
+    }
+
+    let final_part_len = if let Some(new_total_bytes) = spec.resize_bytes {
+        assert!(
+            new_total_bytes >= orig_total_bytes && new_total_bytes.is_multiple_of(512),
+            "invalid resize_bytes={new_total_bytes} (orig={orig_total_bytes})"
+        );
+        raw_file
+            .set_len(new_total_bytes)
+            .expect("failed to grow dst_alpine_raw");
+        let new_total_sec = (new_total_bytes / 512) as u32;
+        let new_num_sec = new_total_sec - (start_sec as u32);
+        raw_file
+            .write_all_at(&new_num_sec.to_le_bytes(), 0x1be + 2 * 16 + 12)
+            .expect("failed to update MBR partition 3 sector count");
+
+        let new_part_bytes = (new_num_sec as u64) * 512;
+        {
+            let part3_grow = OpenOptions::new()
+                .write(true)
+                .open(&part3_path)
+                .expect("failed to reopen part3.ext4 for resize");
+            part3_grow
+                .set_len(new_part_bytes)
+                .expect("failed to extend part3.ext4");
+        }
+        let _ = Command::new("/usr/sbin/e2fsck")
+            .arg("-fy")
+            .arg(&part3_path)
+            .output()
+            .expect("failed to run pre-resize e2fsck on part3.ext4");
+        let resize_out = Command::new("/usr/sbin/resize2fs")
+            .arg(&part3_path)
+            .output()
+            .expect("failed to run /usr/sbin/resize2fs on part3.ext4");
+        assert!(
+            resize_out.status.success(),
+            "resize2fs failed: {}",
+            String::from_utf8_lossy(&resize_out.stderr)
+        );
+        new_part_bytes as usize
+    } else {
+        let _ = Command::new("/usr/sbin/e2fsck")
+            .arg("-fy")
+            .arg(&part3_path)
+            .output()
+            .expect("failed to run pre-debugfs e2fsck on part3.ext4");
+        orig_part_len
+    };
+
+    let mut cmds = String::new();
+
+    if let Some(ssh_priv_key) = spec.ssh_priv_key {
+        let keygen = Command::new("ssh-keygen")
+            .arg("-y")
+            .arg("-f")
+            .arg(ssh_priv_key)
+            .output()
+            .expect("failed to invoke ssh-keygen -y");
+        assert!(keygen.status.success(), "ssh-keygen -y failed");
+        let ak_path = stage_dir.join("authorized_keys");
+        fs::write(&ak_path, &keygen.stdout).expect("failed to write staged authorized_keys");
+        cmds.push_str(&format!(
+            "mkdir /root/.ssh\n\
+             set_inode_field /root/.ssh mode 040700\n\
+             set_inode_field /root/.ssh uid 0\n\
+             set_inode_field /root/.ssh gid 0\n\
+             rm /root/.ssh/authorized_keys\n\
+             write {} /root/.ssh/authorized_keys\n\
+             set_inode_field /root/.ssh/authorized_keys mode 0100600\n\
+             set_inode_field /root/.ssh/authorized_keys uid 0\n\
+             set_inode_field /root/.ssh/authorized_keys gid 0\n",
+            ak_path.display()
+        ));
+    }
+
+    if spec.allow_tcp_forwarding {
+        let sshd_dropin = stage_dir.join("airlock-sshd.conf");
+        fs::write(&sshd_dropin, "AllowTcpForwarding yes\nGatewayPorts yes\n")
+            .expect("failed to write airlock-sshd.conf");
+        cmds.push_str(&format!(
+            "mkdir /etc/ssh/sshd_config.d\n\
+             rm /etc/ssh/sshd_config.d/airlock.conf\n\
+             write {} /etc/ssh/sshd_config.d/airlock.conf\n\
+             set_inode_field /etc/ssh/sshd_config.d/airlock.conf mode 0100644\n\
+             set_inode_field /etc/ssh/sshd_config.d/airlock.conf uid 0\n\
+             set_inode_field /etc/ssh/sshd_config.d/airlock.conf gid 0\n",
+            sshd_dropin.display()
+        ));
+    }
+
+    if let Some(shell_script_in_guest) = spec.autologin_shell_script {
+        let inittab_path = stage_dir.join("inittab");
+        let inittab_body = format!(
+            "::sysinit:/sbin/openrc sysinit\n\
+             ::sysinit:/sbin/openrc boot\n\
+             ::wait:/sbin/openrc default\n\
+             tty1::respawn:/sbin/getty 38400 tty1\n\
+             ::ctrlaltdel:/sbin/reboot\n\
+             ::shutdown:/sbin/openrc shutdown\n\
+             ttyS0::respawn:/sbin/getty -n -l {shell_script_in_guest} -L 0 ttyS0 vt100\n"
+        );
+        fs::write(&inittab_path, inittab_body).expect("failed to write staged inittab");
+        cmds.push_str(&format!(
+            "rm /etc/inittab\n\
+             write {} /etc/inittab\n\
+             set_inode_field /etc/inittab mode 0100644\n\
+             set_inode_field /etc/inittab uid 0\n\
+             set_inode_field /etc/inittab gid 0\n",
+            inittab_path.display()
+        ));
+    }
+
+    if let Some(interfaces_body) = spec.custom_interfaces {
+        let ifaces_path = stage_dir.join("interfaces");
+        fs::write(&ifaces_path, interfaces_body).expect("failed to write staged interfaces");
+        cmds.push_str(&format!(
+            "rm /etc/network/interfaces\n\
+             write {} /etc/network/interfaces\n\
+             set_inode_field /etc/network/interfaces mode 0100644\n\
+             set_inode_field /etc/network/interfaces uid 0\n\
+             set_inode_field /etc/network/interfaces gid 0\n",
+            ifaces_path.display()
+        ));
+    }
+
+    for dir in spec.extra_dirs {
+        cmds.push_str(&format!(
+            "mkdir {dir}\n\
+             set_inode_field {dir} mode 040755\n\
+             set_inode_field {dir} uid 0\n\
+             set_inode_field {dir} gid 0\n"
+        ));
+    }
+
+    for f in spec.extra_files {
+        assert!(
+            f.src.is_file(),
+            "stage_alpine_raw: missing source file '{}'",
+            f.src.display()
+        );
+        cmds.push_str(&format!(
+            "rm {dst}\n\
+             write {src} {dst}\n\
+             set_inode_field {dst} mode 010{mode:04o}\n\
+             set_inode_field {dst} uid 0\n\
+             set_inode_field {dst} gid 0\n",
+            src = f.src.display(),
+            dst = f.dst_in_guest,
+            mode = f.mode_octal & 0o7777,
+        ));
+    }
+
+    let mut debugfs = Command::new("/usr/sbin/debugfs")
+        .arg("-w")
+        .arg(&part3_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn /usr/sbin/debugfs");
+    debugfs
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(cmds.as_bytes())
+        .expect("failed to feed commands to debugfs");
+    let debugfs_out = debugfs.wait_with_output().expect("debugfs wait failed");
+    let stderr_str = String::from_utf8_lossy(&debugfs_out.stderr);
+    assert!(
+        debugfs_out.status.success() && !stderr_str.contains("write:"),
+        "debugfs staging failed: {stderr_str}"
+    );
+
+    let _ = Command::new("/usr/sbin/e2fsck")
+        .arg("-fy")
+        .arg(&part3_path)
+        .output()
+        .expect("failed to run post-debugfs e2fsck on part3.ext4");
+
+    {
+        let part3_in = File::open(&part3_path).expect("failed to reopen part3.ext4");
+        copy_file_slice(&part3_in, 0, &raw_file, part_off, final_part_len);
+    }
+    let _ = fs::remove_file(&part3_path);
+}
+
+#[derive(Debug, Clone)]
+pub struct AirlockMotorOsArtifacts {
+    pub l1_bzimage: PathBuf,
+    pub l1_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn build_airlock_motor_os_artifacts() -> AirlockMotorOsArtifacts {
+    let airlock = ensure_linux_airlock_artifacts();
+    let vmm_dir = ensure_vmm_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+
+    let imager = moto_dir.join("tools/imager");
+    let qcow2 = moto_dir.join("motor-os.qcow2");
+    let stock_kloader = moto_dir.join("kloader");
+    let stock_initrd = moto_dir.join("initrd");
+    let ssh_key = moto_dir.join("test.key");
+    let src_alpine = blobs.join("alpine.raw");
+
+    for required in [
+        &imager,
+        &qcow2,
+        &stock_kloader,
+        &stock_initrd,
+        &ssh_key,
+        &src_alpine,
+    ] {
+        assert!(
+            required.is_file(),
+            "missing required Airlock Motor OS artifact '{}'",
+            required.display()
+        );
+    }
+
+    let stage_dir = airlock.dir.join("airlock-motor-os-stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    fs::create_dir_all(&stage_dir).expect("failed to create target/airlock/airlock-motor-os-stage");
+
+    let l2_raw = stage_dir.join("l2-motor-os.raw");
+    convert_qcow2_to_raw(&qcow2, &l2_raw);
+
+    let l2_net_toml = stage_dir.join("l2-sys-net.toml");
+    fs::write(
+        &l2_net_toml,
+        "auto_icmp_echo_reply = true\n\
+         loopback = true\n\
+         max_icmp_error_rate = 200\n\
+         max_rst_rate = 200\n\
+         max_syn_cookie_rate = 1000\n\n\
+         [devices.net0]\n\
+         mac = \"a4:a1:c2:00:00:02\"\n\
+         cidrs = [\"192.168.5.2/24\"]\n\
+         dns_servers = [\"8.8.8.8\"]\n\n\
+         [[devices.net0.routes]]\n\
+         ip_network = \"0.0.0.0/0\"\n\
+         gateway = \"192.168.5.1\"\n",
+    )
+    .expect("failed to write l2-sys-net.toml");
+    run_imager(
+        &imager,
+        &[
+            "put",
+            l2_raw.to_str().unwrap(),
+            l2_net_toml.to_str().unwrap(),
+            "/system/cfg/sys-net.toml",
+        ],
+    );
+
+    let l1_shell = stage_dir.join("l1-shell.sh");
+    fs::write(
+        &l1_shell,
+        "#!/bin/sh\n\
+         export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n\
+         echo \"AIRLOCK_L1_READY\"\n\
+         cd /opt/airlock 2>/dev/null || true\n\
+         exec /bin/sh\n",
+    )
+    .expect("failed to write l1-shell.sh");
+
+    let vm_l2_toml = stage_dir.join("vm-l2.toml");
+    fs::write(
+        &vm_l2_toml,
+        "log_file = \"/tmp/vmm-l2.log\"\n\
+         log_level = \"info\"\n\
+         pvh = \"/opt/airlock/kloader\"\n\
+         initramfs = \"/opt/airlock/initrd\"\n\
+         cmd_line = \"system-tty\"\n\
+         num_cpus = 2\n\
+         mem_size = \"256M\"\n\
+         blk = [\"/opt/airlock/l2-motor-os.raw\"]\n\n\
+         [net.dev0]\n\
+         mac = \"a4:a1:c2:00:00:02\"\n\
+         mtu = 1500\n\
+         if_name = \"tap0:192.168.5.1/24\"\n",
+    )
+    .expect("failed to write vm-l2.toml");
+
+    let run_l2_sh = stage_dir.join("run-l2.sh");
+    fs::write(
+        &run_l2_sh,
+        "#!/bin/sh\n\
+         set -e\n\
+         lsmod | grep -q '^airlock ' || insmod /opt/airlock/airlock.ko\n\
+         exec /opt/airlock/vmm-io-host-cwasm --airlock -c /opt/airlock/vm-l2.toml \"$@\"\n",
+    )
+    .expect("failed to write run-l2.sh");
+
+    let l1_template_raw = airlock.dir.join("l1-airlock-motor-os-template.raw");
+    let host_io_cwasm = vmm_dir.join("vmm-io-host-cwasm");
+    let host_io_wasm = vmm_dir.join("vmm-io-host-wasm");
+    let io_cwasm = vmm_dir.join("vmm-io.cwasm");
+    let io_wasm = vmm_dir.join("vmm-io.wasm");
+    let core_motor_cwasm = vmm_dir.join("vmm-core-motor.cwasm");
+
+    stage_alpine_raw(
+        &AlpineStageSpec {
+            src_alpine_raw: &src_alpine,
+            dst_alpine_raw: &l1_template_raw,
+            resize_bytes: Some(2 * 1024 * 1024 * 1024),
+            ssh_priv_key: Some(&ssh_key),
+            allow_tcp_forwarding: true,
+            autologin_shell_script: Some("/opt/airlock/l1-shell.sh"),
+            custom_interfaces: None,
+            extra_dirs: &["/opt", "/opt/airlock"],
+            extra_files: &[
+                AlpineStageFile {
+                    src: &l1_shell,
+                    dst_in_guest: "/opt/airlock/l1-shell.sh",
+                    mode_octal: 0o755,
+                },
+                AlpineStageFile {
+                    src: &airlock.airlock_ko,
+                    dst_in_guest: "/opt/airlock/airlock.ko",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &airlock.irqbypass_ko,
+                    dst_in_guest: "/opt/airlock/irqbypass.ko",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &airlock.kvm_ko,
+                    dst_in_guest: "/opt/airlock/kvm.ko",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &airlock.kvm_amd_ko,
+                    dst_in_guest: "/opt/airlock/kvm-amd.ko",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &host_io_cwasm,
+                    dst_in_guest: "/opt/airlock/vmm-io-host-cwasm",
+                    mode_octal: 0o755,
+                },
+                AlpineStageFile {
+                    src: &host_io_wasm,
+                    dst_in_guest: "/opt/airlock/vmm-io-host-wasm",
+                    mode_octal: 0o755,
+                },
+                AlpineStageFile {
+                    src: &io_cwasm,
+                    dst_in_guest: "/opt/airlock/vmm-io.cwasm",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &io_wasm,
+                    dst_in_guest: "/opt/airlock/vmm-io.wasm",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &core_motor_cwasm,
+                    dst_in_guest: "/opt/airlock/vmm-core-motor.cwasm",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &stock_kloader,
+                    dst_in_guest: "/opt/airlock/kloader",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &stock_initrd,
+                    dst_in_guest: "/opt/airlock/initrd",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &l2_raw,
+                    dst_in_guest: "/opt/airlock/l2-motor-os.raw",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &vm_l2_toml,
+                    dst_in_guest: "/opt/airlock/vm-l2.toml",
+                    mode_octal: 0o644,
+                },
+                AlpineStageFile {
+                    src: &run_l2_sh,
+                    dst_in_guest: "/opt/airlock/run-l2.sh",
+                    mode_octal: 0o755,
+                },
+            ],
+        },
+        &stage_dir,
+    );
+
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    AirlockMotorOsArtifacts {
+        l1_bzimage: airlock.bzimage.clone(),
+        l1_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_airlock_motor_os_artifacts() -> &'static AirlockMotorOsArtifacts {
+    static AIRLOCK_MOTO: OnceLock<AirlockMotorOsArtifacts> = OnceLock::new();
+    AIRLOCK_MOTO.get_or_init(build_airlock_motor_os_artifacts)
+}
+
+fn build_airlock_l2_motor_os_ssh_command(key_path: &Path, remote_cmd: &str) -> Command {
+    let proxy = format!(
+        "ssh -F /dev/null -o ProxyCommand=none -o IdentitiesOnly=yes -o BatchMode=yes \
+         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         -o ConnectTimeout=5 -i {} -W %h:%p -p 22 root@192.168.8.2",
+        key_path.display()
+    );
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-F")
+        .arg("/dev/null")
+        .arg("-o")
+        .arg("IdentitiesOnly=yes")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=no")
+        .arg("-o")
+        .arg("UserKnownHostsFile=/dev/null")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg("-o")
+        .arg(format!("ProxyCommand={proxy}"))
+        .arg("-i")
+        .arg(key_path)
+        .arg("-p")
+        .arg("2222")
+        .arg("motor@192.168.5.2")
+        .arg(remote_cmd);
+    cmd
+}
+
+/// Sub-step `(l.3)`: Boots disk-backed L1 Alpine Linux (`airlock.bzimage` + `virtio-iommu`),
+/// loads out-of-tree `airlock.ko` (with zero KVM modules loaded), runs `vmm-io-host --airlock`
+/// to boot SMP full Motor OS in L2 (`virtio-blk` + `tap0:192.168.5.1/24` `virtio-net` + `russhd`),
+/// verifies ICMP + SSH (`motor@192.168.5.2:2222` via L1 `sshd`), clean L2 shutdown, clean
+/// `rmmod airlock` in L1, and clean L1 -> L0 ACPI S5 shutdown.
+pub fn boot_airlock_linux_motor_os(mode: VmmMode, tmp: &TempTestDir, has_host_tap: bool) {
+    boot_airlock_linux_motor_os_with_l0(L0Engine::Wasm(mode), mode, tmp, has_host_tap);
+}
+
+pub fn boot_airlock_linux_motor_os_with_l0(
+    l0: L0Engine,
+    mode: VmmMode,
+    tmp: &TempTestDir,
+    has_host_tap: bool,
+) {
+    if matches!(l0, L0Engine::Wasm(_)) {
+        let _ = ensure_vmm_artifacts();
+    }
+    let art = ensure_airlock_motor_os_artifacts();
+
+    let l1_disk = tmp.path().join("l1-airlock-motor-os.raw");
+    copy_sparse_raw(&art.l1_template_raw, &l1_disk);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&art.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let l1_launch = match mode {
+        VmmMode::Cwasm => "/opt/airlock/vmm-io-host-cwasm --airlock -c /opt/airlock/vm-l2.toml\n",
+        VmmMode::Wasm => "/opt/airlock/vmm-io-host-wasm --airlock -c /opt/airlock/vm-l2.toml\n",
+    };
+
+    let mut sess = L0Session::spawn_linux(&L0LinuxLaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "1024M",
+        bzimage: &art.l1_bzimage,
+        initramfs: None,
+        cmd_line: "console=ttyS0 root=/dev/vda3 rw",
+        iommu: true,
+        chv_rng: true,
+        disk_raw: Some(&l1_disk),
+        tap_if_name: has_host_tap.then_some("puff-tap"),
+    });
+    let state = Arc::clone(&sess.state);
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"AIRLOCK_L1_READY",
+        Duration::from_secs(40),
+    ) else {
+        sess.fail(
+            "airlock_linux_motor_os",
+            mode.as_str(),
+            "L1 Alpine Linux did not reach AIRLOCK_L1_READY within 40s",
+        );
+    };
+
+    thread::sleep(Duration::from_millis(200));
+    sess.stdin
+        .write_all(
+            b"dmesg | grep -q virtio_iommu && ! lsmod | grep -q '^kvm' && insmod /opt/airlock/airlock.ko && echo L1_AIRLOCK_INSMOD_OK\n",
+        )
+        .expect("failed to send insmod check to L1 shell");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"L1_AIRLOCK_INSMOD_OK",
+        Duration::from_secs(15),
+    ) else {
+        sess.fail(
+            "airlock_linux_motor_os",
+            mode.as_str(),
+            "L1 failed virtio_iommu / !kvm / insmod airlock.ko check",
+        );
+    };
+    cursor = next_pos;
+
+    sess.stdin
+        .write_all(l1_launch.as_bytes())
+        .expect("failed to write L2 Motor OS launch command to L1 stdin");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"Starting /system/bin/rush",
+        Duration::from_secs(45),
+    ) else {
+        sess.fail(
+            "airlock_linux_motor_os",
+            mode.as_str(),
+            "L2 nested full Motor OS on airlock.ko did not boot to /system/bin/rush within 45s",
+        );
+    };
+    cursor = next_pos;
+
+    thread::sleep(Duration::from_millis(300));
+    sess.stdin
+        .write_all(b"ping -c 2 192.168.5.1\r")
+        .expect("failed to send ping command to L2 console");
+    sess.stdin.flush().expect("failed to flush L2 ping command");
+
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"bytes from 192.168.5.1",
+        Duration::from_secs(15),
+    ) else {
+        sess.fail(
+            "airlock_linux_motor_os",
+            mode.as_str(),
+            "L2 Motor OS failed to receive ICMP echo reply from L1 Linux tap0 (192.168.5.1)",
+        );
+    };
+    cursor = next_pos;
+
+    if has_host_tap {
+        let ssh_deadline = Instant::now() + Duration::from_secs(25);
+        let mut last_err = String::new();
+        let mut ssh_stdout = None;
+        while Instant::now() < ssh_deadline {
+            match build_airlock_l2_motor_os_ssh_command(
+                &key_copy,
+                "echo L2_SSH_OK_$(uname -s)_$(nproc)",
+            )
+            .output()
+            {
+                Ok(out) if out.status.success() => {
+                    ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                    break;
+                }
+                Ok(out) => {
+                    last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+            thread::sleep(Duration::from_millis(400));
+        }
+
+        let Some(ssh_out) = ssh_stdout else {
+            sess.fail(
+                "airlock_linux_motor_os",
+                mode.as_str(),
+                format!(
+                    "SSH into L2 russhd (motor@192.168.5.2:2222 via L1 sshd root@192.168.8.2:22) failed: {last_err}"
+                ),
+            );
+        };
+        if !ssh_out.contains("L2_SSH_OK_Motor OS_2") {
+            sess.fail(
+                "airlock_linux_motor_os",
+                mode.as_str(),
+                format!("unexpected L2 Motor OS SSH command output: {ssh_out:?}"),
+            );
+        }
+
+        let _ = build_airlock_l2_motor_os_ssh_command(&key_copy, "shutdown").status();
+        let Some(next_pos) =
+            wait_for_serial_from(&state, cursor, b"vm_exit: bye.", Duration::from_secs(15))
+        else {
+            sess.fail(
+                "airlock_linux_motor_os",
+                mode.as_str(),
+                "L2 Motor OS did not emit 'vm_exit: bye.' after SSH shutdown",
+            );
+        };
+        cursor = next_pos;
+    } else {
+        sess.stdin
+            .write_all(b"echo L2_RUSH_OK_$(uname -s)_$(nproc)\r")
+            .expect("failed to send echo to L2 rush");
+        sess.stdin.flush().expect("failed to flush L2 rush");
+        let Some(next_pos) = wait_for_serial_from(
+            &state,
+            cursor,
+            b"L2_RUSH_OK_Motor OS_2",
+            Duration::from_secs(15),
+        ) else {
+            sess.fail(
+                "airlock_linux_motor_os",
+                mode.as_str(),
+                "L2 rush echo check failed in no-host-TAP mode",
+            );
+        };
+        cursor = next_pos;
+
+        sess.stdin
+            .write_all(b"\x02q")
+            .expect("failed to send Ctrl-b q to L2");
+        sess.stdin.flush().expect("failed to flush Ctrl-b q");
+    }
+
+    thread::sleep(Duration::from_millis(300));
+    sess.stdin
+        .write_all(b"rmmod airlock && echo L1_RMMOD_AFTER_L2_OK\n")
+        .expect("failed to send rmmod check to L1 shell");
+    sess.stdin.flush().expect("failed to flush L1 stdin");
+
+    if wait_for_serial_from(
+        &state,
+        cursor,
+        b"L1_RMMOD_AFTER_L2_OK",
+        Duration::from_secs(10),
+    )
+    .is_none()
+    {
+        sess.fail(
+            "airlock_linux_motor_os",
+            mode.as_str(),
+            "L1 shell did not resume and cleanly unload airlock.ko (rmmod airlock) after L2 teardown",
+        );
+    }
+
+    sess.finish_from_l1_linux("airlock_linux_motor_os", mode.as_str());
 }
 
 #[cfg(test)]

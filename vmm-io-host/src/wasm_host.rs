@@ -763,7 +763,7 @@ impl WasiIoConfig {
             add_dir(parent);
         }
 
-        for dir in ["/tmp", "/none/tmp", "/user/tmp", "/vm", "/system"] {
+        for dir in ["/tmp", "/none/tmp", "/user/tmp", "/vm", "/system", "/opt/airlock"] {
             add_dir(Path::new(dir));
         }
 

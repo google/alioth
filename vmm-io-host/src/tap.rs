@@ -126,13 +126,116 @@ impl Tap for HostTap {
     }
 }
 
+fn parse_if_name_and_cidr(spec: &str) -> io::Result<(&str, Option<(std::net::Ipv4Addr, u8)>)> {
+    let Some((name, cidr)) = spec.split_once(':') else {
+        return Ok((spec, None));
+    };
+    let (ip_str, prefix_str) = cidr.split_once('/').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid TAP CIDR '{cidr}' in '{spec}' (expected <ifname>:<ipv4>/<prefix>)"),
+        )
+    })?;
+    let ip: std::net::Ipv4Addr = ip_str.parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid TAP IPv4 '{ip_str}': {e}"),
+        )
+    })?;
+    let prefix: u8 = prefix_str.parse().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid TAP prefix '{prefix_str}': {e}"),
+        )
+    })?;
+    if prefix > 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("TAP prefix {prefix} > 32"),
+        ));
+    }
+    Ok((name, Some((ip, prefix))))
+}
+
+fn make_sockaddr_in(ip: u32) -> libc::sockaddr {
+    let sin = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: 0,
+        sin_addr: libc::in_addr { s_addr: ip.to_be() },
+        sin_zero: [0; 8],
+    };
+    unsafe { std::mem::transmute::<libc::sockaddr_in, libc::sockaddr>(sin) }
+}
+
+fn configure_tap_ipv4(dev_name: &str, ip: std::net::Ipv4Addr, prefix: u8) -> io::Result<()> {
+    const SIOCGIFFLAGS: libc::Ioctl = 0x8913;
+    const SIOCSIFFLAGS: libc::Ioctl = 0x8914;
+    const SIOCSIFADDR: libc::Ioctl = 0x8916;
+    const SIOCSIFNETMASK: libc::Ioctl = 0x891c;
+
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if sock < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    struct SockGuard(c_int);
+    impl Drop for SockGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = libc::close(self.0);
+            }
+        }
+    }
+    let _guard = SockGuard(sock);
+
+    let make_req = || {
+        let mut req = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
+        for (s, d) in zip(dev_name.as_bytes(), req.ifr_name.as_mut()) {
+            *d = *s as _;
+        }
+        req
+    };
+
+    let mut addr_req = make_req();
+    addr_req.ifr_ifru.ifru_addr = make_sockaddr_in(u32::from(ip));
+    if unsafe { libc::ioctl(sock, SIOCSIFADDR, &addr_req) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix)
+    };
+    let mut mask_req = make_req();
+    mask_req.ifr_ifru.ifru_addr = make_sockaddr_in(mask);
+    if unsafe { libc::ioctl(sock, SIOCSIFNETMASK, &mask_req) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut flags_req = make_req();
+    if unsafe { libc::ioctl(sock, SIOCGIFFLAGS, &flags_req) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    unsafe {
+        flags_req.ifr_ifru.ifru_flags |= libc::IFF_UP as i16;
+    }
+    if unsafe { libc::ioctl(sock, SIOCSIFFLAGS, &flags_req) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn setup_tap(file: &mut File, if_name: Option<&str>) -> io::Result<()> {
-    let mut tap_ifconfig = match if_name {
+    let parsed = match if_name {
+        Some(spec) => Some(parse_if_name_and_cidr(spec)?),
+        None => None,
+    };
+    let mut tap_ifconfig = match parsed {
         None => unsafe { tun_get_iff(file) }?,
-        Some(name) => {
+        Some((name, _)) => {
             let mut tap_ifconfig = unsafe { MaybeUninit::<libc::ifreq>::zeroed().assume_init() };
             for (s, d) in zip(name.as_bytes(), tap_ifconfig.ifr_name.as_mut()) {
-                *d = *s as i8;
+                *d = *s as _;
             }
             tap_ifconfig
         }
@@ -141,6 +244,10 @@ fn setup_tap(file: &mut File, if_name: Option<&str>) -> io::Result<()> {
     tap_ifconfig.ifr_ifru.ifru_flags = (IFF_TAP | IFF_NO_PI | IFF_VNET_HDR) as i16;
     unsafe { tun_set_iff(file, &tap_ifconfig) }?;
     unsafe { tun_set_vnet_hdr_sz(file, &VNET_HEADER_SIZE) }?;
+
+    if let Some((name, Some((ip, prefix)))) = parsed {
+        configure_tap_ipv4(name, ip, prefix)?;
+    }
     Ok(())
 }
 
@@ -193,4 +300,26 @@ fn enable_tap_offload(tap: &mut File, feature: NetFeature) -> io::Result<i32> {
         tap_feature |= TunFeature::USO6;
     }
     unsafe { tun_set_offload(tap, tap_feature.bits()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_if_name_and_cidr() {
+        let (name, cidr) = parse_if_name_and_cidr("puff-tap").unwrap();
+        assert_eq!(name, "puff-tap");
+        assert!(cidr.is_none());
+
+        let (name, cidr) = parse_if_name_and_cidr("tap0:192.168.5.1/24").unwrap();
+        assert_eq!(name, "tap0");
+        assert_eq!(
+            cidr,
+            Some((std::net::Ipv4Addr::new(192, 168, 5, 1), 24))
+        );
+
+        assert!(parse_if_name_and_cidr("tap0:192.168.5.1").is_err());
+        assert!(parse_if_name_and_cidr("tap0:192.168.5.1/33").is_err());
+    }
 }

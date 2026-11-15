@@ -172,6 +172,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
     let default_core_filename = if airlock_mode {
+        if std::env::var_os("VMM_ESCAPE_BYTE").is_none() {
+            // Default nested L1 `--airlock` console escape to `Ctrl-b q` (`0x02`) so it never
+            // collides with L0's `Ctrl-a q` (`0x01`).
+            unsafe {
+                std::env::set_var("VMM_ESCAPE_BYTE", "0x02");
+            }
+        }
         DEFAULT_AIRLOCK_CORE_CWASM_FILENAME
     } else {
         DEFAULT_CORE_COMPONENT_FILENAME

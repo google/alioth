@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use vmm_tests::{
     L0Engine, TempTestDir, VmmMode, acquire_linux_lock, acquire_motor_os_lock,
+    boot_airlock_linux_motor_os, boot_airlock_linux_motor_os_with_l0,
     boot_airlock_linux_test_guest, boot_airlock_linux_test_guest_with_l0, boot_and_shutdown,
     boot_chv_until_autonomous_exit, boot_nested_full_alpine, boot_nested_full_alpine_with_l0,
     boot_nested_full_motor_os, boot_nested_full_motor_os_with_l0, boot_nested_linux_initrd,
@@ -531,4 +532,38 @@ fn boot_airlock_linux_test_guest_wasm() {
 fn boot_airlock_linux_test_guest_chv() {
     let tmp = TempTestDir::new("airlock-linux-test-guest-chv");
     boot_airlock_linux_test_guest_with_l0(L0Engine::Chv, VmmMode::Cwasm, &tmp);
+}
+
+fn run_airlock_linux_motor_os(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    let has_tap = use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh");
+    let tmp = TempTestDir::new(&format!("airlock-linux-motor-os-{}", mode.as_str()));
+    boot_airlock_linux_motor_os(mode, &tmp, has_tap);
+}
+
+fn run_airlock_linux_motor_os_chv(mode: VmmMode) {
+    let _lock = acquire_linux_lock();
+    let has_tap = use_network_tap("puff-tap", "run ./vm_scripts/create-tap.sh");
+    let tmp = TempTestDir::new(&format!("airlock-linux-motor-os-chv-{}", mode.as_str()));
+    boot_airlock_linux_motor_os_with_l0(L0Engine::Chv, mode, &tmp, has_tap);
+}
+
+#[test]
+fn boot_airlock_linux_motor_os_cwasm() {
+    run_airlock_linux_motor_os(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_motor_os_wasm() {
+    run_airlock_linux_motor_os(VmmMode::Wasm);
+}
+
+#[test]
+fn boot_airlock_linux_motor_os_chv_cwasm() {
+    run_airlock_linux_motor_os_chv(VmmMode::Cwasm);
+}
+
+#[test]
+fn boot_airlock_linux_motor_os_chv_wasm() {
+    run_airlock_linux_motor_os_chv(VmmMode::Wasm);
 }
