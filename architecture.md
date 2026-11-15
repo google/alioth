@@ -1,250 +1,428 @@
 # WASM VMM Architecture
 
-WASM VMM splits a type-2 / Ring-0-capable virtual machine monitor (derived from
-Alioth v0.2.0) into **two isolated WebAssembly guest modules** communicating
-through shared memory and lock-free doorbell rings:
+WASM VMM (`wasm-vmm` branch) refactors a virtual machine monitor into **two
+isolated WebAssembly guest modules** connected across shared Guest RAM and a
+lock-free shared-memory bridge (`BridgeShm`):
 
-1. **`vmm-core`** (`wasm32-unknown-unknown`, `#![no_std] + alloc`, zero WASI,
-   zero FP/SIMD): Sandboxed chipset, CPU/board initialization, PVH/`bzImage`
-   loader, ACPI tables, PCIe ECAM bus, Virtio PCI modern transport, 16450 UART,
-   `IoApic`, and x86_64 MMIO instruction decoder. Driven synchronously and
-   non-blockingly by a privileged hypervisor host (`vmm-core-host` on Linux KVM,
-   or `tests/kernel/src/vmm/` in Motor OS Ring 0).
-2. **`vmm-io`** (`wasm32-wasip1`, zero FP/SIMD): Userspace device I/O
-   plane owning `vm.toml` parsing, boot payload opening, Virtio `SplitQueue`
-   descriptor-ring traversal over shared Guest RAM, `virtio-blk`, `virtio-net`,
-   and serial console I/O. Hosted in Ring 3 by `vmm-io-host` on Linux or
-   `tests/motor-io-host` on Motor OS.
+1. **`vmm-core`** (`wasm32-unknown-unknown`, `#![no_std] + alloc`, zero WASI):
+   Sandboxed virtual motherboard, guest RAM layout, kernel/initrd boot loaders,
+   ACPI table generation, PCIe bus, modern VirtIO PCI transport, `virtio-iommu`
+   PCI front-end, PCI passthrough configuration space virtualization, emulated
+   `IoApic`, serial UART, and fallback MMIO instruction decoder. Driven as
+   synchronous, non-blocking event handlers by a privileged core host running
+   either in userspace over KVM or directly in Ring 0.
+2. **`vmm-io`** (`wasm32-wasip1`): Userspace device I/O plane responsible for
+   `vm.toml` parsing, opening boot payloads and host backends, VirtIO
+   `SplitQueue` descriptor-ring traversal over shared Guest RAM, `virtio-blk`,
+   `virtio-net`, `virtio-iommu` domain/mapping tables, and serial console I/O.
 
-Both Wasm modules compile to portable `.wasm` binaries and AOT-precompiled
-`.cwasm` images verified at build and load time to contain **zero floating-point
-or SIMD/vector instructions** (`xmm`/`ymm`/`zmm`/`mm`).
+Latency-critical or privilege-requiring primitives — vCPU world switches,
+Stage-2 guest-physical page tables, virtual local interrupt/timer delivery, fast
+virtqueue doorbell matching, and physical IOMMU + MSI-X wiring — remain native
+in the host. Every complex stateful parser, device state machine, and descriptor
+walker runs inside WebAssembly.
+
+Crucially, **a single byte-identical `vmm-core.wasm` and a single byte-identical
+`vmm-io.wasm`** run unmodified across every supported host OS and privilege ring.
 
 ---
 
-## 1. System Overview & Responsibility Split
+## 1. System Overview & Build Artifacts
 
 ```text
-+===================================================================================+
-| Userspace I/O Plane (Ring 3: `vmm-io-host` + `vmm-io.{wasm,cwasm}`)               |
-|  - Parses `vm.toml`, opens kernel/initrd payloads, disk files, TAP, & serial tty  |
-|  - Walks Virtio `SplitQueue` rings directly in shared Guest RAM                   |
-|  - Event loop (`mio::Poll` on Linux, `SysCpu::wait` on Motor OS)                  |
-+=========================================|=========================================+
-                                          |
-                 Shared Guest RAM + `BridgeShm` (`#[repr(C)]`)
-             Lock-Free `core_to_io` / `io_to_core` Rings + Doorbells
-                                          |
-+=========================================|=========================================+
-| Core Plane (`vmm-core-host` on Linux KVM | `tests/kernel/src/vmm/` in Motor Ring 0)|
-|                                                                                   |
-|  +-----------------------------------------------------------------------------+  |
-|  | `vmm-core.{wasm,cwasm}` (`#![no_std] + alloc`, 0 WASI, 0 FP/SIMD)           |  |
-|  |  - Board init, Guest RAM layout (`RamBus`), `bzImage` / Xen PVH ELF loader  |  |
-|  |  - ACPI (`RSDP`, `XSDT`, `FADT`, `DSDT`, `MADT`, `MCFG`), PCIe ECAM bus     |  |
-|  |  - Virtio PCI (`CommonCfg`, `NotifyCfg`, `IsrStatus`, `DeviceCfg`, MSI-X)   |  |
-|  |  - 16450 UART (`0x3f8`), `IoApic` (`0xfec0_0000`), x86_64 MMIO decoder      |  |
-|  |  - `[VcpuCommPage; num_cpus]` in Wasm `SharedMemory`                        |  |
-|  +-----------------------+---------------------------------+-------------------+  |
-|        `VmmHostCore`     |                                 | `VmmCoreBridge`      |
-|      (`"vmm"` imports)   v                                 v (`"vmm_bridge"`)     |
-|  +----------------------------------------+  +---------------------------------+  |
-|  | Native Hypervisor Backend              |  | Core <-> IO Bridge Driver       |  |
-|  |  - Host-owned vCPU run loop / threads  |  |  - Boot info & payload reads    |  |
-|  |  - Stage-2 MMU (`KVM` / NPT / EPT)     |  |  - `core_to_io` / `io_to_core`  |  |
-|  |  - VMCS/VMCB + LAPIC + `pvclock`       |  |  - Direct MSI-X IRQ route table |  |
-|  |  - Fast Doorbell Table (0 Wasm calls) -+--+-> pushes `VirtioNotify`         |  |
-|  +----------------------------------------+  +---------------------------------+  |
-+===================================================================================+
++======================================================================================+
+| Userspace I/O Plane (Ring 3)                                                         |
+|  Host: `vmm-io-host-{cwasm,wasm}` (Linux)  |  `motor-io-host-{cwasm,wasm}` (Motor OS)|
+|  Guest: `vmm-io.{cwasm,wasm}` (`wasm32-wasip1`, 0 FP/SIMD)                           |
+|   - Parses `vm.toml`, opens kernel/initrd, disk images, network backends, console    |
+|   - Walks VirtIO `SplitQueue` rings in shared Guest RAM (`EndpointDmaView` / IOMMU)  |
++==========================================|===========================================+
+                                           |
+                   Zero-Copy Shared Guest RAM + `BridgeShm` (`#[repr(C)]`)
+               Lock-Free `core_to_io` / `io_to_core` Rings + OS Wait/Wake
+                                           |
++==========================================|===========================================+
+| Hypervisor Core Plane (Ring 3 over KVM, or Ring 0 In-Kernel)                         |
+|  Host: `vmm-core-host-{cwasm,wasm}` (Linux Ring 3 KVM)                               |
+|     |  `tests/kernel` (`target/test-guest/kernel`, Motor OS Ring 0)                  |
+|     |  `vmm-core-kmod` (`target/airlock/airlock.ko`, Linux Ring 0)                   |
+|                                                                                      |
+|  +--------------------------------------------------------------------------------+  |
+|  | `vmm-core.{wasm,cwasm}` / `vmm-core-motor.cwasm` (`#![no_std]`, 0 WASI, 0 FP)  |  |
+|  |  - Board init, Guest RAM layout, Linux & ELF/PVH loaders, ACPI (+ `VIOT`)      |  |
+|  |  - PCIe bus, VirtIO PCI transport + MSI-X, `PassthroughPciDev`, UART, `IoApic` |  |
+|  |  - Per-vCPU `VcpuCommPage` array + multi-instance `SharedMemory` workers       |  |
+|  +-------------------------+----------------------------------+-------------------+  |
+|          `VmmHostCore`     |                                  | `VmmCoreBridge`      |
+|        (`"vmm"` imports)   v                                  v (`"vmm_bridge"`)     |
+|  +------------------------------------------+  +----------------------------------+  |
+|  | Native Hypervisor & Passthrough Backend  |  | Core <-> IO Bridge Driver        |  |
+|  |  - vCPU run loop, Stage-2 MMU, vLAPIC    |  |  - Boot payloads & RAM slot map  |  |
+|  |  - Fast Doorbell Table (0 Wasm calls) ---+--+--> pushes `VirtioNotify`         |  |
+|  |  - IOMMU domains, BAR MMIO, hardirq MSI  |  |  - Direct MSI-X IRQ route table  |  |
+|  +------------------------------------------+  +----------------------------------+  |
++======================================================================================+
 ```
 
-This split keeps every latency-critical or privilege-requiring primitive in the
-native host (world switch, Stage-2 page tables, LAPIC/timer/IPI, and fast
-`QueueNotify` doorbell matching) while isolating every complex stateful parser
-and device state machine inside Wasm.
+### Crate & Build Artifact Map
+
+| Directory / Crate      | Target & Artifact(s)          | Privilege & Role                        |
+|------------------------|-------------------------------|-----------------------------------------|
+| `vmm-core/`            | `wasm32-unknown-unknown` ->   | Wasm guest (Core): `#![no_std] + alloc` |
+|                        | `vmm-core.wasm`,              | chipset, PCIe, boot loader, passthrough |
+|                        | `vmm-core.cwasm`,             | PCI config, and exit handlers           |
+|                        | `vmm-core-motor.cwasm`        |                                         |
+| `vmm-io/`              | `wasm32-wasip1` ->            | Wasm guest (I/O): userspace config      |
+|                        | `vmm-io.wasm`,                | parser, `SplitQueue` walker,            |
+|                        | `vmm-io.cwasm`,               | `virtio-{blk,net,iommu}`, and console   |
+|                        | `target/motor/vmm-io.cwasm`   |                                         |
+| `derive-layout/`       | Host proc-macro plugin        | Build-time: compile-time struct layout  |
+|                        |                               | and offset derivation                   |
+| `vmm-core-host/`       | `x86_64-unknown-linux-musl`   | Linux Ring 3: `/dev/kvm` core host;     |
+|                        | -> `vmm-core-host-cwasm`,     | `build.rs` also precompiles `.cwasm`    |
+|                        | `vmm-core-host-wasm`          | images                                  |
+| `vmm-io-host/`         | `x86_64-unknown-linux-musl`   | Linux Ring 3: I/O host driving either   |
+|                        | -> `vmm-io-host-cwasm`,       | `vmm-core-host-*` (KVM) or              |
+|                        | `vmm-io-host-wasm`            | `/dev/airlock` (`--airlock`)            |
+| `vmm-core-kmod/`       | `x86_64-unknown-none` +       | Linux Ring 0: out-of-tree,              |
+|                        | Kbuild -> `airlock.ko`,       | KVM-independent Linux kernel VMM        |
+|                        | `bzImage` (`target/airlock/`) | hosting `vmm-core-motor.cwasm`          |
+| `tests/kernel/`        | `x86_64-unknown-none` ->      | Motor OS Ring 0 (with `tests/kloader` & |
+|                        | `kernel`, `kloader`           | `tests/moto-sys`): microkernel          |
+|                        | (in `target/test-guest/`)     | embedding Ring-0 VMM, `#![no_std]`      |
+|                        |                               | Wasmtime, and `vmm-core-motor.cwasm`    |
+| `tests/motor-io-host/` | `x86_64-unknown-motor` ->     | Motor OS Ring 3: I/O host (`motor-fs`   |
+|                        | `motor-io-host-{cwasm,wasm}`  | disk, `IpDevice` virtual Ethernet,      |
+|                        | (in `target/motor/`)          | console)                                |
+| `tests/test-init/`     | `x86_64-unknown-motor` ->     | Motor OS Ring 3: minimal Wasmtime-free  |
+|                        | `target/test-guest/test-init` | `initrd` bootstrap launcher for         |
+|                        |                               | diskless passthrough/smoke VMs          |
 
 ---
 
-## 2. Core Plane (`vmm-core` + `VmmHostCore` + `VmmCoreBridge`)
+## 2. Core / I/O Split & Shared-Memory Bridge (`BridgeShm`)
 
-### 2.1 Host-Driven Control Flow & `VcpuCommPage`
+### 2.1 Plane Responsibilities
 
-`vmm-core` never spawns threads or blocks inside Wasm. The host owns the vCPU
-execution loop and invokes `vmm-core` exports strictly as non-blocking handlers
-(`vmm-core/src/wasm.rs`):
+- **`vmm-core` (Chipset & Control Plane)**:
+  - Constructs the guest physical memory map, loads Linux kernel images or direct
+    ELF/PVH binaries + `initramfs`, sets initial BSP/AP processor state, and
+    generates ACPI tables (including `MCFG` for PCIe and `VIOT` when
+    `virtio-iommu` is enabled).
+  - Emulates the PCIe bus, VirtIO PCI transport capabilities (`CommonCfg`,
+    `NotifyCfg`, `IsrStatus`, `DeviceCfg`, and `MsixCap`), `PassthroughPciDev`
+    configuration headers, `IoApic` interrupt routing, and legacy serial UART.
+  - Translates pin interrupts (such as UART) inside its emulated `IoApic` into
+    standard message-signaled interrupts (`VmmHostCore::inject_msi`), keeping
+    the host interrupt interface uniform across emulated, VirtIO, and
+    passthrough devices.
+  - Provides a float-free fallback MMIO instruction decoder so minimal Ring-0
+    hosts can forward raw Stage-2 page-fault bytes (`VmExit::MmioFault`) while
+    hosts that pre-decode MMIO (`HostCaps::DECODED_MMIO`) pass `VmExit::Mmio`.
 
-```rust
-extern "C" {
-    /// Initialize board, Guest RAM, ACPI, kernel/initrd, and BSP/AP initial state.
-    /// Returns Wasm linear memory offset of `[VcpuCommPage; num_cpus]` (or <0 on err).
-    pub fn vmm_init() -> i32;
+- **`vmm-io` (Data & Backend Plane)**:
+  - Parses `vm.toml`, opens kernel/initrd files, disk images, network TAP
+    interfaces, and serial terminals, and publishes initial VM metadata into
+    `BridgeShm` before the core host starts `vmm-core`.
+  - Owns VirtIO `SplitQueue` descriptor-ring traversal directly over shared
+    Guest RAM, along with `virtio-blk`, `virtio-net`, serial RX/TX framing, and
+    `virtio-iommu` address-space tables (`IommuState`).
 
-    /// Return configured guest vCPU count (`0` before `vmm_init`).
-    pub fn vmm_num_cpus() -> u32;
+Keeping `SplitQueue` in `vmm-io` avoids bounce buffers on the core plane and
+allows asynchronous I/O completions (such as incoming network packets arriving
+while all vCPUs are executing in guest mode or halted) to write Guest RAM and
+trigger interrupts without pausing a vCPU to run `vmm-core`.
 
-    /// Return 16-byte-aligned disjoint stack top in `SharedMemory` for worker
-    /// `slot_id` (`0..num_cpus` for vCPUs, `num_cpus` for the bridge RX worker).
-    pub fn vmm_stack_top(slot_id: u32) -> u32;
+### 2.2 Narrow Host Import Interfaces
 
-    /// Bind worker `Instance[vcpu_id]` after setting its `__stack_pointer` global.
-    pub fn vmm_bind_vcpu(vcpu_id: u32, stack_top: u32);
+Each Wasm module communicates with its host solely through typed host-import
+traits:
 
-    /// Handle one slow-path exit for `vcpu_id` via `comm_page[vcpu_id]`.
-    /// Returns `VmAction` (`0` = Continue, `1` = Shutdown, `2` = Reboot, `<0` = HvError).
-    pub fn vmm_on_vcpu_exit(vcpu_id: u32) -> i32;
+- **`vmm-core` imports**:
+  - `"vmm"` (`VmmHostCore` in `vmm-core/src/host.rs`): pure virtualization and
+    hardware hooks — host capability discovery, vCPU state setup & wake,
+    memory-object allocation and Stage-2 GPA mapping (`gpa_map` / `gpa_unmap`),
+    MSI injection (`inject_msi`), fast doorbell registration
+    (`register_doorbell` / `unregister_doorbell`), and narrow PCI passthrough
+    operations (`pci_*`). Contains zero VirtIO or UART concepts.
+  - `"vmm_bridge"` (`VmmCoreBridge`): reads boot metadata/payloads, publishes
+    virtqueue parameters and resolved MSI-X routes into `BridgeShm`, and
+    exchanges control messages with `vmm-io`.
+- **`vmm-io` imports**:
+  - `"vmm"` (`IoHost` + `GuestMemAccess` in `vmm-io/src/host.rs`): block
+    read/write/flush, TAP read/write/offload/poll registration, serial console
+    I/O, VM configuration registration, `io_next_event()`, zero-copy Guest RAM
+    reads/writes, and interrupt/shutdown signaling.
 
-    /// Drain pending control messages from `vmm-io` (`SerialRx`, `RequestShutdown`).
-    pub fn vmm_on_bridge_rx() -> i32;
+### 2.3 `BridgeShm` & Zero-Wasm-Call Fast Paths
 
-    /// Reset board and Guest RAM state across a guest reboot.
-    pub fn vmm_reset() -> i32;
-}
-```
+Bulk memory and control signaling are separated across `BridgeShm`
+(`vmm-core/src/host.rs` `abi::BridgeShm`):
 
-Each vCPU exchanges hot register and trap state with `vmm-core` in place through
-a cache-line-aligned `VcpuCommPage` in Wasm linear memory (`vmm-core/src/host.rs`),
-avoiding per-exit register FFI calls:
-
-```rust
-#[repr(C, align(64))]
-pub struct VcpuCommPage {
-    pub exit: RawVmExit,    // Io, Mmio, MmioFault, Cpuid, MsrRead/Write, Shutdown, Reboot
-    pub synced_regs: u32,   // Bitmask of valid architectural fields below
-    pub dirty_regs: u32,    // Bitmask of fields modified by Wasm (e.g. GPRs, RIP)
-    pub gprs: [u64; 16],    // RAX..R15
-    pub rip: u64,
-    pub rflags: u64,
-    pub cr0: u64,
-    pub cr3: u64,
-    pub cr4: u64,
-    pub efer: u64,
-    pub cs: RawSegReg,      // Determines 16/32/64-bit instruction decode mode
-    pub entry: RawVmEntry,  // None, Io, Mmio, Msr, Shutdown, Reboot, InjectGp
-}
-```
-
-### 2.2 Core Host Traits (`vmm-core/src/host.rs`)
-
-`vmm-core` imports two narrow modules (`"vmm"` and `"vmm_bridge"`), surfaced in
-Rust via `VmmHostCore` and `VmmCoreBridge`:
-
-- **`VmmHostCore`** (pure hardware virtualization, zero Virtio/UART concepts):
-  - Capabilities & CPUID: `caps() -> HostCaps`, `supported_cpuids(...)`
-  - Cold-path vCPU setup & wake: `vcpu_configure`, `vcpu_get_regs`,
-    `vcpu_set_regs` (including `RegId::MpState`), `vcpu_kick`
-  - Slotless memory objects & Stage-2 GPA mapping: `mem_alloc`, `mem_free`,
-    `mem_read`, `mem_write`, `gpa_map`, `gpa_unmap`
-  - Interrupts & fast doorbells: `inject_msi`, `set_gsi_level` (used only when
-    `HostCaps::HW_IOAPIC` is advertised), `register_doorbell`,
-    `unregister_doorbell`
-- **`VmmCoreBridge`** (core side of `BridgeShm`):
-  - `boot_info`, `read_payload`, `configure_queues`, `update_irq_route`,
-    `send_cmd`, `recv_cmd`
-
-### 2.3 Chipset, Interrupts, Doorbells, & Hybrid MMIO Decoding
-
-1. **In-Wasm `IoApic` (`0xfec0_0000`) & Pure MSI Boundary**:
-   `vmm-core` emulates a 24-pin IOAPIC in Rust. Legacy `COM1` (IRQ 4) asserts pin
-   4 on `IoApic`, which formats Redirection Table Entry 4 into
-   `VmmHostCore::inject_msi(addr, data)` — the exact same primitive used by
-   Virtio MSI-X. Linux KVM runs with `KVM_CAP_SPLIT_IRQCHIP`; Ring-0 hosts need
-   no in-kernel IOAPIC or 8259 PIC.
-2. **Explicit SMP `MpState`**:
-   `vmm_init()` configures `BSP = MpState::Runnable` and `APs = MpState::Uninitialized`
-   (Wait-for-SIPI), matching `KVM_SET_MP_STATE` and Ring-0 LAPIC `ICR` (`INIT`/`SIPI`)
-   state transitions.
-3. **Fast `QueueNotify` Doorbells (`register_doorbell`)**:
-   When the guest enables a `VirtioPciDevice` BAR, `vmm-core` registers each
-   queue's notify address. On Linux (`KVM_IOEVENTFD`) and Motor OS Ring 0 (an
-   in-kernel sorted doorbell table checked on NPT/PIO exit), guest `QueueNotify`
-   writes enqueue `VirtioNotify` and wake `vmm-io` with **zero Wasm calls**.
-4. **Hybrid MMIO Decoding (`VmExit::Mmio` vs. `VmExit::MmioFault`)**:
-   Hosts that pre-decode MMIO (`HostCaps::DECODED_MMIO`, e.g., Linux KVM) pass
-   `VmExit::Mmio`. Minimal Ring-0 hosts (e.g., Motor OS) pass `VmExit::MmioFault`
-   with up to 15 instruction bytes, and `vmm-core` decodes the instruction in
-   float-free Rust, updating `comm_page.gprs` and `comm_page.rip` in place.
-
-### 2.4 Concurrent Execution in `#![no_std]` Wasm
-
-To handle slow-path exits across vCPUs in parallel without WASI threads, the
-host instantiates `num_cpus + 1` lightweight `(Store, Instance)` workers (`0..num_cpus`
-for vCPUs plus `num_cpus` for `vmm_on_bridge_rx`) all importing the **same**
-`wasmtime::SharedMemory` (`("env", "memory")`):
-
-1. **Disjoint Shadow Stacks**: Each worker's private `__stack_pointer` (`global[0]`)
-   is set to `vmm_stack_top(slot_id)` before any exit or RX call runs.
-2. **Passive Data Segments**: Linked with `--import-memory --shared-memory --max-memory=...`
-   so instantiating worker instances never overwrites initialized `.data`/`.bss`.
-3. **Hardware Atomics**: Built with `+atomics,+mutable-globals` and
-   `-Z build-std=core,alloc` so `core::sync::atomic` emits real `LOCK` instructions.
-4. **Non-Blocking Synchronization**: Shared devices (`PciBus`, `IoApic`, `Serial`,
-   Virtio PCI config, global allocator) use short-hold `spin::Mutex` locks.
+1. **Zero-Copy Shared Guest RAM & Boot Payloads**:
+   Guest RAM and boot images are backed by shared memory objects mapped into
+   both the I/O host and the core host (and pinned into Stage-2 page tables for
+   the guest). `io_guest_mem_read` and `io_guest_mem_write` copy directly
+   between `vmm-io` linear memory and Guest RAM via `BridgeShm::ram_slots` with
+   zero IPC copies.
+2. **Lock-Free Control Rings**:
+   `BridgeShm` is a `#[repr(C)]` shared header holding `ShmBootInfo`, VirtIO and
+   passthrough device descriptors, RAM slot descriptors, queue configurations,
+   `ShmDeviceMsixRouting`, a multi-producer/single-consumer `core_to_io` ring
+   (`VirtioNotify`, `VirtioStart`, `VirtioReset`, `SerialTx`, `Shutdown`), and a
+   single-producer/single-consumer `io_to_core` ring (`VirtioIrq`, `SerialRx`,
+   `RequestShutdown`), paired with OS wait/wake handles.
+3. **Zero-Wasm-Call Doorbell & Interrupt Fast Paths**:
+   - **Guest -> I/O (`QueueNotify`)**: When a guest enables a VirtIO PCI BAR,
+     `vmm-core` registers each queue's notify address via `register_doorbell`.
+     Subsequent guest doorbell writes are matched natively by the core host
+     (`ioeventfd` on Linux KVM, or the Ring-0 `DoorbellTable` on Motor OS and
+     `airlock.ko`), enqueueing `VirtioNotify` and waking `vmm-io` with **zero
+     `vmm-core` Wasm calls**.
+   - **I/O -> Guest (`VirtioIrq`)**: Whenever a guest updates a device's MSI-X
+     table, `vmm-core` publishes the resolved `(msi_addr, msi_data)` entry into
+     `BridgeShm::irq_routes`. When `vmm-io` signals `io_virtio_irq`, the core
+     host reads `irq_routes` and injects the MSI directly into the target vCPU
+     with **zero `vmm-core` Wasm calls**.
 
 ---
 
-## 3. I/O Plane (`vmm-io` + `IoHost`)
+## 3. WebAssembly Execution Model
 
-`vmm-io` (`vmm-io/src/host.rs`, `vmm-io/src/wasm.rs`) imports the `"vmm"` module
-from `vmm-io-host` (`IoHost` + `GuestMemAccess`):
+### 3.1 Execution Profiles & `VcpuCommPage`
 
-- **Device backends**:
-  - `Tap`: `tap_open`, `tap_detected_offload`, `tap_enable_offload`,
-    `tap_register`, `tap_deregister`, `tap_read`, `tap_write`, `tap_close`
-  - `BlockBackend`: `blk_open`, `blk_read_at`, `blk_write_at`, `blk_flush`,
-    `blk_close`
-  - `SerialConsole`: `serial_open`, `serial_write_byte`, `serial_read_input`,
-    `serial_shutdown`, `serial_close`
-- **Cross-plane bridge & DMA**:
-  - `io_register_vm_config(boot_cfg, virtio_devs)`
-  - `io_next_event() -> IoBridgeEvent` (`VirtioStart`, `VirtioNotify`,
-    `VirtioReset`, `Poll`, `SerialInput`, `SerialTx`, `Shutdown`)
-  - `io_guest_mem_read(gpa, dst)` / `io_guest_mem_write(gpa, src)`
-  - `io_virtio_irq(dev, kind)` / `io_serial_push_rx(bytes)` / `io_request_shutdown()`
+- **`vmm-core` (Passive, Host-Driven)**:
+  Compiled for `wasm32-unknown-unknown` with `#![no_std] + alloc` and zero WASI
+  imports. `vmm-core` never blocks or spawns threads; the host owns vCPU threads
+  and calls non-blocking exports (`vmm_init`, `vmm_on_vcpu_exit`,
+  `vmm_on_bridge_rx`, `vmm_reset`). Rather than making per-register FFI calls on
+  every VM exit, the host and `vmm-core` exchange architectural exit/entry state
+  in place through a cache-line-aligned `[VcpuCommPage; num_cpus]` array inside
+  `vmm-core` linear memory.
+- **`vmm-io` (Event-Loop Driven)**:
+  Compiled for `wasm32-wasip1`. Its `vmm_io_run()` export initializes devices
+  from `vm.toml` and runs a single-threaded event loop over `io_next_event()`
+  until VM shutdown.
 
-### Why `SplitQueue` Lives in `vmm-io`
-- Keeps `vmm-core` compact and free of descriptor-ring traversal or bounce buffers.
-- Allows asynchronous device arrivals (such as incoming network packets when no
-  vCPU is in a VM exit) to pop RX descriptors, write Guest RAM, and inject MSI-X
-  independently on the I/O plane.
-- Whenever `vmm-core` updates a device's MSI-X vector mapping, it publishes the
-  resolved `(msi_addr, msi_data)` into `BridgeShm::irq_routes`. When `vmm-io`
-  calls `io_virtio_irq`, the core host injects the MSI **directly** without
-  entering a `vmm-core` Wasm worker.
+### 3.2 Multi-vCPU Concurrency in `#![no_std]` `vmm-core`
+
+To service slow-path VM exits across multiple vCPUs concurrently without WASI
+threads, the core host instantiates `num_cpus + 1` lightweight Wasmtime
+`(Store, Instance)` workers (`0..num_cpus` for vCPUs plus slot `num_cpus` for
+`vmm_on_bridge_rx`) that all import the **same** `wasmtime::SharedMemory`
+(`("env", "memory")`):
+
+- Each worker is assigned a disjoint shadow stack (`vmm_stack_top(slot_id)`) via
+  `vmm_bind_vcpu`.
+- `vmm-core` is linked with `--import-memory --shared-memory`, passive data
+  segments, and WebAssembly atomics (`-Z build-std=core,alloc`), so worker
+  instantiation preserves initialized `.data`/`.bss` state and `core::sync::atomic`
+  compiles to native atomic instructions.
+- Shared chipset structures (`PciBus`, `IoApic`, UART, VirtIO PCI config, heap
+  allocator) are guarded by short-hold spinlocks.
+
+### 3.3 `.wasm` (JIT) vs. `.cwasm` (AOT) & Ring-0 Invariants
+
+1. **Dual Host Packaging (`-wasm` vs. `-cwasm`)**:
+   Userspace hosts (`vmm-core-host`, `vmm-io-host`, `motor-io-host`) build in
+   two flavors: `-wasm` (includes Cranelift to JIT `.wasm` modules at startup)
+   and `-cwasm` (omits the compiler, loading precompiled `.cwasm` artifacts via
+   `Module::deserialize` for minimal footprint and instant startup).
+2. **Ring-0 Bare-Metal AOT Image (`vmm-core-motor.cwasm`)**:
+   `vmm-core-host/build.rs` also precompiles `vmm-core.wasm` into
+   `vmm-core-motor.cwasm` targeting `x86_64-unknown-none` with explicit software
+   bounds checks (`signals_based_traps(false)` and zero virtual guard pages).
+   Wasm traps unwind cleanly in Rust without relying on kernel page-fault fixup
+   tables, and Ring-0 hosts map code sections `R+X` and data sections `R+W`
+   (strict `W^X`). Both Motor OS Ring 0 and Linux `airlock.ko` load this **exact
+   same `vmm-core-motor.cwasm` file**.
+3. **Zero Floating-Point / SIMD Invariant**:
+   Both `vmm-core` and `vmm-io` are compiled with floating-point and SIMD
+   disabled and verified by machine-code disassemblers (`verify_no_fp`) to emit
+   zero floating-point or vector instructions. Ring-0 hosts can therefore invoke
+   `vmm-core` directly on VM exits without saving or restoring FPU/vector state.
 
 ---
 
-## 4. Shared-Memory Bridge (`BridgeShm`)
+## 4. IOMMU Architecture
 
-Bulk data and control traffic are strictly separated across the Core <-> I/O
-boundary (`vmm-core/src/host.rs` `abi::BridgeShm`):
+WASM VMM implements IOMMU isolation at two levels that compose cleanly in nested
+topologies:
 
-1. **Zero-Copy Bulk Memory**:
-   Guest RAM (`memfd` + `MAP_SHARED` on Linux, pinned shared `SysMem` pages on
-   Motor OS) and boot payloads (`kernel` + `initramfs`) are mapped directly into
-   both hosts. `io_guest_mem_read` and `io_guest_mem_write` translate
-   `gpa -> shm_offset` via `BridgeShm::ram_slots` and `memcpy` directly between
-   `vmm-io` linear memory and Guest RAM with zero IPC copies.
-2. **`#[repr(C)]` Control Header & Lock-Free Rings (`BridgeShm`)**:
-   - Static config tables: `ShmBootInfo`, `ShmVirtioDeviceSpec[MAX_VIRTIO_DEVS]`,
-     `ShmRamSlot[MAX_RAM_SLOTS]`, `ShmVirtioQueueConfig[MAX_VIRTIO_DEVS][MAX_QUEUES_PER_DEV]`,
-     and `ShmDeviceMsixRouting[MAX_VIRTIO_DEVS]`.
-   - `core_to_io` ring (MPSC, vCPUs -> I/O thread): `VirtioNotify`, `VirtioStart`,
-     `VirtioReset`, `SerialTx`, `Shutdown`.
-   - `io_to_core` ring (SPSC, I/O thread -> Core host): `VirtioIrq`, `SerialRx`,
-     `RequestShutdown`.
-   - Paired with OS wait/wake handles (`eventfd` on Linux; `vm_handle: SysHandle`
-     via `SysCpu::wait` / `SysCpu::wake` on Motor OS).
+1. **Guest-Facing Emulated `virtio-iommu` (`iommu = true` in `vm.toml`)**:
+   - Split across `vmm-core` and `vmm-io`: `vmm-core` exposes a PCI
+     `virtio-iommu` device at `00:01.0` and emits an ACPI `VIOT` table
+     advertising IOMMU translation for guest PCI endpoints (`00:02.0+`), while
+     `vmm-io` implements `IommuState` (`vmm-io/src/iommu.rs`), handling
+     `ATTACH`, `DETACH`, `MAP`, `UNMAP`, and `PROBE` requests on the request
+     virtqueue.
+   - Every emulated VirtIO device performs guest RAM accesses through an
+     endpoint-scoped `EndpointDmaView`, enforcing IOVA-to-GPA translation and
+     read/write permissions on all descriptor rings and DMA buffers.
+   - Because standard `virtio-iommu` + ACPI `VIOT` is used, L1 guests work
+     identically under L0 WASM VMM and external VMMs such as Cloud Hypervisor
+     (`--vmm chv`).
+
+2. **Host-Side Ring-0 IOMMU Enforcement for Device Passthrough**:
+   - Before enabling PCI Bus Mastering on any assigned endpoint, a Ring-0 core
+     host attaches the physical BDF to a dedicated IOMMU protection domain
+     populated solely with that VM's pinned Guest RAM (`GPA -> HPA`), tearing
+     the domain down and resetting the function on VM exit.
+   - **Motor OS Ring 0** includes a native kernel `VirtioIommuDriver`
+     (`tests/kernel/src/vmm/virtio_iommu.rs`) that parses ACPI `VIOT`, claims
+     `00:01.0` before userspace starts, and issues synchronous `ATTACH` / `MAP`
+     / `UNMAP` / `DETACH` commands.
+   - **Linux Ring-0 `airlock.ko`** uses the Linux kernel's standard IOMMU
+     subsystem (`iommu_paging_domain_alloc`, `iommu_attach_device`, `iommu_map`,
+     `iommu_unmap`), working transparently over paravirtual `virtio-iommu` in
+     nested VMs as well as bare-metal hardware IOMMUs.
 
 ---
 
-## 5. Host Mapping Summary
+## 5. VFIO-Style PCI Device Passthrough
 
-| Capability / Primitive | Linux Ring 3 (`vmm-core-host` + `vmm-io-host`) | Motor OS Ring 0 + Ring 3 ([`airlock-motor-os.md`](airlock-motor-os.md)) |
-| :--------------------- | :--------------------------------------------- | :---------------------------------------------------------------------- |
-| Core Wasm binary       | `vmm-core.wasm` / `vmm-core.cwasm`             | Byte-identical `vmm-core.wasm` -> `target/motor/vmm-core.cwasm`         |
-| I/O Wasm binary        | `vmm-io.wasm` / `vmm-io.cwasm`                 | Byte-identical `vmm-io.wasm` / `target/motor/vmm-io.cwasm` (`motor-io-host`) |
-| Stage-2 GPA mapping    | `KVM_SET_USER_MEMORY_REGION` over `memfd`      | Ring-0 NPT/EPT over pinned `SysMem` pages                               |
-| vCPU threads           | Host `std::thread`s calling `ioctl(KVM_RUN)`   | Kernel `process::Thread`s running `VMRUN` + `x2APIC` + `pvclock`        |
-| Interrupt delivery     | `KVM_SIGNAL_MSI` (`KVM_CAP_SPLIT_IRQCHIP`)     | Ring-0 LAPIC IRR + `sched::poke_cpu` wakeup IPI                         |
-| Fast `QueueNotify`     | `KVM_IOEVENTFD` -> `core_to_io` `eventfd`      | Ring-0 `DoorbellTable` -> `BridgeShm::core_to_io` + `SysObject::wake`   |
-| MMIO exit variant      | `VmExit::Mmio` (`HostCaps::DECODED_MMIO`)      | `VmExit::MmioFault` (decoded in Wasm by `vmm-core`)                     |
+PCI endpoints can be assigned directly to a VM via `pci = [{ bdf = "0000:00:03.0" }]`
+in `vm.toml` without a userspace VFIO proxy:
+
+1. **Cross-OS Config Virtualization (`PassthroughPciDev` in `vmm-core`)**:
+   `vmm-core/src/hw/pci/passthrough.rs` implements all OS-independent PCI
+   configuration space virtualization against narrow `VmmHostCore::pci_*`
+   imports:
+   - Virtualizes the Type-0 header, PCI Command register, and guest BAR sizing
+     and relocation so guest BAR reprogramming updates Stage-2 GPA mappings
+     rather than physical host BAR registers.
+   - Sanitizes the PCI capability list: preserves safe capabilities (such as
+     VirtIO vendor capabilities and MSI-X) while hiding unsafe backdoor
+     capabilities such as `VIRTIO_PCI_CAP_PCI_CFG` (which would otherwise allow
+     config-space window accesses to bypass MMIO traps).
+   - Applies `VirtioCommonIommuFilter` on VirtIO passthrough functions so an L2
+     guest without its own virtual IOMMU negotiates direct physical-address DMA
+     cleanly while the L1 Ring-0 IOMMU translates `L2 GPA -> HPA` transparently.
+
+2. **4 KiB BAR Page Carving (Direct MMIO vs. Trapped Control Pages)**:
+   Each assigned MMIO BAR is partitioned at 4 KiB page granularity when mapped
+   into the guest:
+   - **Direct Stage-2 MMIO pages**: Pages containing device data/notify regions
+     (such as VirtIO `NotifyCfg` doorbells and `IsrStatus`) are mapped directly
+     into the guest's Stage-2 page tables as uncached device memory. Guest
+     doorbell writes go straight to the underlying device with **zero L1 Ring-3
+     exits and zero L1 Wasm calls**.
+   - **Trapped control pages**: Pages overlapping the physical MSI-X Table/PBA
+     or filtered VirtIO `CommonCfg` remain unmapped in Stage-2 so guest accesses
+     trap to `PassthroughPciDev` in `vmm-core`. Any non-sensitive sub-ranges
+     sharing a 4 KiB page with a trapped structure are forwarded by `vmm-core`
+     through `pci_bar_read` / `pci_bar_write`.
+
+3. **Ring-0 MSI-X Interrupt Forwarding**:
+   Guest writes to the virtual MSI-X Table update `PassthroughPciDev`, which
+   passes resolved guest `(msi_addr, msi_data)` vectors to
+   `VmmHostCore::pci_configure_msix`. Physical MSI-X interrupts arrive in Ring 0
+   and are injected directly into the target guest vCPU without bouncing through
+   Ring 3 or Wasm.
+
+4. **Partial vs. Full All-PCI Passthrough (Zero Ring-3 VM-Exit Guarantee)**:
+   - *Partial passthrough*: L1 keeps its own block device (and optional
+     management NIC) while passing dedicated PCI devices (e.g. `virtio-net`)
+     straight to L2 alongside emulated `vmm-io` devices.
+   - *Full all-PCI passthrough*: L1 boots from an in-memory `initramfs`/`initrd`
+     and passes **all** PCI devices (`virtio-blk` + `virtio-net`) to L2 with
+     zero emulated VirtIO devices (`virtio_count == 0`). In steady state, **all
+     disk and network I/O runs with zero VM-exits to L1 Ring-3 userspace**: DMA
+     transfers flow directly between the device and IOMMU-mapped L2 RAM,
+     doorbells hit direct Stage-2 MMIO mappings, and MSI-X interrupts are
+     injected inside Ring 0.
+
+---
+
+## 6. Implemented Hosts
+
+### 6.1 Hypervisor Core Hosts (`vmm-core-host` Implementations)
+
+1. **Linux Ring-3 KVM Host (`vmm-core-host/`)**
+   - *Artifacts*: `vmm-core-host-cwasm`, `vmm-core-host-wasm`.
+   - Spawned as a child process by `vmm-io-host`, inheriting `BridgeShm` and
+     Guest RAM `memfd`s plus `eventfd` descriptors.
+   - Implements `VmmHostCore` over `/dev/kvm` using `KVM_SET_USER_MEMORY_REGION`,
+     per-vCPU userspace threads (`KVM_RUN`), split irqchip MSI delivery
+     (`KVM_SIGNAL_MSI`), and `KVM_IOEVENTFD` fast doorbells.
+
+2. **Motor OS Ring-0 Hypervisor (`tests/kernel/src/vmm/`)**
+   - *Artifacts*: `target/test-guest/kernel` and `target/test-guest/kloader`
+     (built with `tests/moto-sys/` via `./tests/kernel/build.sh`).
+   - Compiled directly into the Motor OS microkernel with `#![no_std]` Wasmtime,
+     executing `vmm-core-motor.cwasm` in `W^X` kernel virtual memory.
+   - Implements Stage-2 page tables over pinned shared pages, kernel vCPU
+     threads, virtual local interrupt/timer and paravirtual clock emulation,
+     Ring-0 `DoorbellTable`, `VirtioIommuDriver`, and Ring-0 PCI/MSI-X
+     passthrough (`pci_host.rs`).
+   - Exposed to Ring-3 processes holding `CAP_VMM` via Motor OS kernel object
+     and wait/wake syscalls (`SysObj::create("vmm:...")`, `SysCpu::wait`,
+     `SysCpu::wake`).
+
+3. **Linux Ring-0 Kernel Module (`vmm-core-kmod/`)**
+   - *Artifacts*: `target/airlock/airlock.ko` (plus optional out-of-tree L1 test
+     kernel `target/airlock/bzImage`, built via `./vmm-core-kmod/build.sh`).
+   - Hybrid out-of-tree module combining a `#![no_std] + alloc` Rust `staticlib`
+     (`vmm-core-kmod/rust/`, linking the same `#![no_std]` Wasmtime crate graph
+     as Motor OS) with a thin C Kbuild shim (`vmm-core-kmod/c/`) wrapping Linux
+     memory allocation, `vmap` (`W^X`), `pin_user_pages_fast`, `kthread`s,
+     `eventfd` wake/poll hooks, `iommu_domain`, `pci_dev`, and MSI-X `request_irq`
+     handlers.
+   - **KVM-independent and KVM-coexisting**: requires zero `kvm.ko` symbols,
+     runs on kernels with `CONFIG_KVM=n` or `kvm` unloaded, and reference-counts
+     per-CPU hardware virtualization enablement so it can also run concurrently
+     while `kvm` is loaded (`--with-kvm-loaded`).
+   - Exposes `/dev/airlock` (`AIRLOCK_IOC_CREATE_VM`) and executes the **exact
+     same `vmm-core-motor.cwasm`** binary used by Motor OS Ring 0.
+
+### 6.2 Userspace I/O Hosts (`vmm-io-host` Implementations)
+
+1. **Linux Ring-3 `vmm-io-host` (`vmm-io-host/`)**
+   - *Artifacts*: `vmm-io-host-cwasm`, `vmm-io-host-wasm`.
+   - Hosts `vmm-io.{cwasm,wasm}` on a `mio::Poll` event loop, providing file
+     block I/O (`pread`/`pwrite`/`fsync`), `/dev/net/tun` TAP networking, and
+     raw terminal serial I/O (`Ctrl-a` or nested `Ctrl-b` escape).
+   - Allocates `BridgeShm` and Guest RAM `memfd`s plus `eventfd`s and attaches
+     to **either** Linux core host from the same binary:
+     - *Default mode*: spawns `vmm-core-host-{cwasm,wasm}` over `/dev/kvm`.
+     - *`--airlock` mode*: opens `/dev/airlock`, loads `vmm-core-motor.cwasm`,
+       unbinds/prepares any configured passthrough PCI BDFs via `sysfs`, and
+       issues `AIRLOCK_IOC_CREATE_VM` to `airlock.ko` with no Ring-3
+       `vmm-core-host` process.
+
+2. **Motor OS Ring-3 `motor-io-host` (`tests/motor-io-host/`)**
+   - *Artifacts*: `target/motor/motor-io-host-cwasm`,
+     `target/motor/motor-io-host-wasm` (built via `./tests/motor-io-host/build.sh`).
+   - Hosts `vmm-io.{cwasm,wasm}` on `x86_64-unknown-motor`, providing `motor-fs`
+     disk backends, `MotorIpTap` virtual L2<->L3 Ethernet (in-process ARP/DHCPv4
+     and TCP/UDP socket forwarding over Motor OS `sys-io`), raw serial console
+     (`Ctrl-b q`), and `SysObj` / `SysCpu` coordination with Motor OS Ring 0.
+
+3. **Motor OS Minimal Initrd Bootstrap (`tests/test-init/`)**
+   - *Artifact*: `target/test-guest/test-init`.
+   - Lightweight Wasmtime-free Ring-3 launcher used when a diskless `initrd`-only
+     Motor OS L1 VM boots a nested VM whose I/O devices are all passed through
+     (`virtio_count == 0`, e.g. `run-passthrough-blk-linux.sh`) or runs minimal
+     serial-only smoke tests (`run-nested-test-guest.sh`). Unpacks an
+     `InitrdBundle` into `BridgeShm` and Guest RAM, invokes
+     `SysObj::create("vmm:...")`, and relays serial console I/O.
+
+### 6.3 Host Comparison Summary
+
+| Aspect              | Linux KVM (Ring 3)     | Motor OS (Ring 0)       | `airlock.ko` (Ring 0)   |
+|---------------------|------------------------|-------------------------|-------------------------|
+| Core Wasm module    | `vmm-core.cwasm` or    | `vmm-core-motor.cwasm`  | `vmm-core-motor.cwasm`  |
+|                     | `vmm-core.wasm`        |                         | (byte-identical)        |
+| Paired I/O host     | `vmm-io-host-*`        | `motor-io-host-*` or    | `vmm-io-host-*` with    |
+|                     | (default KVM mode)     | `test-init`             | `--airlock`             |
+| Shared Guest RAM    | Shared `memfd`         | Shared `SysMem` pages   | Shared `memfd` pages    |
+|                     | mappings               | pinned in Ring 0        | (`pin_user_pages_fast`) |
+| vCPU execution      | Userspace threads      | Ring-0 Motor OS kernel  | Ring-0 Linux `kthread`s |
+|                     | calling `KVM_RUN`      | threads                 | (`airlock-vcpu`)        |
+| Fast `QueueNotify`  | `KVM_IOEVENTFD` ->     | Ring-0 `DoorbellTable`  | Ring-0 `DoorbellTable`  |
+|                     | `eventfd`              | -> `SysObject::wake`    | -> `eventfd_signal`     |
+| Direct `VirtioIrq`  | `eventfd` ->           | `SysCpu::wake` ->       | `eventfd` poll wakeup   |
+|                     | `KVM_SIGNAL_MSI`       | Ring-0 vLAPIC + IPI     | -> Ring-0 vLAPIC + IPI  |
+| Passthrough & IOMMU | Emulated               | Ring-0                  | Linux `iommu_domain` +  |
+|                     | `virtio-iommu` (as L0  | `VirtioIommuDriver` +   | `pci_dev` + hardirq MSI |
+|                     | host)                  | `pci_host.rs`           |                         |
