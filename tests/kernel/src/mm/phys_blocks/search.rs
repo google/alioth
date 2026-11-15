@@ -94,4 +94,63 @@ impl<L: PageLinks> Pool<'_, L> {
     ) -> Result<Option<u64>, AllocationError> {
         self.scan(self.whole, true, |index| self.take_huge(index, class))
     }
+
+    /// Allocates `num_blocks` physically adjacent 2 MiB `WHOLE` blocks as
+    /// consecutive `SmallPage` frames (`num_blocks * 512` pages), rolling back
+    /// cleanly if a concurrent allocation breaks a candidate run.
+    pub(super) fn allocate_whole_run(
+        &self,
+        num_blocks: usize,
+        class: AllocationClass,
+    ) -> Result<Option<u64>, AllocationError> {
+        if num_blocks == 0 || num_blocks > self.block_count {
+            return Ok(None);
+        }
+        let is_whole = |idx: usize| -> bool {
+            (self.whole[idx / 64].load(Ordering::Acquire) >> (idx % 64)) & 1 != 0
+        };
+        let rollback_blocks = |start: usize, count: usize| {
+            for b in start..(start + count) {
+                let base = (b as u64) << BLOCK_SHIFT;
+                for p in 0..PAGES {
+                    self.push(base + (u64::from(p) << PAGE_SHIFT))
+                        .expect("phys: corrupt rollback of whole-block run");
+                }
+            }
+        };
+
+        let mut start = 0usize;
+        while start + num_blocks <= self.block_count {
+            let mut run = 0usize;
+            while run < num_blocks && is_whole(start + run) {
+                run += 1;
+            }
+            if run < num_blocks {
+                start += run + 1;
+                continue;
+            }
+
+            let mut taken = 0usize;
+            let mut failed_err: Option<AllocationError> = None;
+            while taken < num_blocks {
+                match self.take_small(start + taken, PAGES, SmallSource::Whole, false, class) {
+                    Ok(Some(_)) => taken += 1,
+                    Ok(None) => break,
+                    Err(e) => {
+                        failed_err = Some(e);
+                        break;
+                    }
+                }
+            }
+            if taken == num_blocks {
+                return Ok(Some((start as u64) << BLOCK_SHIFT));
+            }
+            rollback_blocks(start, taken);
+            if let Some(e) = failed_err {
+                return Err(e);
+            }
+            start += taken + 1;
+        }
+        Ok(None)
+    }
 }

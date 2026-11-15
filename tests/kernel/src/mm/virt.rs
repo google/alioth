@@ -591,6 +591,7 @@ impl VmemRegion {
         let memory_segment =
             self.allocate_pages_locked(&mut segments, num_pages, MappingOptions::empty(), None)?;
         let vmem_segment = segments.get_mut(&memory_segment.start).unwrap();
+        vmem_segment.set_mapping_options(mapping_options);
         let mut virt_addr = memory_segment.start;
         let mut phys_addr = phys_start;
         for _ in 0..num_pages {
@@ -604,7 +605,7 @@ impl VmemRegion {
                     self.allocation_class(),
                 )?;
             }
-            vmem_segment.set_frame(virt_addr, frame);
+            vmem_segment.set_frame(virt_addr, frame, mapping_options);
             virt_addr += PAGE_SIZE_SMALL;
             phys_addr += PAGE_SIZE_SMALL;
         }
@@ -652,6 +653,7 @@ impl VmemRegion {
         let memory_segment =
             self.allocate_pages_locked(&mut segments, num_pages, MappingOptions::empty(), None)?;
         let vmem_segment = segments.get_mut(&memory_segment.start).unwrap();
+        vmem_segment.set_mapping_options(mapping_options);
         let mut virt_addr = vmem_segment.segment().start;
         for idx in 0..num_pages {
             let frame = frames[idx as usize].take();
@@ -672,7 +674,7 @@ impl VmemRegion {
                 return Err(err);
             }
 
-            vmem_segment.set_frame(virt_addr, frame);
+            vmem_segment.set_frame(virt_addr, frame, mapping_options);
             virt_addr += PAGE_SIZE_SMALL;
         }
 

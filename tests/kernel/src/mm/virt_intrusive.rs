@@ -438,7 +438,16 @@ impl VmemSegment {
             .unwrap_or_else(|| self.address_space().allocation_class())
     }
 
-    pub(super) fn set_frame(&mut self, page: u64, frame: SlabArc<Frame>) {
+    pub(super) fn set_mapping_options(&mut self, mapping_options: MappingOptions) {
+        self.mapping_options = mapping_options;
+    }
+
+    pub(super) fn set_frame(
+        &mut self,
+        page: u64,
+        frame: SlabArc<Frame>,
+        mapping_options: MappingOptions,
+    ) {
         let backing = frame.get().unwrap();
         debug_assert!(!backing.is_mmio());
         self.address_space()
@@ -447,6 +456,7 @@ impl VmemSegment {
         let page = self.find_page_mut(page).unwrap();
         debug_assert!(page.frame.is_null());
         page.frame = frame;
+        page.mapping_options = mapping_options;
     }
 
     // Huge candidates of an eligible segment: its whole 2 MiB units. The

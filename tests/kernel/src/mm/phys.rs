@@ -368,11 +368,16 @@ impl PhysicalMemory {
         num_frames: u64,
         class: AllocationClass,
     ) -> Result<Vec<SlabArc<Frame>>, AllocationFailure> {
-        // The syscall caps contiguous requests at 64 small pages.
-        assert!(num_frames <= 64);
+        assert_ne!(num_frames, 0);
         assert_eq!(kind, PageType::SmallPage);
 
-        let start = self.allocate_frameless_run(num_frames as u16, class)?;
+        let start = if num_frames <= 512 {
+            self.allocate_frameless_run(num_frames as u16, class)?
+        } else {
+            assert_eq!(num_frames % 512, 0);
+            self.blocks
+                .alloc_whole_run((num_frames / 512) as usize, class)?
+        };
         let mut result = Vec::with_capacity(num_frames as usize);
         for idx in 0..num_frames {
             let frame_start = start + (idx << PAGE_SIZE_SMALL_LOG2);

@@ -181,6 +181,43 @@ pub fn write_test_guest_initrd(test_init_path: &Path, output_path: &Path) {
     });
 }
 
+pub const INITRD_BUNDLE_MAGIC: [u8; 8] = *b"MVMMBNDL";
+pub const INITRD_BUNDLE_VERSION: u32 = 1;
+pub const INITRD_BUNDLE_HEADER_SIZE: usize = 64;
+
+/// Packs a stripped PID 2 (`test-init`) ELF plus a 4 KiB-aligned `InitrdBundle`
+/// trailer (`vm.toml` + `vmm-core-motor.cwasm` + L2 `kernel` + optional L2 `initramfs`)
+/// into a standalone `initrd-passthrough` image (4 KiB-padded).
+pub fn pack_passthrough_initrd(
+    test_init_elf: &[u8],
+    vm_toml: &[u8],
+    core_cwasm: &[u8],
+    l2_kernel: &[u8],
+    l2_initramfs: &[u8],
+) -> Vec<u8> {
+    let mut buf = pack_test_guest_initrd(test_init_elf);
+    let bundle_off = buf.len().next_multiple_of(4096);
+    buf.resize(bundle_off, 0);
+
+    let mut hdr = [0u8; INITRD_BUNDLE_HEADER_SIZE];
+    hdr[0..8].copy_from_slice(&INITRD_BUNDLE_MAGIC);
+    hdr[8..12].copy_from_slice(&INITRD_BUNDLE_VERSION.to_le_bytes());
+    hdr[16..24].copy_from_slice(&(vm_toml.len() as u64).to_le_bytes());
+    hdr[24..32].copy_from_slice(&(core_cwasm.len() as u64).to_le_bytes());
+    hdr[32..40].copy_from_slice(&(l2_kernel.len() as u64).to_le_bytes());
+    hdr[40..48].copy_from_slice(&(l2_initramfs.len() as u64).to_le_bytes());
+
+    buf.extend_from_slice(&hdr);
+    buf.extend_from_slice(vm_toml);
+    buf.extend_from_slice(core_cwasm);
+    buf.extend_from_slice(l2_kernel);
+    buf.extend_from_slice(l2_initramfs);
+
+    let final_len = buf.len().next_multiple_of(4096);
+    buf.resize(final_len, 0);
+    buf
+}
+
 #[derive(Debug, Clone)]
 pub struct TestGuestArtifacts {
     pub dir: PathBuf,
@@ -2752,6 +2789,261 @@ pub fn boot_passthrough_net_alpine_with_l0(l0: L0Engine, mode: VmmMode, tmp: &Te
     sess.finish_from_l1_rush("passthrough_net_alpine", mode.as_str());
 }
 
+#[derive(Debug, Clone)]
+pub struct PassthroughBlkAlpineArtifacts {
+    pub l1_kloader: PathBuf,
+    pub l1_passthrough_initrd: PathBuf,
+    pub alpine_template_raw: PathBuf,
+    pub ssh_key: PathBuf,
+}
+
+fn build_passthrough_blk_alpine_artifacts() -> PassthroughBlkAlpineArtifacts {
+    let guest = ensure_test_guest_artifacts();
+    let moto_dir = motor_os_release_dir();
+    let blobs = linux_blobs_dir();
+    let ssh_key = moto_dir.join("test.key");
+    let bzimage = blobs.join("bzImage");
+    let src_alpine = blobs.join("alpine.raw");
+
+    for required in [&ssh_key, &bzimage, &src_alpine] {
+        assert!(
+            required.is_file(),
+            "missing required passthrough-blk Alpine artifact '{}'",
+            required.display()
+        );
+    }
+
+    let out_dir = guest.dir.join("passthrough-blk-alpine");
+    let stage_dir = out_dir.join("stage");
+    let _ = fs::remove_dir_all(&out_dir);
+    fs::create_dir_all(&stage_dir)
+        .expect("failed to create target/test-guest/passthrough-blk-alpine/stage");
+
+    let alpine_template_raw = out_dir.join("alpine-template.raw");
+    copy_sparse_raw(&src_alpine, &alpine_template_raw);
+    inject_ssh_pubkey_into_alpine_raw(&alpine_template_raw, &ssh_key, &stage_dir);
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    let vm_l2_toml = "\
+kernel = \"bzImage\"\n\
+cmd_line = \"console=ttyS0 root=/dev/vda3 rw\"\n\
+num_cpus = 2\n\
+mem_size = \"256M\"\n\
+pci = [\"00:02.0\", \"00:03.0\"]\n";
+
+    let test_init_bytes =
+        fs::read(&guest.test_init).expect("failed to read stripped test-init ELF");
+    let cwasm_bytes = fs::read(&guest.vmm_core_motor_cwasm)
+        .expect("failed to read vmm-core-motor.cwasm");
+    let bzimage_bytes = fs::read(&bzimage).expect("failed to read Linux bzImage");
+
+    let packed = pack_passthrough_initrd(
+        &test_init_bytes,
+        vm_l2_toml.as_bytes(),
+        &cwasm_bytes,
+        &bzimage_bytes,
+        &[],
+    );
+    let l1_passthrough_initrd = out_dir.join("initrd-passthrough-blk-alpine");
+    fs::write(&l1_passthrough_initrd, &packed)
+        .expect("failed to write initrd-passthrough-blk-alpine");
+
+    PassthroughBlkAlpineArtifacts {
+        l1_kloader: guest.kloader.clone(),
+        l1_passthrough_initrd,
+        alpine_template_raw,
+        ssh_key,
+    }
+}
+
+pub fn ensure_passthrough_blk_alpine_artifacts() -> &'static PassthroughBlkAlpineArtifacts {
+    static PT_BLK_ALPINE: OnceLock<PassthroughBlkAlpineArtifacts> = OnceLock::new();
+    PT_BLK_ALPINE.get_or_init(build_passthrough_blk_alpine_artifacts)
+}
+
+/// Topology B: Boots diskless (`initrd-only`) L1 Motor OS with
+/// `pci_passthrough=00:02.0,00:03.0` while L0 attaches `alpine.raw` (`virtio-blk` `00:02.0`)
+/// and `puff-tap` (`virtio-net` `00:03.0`) behind `virtio-iommu`.
+/// L1's lean PID 2 (`test-init` + `InitrdBundle`) drives Ring-0 `vmm-core-motor.cwasm`
+/// directly with zero Ring-3 Wasmtime or `vmm-io`, passing both PCI endpoints straight
+/// through to L2 Alpine Linux. Verifies bidirectional serial console, direct L0 -> L2 SSH,
+/// rootfs `/dev/vda3`, ICMP ping, and autonomous L2 -> L1 -> L0 ACPI S5 shutdown!
+pub fn boot_passthrough_blk_alpine(mode: VmmMode, tmp: &TempTestDir) {
+    boot_passthrough_blk_alpine_with_l0(L0Engine::Wasm(mode), "cwasm", tmp);
+}
+
+pub fn boot_passthrough_blk_alpine_with_l0(l0: L0Engine, l1_label: &str, tmp: &TempTestDir) {
+    if matches!(l0, L0Engine::Wasm(_)) {
+        let _ = ensure_vmm_artifacts();
+    }
+    let pt = ensure_passthrough_blk_alpine_artifacts();
+
+    let scratch_alpine = tmp.path().join("alpine.raw");
+    copy_sparse_raw(&pt.alpine_template_raw, &scratch_alpine);
+
+    let key_copy = tmp.path().join("test.key");
+    fs::copy(&pt.ssh_key, &key_copy).expect("failed to copy Motor OS SSH test.key");
+    fs::set_permissions(&key_copy, fs::Permissions::from_mode(0o600))
+        .expect("failed to chmod 0600 test.key");
+
+    let mut sess = L0Session::spawn(&L0LaunchSpec {
+        engine: l0,
+        tmp,
+        num_cpus: 4,
+        mem_size: "768M",
+        pvh_kernel: &pt.l1_kloader,
+        initramfs: &pt.l1_passthrough_initrd,
+        cmd_line: "vmm-passthrough pci_passthrough=00:02.0,00:03.0",
+        iommu: true,
+        disk_raw: Some(&scratch_alpine),
+        tap_if_name: Some("puff-tap"),
+    });
+    let state = Arc::clone(&sess.state);
+
+    let Some(mut cursor) = wait_for_serial_from(
+        &state,
+        0,
+        b"alpine-vm login:",
+        Duration::from_secs(60),
+    ) else {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            "L2 Alpine Linux booting from passed-through 00:02.0 + 00:03.0 did not reach 'alpine-vm login:' within 60s",
+        );
+    };
+
+    {
+        let serial_snap = state.0.lock().unwrap().buf.clone();
+        let boot_txt = String::from_utf8_lossy(&serial_snap);
+        for expected in [
+            "vmm::pci_cfg: reserved passthrough PCI BDF 00:02.0",
+            "vmm::pci_cfg: reserved passthrough PCI BDF 00:03.0",
+            "vmm::virtio_iommu: active at ",
+            "vmm-passthrough: starting L2 VM (cpus=2, mem_mib=256, pci_devs=2)",
+            "vmm::pci_host: attached 00:02.0",
+            "vmm::pci_host: attached 00:03.0",
+        ] {
+            if !boot_txt.contains(expected) {
+                sess.fail(
+                    "passthrough_blk_alpine",
+                    l1_label,
+                    format!("missing expected L1 Topology B boot marker {expected:?}"),
+                );
+            }
+        }
+    }
+
+    let ssh_deadline = Instant::now() + Duration::from_secs(25);
+    let mut last_err = String::new();
+    let mut ssh_stdout = None;
+    let verify_cmd = "ping -c 2 192.168.8.1 && test -b /dev/vda3 && df -T / && echo L2_PASSTHROUGH_BLK_OK_$(uname -s)_$(nproc)";
+    while Instant::now() < ssh_deadline {
+        match build_direct_alpine_ssh_command(&key_copy, verify_cmd).output() {
+            Ok(out) if out.status.success() => {
+                ssh_stdout = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                break;
+            }
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+
+    let Some(ssh_out) = ssh_stdout else {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            format!("direct L0 -> L2 SSH (root@192.168.8.2:22 over passed-through 00:03.0) failed: {last_err}"),
+        );
+    };
+    if !ssh_out.contains("bytes from 192.168.8.1")
+        || !ssh_out.contains("ext4")
+        || !ssh_out.contains("L2_PASSTHROUGH_BLK_OK_Linux_2")
+    {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            format!("unexpected L2 direct SSH/df/ping output: {ssh_out:?}"),
+        );
+    }
+
+    // Also verify interactive COM1 RX forwarding (`L0 -> L1 PID 2 -> L2 ttyS0`) before poweroff!
+    sess.stdin
+        .write_all(b"\r")
+        .expect("failed to send CR over COM1 to L2 ttyS0");
+    sess.stdin.flush().expect("failed to flush CR over COM1");
+    let Some(next_pos) = wait_for_serial_from(
+        &state,
+        cursor,
+        b"alpine-vm login:",
+        Duration::from_secs(10),
+    ) else {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            "interactive COM1 RX forwarding (L0 -> L1 PID 2 -> L2 ttyS0) did not echo login prompt",
+        );
+    };
+    cursor = next_pos;
+
+    // Power off L2 over direct SSH; verify autonomous L2 -> L1 -> L0 ACPI S5 shutdown!
+    let _ = build_direct_alpine_ssh_command(&key_copy, "poweroff").status();
+    if wait_for_serial_from(&state, cursor, b"reboot: Power down", Duration::from_secs(20))
+        .is_none()
+    {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            "L2 Alpine did not emit 'reboot: Power down' after direct SSH poweroff",
+        );
+    }
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(15);
+    let exit_status = loop {
+        match sess.guard.child.try_wait().expect("try_wait failed") {
+            Some(status) => {
+                sess.guard.armed = false;
+                break Some(status);
+            }
+            None if Instant::now() >= shutdown_deadline => break None,
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let Some(status) = exit_status else {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            "L1/L0 did not shut down autonomously within 15s after L2 poweroff",
+        );
+    };
+    if !status.success() {
+        sess.fail(
+            "passthrough_blk_alpine",
+            l1_label,
+            format!("L0 exited with non-zero status: {status}"),
+        );
+    }
+
+    drop(sess.stdin);
+    let _ = sess.stdout_handle.join();
+    let _ = sess.stderr_handle.join();
+    let serial_bytes = sess.state.0.lock().unwrap().buf.clone();
+    let full_serial = String::from_utf8_lossy(&serial_bytes);
+    assert!(
+        full_serial.contains("vmm-passthrough: l2_shutdown=clean"),
+        "missing L1 PID-2 clean teardown marker in serial output:\n{full_serial}"
+    );
+    assert!(
+        full_serial.contains("vm_exit: bye."),
+        "missing L1 kernel ACPI S5 exit marker in serial output:\n{full_serial}"
+    );
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -2782,5 +3074,50 @@ mod unit_tests {
         assert_eq!(sys_io_end as usize, image.len());
         assert!(image[28..4096].iter().all(|&b| b == 0));
         assert_eq!(&image[4096..], fake_elf);
+    }
+
+    #[test]
+    fn test_pack_passthrough_initrd_bundle_layout() {
+        let fake_elf = b"\x7fELFtest-init-elf";
+        let fake_toml = b"kernel = \"bzImage\"\nnum_cpus = 2\nmem_size = \"256M\"\npci = [\"00:02.0\"]\n";
+        let fake_cwasm = b"CWASM_PAYLOAD";
+        let fake_kernel = b"BZIMAGE_PAYLOAD_1234";
+        let image = pack_passthrough_initrd(fake_elf, fake_toml, fake_cwasm, fake_kernel, &[]);
+
+        assert_eq!(image.len() % 4096, 0);
+        let sys_io_start = u32::from_le_bytes(image[20..24].try_into().unwrap()) as usize;
+        let sys_io_end = u32::from_le_bytes(image[24..28].try_into().unwrap()) as usize;
+        assert_eq!(sys_io_start, 4096);
+        assert_eq!(sys_io_end, 4096 + fake_elf.len());
+
+        let bundle_off = sys_io_end.next_multiple_of(4096);
+        assert_eq!(bundle_off, 8192);
+        assert_eq!(&image[bundle_off..bundle_off + 8], b"MVMMBNDL");
+        let ver = u32::from_le_bytes(image[bundle_off + 8..bundle_off + 12].try_into().unwrap());
+        assert_eq!(ver, INITRD_BUNDLE_VERSION);
+        let toml_len =
+            u64::from_le_bytes(image[bundle_off + 16..bundle_off + 24].try_into().unwrap())
+                as usize;
+        let cwasm_len =
+            u64::from_le_bytes(image[bundle_off + 24..bundle_off + 32].try_into().unwrap())
+                as usize;
+        let kernel_len =
+            u64::from_le_bytes(image[bundle_off + 32..bundle_off + 40].try_into().unwrap())
+                as usize;
+        let initramfs_len =
+            u64::from_le_bytes(image[bundle_off + 40..bundle_off + 48].try_into().unwrap())
+                as usize;
+
+        assert_eq!(toml_len, fake_toml.len());
+        assert_eq!(cwasm_len, fake_cwasm.len());
+        assert_eq!(kernel_len, fake_kernel.len());
+        assert_eq!(initramfs_len, 0);
+
+        let p0 = bundle_off + INITRD_BUNDLE_HEADER_SIZE;
+        assert_eq!(&image[p0..p0 + toml_len], fake_toml);
+        let p1 = p0 + toml_len;
+        assert_eq!(&image[p1..p1 + cwasm_len], fake_cwasm);
+        let p2 = p1 + cwasm_len;
+        assert_eq!(&image[p2..p2 + kernel_len], fake_kernel);
     }
 }

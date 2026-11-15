@@ -89,9 +89,11 @@ fn sys_map(
     }
 
     if flags == (SysMem::F_READABLE | SysMem::F_WRITABLE | SysMem::F_CONTIGUOUS) {
-        // This is used for MMIO at arbitrary addresses, e.g. to create VirtIO virtqueues.
-        if !io_manager {
-            log::debug!("sys_map: MMIO w/o CAP_IO_MAN");
+        // Used for physically-contiguous DMA rings (`CAP_IO_MANAGER`, <= 64 pages)
+        // and physically-contiguous Guest RAM arenas (`CAP_VMM`, 2 MiB-aligned).
+        let vmm_cap = curr_thread.owner().capabilities() & moto_sys::caps::CAP_VMM != 0;
+        if !io_manager && !vmm_cap {
+            log::debug!("sys_map: F_CONTIGUOUS w/o CAP_IO_MAN or CAP_VMM");
             return Ok(ResultBuilder::result(moto_rt::E_NOT_ALLOWED));
         }
         if phys_addr != u64::MAX || virt_addr != u64::MAX {
@@ -99,8 +101,8 @@ fn sys_map(
             return Ok(ResultBuilder::invalid_argument());
         }
 
-        if num_pages > 64 {
-            log::debug!("sys_mem_impl: too many pages");
+        if num_pages > 64 && (!vmm_cap || (num_pages % 512 != 0 && num_pages > 512)) {
+            log::debug!("sys_mem_impl: too many pages for F_CONTIGUOUS ({num_pages})");
             return Ok(ResultBuilder::invalid_argument());
         }
 

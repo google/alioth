@@ -277,6 +277,14 @@ impl BlockPool {
         self.allocation_result(self.allocate_huge(class), class)
     }
 
+    pub(crate) fn alloc_whole_run(
+        &self,
+        num_blocks: usize,
+        class: AllocationClass,
+    ) -> Result<u64, crate::mm::AllocationFailure> {
+        self.allocation_result(self.allocate_whole_run(num_blocks, class), class)
+    }
+
     pub(crate) fn free_huge(&self, addr: u64) {
         self.return_huge(addr)
             .unwrap_or_else(|err| panic!("phys: corrupt huge free of 0x{addr:x}: {err:?}"));

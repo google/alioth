@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
-use moto_sys::sys_mem::PAGE_SIZE_SMALL;
+use moto_sys::sys_mem::{PAGE_SIZE_MID, PAGE_SIZE_SMALL};
 use moto_sys::{SysCpu, SysHandle, SysMem, SysObj};
 use vmm_core::host::abi::{
     BridgeShm, CORE_MSG_SERIAL_TX, CORE_MSG_SHUTDOWN, CORE_MSG_VIRTIO_CONFIG_WRITE,
@@ -68,6 +68,29 @@ impl SysMemArena {
             addr,
             byte_len: aligned,
         })
+    }
+
+    fn alloc_guest_ram(min_bytes: usize, prefer_contiguous: bool) -> io::Result<Self> {
+        if prefer_contiguous {
+            let aligned = min_bytes
+                .max(PAGE_SIZE_MID as usize)
+                .next_multiple_of(PAGE_SIZE_MID as usize);
+            let pages = (aligned / PAGE_SIZE_SMALL as usize) as u64;
+            if let Ok(addr) = SysMem::map(
+                SysHandle::SELF,
+                SysMem::F_READABLE | SysMem::F_WRITABLE | SysMem::F_CONTIGUOUS,
+                u64::MAX,
+                u64::MAX,
+                PAGE_SIZE_SMALL,
+                pages,
+            ) {
+                return Ok(Self {
+                    addr,
+                    byte_len: aligned,
+                });
+            }
+        }
+        Self::alloc_zeroed(min_bytes)
     }
 
     fn from_slice(src: &[u8]) -> io::Result<Self> {
@@ -623,8 +646,8 @@ impl VmmHostIo for MotorIoHost {
         let ram_size = boot_cfg
             .mem_size
             .max(4 << 20)
-            .next_multiple_of(PAGE_SIZE_SMALL as usize);
-        let ram_arena = SysMemArena::alloc_zeroed(ram_size)?;
+            .next_multiple_of(PAGE_SIZE_MID as usize);
+        let ram_arena = SysMemArena::alloc_guest_ram(ram_size, !boot_cfg.pci_devs.is_empty())?;
 
         let mut payload_bytes = Vec::new();
         let mut kernel_size = 0u64;

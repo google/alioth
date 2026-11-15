@@ -6,7 +6,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-nested = ["dep:vmm-core"]
+nested = []
 
 [workspace]
 resolver = "2"
@@ -29,7 +29,7 @@ zerocopy = { version = "0.7.32", default-features = false, features = ["derive",
 elfloader = { path = "../../../motor-dev/motor-os/src/third_party/elfloader" }
 moto-rt   = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }
 moto-sys  = { path = "../moto-sys" }
-vmm-core  = { path = "../../vmm-core", optional = true }
+vmm-core  = { path = "../../vmm-core" }
 
 [patch.crates-io]
 moto-rt  = { path = "../../../motor-dev/motor-os/src/sys/lib/moto-rt" }

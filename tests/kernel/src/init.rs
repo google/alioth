@@ -118,6 +118,25 @@ impl PvhStartInfo {
         &initrd[(header.sys_io_start as usize)..(header.sys_io_end as usize)]
     }
 
+    fn initrd_bundle_bytes(&self) -> Option<&'static [u8]> {
+        let (start, len) = self.initrd();
+        if len <= 4096 {
+            return None;
+        }
+        let header =
+            InitrdHeader::from_addr((crate::mm::PAGING_DIRECT_MAP_OFFSET + start) as usize);
+        if header.magic != InitrdHeader::MAGIC {
+            return None;
+        }
+        let bundle_start =
+            crate::mm::align_up(header.sys_io_end as u64, PAGE_SIZE_SMALL) as usize;
+        let initrd = self.initrd_bytes();
+        if bundle_start >= initrd.len() {
+            return None;
+        }
+        Some(&initrd[bundle_start..])
+    }
+
     fn init(pvh_addr: u64) -> &'static PvhStartInfo {
         let self_: &'static Self =
             unsafe { (pvh_addr as usize as *const PvhStartInfo).as_ref().unwrap() };
@@ -266,6 +285,9 @@ fn start_bsp(arg: u64) -> ! {
     let cmdline = Box::leak(Box::new(cmdline[..cmdline_len].to_vec()));
     crate::config::get().cmdline.set(cmdline);
     place_sys_io(boot_info.pvh().sys_io_bytes());
+    if let Some(bundle_bytes) = boot_info.pvh().initrd_bundle_bytes() {
+        place_initrd_bundle(bundle_bytes);
+    }
     let cpu_main_addr = cpu_main as *const fn(u64) as usize as u64;
     unsafe {
         core::arch::asm!("
@@ -301,6 +323,8 @@ fn start_ap(this_cpu: uCpus) -> ! {
 
 static SYS_IO_ELF_START: AtomicUsize = AtomicUsize::new(0);
 static SYS_IO_ELF_SIZE: AtomicUsize = AtomicUsize::new(0);
+static INITRD_BUNDLE_START: AtomicUsize = AtomicUsize::new(0);
+static INITRD_BUNDLE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 // The ELF loader maps sys-io's read-only segments straight from a
 // kernel-static copy of the file. When the initrd stays reserved (it lies
@@ -338,6 +362,33 @@ fn copy_sys_io(sys_io_bytes: &[u8]) {
 
     SYS_IO_ELF_START.store(seg.start as usize, Ordering::Relaxed);
     SYS_IO_ELF_SIZE.store(seg.size as usize, Ordering::Relaxed);
+}
+
+fn place_initrd_bundle(bundle_bytes: &[u8]) {
+    let phys_start = bundle_bytes.as_ptr() as u64 - crate::mm::PAGING_DIRECT_MAP_OFFSET;
+    let num_pages =
+        crate::mm::align_up(bundle_bytes.len() as u64, PAGE_SIZE_SMALL) >> PAGE_SIZE_SMALL_LOG2;
+    if crate::mm::initrd_reserved() && phys_start & (PAGE_SIZE_SMALL - 1) == 0 {
+        let seg = crate::mm::virt::vmem_map_reserved_pages(phys_start, num_pages).unwrap();
+        INITRD_BUNDLE_START.store(seg.start as usize, Ordering::Relaxed);
+        INITRD_BUNDLE_SIZE.store(bundle_bytes.len(), Ordering::Relaxed);
+    } else {
+        let seg = crate::mm::virt::vmem_allocate_pages(
+            crate::mm::virt::VmemKind::KernelStatic,
+            num_pages,
+            crate::mm::AllocationClass::Kernel,
+        )
+        .unwrap();
+        unsafe {
+            core::intrinsics::copy_nonoverlapping(
+                bundle_bytes.as_ptr(),
+                seg.start as usize as *mut u8,
+                bundle_bytes.len(),
+            );
+        }
+        INITRD_BUNDLE_START.store(seg.start as usize, Ordering::Relaxed);
+        INITRD_BUNDLE_SIZE.store(bundle_bytes.len(), Ordering::Relaxed);
+    }
 }
 
 fn cpu_main(this_cpu: u64) -> ! {
@@ -434,6 +485,21 @@ pub fn start_userspace_processes() {
         panic!("failed to load sys-io");
     }
     let entry_point = result.unwrap();
+
+    let bundle_size = INITRD_BUNDLE_SIZE.load(Ordering::Relaxed);
+    if bundle_size > 0 {
+        let bundle_kaddr = INITRD_BUNDLE_START.load(Ordering::Relaxed) as u64;
+        let bundle_pages =
+            crate::mm::align_up(bundle_size as u64, PAGE_SIZE_SMALL) >> PAGE_SIZE_SMALL_LOG2;
+        address_space
+            .map_kernel_static(
+                moto_sys::CUSTOM_USERSPACE_REGION_START + (1u64 << 30),
+                bundle_kaddr,
+                bundle_pages,
+                crate::mm::MappingOptions::USER_ACCESSIBLE | crate::mm::MappingOptions::READABLE,
+            )
+            .expect("failed to map InitrdBundle into PID 2");
+    }
 
     address_space
         .claim_for_process(crate::mm::AllocationClass::System)
