@@ -14,6 +14,7 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::mem::size_of;
+use std::num::Wrapping;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use zerocopy::{FromBytes, FromZeros, IntoBytes};
 use crate::mem::emulated::{Action, Mmio};
 use crate::mem::mapped::{Ram, RamBus};
 use crate::sync::notifier::Notifier;
+use crate::virtio::dev::vsock::uds_vsock::{ConnState, Connection};
 use crate::virtio::dev::vsock::{
     ShutdownFlag, UdsVsockSpec, VSOCK_CID_HOST, VsockConfig, VsockFeature, VsockHeader, VsockOp,
     VsockType, VsockVirtq,
@@ -86,6 +88,7 @@ fn guest_hdr(op: VsockOp, guest_port: u32, host_port: u32) -> VsockHeader {
         dst_port: host_port,
         op,
         type_: VsockType::STREAM,
+        buf_alloc: RX_LEN,
         ..Default::default()
     }
 }
@@ -575,4 +578,312 @@ fn vsock_conn_request_close_test() {
     assert_eq!(hdr.dst_port, H2G_GUEST_PORT);
 
     t.shutdown();
+}
+
+#[test]
+fn vsock_credit_request_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.load();
+    let mut t = VsockTest::new(&ram_bus, &ram);
+
+    const HOST_PORT: u32 = 8800;
+    const GUEST_PORT: u32 = 8801;
+    let listener_path = format!("{}_{HOST_PORT}", t.sock_path.to_string_lossy());
+    let listener = UnixListener::bind(&listener_path).unwrap();
+    let rx_buf_id = t.add_rx_desc();
+    let req_hdr = guest_hdr(VsockOp::REQUEST, GUEST_PORT, HOST_PORT);
+    t.send_to_tx(&req_hdr, &[], true);
+    let resp_hdr = t.take_rx_hdr(rx_buf_id);
+    assert_eq!(resp_hdr.op, VsockOp::RESPONSE);
+    let host_buf_alloc = resp_hdr.buf_alloc;
+    assert!(host_buf_alloc > 0);
+    let (mut host_stream, _) = listener.accept().unwrap();
+
+    // Send a small payload from guest to host so device `fwd_cnt` advances.
+    const PAYLOAD: &[u8] = b"credit check payload";
+    let rw_hdr = VsockHeader {
+        len: PAYLOAD.len() as u32,
+        ..guest_hdr(VsockOp::RW, GUEST_PORT, HOST_PORT)
+    };
+    t.send_to_tx(&rw_hdr, PAYLOAD, false);
+    let mut recv_buf = [0u8; PAYLOAD.len()];
+    host_stream.read_exact(&mut recv_buf).unwrap();
+    assert_eq!(&recv_buf, PAYLOAD);
+
+    // 1. CREDIT_REQUEST with RX buffer available replies immediately with CREDIT_UPDATE.
+    let credit_buf_id = t.add_rx_desc();
+    let credit_req = guest_hdr(VsockOp::CREDIT_REQUEST, GUEST_PORT, HOST_PORT);
+    t.send_to_tx(&credit_req, &[], true);
+    let update_hdr = t.take_rx_hdr(credit_buf_id);
+    assert_eq!(update_hdr.src_cid, VSOCK_CID_HOST);
+    assert_eq!(update_hdr.dst_cid, GUEST_CID);
+    assert_eq!(update_hdr.src_port, HOST_PORT);
+    assert_eq!(update_hdr.dst_port, GUEST_PORT);
+    assert_eq!(update_hdr.op, VsockOp::CREDIT_UPDATE);
+    assert_eq!(update_hdr.type_, VsockType::STREAM);
+    assert_eq!(update_hdr.fwd_cnt, Wrapping(PAYLOAD.len() as u32));
+    assert_eq!(update_hdr.buf_alloc, host_buf_alloc);
+
+    // 2. CREDIT_REQUEST when RX queue is empty defers CREDIT_UPDATE until RX buffer is posted.
+    t.send_to_tx(&credit_req, &[], false);
+    let deferred_buf_id = t.add_rx_desc();
+    t.notify_rx();
+    let deferred_hdr = t.wait_rx_hdr(deferred_buf_id);
+    assert_eq!(deferred_hdr.op, VsockOp::CREDIT_UPDATE);
+    assert_eq!(deferred_hdr.fwd_cnt, Wrapping(PAYLOAD.len() as u32));
+    assert_eq!(deferred_hdr.buf_alloc, host_buf_alloc);
+
+    // 3. CREDIT_REQUEST for an unknown connection responds with RST.
+    let rst_buf_id = t.add_rx_desc();
+    let unknown_req = guest_hdr(VsockOp::CREDIT_REQUEST, 9999, 9998);
+    t.send_to_tx(&unknown_req, &[], true);
+    let rst_hdr = t.take_rx_hdr(rst_buf_id);
+    assert_eq!(rst_hdr.op, VsockOp::RST);
+    assert_eq!(rst_hdr.src_port, 9998);
+    assert_eq!(rst_hdr.dst_port, 9999);
+
+    t.shutdown();
+}
+
+#[test]
+fn vsock_rx_credit_flow_control_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.load();
+    let mut t = VsockTest::new(&ram_bus, &ram);
+
+    const GUEST_PORT: u32 = 1025;
+    const GUEST_BUF_ALLOC: u32 = 32;
+    let (mut host_stream, host_port) = t.request_conn(GUEST_PORT);
+
+    // Guest accepts advertising only 32 bytes of buffer space.
+    let resp_hdr = VsockHeader {
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: Wrapping(0),
+        ..guest_hdr(VsockOp::RESPONSE, GUEST_PORT, host_port)
+    };
+    t.send_to_tx(&resp_hdr, &[], false);
+    let mut ok_line = String::new();
+    BufReader::new(&host_stream)
+        .read_line(&mut ok_line)
+        .unwrap();
+    assert_eq!(ok_line, format!("OK {host_port}\n"));
+
+    // Offer 5 RX descriptors well above TX_ADDR so multiple descriptors are ready.
+    const MULTI_RX_BASE: u64 = DATA_ADDR + 0x4000;
+    let rx_addrs: [u64; 5] = [0, 1, 2, 3, 4].map(|i| MULTI_RX_BASE + i * 0x1000);
+    let rx_ids = rx_addrs.map(|addr| t.add_rx_desc_at(addr, 0x1000));
+    t.notify_rx();
+
+    // Host writes 100 bytes; device must only send 32 bytes (`peer_free == 32`).
+    let expected: Vec<u8> = (0u8..100).collect();
+    host_stream.write_all(&expected).unwrap();
+    host_stream.flush().unwrap();
+
+    let mut received = Vec::new();
+    let mut take_rx_chunk = |t: &mut VsockTest, expected_len: usize| -> VsockHeader {
+        let used = t.rx_q.get_used().unwrap();
+        let idx = rx_ids.iter().position(|id| *id == used.id).unwrap();
+        let addr = rx_addrs[idx];
+        assert_eq!(used.len as usize, HDR_SIZE + expected_len);
+        let hdr = t.read_hdr(addr);
+        assert_eq!(hdr.op, VsockOp::RW);
+        assert_eq!(hdr.len as usize, expected_len);
+        let mut chunk = vec![0u8; expected_len];
+        ram.read(addr + HDR_SIZE as u64, &mut chunk).unwrap();
+        received.extend_from_slice(&chunk);
+        hdr
+    };
+
+    t.wait_rx_irq();
+    take_rx_chunk(&mut t, 32);
+    // Ensure the device stalls once `peer_free` hits 0, despite remaining RX descriptors.
+    thread::sleep(Duration::from_millis(50));
+    t.assert_no_irq();
+    assert!(t.rx_q.get_used().is_none());
+
+    // Guest frees 20 bytes via CREDIT_UPDATE (`peer_free` = 32 - (32 - 20) = 20).
+    // Device must immediately resume from the socket without a new host write.
+    let cu_20 = VsockHeader {
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: Wrapping(20),
+        ..guest_hdr(VsockOp::CREDIT_UPDATE, GUEST_PORT, host_port)
+    };
+    t.send_to_tx(&cu_20, &[], true);
+    take_rx_chunk(&mut t, 20);
+    t.assert_no_irq();
+
+    // Guest piggybacks credit (`fwd_cnt = 52`) on an outgoing RW packet (`peer_free` = 32).
+    let piggyback_rw = VsockHeader {
+        len: 4,
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: Wrapping(52),
+        ..guest_hdr(VsockOp::RW, GUEST_PORT, host_port)
+    };
+    t.send_to_tx(&piggyback_rw, b"ping", true);
+    let mut ping_buf = [0u8; 4];
+    host_stream.read_exact(&mut ping_buf).unwrap();
+    assert_eq!(&ping_buf, b"ping");
+    let hdr = take_rx_chunk(&mut t, 32);
+    assert_eq!(hdr.fwd_cnt, Wrapping(4));
+    t.assert_no_irq();
+
+    // Guest advances `fwd_cnt` to 84 (`peer_free` = 32 >= remaining 16 bytes).
+    let cu_84 = VsockHeader {
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: Wrapping(84),
+        ..guest_hdr(VsockOp::CREDIT_UPDATE, GUEST_PORT, host_port)
+    };
+    t.send_to_tx(&cu_84, &[], true);
+    take_rx_chunk(&mut t, 16);
+    assert_eq!(received, expected);
+
+    // Clamp `peer_free` to 0 (`buf_alloc = 0, fwd_cnt = 100`) and close host socket;
+    // RST has no payload and must still be delivered immediately into the 5th RX descriptor.
+    let cu_zero = VsockHeader {
+        buf_alloc: 0,
+        fwd_cnt: Wrapping(100),
+        ..guest_hdr(VsockOp::CREDIT_UPDATE, GUEST_PORT, host_port)
+    };
+    t.send_to_tx(&cu_zero, &[], false);
+    drop(host_stream);
+    let used = t.wait_rx_used();
+    let idx = rx_ids.iter().position(|id| *id == used.id).unwrap();
+    assert_eq!(used.len as usize, HDR_SIZE);
+    let rst_hdr = t.read_hdr(rx_addrs[idx]);
+    assert_eq!(rst_hdr.op, VsockOp::RST);
+
+    t.shutdown();
+}
+
+#[test]
+fn vsock_unidirectional_tx_credit_update_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.load();
+    let mut t = VsockTest::new(&ram_bus, &ram);
+
+    const HOST_PORT: u32 = 8810;
+    const GUEST_PORT: u32 = 8811;
+    let listener_path = format!("{}_{HOST_PORT}", t.sock_path.to_string_lossy());
+    let listener = UnixListener::bind(&listener_path).unwrap();
+    let rx_buf_id = t.add_rx_desc();
+    let req_hdr = guest_hdr(VsockOp::REQUEST, GUEST_PORT, HOST_PORT);
+    t.send_to_tx(&req_hdr, &[], true);
+    let resp_hdr = t.take_rx_hdr(rx_buf_id);
+    assert_eq!(resp_hdr.op, VsockOp::RESPONSE);
+    let host_buf_alloc = resp_hdr.buf_alloc;
+    assert!(host_buf_alloc > 0);
+    let (mut host_stream, _) = listener.accept().unwrap();
+
+    // Post RX buffers above TX_ADDR so unsolicited CREDIT_UPDATE packets can arrive.
+    const RX_RING_BASE: u64 = DATA_ADDR + 0x4000;
+    let rx_addrs: [u64; 8] = [0, 1, 2, 3, 4, 5, 6, 7].map(|i| RX_RING_BASE + i * 256);
+    let mut rx_ids = rx_addrs.map(|addr| t.add_rx_desc_at(addr, 256));
+    t.notify_rx();
+
+    // Stream >= 96 KiB and >= 2 * host_buf_alloc unidirectionally from guest to host
+    // while strictly obeying `peer_free` flow control on the guest side.
+    let total_bytes = (host_buf_alloc as usize * 2).max(96 * 1024);
+    let expected: Vec<u8> = (0..total_bytes).map(|i| (i % 251) as u8).collect();
+    let mut received = vec![0u8; total_bytes];
+
+    let mut guest_tx_cnt = Wrapping(0u32);
+    let mut peer_buf_alloc = host_buf_alloc;
+    let mut peer_fwd_cnt = Wrapping(0u32);
+    let mut credit_updates = 0usize;
+    let mut sent = 0usize;
+    let max_chunk = (host_buf_alloc as usize / 2).clamp(1, 4096);
+
+    while sent < total_bytes {
+        let inflight = (guest_tx_cnt - peer_fwd_cnt).0;
+        let peer_free = peer_buf_alloc.saturating_sub(inflight) as usize;
+        assert!(
+            peer_free > 0,
+            "guest TX starved at {sent}/{total_bytes} bytes (tx_cnt={guest_tx_cnt}, peer_fwd_cnt={peer_fwd_cnt}, peer_buf_alloc={peer_buf_alloc})"
+        );
+        let chunk_len = (total_bytes - sent).min(max_chunk).min(peer_free);
+        let hdr = VsockHeader {
+            len: chunk_len as u32,
+            ..guest_hdr(VsockOp::RW, GUEST_PORT, HOST_PORT)
+        };
+        let data_addr = TX_ADDR + HDR_SIZE as u64;
+        t.ram.write(TX_ADDR, hdr.as_bytes()).unwrap();
+        t.ram
+            .write(data_addr, &expected[sent..sent + chunk_len])
+            .unwrap();
+        let tx_id = t.tx_q.add_desc(
+            &[(TX_ADDR, HDR_SIZE as u32), (data_addr, chunk_len as u32)],
+            &[],
+        );
+        t.tx.send(WakeEvent::Notify {
+            q_index: VsockVirtq::TX.raw(),
+        })
+        .unwrap();
+        t.notifier.notify().unwrap();
+
+        let used = loop {
+            if let Some(used) = t.tx_q.get_used() {
+                break used;
+            }
+            t.irq_rx.recv_timeout(TIMEOUT).unwrap();
+        };
+        assert_eq!(used.id, tx_id);
+        assert_eq!(used.len, 0);
+        // Drain any additional queued IRQ notification from the same batch.
+        while t.irq_rx.try_recv().is_ok() {}
+
+        host_stream
+            .read_exact(&mut received[sent..sent + chunk_len])
+            .unwrap();
+        guest_tx_cnt += chunk_len as u32;
+        sent += chunk_len;
+
+        let mut replenished = false;
+        while let Some(used) = t.rx_q.get_used() {
+            let slot = rx_ids.iter().position(|id| *id == used.id).unwrap();
+            assert_eq!(used.len as usize, HDR_SIZE);
+            let cu_hdr = t.read_hdr(rx_addrs[slot]);
+            assert_eq!(cu_hdr.op, VsockOp::CREDIT_UPDATE);
+            assert_eq!(cu_hdr.src_port, HOST_PORT);
+            assert_eq!(cu_hdr.dst_port, GUEST_PORT);
+            peer_buf_alloc = cu_hdr.buf_alloc;
+            peer_fwd_cnt = cu_hdr.fwd_cnt;
+            credit_updates += 1;
+            rx_ids[slot] = t.add_rx_desc_at(rx_addrs[slot], 256);
+            replenished = true;
+        }
+        if replenished {
+            t.notify_rx();
+        }
+    }
+
+    assert!(
+        credit_updates >= 2,
+        "expected unsolicited CREDIT_UPDATEs, got {credit_updates}"
+    );
+    assert_eq!(received, expected);
+
+    t.shutdown();
+}
+
+#[test]
+fn vsock_credit_wrapping_test() {
+    let (s1, s2) = UnixStream::pair().unwrap();
+    let mut conn = Connection::new(BufReader::new(s1), s2, 1024, ConnState::Established);
+
+    // Wrap `tx_cnt` across `u32::MAX` and verify `peer_free` arithmetic.
+    conn.peer_buf_alloc = 64;
+    conn.peer_fwd_cnt = Wrapping(u32::MAX - 9);
+    conn.tx_cnt = Wrapping(10); // 20 bytes in flight across wrap boundary
+    assert_eq!(conn.peer_free(), 44);
+
+    // Forged `peer_fwd_cnt` ahead of `tx_cnt` or shrunk `peer_buf_alloc` clamps to 0.
+    conn.peer_fwd_cnt = Wrapping(20);
+    assert_eq!(conn.peer_free(), 0);
+
+    // Wrap `fwd_cnt` across `u32::MAX` and verify `needs_credit_update`.
+    conn.last_fwd_cnt = Wrapping(u32::MAX - 99);
+    conn.fwd_cnt = Wrapping(400); // 500 bytes unacked < 512
+    assert!(!conn.needs_credit_update());
+    conn.fwd_cnt = Wrapping(412); // 512 bytes unacked == 1024 / 2
+    assert!(conn.needs_credit_update());
 }

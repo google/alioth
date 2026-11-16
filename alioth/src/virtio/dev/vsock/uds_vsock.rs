@@ -215,13 +215,12 @@ impl UdsVsock {
             ..Default::default()
         };
         self.respond(&hdr, irq_sender, rx_q)?;
-        let conn = Connection {
-            state: ConnState::Requested,
-            reader: pending.reader,
-            writer: BufWriter::new(writer),
-            buf_alloc: buf_size as u32,
-            eof: false,
-        };
+        let conn = Connection::new(
+            pending.reader,
+            writer,
+            buf_size as u32,
+            ConnState::Requested,
+        );
         self.connections.insert((host_port, port), conn);
         let count = self.host_ports.entry(host_port).or_default();
         *count += 1;
@@ -309,6 +308,7 @@ impl UdsVsock {
             );
             return Ok(());
         };
+        conn.update_peer_credit(hdr);
         let acked = writeln!(conn.writer, "OK {host_port}").and_then(|_| conn.writer.flush());
         match acked {
             Ok(()) => {}
@@ -323,9 +323,7 @@ impl UdsVsock {
             }
             Err(e) => return Err(e.into()),
         }
-        conn.state = ConnState::Established {
-            fwd_cnt: Wrapping(0),
-        };
+        conn.state = ConnState::Established;
         log::trace!(
             "{}: host:{host_port} -> vm:{guest_port}: established",
             self.name
@@ -393,6 +391,7 @@ impl UdsVsock {
             );
             return Ok(());
         };
+        conn.update_peer_credit(hdr);
         let mut flags = if let ConnState::Shutdown { flags } = conn.state {
             flags
         } else {
@@ -448,15 +447,13 @@ impl UdsVsock {
             Interest::READABLE,
         )?;
         let buf_size = get_buf_size(&writer)?;
-        let conn = Connection {
-            reader: BufReader::new(reader),
-            writer: BufWriter::new(writer),
-            buf_alloc: buf_size as u32,
-            eof: false,
-            state: ConnState::Established {
-                fwd_cnt: Wrapping(0),
-            },
-        };
+        let mut conn = Connection::new(
+            BufReader::new(reader),
+            writer,
+            buf_size as u32,
+            ConnState::Established,
+        );
+        conn.update_peer_credit(hdr);
         let resp = VsockHeader {
             src_cid: VSOCK_CID_HOST,
             dst_cid: self.config.guest_cid,
@@ -482,6 +479,68 @@ impl UdsVsock {
             self.name
         );
         Ok(())
+    }
+
+    fn handle_tx_credit_update<Q, S>(
+        &mut self,
+        hdr: &VsockHeader,
+        registry: &Registry,
+        rx_q: &mut Queue<Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue,
+        S: IrqSender,
+    {
+        let host_port = hdr.dst_port;
+        let guest_port = hdr.src_port;
+        let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
+            log::warn!(
+                "{}: vm:{guest_port} -> host:{host_port}: unknown connection",
+                self.name
+            );
+            return Ok(());
+        };
+        conn.update_peer_credit(hdr);
+        log::trace!(
+            "{}: vm:{guest_port} -> host:{host_port}: credit update: fwd_cnt {}, buf_alloc {}",
+            self.name,
+            hdr.fwd_cnt,
+            hdr.buf_alloc
+        );
+        self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
+    }
+
+    fn handle_tx_credit_request<Q, S>(
+        &mut self,
+        hdr: &VsockHeader,
+        registry: &Registry,
+        rx_q: &mut Queue<Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue,
+        S: IrqSender,
+    {
+        let host_port = hdr.dst_port;
+        let guest_port = hdr.src_port;
+        let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
+            log::warn!(
+                "{}: vm:{guest_port} -> host:{host_port}: unknown connection",
+                self.name
+            );
+            if rx_q.desc_avail() {
+                self.respond_rst(hdr, irq_sender, rx_q)?;
+            }
+            return Ok(());
+        };
+        conn.update_peer_credit(hdr);
+        conn.credit_update_pending = true;
+        log::trace!(
+            "{}: vm:{guest_port} -> host:{host_port}: credit request",
+            self.name
+        );
+        self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
     }
 
     fn handle_tx_desc<Q, S>(
@@ -522,16 +581,12 @@ impl UdsVsock {
             VsockOp::REQUEST => self.handle_tx_request(hdr, registry, irq_sender, rx_q),
             VsockOp::RESPONSE => self.handle_tx_response(hdr, registry, rx_q, irq_sender),
             VsockOp::RST => self.handle_tx_rst(hdr, registry),
-            VsockOp::RW => self.transfer_tx_data(hdr, body, readable, registry, rx_q, irq_sender),
-            VsockOp::CREDIT_UPDATE => {
-                log::info!(
-                    "{name}: CREDIT_UPDATE: fwd_cnt: {}, buf_alloc: {}",
-                    hdr.fwd_cnt,
-                    hdr.buf_alloc
-                );
-                Ok(())
-            }
             VsockOp::SHUTDOWN => self.handle_tx_shutdown(hdr, registry, irq_sender, rx_q),
+            VsockOp::RW => self.transfer_tx_data(hdr, body, readable, registry, rx_q, irq_sender),
+            VsockOp::CREDIT_UPDATE => self.handle_tx_credit_update(hdr, registry, rx_q, irq_sender),
+            VsockOp::CREDIT_REQUEST => {
+                self.handle_tx_credit_request(hdr, registry, rx_q, irq_sender)
+            }
             _ => {
                 log::error!("{name}: unsupported operation: {:?}", hdr.op);
                 Ok(())
@@ -556,6 +611,51 @@ impl UdsVsock {
         })
     }
 
+    fn send_credit_update<Q, S>(
+        &mut self,
+        host_port: u32,
+        guest_port: u32,
+        rx_q: &mut Queue<Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue,
+        S: IrqSender,
+    {
+        if !rx_q.desc_avail() {
+            return Ok(());
+        }
+        let Some(conn) = self.connections.get(&(host_port, guest_port)) else {
+            return Ok(());
+        };
+        if conn.eof || !conn.credit_update_pending {
+            return Ok(());
+        }
+        let fwd_cnt = conn.fwd_cnt;
+        let buf_alloc = conn.buf_alloc;
+        let hdr = VsockHeader {
+            src_cid: VSOCK_CID_HOST,
+            dst_cid: self.config.guest_cid,
+            src_port: host_port,
+            dst_port: guest_port,
+            type_: SOCKET_TYPE,
+            op: VsockOp::CREDIT_UPDATE,
+            fwd_cnt,
+            buf_alloc,
+            ..Default::default()
+        };
+        self.respond(&hdr, irq_sender, rx_q)?;
+        if let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) {
+            conn.last_fwd_cnt = fwd_cnt;
+            conn.credit_update_pending = false;
+        }
+        log::trace!(
+            "{}: host:{host_port} -> vm:{guest_port}: credit update: fwd_cnt {fwd_cnt}, buf_alloc {buf_alloc}",
+            self.name
+        );
+        Ok(())
+    }
+
     fn transfer_rx_data<Q, S>(
         &mut self,
         host_port: u32,
@@ -567,48 +667,75 @@ impl UdsVsock {
         Q: VirtQueue,
         S: IrqSender,
     {
+        fn check_eof(conn: &mut Connection) -> Result<()> {
+            match conn.reader.fill_buf() {
+                Ok([]) => conn.eof = true,
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) if is_conn_lost(&e) => conn.eof = true,
+                Err(e) => return Err(e.into()),
+            }
+            Ok(())
+        }
+
         fn copy_to_rx(
             hdr: &mut VsockHeader,
             conn: &mut BufReader<UnixStream>,
             buffers: &mut [IoSliceMut],
+            max_len: usize,
         ) -> Result<(usize, bool)> {
             let mut nskip = 0;
             let mut nread = 0;
             let mut eof = false;
-            for buf in buffers.iter_mut() {
-                let r = if HEADER_SIZE > nskip {
+            'outer: for buf in buffers.iter_mut() {
+                let data = if HEADER_SIZE > nskip {
                     let Some((_, data)) = buf.split_at_mut_checked(HEADER_SIZE - nskip) else {
                         nskip += buf.len();
                         continue;
                     };
                     nskip = HEADER_SIZE;
-                    if data.is_empty() {
-                        continue;
-                    }
-                    conn.read(data)
+                    data
                 } else {
-                    conn.read(buf)
+                    &mut buf[..]
                 };
-                let n = match r {
-                    Ok(0) => {
-                        eof = true;
-                        break;
+                let limit = (max_len - nread).min(data.len());
+                let mut target = &mut data[..limit];
+                while !target.is_empty() {
+                    match conn.read(target) {
+                        Ok(0) => {
+                            eof = true;
+                            break 'outer;
+                        }
+                        Ok(n) => {
+                            nread += n;
+                            target = &mut target[n..];
+                        }
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break 'outer,
+                        Err(e) if is_conn_lost(&e) => {
+                            eof = true;
+                            break 'outer;
+                        }
+                        Err(e) => return Err(e.into()),
                     }
-                    Ok(n) => n,
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(e) => Err(e)?,
-                };
-                nread += n;
+                }
+                if nread == max_len && nskip == HEADER_SIZE {
+                    break;
+                }
             }
             if nskip != HEADER_SIZE {
                 return error::InvalidBuffer.fail();
             }
-            hdr.len = nread as u32;
-            let mut hdr_buf = hdr.as_bytes();
-            let _ = hdr_buf.read_vectored(buffers);
+            if nread > 0 {
+                hdr.len = nread as u32;
+                let mut hdr_buf = hdr.as_bytes();
+                let _ = hdr_buf.read_vectored(buffers);
+            }
             Ok((nread, eof))
         }
 
+        if !rx_q.desc_avail() {
+            return Ok(());
+        }
         let rx_idx = VsockVirtq::RX.raw();
         let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
             log::warn!(
@@ -620,7 +747,7 @@ impl UdsVsock {
         if conn.eof {
             return Ok(());
         }
-        let ConnState::Established { fwd_cnt } = conn.state else {
+        if conn.state != ConnState::Established {
             // Data can arrive before the guest accepts the connection. It
             // stays buffered in the socket until then.
             log::debug!(
@@ -629,7 +756,11 @@ impl UdsVsock {
                 conn.state
             );
             return Ok(());
-        };
+        }
+        if conn.peer_free() == 0 {
+            check_eof(conn)?;
+            return Ok(());
+        }
         let mut hdr = VsockHeader {
             src_cid: VSOCK_CID_HOST,
             dst_cid: self.config.guest_cid,
@@ -637,7 +768,7 @@ impl UdsVsock {
             dst_port: guest_port,
             type_: SOCKET_TYPE,
             op: VsockOp::RW,
-            fwd_cnt,
+            fwd_cnt: conn.fwd_cnt,
             buf_alloc: conn.buf_alloc,
             ..Default::default()
         };
@@ -645,13 +776,26 @@ impl UdsVsock {
             if conn.eof {
                 return Ok(Status::Break);
             }
-            let (nread, read_eof) = copy_to_rx(&mut hdr, &mut conn.reader, &mut desc.writable)?;
+            let peer_free = conn.peer_free();
+            if peer_free == 0 {
+                check_eof(conn)?;
+                return Ok(Status::Break);
+            }
+            let (nread, read_eof) = copy_to_rx(
+                &mut hdr,
+                &mut conn.reader,
+                &mut desc.writable,
+                peer_free as usize,
+            )?;
             conn.eof |= read_eof;
             if nread == 0 {
                 return Ok(Status::Break);
             }
+            conn.tx_cnt += nread as u32;
+            conn.last_fwd_cnt = conn.fwd_cnt;
+            conn.credit_update_pending = false;
             log::trace!(
-                "{}: host:{host_port} -> vm:{guest_port}: transfered {nread} bytes",
+                "{}: host:{host_port} -> vm:{guest_port}: transferred {nread} bytes",
                 self.name
             );
             Ok(Status::Done {
@@ -673,6 +817,7 @@ impl UdsVsock {
         Q: VirtQueue,
         S: IrqSender,
     {
+        self.send_credit_update(host_port, guest_port, rx_q, irq_sender)?;
         self.transfer_rx_data(host_port, guest_port, rx_q, irq_sender)?;
 
         let eof = self
@@ -710,13 +855,11 @@ impl UdsVsock {
         let mut ports: Vec<_> = self
             .connections
             .iter()
-            .map(|(ports, conn)| (*ports, conn.eof))
+            .map(|(ports, conn)| (*ports, conn.eof, conn.credit_update_pending))
             .collect();
-        // Sort connections to process those with EOF first.
-        // !eof maps true to false, and false to true. Since false < true,
-        // this puts eof=true connections at the front of the list.
-        ports.sort_by_key(|(_, eof)| !eof);
-        for ((host_port, guest_port), _) in ports {
+        // Sort connections to process those with EOF or pending credit updates first.
+        ports.sort_by_key(|(_, eof, credit_pending)| (!eof, !credit_pending));
+        for ((host_port, guest_port), _, _) in ports {
             if !rx_q.desc_avail() {
                 break;
             }
@@ -784,10 +927,11 @@ impl UdsVsock {
             );
             return Ok(());
         };
-        let ConnState::Established { fwd_cnt } = &mut conn.state else {
+        if conn.state != ConnState::Established {
             log::warn!("{}: invalid connection state {:?}", self.name, conn.state);
             return Ok(());
-        };
+        }
+        conn.update_peer_credit(hdr);
         match write_to_conn(&mut conn.writer, body, buffers, hdr.len as usize) {
             Ok(0) => {}
             Ok(remain) => {
@@ -806,13 +950,16 @@ impl UdsVsock {
             }
             Err(e) => return Err(e.into()),
         }
-        *fwd_cnt += hdr.len;
+        conn.fwd_cnt += hdr.len;
+        if conn.needs_credit_update() {
+            conn.credit_update_pending = true;
+        }
         log::trace!(
             "{}: vm:{guest_port} -> host:{host_port}: transferred {} bytes",
             self.name,
             hdr.len
         );
-        Ok(())
+        self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
     }
 }
 
@@ -833,7 +980,7 @@ impl Drop for UdsVsock {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConnState {
     Requested,
-    Established { fwd_cnt: Wrapping<u32> },
+    Established,
     Shutdown { flags: ShutdownFlag },
 }
 
@@ -843,7 +990,51 @@ pub struct Connection {
     reader: BufReader<UnixStream>,
     writer: BufWriter<UnixStream>,
     buf_alloc: u32,
+    fwd_cnt: Wrapping<u32>,
+    last_fwd_cnt: Wrapping<u32>,
+    tx_cnt: Wrapping<u32>,
+    peer_buf_alloc: u32,
+    peer_fwd_cnt: Wrapping<u32>,
+    credit_update_pending: bool,
     eof: bool,
+}
+
+impl Connection {
+    fn new(
+        reader: BufReader<UnixStream>,
+        writer: UnixStream,
+        buf_alloc: u32,
+        state: ConnState,
+    ) -> Self {
+        Connection {
+            state,
+            reader,
+            writer: BufWriter::new(writer),
+            buf_alloc,
+            fwd_cnt: Wrapping(0),
+            last_fwd_cnt: Wrapping(0),
+            tx_cnt: Wrapping(0),
+            peer_buf_alloc: 0,
+            peer_fwd_cnt: Wrapping(0),
+            credit_update_pending: false,
+            eof: false,
+        }
+    }
+
+    fn peer_free(&self) -> u32 {
+        let inflight = (self.tx_cnt - self.peer_fwd_cnt).0;
+        self.peer_buf_alloc.saturating_sub(inflight)
+    }
+
+    fn update_peer_credit(&mut self, hdr: &VsockHeader) {
+        self.peer_buf_alloc = hdr.buf_alloc;
+        self.peer_fwd_cnt = hdr.fwd_cnt;
+    }
+
+    fn needs_credit_update(&self) -> bool {
+        let unacked = (self.fwd_cnt - self.last_fwd_cnt).0;
+        unacked > 0 && self.buf_alloc.saturating_sub(unacked) <= self.buf_alloc / 2
+    }
 }
 
 impl UdsVsock {
