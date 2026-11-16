@@ -21,13 +21,22 @@ pub use serde_aco_derive::Help;
 
 #[derive(Debug)]
 pub struct FieldHelp {
+    /// The key in command-line options, or "" if the field is flattened.
     pub ident: &'static str,
+    /// The key in serialized data, e.g. JSON, or "" if the field is
+    /// flattened.
+    pub name: &'static str,
     pub doc: &'static str,
     pub ty: TypedHelp,
+    /// Whether serialized data may omit the field, since it has a default
+    /// value, or is skipped when serializing.
+    pub optional: bool,
 }
 
 #[derive(Debug)]
 pub enum TypedHelp {
+    /// A struct. The fields of a struct variant form a struct with an empty
+    /// name.
     Struct {
         name: &'static str,
         fields: &'static [FieldHelp],
@@ -41,6 +50,7 @@ pub enum TypedHelp {
     Float,
     Bool,
     Unit,
+    /// A string in a custom format, e.g. a MAC address.
     Custom {
         desc: &'static str,
     },
@@ -147,11 +157,15 @@ fn add_extra_help<'a>(extra: &mut ExtraHelp<'a>, v: &'a TypedHelp) {
     else {
         return;
     };
-    if extra.types.insert(name) {
-        extra.helps.push(v);
-        for f in fields.iter() {
-            add_extra_help(extra, &f.ty);
+    // The fields of a struct variant are listed with the variant.
+    if !name.is_empty() {
+        if !extra.types.insert(name) {
+            return;
         }
+        extra.helps.push(v);
+    }
+    for f in fields.iter() {
+        add_extra_help(extra, &f.ty);
     }
 }
 

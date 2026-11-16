@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2024 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use assert_matches::assert_matches;
+use serde::{Deserialize, Serialize};
 use serde_aco::{FieldHelp, Help, TypedHelp};
 
 #[derive(Help)]
@@ -33,8 +34,10 @@ fn test_struct_help() {
             name: "TestStruct",
             fields: &[FieldHelp {
                 ident: "field2",
+                name: "field2",
                 doc: "field2 is a number",
-                ty: TypedHelp::Int
+                ty: TypedHelp::Int,
+                optional: false,
             }]
         }
     )
@@ -62,16 +65,127 @@ fn test_enum_help() {
             name: "TestEnum",
             variants: &[FieldHelp {
                 ident: "Variant2",
+                name: "Variant2",
                 doc: "Variant2 has a field",
                 ty: TypedHelp::Struct {
-                    name: "TestEnum",
+                    name: "",
                     fields: &[FieldHelp {
                         ident: "f",
+                        name: "f",
                         doc: "f is a u32",
                         ty: TypedHelp::Int,
+                        optional: false,
                     }],
                 },
+                optional: false,
             }],
+        }
+    );
+}
+
+#[derive(Serialize, Deserialize, Help)]
+#[serde(rename_all = "snake_case")]
+pub enum TestRenamedEnum {
+    #[serde(alias = "io")]
+    IoUring,
+    #[serde(rename = "epoll")]
+    Mio,
+}
+
+#[test]
+fn test_renamed_enum_help() {
+    assert_matches!(
+        TestRenamedEnum::HELP,
+        TypedHelp::Enum {
+            variants: &[
+                FieldHelp {
+                    ident: "io",
+                    name: "io_uring",
+                    ..
+                },
+                FieldHelp {
+                    ident: "epoll",
+                    name: "epoll",
+                    ..
+                },
+            ],
+            ..
+        }
+    );
+}
+
+#[derive(Serialize, Deserialize, Help)]
+#[serde(rename_all = "camelCase")]
+pub struct TestOptionalFields {
+    pub required: u32,
+    #[serde(default)]
+    pub with_default: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<u32>,
+    #[serde(alias = "q")]
+    pub queue_pairs: u32,
+    #[serde(flatten)]
+    pub flattened: TestRenamedEnum,
+}
+
+#[test]
+fn test_optional_fields_help() {
+    assert_matches!(
+        TestOptionalFields::HELP,
+        TypedHelp::Struct {
+            fields: &[
+                FieldHelp {
+                    ident: "required",
+                    name: "required",
+                    optional: false,
+                    ..
+                },
+                FieldHelp {
+                    ident: "withDefault",
+                    name: "withDefault",
+                    optional: true,
+                    ..
+                },
+                FieldHelp {
+                    ident: "skipped",
+                    name: "skipped",
+                    optional: true,
+                    ..
+                },
+                FieldHelp {
+                    ident: "q",
+                    name: "queuePairs",
+                    optional: false,
+                    ..
+                },
+                FieldHelp {
+                    ident: "",
+                    name: "",
+                    ty: TypedHelp::Enum {
+                        name: "TestRenamedEnum",
+                        ..
+                    },
+                    ..
+                },
+            ],
+            ..
+        }
+    );
+}
+
+#[derive(Default, Serialize, Deserialize, Help)]
+#[serde(default)]
+pub struct TestDefaultStruct {
+    pub field: u32,
+}
+
+#[test]
+fn test_default_struct_help() {
+    assert_matches!(
+        TestDefaultStruct::HELP,
+        TypedHelp::Struct {
+            fields: &[FieldHelp { optional: true, .. }],
+            ..
         }
     );
 }
