@@ -11,7 +11,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 vmm-core = { path = "../../vmm-core" }
-wasmtime = { path = "../../../wasmtime/crates/wasmtime", default-features = false, features = ["runtime", "custom-sync-primitives", "threads"] }
+wasmtime = { git = "https://github.com/posk-io/wasmtime.git", branch = "posk/nostd-threads", default-features = false, features = ["runtime", "custom-sync-primitives", "threads"] }
 # Force software SHA-2 in `wasmtime-environ` so `sha2` never emits SSE2/SHA-NI SIMD intrinsics under soft-float.
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
 zerocopy = { version = "0.7.32", default-features = false, features = ["derive", "alloc"] }

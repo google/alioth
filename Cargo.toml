@@ -36,8 +36,8 @@ mio = { version = "0.8.8", features = ["os-poll", "os-ext", "net"] }
 parking_lot = { version = "0.12" }
 simplelog = "0.12.2"
 thiserror = "1"
-wasmtime = { path = "../wasmtime/crates/wasmtime", default-features = false, features = ["runtime", "threads", "std"] }
-wasmtime-wasi = { path = "../wasmtime/crates/wasi", default-features = false, features = ["p1"] }
+wasmtime = { git = "https://github.com/posk-io/wasmtime.git", branch = "posk/nostd-threads", default-features = false, features = ["runtime", "threads", "std"] }
+wasmtime-wasi = { git = "https://github.com/posk-io/wasmtime.git", branch = "posk/nostd-threads", default-features = false, features = ["p1"] }
 zerocopy = { version = "0.7.32", features = ["derive", "alloc"] }
 
 [profile.release]

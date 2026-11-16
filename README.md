@@ -42,12 +42,10 @@ data/control paths, passthrough/IOMMU mechanics, hosts, and build artifacts.
 
 ## Prerequisites
 
-1. **Sibling Checkouts**:
-   - `../wasmtime`: Wasmtime checkout on branch `posk/nostd-threads` (`#![no_std]`
-     shared-memory support used by both userspace and Ring-0 hosts).
-   - Optional (for guest builds and integration tests): `../linux-blobs/`
-     (Alpine disk & `initramfs`), `../linux-stable/` (Linux kernel source for L1
-     `airlock.ko` builds), and `../motor-dev/motor-os/` (Motor OS images; see the
+1. **Optional Sibling Checkouts** (for guest builds and integration tests):
+   - `../linux-blobs/` (Alpine disk & `initramfs`), `../linux-stable/` (Linux
+     kernel source for L1 `airlock.ko` builds), and `../motor-dev/motor-os/`
+     (Motor OS images; see the
      [Motor OS build guide](https://github.com/moturus/motor-os/blob/main/docs/build.md)).
 2. **Rust Toolchain Targets**:
    ```sh

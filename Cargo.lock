@@ -160,6 +160,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
@@ -167,6 +168,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64-meta"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-srcgen",
 ]
@@ -174,6 +176,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bforest"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-entity",
  "wasmtime-internal-core",
@@ -182,6 +185,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bitset"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "serde",
  "serde_derive",
@@ -191,6 +195,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -220,6 +225,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-meta"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -231,10 +237,12 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-shared"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 
 [[package]]
 name = "cranelift-control"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "arbitrary",
 ]
@@ -242,6 +250,7 @@ dependencies = [
 [[package]]
 name = "cranelift-entity"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-bitset",
  "serde",
@@ -252,21 +261,23 @@ dependencies = [
 [[package]]
 name = "cranelift-frontend"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-codegen",
  "hashbrown 0.17.1",
  "log",
  "smallvec",
- "target-lexicon",
 ]
 
 [[package]]
 name = "cranelift-isle"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 
 [[package]]
 name = "cranelift-native"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -277,6 +288,7 @@ dependencies = [
 [[package]]
 name = "cranelift-srcgen"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 
 [[package]]
 name = "crc32fast"
@@ -899,6 +911,7 @@ dependencies = [
 [[package]]
 name = "pulley-interpreter"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-bitset",
  "pulley-macros",
@@ -908,6 +921,7 @@ dependencies = [
 [[package]]
 name = "pulley-macros"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1464,6 +1478,7 @@ dependencies = [
 [[package]]
 name = "wasmtime"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "addr2line",
  "async-trait",
@@ -1504,6 +1519,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-environ"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "anyhow",
  "cpp_demangle",
@@ -1532,6 +1548,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-component-macro"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -1545,10 +1562,12 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-component-util"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 
 [[package]]
 name = "wasmtime-internal-core"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "hashbrown 0.17.1",
  "libm",
@@ -1558,6 +1577,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-cranelift"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-codegen",
  "cranelift-control",
@@ -1570,7 +1590,6 @@ dependencies = [
  "object",
  "smallvec",
  "target-lexicon",
- "thiserror 2.0.20",
  "wasmparser",
  "wasmtime-environ",
  "wasmtime-internal-core",
@@ -1581,6 +1600,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-fiber"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cc",
  "libc",
@@ -1593,6 +1613,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-jit-debug"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cc",
  "wasmtime-internal-versioned-export-macros",
@@ -1601,6 +1622,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "libc",
  "wasmtime-internal-core",
@@ -1610,6 +1632,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-unwinder"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -1620,6 +1643,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-versioned-export-macros"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1629,6 +1653,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-wit-bindgen"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -1641,6 +1666,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-wasi"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -1650,7 +1676,6 @@ dependencies = [
  "rand",
  "rustix",
  "rustix-linux-procfs",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "url",
@@ -1663,6 +1688,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-wasi-io"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1683,6 +1709,7 @@ dependencies = [
 [[package]]
 name = "wiggle"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "bitflags",
  "thiserror 2.0.20",
@@ -1695,6 +1722,7 @@ dependencies = [
 [[package]]
 name = "wiggle-generate"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1707,8 +1735,8 @@ dependencies = [
 [[package]]
 name = "wiggle-macro"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
- "proc-macro2",
  "quote",
  "syn 3.0.6",
  "wiggle-generate",

@@ -113,6 +113,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bforest"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-entity",
  "wasmtime-internal-core",
@@ -121,6 +122,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bitset"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "serde",
  "serde_derive",
@@ -130,6 +132,7 @@ dependencies = [
 [[package]]
 name = "cranelift-entity"
 version = "0.139.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-bitset",
  "serde",
@@ -379,6 +382,7 @@ dependencies = [
 [[package]]
 name = "pulley-interpreter"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "cranelift-bitset",
  "pulley-macros",
@@ -388,6 +392,7 @@ dependencies = [
 [[package]]
 name = "pulley-macros"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -609,6 +614,7 @@ dependencies = [
 [[package]]
 name = "wasmtime"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "bitflags 2.13.2",
  "bumpalo",
@@ -636,6 +642,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-environ"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "anyhow",
  "cranelift-bforest",
@@ -656,6 +663,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-core"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "hashbrown",
  "libm",
@@ -665,6 +673,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-unwinder"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "log",
  "object",
@@ -674,6 +683,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-versioned-export-macros"
 version = "52.0.0-dev"
+source = "git+https://github.com/posk-io/wasmtime.git?branch=posk%2Fnostd-threads#c3d045b94585f1f3ce2fa4f585d68105abe4936d"
 dependencies = [
  "proc-macro2",
  "quote",
