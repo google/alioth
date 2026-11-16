@@ -74,8 +74,9 @@ impl VhostVsock {
             vhost_dev.set_backend_features(&backend_feature)?;
         }
         let dev_feat = vhost_dev.get_features()? as u128;
-        let known_feat = VirtioFeature::from_bits_truncate(dev_feat).bits()
-            | VsockFeature::from_bits_truncate(dev_feat).bits();
+        let known_feat =
+            (VirtioFeature::from_bits_truncate(dev_feat) & !VirtioFeature::VHOST_PROTOCOL).bits()
+                | VsockFeature::from_bits_truncate(dev_feat).bits();
         if !VirtioFeature::from_bits_retain(known_feat).contains(VirtioFeature::VERSION_1) {
             return error::VhostMissingDeviceFeature {
                 feature: VirtioFeature::VERSION_1.bits(),

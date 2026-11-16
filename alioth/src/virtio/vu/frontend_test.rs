@@ -21,6 +21,7 @@ use mio::Poll;
 use rstest::rstest;
 
 use crate::sync::notifier::Notifier;
+use crate::virtio::dev::Virtio;
 use crate::virtio::queue::packed::PackedQueue;
 use crate::virtio::queue::split::SplitQueue;
 use crate::virtio::queue::{Queue, VirtQueue};
@@ -157,12 +158,17 @@ fn test_vu_frontend_activate_vring_base(#[case] drv_feat: VirtioFeature, #[case]
     let backend = VuSession::from(backend_conn);
     let backend_thread = thread::spawn(move || {
         let mut fds = [const { None }; 8];
+        let mut set_feat = None;
         let mut bases = vec![];
         while let Ok(msg) = backend.recv_msg(&mut fds) {
             let req = VuFrontMsg::from(msg.request);
             match req {
-                VuFrontMsg::SET_FEATURES
-                | VuFrontMsg::SET_VIRTQ_KICK
+                VuFrontMsg::SET_FEATURES => {
+                    let feat: u64 = backend.recv_payload().unwrap();
+                    set_feat = Some(feat);
+                    backend.reply(req, &0u64, &[]).unwrap();
+                }
+                VuFrontMsg::SET_VIRTQ_KICK
                 | VuFrontMsg::SET_VIRTQ_CALL
                 | VuFrontMsg::SET_STATUS => {
                     let _: u64 = backend.recv_payload().unwrap();
@@ -184,16 +190,17 @@ fn test_vu_frontend_activate_vring_base(#[case] drv_feat: VirtioFeature, #[case]
                 req => panic!("unexpected request: {req:?}"),
             }
         }
-        bases
+        (set_feat, bases)
     });
 
+    let device_feature = (drv_feat | VirtioFeature::VHOST_PROTOCOL).bits() as u64;
     let mut frontend = VuFrontend {
         name: "vu-frontend".into(),
         session: Arc::new(VuSession::from(frontend_conn)),
         channel: None,
         id: DeviceId::NET,
         vu_feature: VuFeature::STATUS,
-        device_feature: (drv_feat | VirtioFeature::VHOST_PROTOCOL).bits() as u64,
+        device_feature,
         num_queues: 2,
         err_fds: Box::default(),
     };
@@ -206,6 +213,49 @@ fn test_vu_frontend_activate_vring_base(#[case] drv_feat: VirtioFeature, #[case]
     }
     drop(frontend);
 
-    let bases = backend_thread.join().unwrap();
+    let (set_feat, bases) = backend_thread.join().unwrap();
+    assert_eq!(set_feat, Some(device_feature));
     assert_eq!(bases, [(0, expected), (1, expected)]);
+}
+
+#[test]
+fn test_vu_frontend_feature_filtering() {
+    let (frontend_conn, _backend_conn) = UnixStream::pair().unwrap();
+    let dev_low = (1 << 0) | (1 << 5) | (1 << 23);
+    let dev_high = (1 << 50) | (1 << 57) | (1 << 63);
+    let supported_transport = (VirtioFeature::INDIRECT_DESC
+        | VirtioFeature::EVENT_IDX
+        | VirtioFeature::VERSION_1
+        | VirtioFeature::ACCESS_PLATFORM
+        | VirtioFeature::RING_PACKED)
+        .bits() as u64;
+    // VHOST_PROTOCOL (30) plus unsupported/reserved transport bits:
+    // NOTIFY_ON_EMPTY (24), ANY_LAYOUT (27), IN_ORDER (35),
+    // NOTIFICATION_DATA (38), RING_RESET (40), ADMIN_VQ (41), SUSPEND (43),
+    // and reserved bit 49.
+    let unsupported_transport = VirtioFeature::VHOST_PROTOCOL.bits() as u64
+        | (1 << 24)
+        | (1 << 27)
+        | (1 << 35)
+        | (1 << 38)
+        | (1 << 40)
+        | (1 << 41)
+        | (1 << 43)
+        | (1 << 49);
+
+    let frontend = VuFrontend {
+        name: "vu-frontend".into(),
+        session: Arc::new(VuSession::from(frontend_conn)),
+        channel: None,
+        id: DeviceId::NET,
+        vu_feature: VuFeature::empty(),
+        device_feature: dev_low | dev_high | supported_transport | unsupported_transport,
+        num_queues: 1,
+        err_fds: Box::default(),
+    };
+
+    let exposed = frontend.feature();
+    assert_eq!(exposed, (dev_low | dev_high | supported_transport) as u128);
+    assert_eq!(exposed & VirtioFeature::VHOST_PROTOCOL.bits(), 0);
+    assert_eq!(exposed & (unsupported_transport as u128), 0);
 }

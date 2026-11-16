@@ -42,6 +42,16 @@ bitflags! {
     pub struct VuDevFeature(u128) { }
 }
 
+// VirtIO spec 1.4, Sec 2.2: bits 0..24 and 50..128 are device-specific;
+// bits 24..50 are reserved for queue/transport extensions and future use.
+const DEVICE_FEATURE_MASK: u64 = ((1 << 24) - 1) | (!0 << 50);
+
+const SUPPORTED_VIRTIO_FEATURES: u64 = (VirtioFeature::INDIRECT_DESC.bits()
+    | VirtioFeature::EVENT_IDX.bits()
+    | VirtioFeature::VERSION_1.bits()
+    | VirtioFeature::ACCESS_PLATFORM.bits()
+    | VirtioFeature::RING_PACKED.bits()) as u64;
+
 #[derive(Debug)]
 pub struct UpdateVuMem {
     pub name: Arc<str>,
@@ -264,7 +274,7 @@ impl Virtio for VuFrontend {
     }
 
     fn feature(&self) -> u128 {
-        self.device_feature as u128
+        (self.device_feature & (DEVICE_FEATURE_MASK | SUPPORTED_VIRTIO_FEATURES)) as u128
     }
 
     fn spawn_worker<S>(self, param: WorkerParam<S>) -> Result<(JoinHandle<()>, Arc<Notifier>)>
