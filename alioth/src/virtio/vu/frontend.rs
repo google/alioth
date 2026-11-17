@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -36,7 +36,7 @@ use crate::virtio::vu::conn::{VuChannel, VuSession};
 use crate::virtio::vu::error as vu_error;
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
 use crate::virtio::{DevStatus, DeviceId, IrqSender, Result, VirtioFeature, error};
-use crate::{bitflags, ffi, mem};
+use crate::{bitflags, mem};
 
 bitflags! {
     pub struct VuDevFeature(u128) { }
@@ -163,7 +163,7 @@ pub struct VuFrontend {
     vu_feature: VuFeature,
     device_feature: u64,
     num_queues: u16,
-    err_fds: Box<[OwnedFd]>,
+    err_fds: Box<[Notifier]>,
 }
 
 impl VuFrontend {
@@ -219,10 +219,10 @@ impl VuFrontend {
 
         let mut err_fds = vec![];
         for index in 0..num_queues {
-            let raw_fd = ffi!(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })?;
-            let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+            let fd = Notifier::new()?;
             session.set_virtq_err(&(index as u64), fd.as_fd())?;
-            log::trace!("{name}: queue-{index}: set error fd: {}", fd.as_raw_fd());
+            let raw_fd = fd.as_fd().as_raw_fd();
+            log::trace!("{name}: queue-{index}: set error fd: {raw_fd}");
             err_fds.push(fd);
         }
 
@@ -369,12 +369,9 @@ impl VirtioMio for VuFrontend {
             log::trace!("{name}: queue-{index}: set enabled: {}", virtq_enable.val);
         }
 
-        for (index, fd) in self.err_fds.iter().enumerate() {
-            active_mio.poll.registry().register(
-                &mut SourceFd(&fd.as_raw_fd()),
-                Token(index),
-                Interest::READABLE,
-            )?;
+        let registry = active_mio.poll.registry();
+        for (index, fd) in self.err_fds.iter_mut().enumerate() {
+            registry.register(fd, Token(index), Interest::READABLE)?;
         }
 
         if self.vu_feature.contains(VuFeature::STATUS) {
@@ -431,8 +428,8 @@ impl VirtioMio for VuFrontend {
         {
             log::error!("{name}: failed to reset device status: {e:?}");
         }
-        for (index, fd) in self.err_fds.iter().enumerate() {
-            if let Err(e) = registry.deregister(&mut SourceFd(&fd.as_raw_fd())) {
+        for (index, fd) in self.err_fds.iter_mut().enumerate() {
+            if let Err(e) = registry.deregister(fd) {
                 log::error!("{name}: queue-{index}: failed to deregister error fd: {e:?}");
             }
         }

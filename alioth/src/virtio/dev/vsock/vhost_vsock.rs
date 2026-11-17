@@ -12,19 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use libc::{EFD_CLOEXEC, EFD_NONBLOCK, eventfd};
 use mio::event::Event;
-use mio::unix::SourceFd;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
 use serde_aco::Help;
 
-use crate::ffi;
 use crate::mem::LayoutUpdated;
 use crate::sync::notifier::Notifier;
 use crate::sys::vhost::{VHOST_FILE_UNBIND, VirtqAddr, VirtqFile, VirtqState};
@@ -57,7 +54,7 @@ pub struct VhostVsock {
     vhost_dev: Arc<VhostDev>,
     config: VsockConfig,
     features: u64,
-    error_fds: [Option<OwnedFd>; 2],
+    error_fds: [Option<Notifier>; 2],
 }
 
 impl VhostVsock {
@@ -189,17 +186,13 @@ impl VirtioMio for VhostVsock {
             self.vhost_dev.set_virtq_addr(&virtq_addr)?;
         }
         for (index, fd) in self.error_fds.iter_mut().enumerate() {
-            let err_fd =
-                unsafe { OwnedFd::from_raw_fd(ffi!(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK))?) };
+            let mut err_fd = Notifier::new()?;
             self.vhost_dev.set_virtq_err(&VirtqFile {
                 index: index as u32,
-                fd: err_fd.as_raw_fd(),
+                fd: err_fd.as_fd().as_raw_fd(),
             })?;
-            active_mio.poll.registry().register(
-                &mut SourceFd(&err_fd.as_raw_fd()),
-                Token(index as _),
-                Interest::READABLE,
-            )?;
+            let registry = active_mio.poll.registry();
+            registry.register(&mut err_fd, Token(index as _), Interest::READABLE)?;
             *fd = Some(err_fd);
         }
         self.vhost_dev.vsock_set_running(true)?;
@@ -222,7 +215,7 @@ impl VirtioMio for VhostVsock {
             if let Err(e) = self.vhost_dev.set_virtq_err(&unbind) {
                 log::error!("{name}: queue-{index}: failed to unbind error fd: {e:?}");
             }
-            if let Err(e) = registry.deregister(&mut SourceFd(&err_fd.as_raw_fd())) {
+            if let Err(e) = registry.deregister(err_fd) {
                 log::error!("{name}: queue-{index}: failed to deregister error fd: {e:?}");
             }
             *error_fd = None;
