@@ -10,8 +10,8 @@ license.workspace = true
 alioth-macros.workspace = true
 bitfield = "0.20.0"
 bitflags = "2.11.1"
-chrono = "0.4.44"
 flume.workspace = true
+jiff = { version = "1", default-features = false }
 libc = "0.2.186"
 log = "0.4"
 mio = { version = "1", features = ["net", "os-ext", "os-poll"] }

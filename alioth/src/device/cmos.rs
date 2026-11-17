@@ -15,7 +15,8 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use bitfield::bitfield;
-use chrono::{DateTime, Datelike, Timelike};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::device::clock::Clock;
 use crate::device::{MmioDev, Pause, Result};
@@ -97,28 +98,29 @@ impl<C: Clock> Mmio for Cmos<C> {
             return Ok(reg as u64);
         }
         let nanos = self.clock.now().as_nanos();
-        let now = DateTime::from_timestamp_nanos(nanos as i64);
+        let ts = Timestamp::from_nanosecond(nanos as i128).unwrap_or(Timestamp::UNIX_EPOCH);
+        let now = TimeZone::UTC.to_datetime(ts);
         let ret = match CmosReg(reg).reg() {
-            0x00 => now.second(),
-            0x02 => now.minute(),
-            0x04 => now.hour(),
-            0x06 => now.weekday().number_from_sunday(),
-            0x07 => now.day(),
-            0x08 => now.month(),
-            0x09 => now.year() as u32 % 100,
-            0x32 => now.year() as u32 / 100 + 1,
+            0x00 => now.second() as u8,
+            0x02 => now.minute() as u8,
+            0x04 => now.hour() as u8,
+            0x06 => now.weekday().to_sunday_one_offset() as u8,
+            0x07 => now.day() as u8,
+            0x08 => now.month() as u8,
+            0x09 => (now.year() % 100) as u8,
+            0x32 => (now.year() / 100 + 1) as u8,
             0x0a => {
                 // Assuming the hardware takes 8 crystal cycles to update
                 // the 8 registers above.
                 // 1 / 32768 Hz * 8 = 244140 ns
                 let mut r = CmosRegA::default();
-                if now.nanosecond() < 244140 {
+                if now.subsec_nanosecond() < 244140 {
                     r.set_update_in_progress(true);
                 }
-                r.0 as u32
+                r.0
             }
-            0x0b => (CmosRegB::HOUR_24 | CmosRegB::BINARY_FORMAT).bits() as u32,
-            0x0d => CmosRegD::POWER.bits() as u32,
+            0x0b => (CmosRegB::HOUR_24 | CmosRegB::BINARY_FORMAT).bits(),
+            0x0d => CmosRegD::POWER.bits(),
             _ => {
                 log::debug!("cmos: read from reg {reg:#x}: ignored");
                 0
