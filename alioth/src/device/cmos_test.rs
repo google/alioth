@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use assert_matches::assert_matches;
-use chrono::DateTime;
+use jiff::Timestamp;
 
 use crate::device::clock::tests::TestClock;
 use crate::device::cmos::{Cmos, CmosRegA};
@@ -22,7 +22,7 @@ use crate::mem::emulated::Mmio;
 #[test]
 fn test_cmos() {
     // Nov 7, 2025 at 15:44:58.01 GMT-08:00
-    let now = DateTime::from_timestamp_nanos(1_762_559_098_010_000_000);
+    let now = Timestamp::from_nanosecond(1_762_559_098_010_000_000).unwrap();
     let cmos = Cmos::new(TestClock { now });
     assert_eq!(cmos.size(), 2);
 
@@ -70,7 +70,7 @@ fn test_cmos() {
 #[test]
 fn test_cmos_upgrade_in_progress() {
     // Nov 27, 2025 at 07:45:00.00 GMT-08:00
-    let now = DateTime::from_timestamp_nanos(1_764_258_300_000_000_000);
+    let now = Timestamp::from_nanosecond(1_764_258_300_000_000_000).unwrap();
     let cmos = Cmos::new(TestClock { now });
 
     assert_matches!(cmos.write(0x0, 1, 0xa), Ok(_));

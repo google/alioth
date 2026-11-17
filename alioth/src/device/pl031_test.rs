@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use assert_matches::assert_matches;
-use chrono::DateTime;
+use jiff::Timestamp;
 
 use crate::arch::aarch64::layout::PL031_START;
 use crate::device::clock::tests::TestClock;
@@ -27,7 +27,7 @@ use crate::mem::emulated::Mmio;
 #[test]
 fn test_pl031() {
     // Nov 21, 2025 at 15:16:59 GMT-08:00
-    let now = DateTime::from_timestamp_nanos(1_763_767_019_000_000_000);
+    let now = Timestamp::from_nanosecond(1_763_767_019_000_000_000).unwrap();
     let mut pl031 = Pl031::new(PL031_START, TestClock { now });
 
     assert_eq!(pl031.size(), 0x1000);

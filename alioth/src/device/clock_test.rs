@@ -14,19 +14,18 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::device::clock::{Clock, SystemClock};
 
 #[derive(Debug)]
 pub struct TestClock {
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
 }
 
 impl Clock for TestClock {
     fn now(&self) -> Duration {
-        let nanos = (self.now - DateTime::UNIX_EPOCH).num_nanoseconds().unwrap();
-        Duration::from_nanos(nanos as u64)
+        Duration::from_nanos(self.now.as_nanosecond() as u64)
     }
 }
 
