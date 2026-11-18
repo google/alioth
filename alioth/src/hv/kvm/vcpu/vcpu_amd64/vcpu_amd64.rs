@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::iter::zip;
 use std::os::fd::{FromRawFd, OwnedFd};
 
+use libc::EINVAL;
 use snafu::ResultExt;
 use zerocopy::{transmute_mut, transmute_ref};
 
@@ -169,8 +170,16 @@ impl KvmVcpu {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
+    /// Tells the guest that the VMM stopped this vCPU for a while, so that
+    /// its soft lockup watchdog does not take the gap for a lockup.
     pub fn kvmclock_ctrl(&mut self) -> Result<()> {
-        unsafe { kvm_kvmclock_ctrl(&self.fd) }.context(kvm_error::KvmClockCtrl)?;
+        let ret = unsafe { kvm_kvmclock_ctrl(&self.fd) };
+        // The guest has not enabled kvmclock on this vCPU, e.g. it still
+        // runs the firmware, so there is nothing to tell.
+        if matches!(&ret, Err(e) if e.raw_os_error() == Some(EINVAL)) {
+            return Ok(());
+        }
+        ret.context(kvm_error::KvmClockCtrl)?;
         Ok(())
     }
 
