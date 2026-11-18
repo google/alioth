@@ -1,7 +1,2 @@
-[advisories]
-ignore = [
-    { id = "RUSTSEC-2026-0543", reason = "chrono is still a transitive dependency of flexi_logger" },
-]
-
 [licenses]
 allow = ["Unicode-3.0", "MIT", "Apache-2.0"]
