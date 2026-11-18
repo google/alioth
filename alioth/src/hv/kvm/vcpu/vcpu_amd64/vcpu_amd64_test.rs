@@ -176,6 +176,20 @@ fn test_vcpu_regs() {
 
 #[test]
 #[cfg_attr(not(feature = "test-hv"), ignore)]
+fn test_kvmclock_ctrl_without_kvmclock() {
+    use crate::hv::VmSpec;
+    use crate::hv::kvm::KvmSpec;
+
+    let kvm = Kvm::new(KvmSpec::default()).unwrap();
+    let vm = kvm.create_vm(&VmSpec { coco: None }).unwrap();
+    let mut vcpu = vm.create_vcpu(0, 0).unwrap();
+
+    // A guest that has not enabled kvmclock has nothing to be told.
+    assert_matches!(vcpu.kvmclock_ctrl(), Ok(()));
+}
+
+#[test]
+#[cfg_attr(not(feature = "test-hv"), ignore)]
 fn test_kick_before_kvm_run() {
     use crate::hv::VmSpec;
     use crate::hv::kvm::KvmSpec;
