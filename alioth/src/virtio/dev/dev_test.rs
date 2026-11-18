@@ -19,8 +19,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use assert_matches::assert_matches;
-use mio::Registry;
 use mio::event::Event;
+use mio::{Events, Interest, Poll, Registry, Token};
 
 use crate::mem::mapped::{ArcMemPages, RamBus};
 use crate::mem::{MemRegion, MemRegionType, Memory};
@@ -61,6 +61,8 @@ fn test_virtio_register_get_driver_feature() {
 /// has neither.
 #[derive(Debug, Default)]
 struct FakeDev {
+    /// The queue that something else serves, like vhost in the kernel.
+    offloaded: Option<u16>,
     /// Makes activation fail, like a backend rejecting the driver setup.
     fail_activate: Arc<AtomicBool>,
     /// Counts successful activations.
@@ -83,6 +85,10 @@ impl Virtio for FakeDev {
 
     fn num_queues(&self) -> u16 {
         1
+    }
+
+    fn notifier_offloaded(&self, q_index: u16) -> Result<bool> {
+        Ok(self.offloaded == Some(q_index))
     }
 
     fn config(&self) -> Arc<EntropyConfig> {
@@ -192,7 +198,10 @@ impl TestWorker {
 
     /// Spawns a worker whose queue is in the fixture memory of `ram_bus`.
     fn spawn_on(ram_bus: Arc<RamBus>) -> Self {
-        let dev = FakeDev::default();
+        Self::spawn_dev(FakeDev::default(), ram_bus)
+    }
+
+    fn spawn_dev(dev: FakeDev, ram_bus: Arc<RamBus>) -> Self {
         let fail_activate = dev.fail_activate.clone();
         let activations = dev.activations.clone();
         let resets = dev.resets.clone();
@@ -217,10 +226,15 @@ impl TestWorker {
     }
 
     fn start(&self) {
+        self.start_with(None)
+    }
+
+    /// Starts the device with the queue notifiers of a transport.
+    fn start_with(&self, notifiers: Option<Arc<[Notifier]>>) {
         let param = StartParam {
             feature: VirtioFeature::VERSION_1.bits(),
             irq_sender: self.irq_sender.clone(),
-            notifiers: None,
+            notifiers,
         };
         assert!(self.ctl.wake(WakeEvent::Start { param }));
     }
@@ -285,6 +299,55 @@ fn test_worker_reset_after_start() {
     assert_eq!(worker.resets(), 2);
     assert!(!worker.ctl.failed());
     assert_eq!(worker.config_irqs(), 0);
+    worker.shutdown();
+}
+
+#[test]
+fn test_notify_offloaded() {
+    // Something else serves queue 1. The worker serves queue 0 itself.
+    let dev = FakeDev {
+        offloaded: Some(1),
+        ..Default::default()
+    };
+    let mut observer = Poll::new().unwrap();
+    let mut notifiers = [Notifier::new().unwrap(), Notifier::new().unwrap()];
+    for (index, notifier) in notifiers.iter_mut().enumerate() {
+        let registry = observer.registry();
+        registry
+            .register(notifier, Token(index), Interest::READABLE)
+            .unwrap();
+    }
+
+    dev.notify_offloaded(&notifiers).unwrap();
+    let mut events = Events::with_capacity(4);
+    observer.poll(&mut events, Some(Duration::ZERO)).unwrap();
+    let tokens = events.iter().map(|e| e.token()).collect::<Vec<_>>();
+    assert_eq!(tokens, [Token(1)]);
+}
+
+#[test]
+fn test_worker_notifies_offloaded_queues_on_start() {
+    // Something else serves queue 1. It may have dropped what the driver
+    // notified before the worker activated the device.
+    let dev = FakeDev {
+        offloaded: Some(1),
+        ..Default::default()
+    };
+    let worker = TestWorker::spawn_dev(dev, Arc::new(fixture_ram_bus()));
+    let mut observer = Poll::new().unwrap();
+    let mut notifiers = [Notifier::new().unwrap(), Notifier::new().unwrap()];
+    let registry = observer.registry();
+    registry
+        .register(&mut notifiers[1], Token(1), Interest::READABLE)
+        .unwrap();
+
+    worker.start_with(Some(Arc::from(notifiers)));
+    worker.wait_activations(1);
+    let mut events = Events::with_capacity(4);
+    observer.poll(&mut events, Some(TIMEOUT)).unwrap();
+    let tokens = events.iter().map(|e| e.token()).collect::<Vec<_>>();
+    assert_eq!(tokens, [Token(1)]);
+
     worker.shutdown();
 }
 

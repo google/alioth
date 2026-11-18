@@ -63,6 +63,21 @@ pub trait Virtio: Debug + Send + Sync + 'static {
     fn notifier_offloaded(&self, _q_index: u16) -> Result<bool> {
         Ok(false)
     }
+    /// Notifies the offloaded queues, which something else serves, e.g.
+    /// vhost in the kernel. `notifiers` are the notifiers of all queues.
+    ///
+    /// Whatever serves such a queue drops a notification that reaches it
+    /// before it starts, and may not look at the queue when it starts. It
+    /// has to cope with a notification without new buffers (VirtIO spec
+    /// 1.4, Sec 2.7.10.2).
+    fn notify_offloaded(&self, notifiers: &[Notifier]) -> Result<()> {
+        for (index, notifier) in notifiers.iter().enumerate() {
+            if self.notifier_offloaded(index as u16)? {
+                notifier.notify()?;
+            }
+        }
+        Ok(())
+    }
     fn mem_update_callback(&self) -> Option<Box<dyn LayoutUpdated>> {
         None
     }

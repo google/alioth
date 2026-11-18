@@ -119,6 +119,8 @@ where
             poll: &mut self.poll,
         };
         context.dev.activate(param.feature, &mut active_mio)?;
+        // The driver may have notified the queues since it set DRIVER_OK.
+        context.dev.notify_offloaded(active_mio.notifiers)?;
         // Only KVM offers ioeventfds, see [`crate::hv::NotifierRegistry`].
         #[cfg(target_os = "linux")]
         for (index, notifier) in active_mio.notifiers.iter().enumerate() {
