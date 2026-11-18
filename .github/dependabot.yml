@@ -12,6 +12,8 @@ updates:
           - minor
           - major
           - patch
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: cargo
     directory: "/"
@@ -23,3 +25,5 @@ updates:
       patches:
         update-types:
           - patch
+    cooldown:
+      default-days: 7
