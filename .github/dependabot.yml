@@ -17,6 +17,8 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    commit-message:
+        prefix: "build(deps)"
     groups:
       patches:
         update-types:
