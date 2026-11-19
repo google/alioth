@@ -60,26 +60,16 @@ where
     let mut resp = Message::new_zeroed();
     let mut payload = R::new_zeroed();
     let mut ret_code = u64::MAX;
-    let mut bufs = [
-        IoSliceMut::new(resp.as_mut_bytes()),
-        if size_of::<R>() > 0 {
-            IoSliceMut::new(payload.as_mut_bytes())
-        } else {
-            IoSliceMut::new(ret_code.as_mut_bytes())
-        },
-        IoSliceMut::new(out),
-    ];
-    let resp_size = bufs[1].len() + bufs[2].len();
-    let expect_size = size_of::<Message>() + resp_size;
+    let body = if size_of::<R>() > 0 {
+        payload.as_mut_bytes()
+    } else {
+        ret_code.as_mut_bytes()
+    };
+    let resp_size = body.len() + out.len();
 
-    let size = conn.read_vectored(&mut bufs)?;
-    if size != expect_size {
-        return error::MsgSize {
-            want: expect_size,
-            got: size,
-        }
-        .fail();
-    }
+    // The peer may send a reply in parts, e.g. the header and the payload
+    // in separate writes, so a single read may not return all of it.
+    conn.read_exact(resp.as_mut_bytes())?;
     if resp.request != req {
         return error::Response {
             want: req,
@@ -87,6 +77,8 @@ where
         }
         .fail();
     }
+    // A reply of another size, e.g. an empty one that reports an error,
+    // has no payload to wait for.
     if resp.size as usize != resp_size {
         return error::PayloadSize {
             want: resp_size,
@@ -94,6 +86,8 @@ where
         }
         .fail();
     }
+    conn.read_exact(body)?;
+    conn.read_exact(out)?;
     if size_of::<R>() == 0 && ret_code != 0 {
         return error::RequestErr { ret: ret_code, req }.fail();
     }

@@ -12,13 +12,88 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
-use zerocopy::IntoBytes;
+use assert_matches::assert_matches;
+use zerocopy::{FromZeros, IntoBytes};
 
-use crate::virtio::vu::bindings::{DeviceConfig, MAX_CONFIG_SIZE, VuFrontMsg};
+use crate::virtio::vu::Error;
+use crate::virtio::vu::bindings::{
+    DeviceConfig, MAX_CONFIG_SIZE, Message, MessageFlag, VuFrontMsg,
+};
 use crate::virtio::vu::conn::VuSession;
+
+/// Reads a request with its payload from `conn`, and returns its header.
+fn read_request(mut conn: &UnixStream) -> Message {
+    let mut msg = Message::new_zeroed();
+    conn.read_exact(msg.as_mut_bytes()).unwrap();
+    let mut payload = vec![0u8; msg.size as usize];
+    conn.read_exact(&mut payload).unwrap();
+    msg
+}
+
+#[test]
+fn test_vu_session_reply_in_parts() {
+    let (client_conn, mut server_conn) = UnixStream::pair().unwrap();
+    let client = VuSession::from(client_conn);
+
+    // The reply arrives in two parts, like the replies of libvhost-user.
+    let server_thread = thread::spawn(move || {
+        let req = read_request(&server_conn);
+        let reply = Message {
+            request: req.request,
+            flag: MessageFlag::receiver(),
+            size: 8,
+        };
+        server_conn.write_all(reply.as_bytes()).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        server_conn.write_all(0xdead_beef_u64.as_bytes()).unwrap();
+        server_conn
+    });
+
+    assert_matches!(client.get_features(), Ok(0xdead_beef));
+    drop(server_thread.join().unwrap());
+}
+
+#[test]
+fn test_vu_session_reply_without_payload() {
+    let (client_conn, mut server_conn) = UnixStream::pair().unwrap();
+    let client = VuSession::from(client_conn);
+
+    // A back-end reports that it cannot read the config with an empty reply.
+    let server_thread = thread::spawn(move || {
+        let req = read_request(&server_conn);
+        assert_eq!(req.request, VuFrontMsg::GET_CONFIG.raw());
+        let reply = Message {
+            request: req.request,
+            flag: MessageFlag::receiver(),
+            size: 0,
+        };
+        server_conn.write_all(reply.as_bytes()).unwrap();
+        server_conn
+    });
+
+    // The session does not wait for a payload that never arrives.
+    let cfg = DeviceConfig {
+        offset: 0,
+        size: 8,
+        flags: 0,
+    };
+    let mut out = 0u64;
+    assert_matches!(
+        client.get_config(&cfg, out.as_mut_bytes()),
+        Err(Error::PayloadSize {
+            want: 20,
+            got: 0,
+            ..
+        })
+    );
+    drop(server_thread.join().unwrap());
+}
 
 #[test]
 fn test_vu_session_concurrent_requests() {
@@ -26,7 +101,7 @@ fn test_vu_session_concurrent_requests() {
     let client = Arc::new(VuSession::from(client_conn));
     let server = VuSession::from(server_conn);
 
-    let server_thread = std::thread::spawn(move || {
+    let server_thread = thread::spawn(move || {
         let mut fds = [const { None }; 8];
         while let Ok(msg) = server.recv_msg(&mut fds) {
             match VuFrontMsg::from(msg.request) {
@@ -55,7 +130,7 @@ fn test_vu_session_concurrent_requests() {
     let mut handles = Vec::new();
     for i in 0..4 {
         let session = client.clone();
-        handles.push(std::thread::spawn(move || {
+        handles.push(thread::spawn(move || {
             for _ in 0..50 {
                 if i % 2 == 0 {
                     assert_eq!(session.get_features().unwrap(), 0xdead_beef);
