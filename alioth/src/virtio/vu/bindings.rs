@@ -39,7 +39,10 @@ bitflags! {
         XEN_MMAP = 1 << 17;
         SHARED_OBJECT = 1 << 18;
         DEVICE_STATE = 1 << 19;
-        SHMEM = 1 << 21;
+        GET_VRING_BASE_INFLIGHT = 1 << 20;
+        GPA_ADDRESSES = 1 << 21;
+        SHMEM = 1 << 22;
+        GET_VRING_BASE_SKIP_DRAIN = 1 << 23;
     }
 }
 
