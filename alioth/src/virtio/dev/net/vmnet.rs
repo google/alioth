@@ -14,7 +14,7 @@
 
 use std::ffi::CStr;
 use std::fmt::Debug;
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, IoSliceMut};
 use std::ptr::null;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -22,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use flume::Sender;
-use libc::c_void;
+use libc::{c_void, iovec};
 use mio::event::Event;
 use mio::{Interest, Registry, Token};
 use serde::Deserialize;
@@ -48,7 +48,7 @@ use crate::virtio::dev::net::{NetConfig, NetFeature, VirtioNetHdr};
 use crate::virtio::dev::{DevSpec, DeviceId, Result, Virtio, WorkerParam};
 use crate::virtio::queue::{DescChain, Status, VirtQueue};
 use crate::virtio::worker::mio::{ActiveMio, Mio, VirtioMio};
-use crate::virtio::{FEATURE_BUILT_IN, IrqSender};
+use crate::virtio::{FEATURE_BUILT_IN, IrqSender, error};
 
 #[derive(Debug)]
 pub struct Net {
@@ -372,7 +372,8 @@ impl VirtioMio for Net {
         };
         let irq_sender = active_mio.irq_sender;
         if index == self.config.max_queue_pairs * 2 {
-            unimplemented!()
+            log::error!("{}: control queue is not supported", self.name);
+            return Ok(());
         }
         let interface = self.interface.load(Ordering::Acquire);
         if index & 1 == 0 {
@@ -383,9 +384,28 @@ impl VirtioMio for Net {
     }
 }
 
-fn read_from_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) -> Result<Status> {
+fn write_header(hdr: &VirtioNetHdr, bufs: &mut [IoSliceMut<'_>]) {
+    let mut rem = hdr.as_bytes();
+    for buf in bufs {
+        let len = rem.len().min(buf.len());
+        let (head, tail) = rem.split_at(len);
+        buf[..len].copy_from_slice(head);
+        rem = tail;
+        if rem.is_empty() {
+            break;
+        }
+    }
+    debug_assert!(rem.is_empty());
+}
+
+fn read_from_vmnet_with(
+    mut read_pkt: impl FnMut(&mut VmPktDesc, &mut i32) -> VmnetReturn,
+) -> impl FnMut(&mut DescChain) -> Result<Status> {
     move |chain: &mut DescChain| {
-        let mut iov = trim_desc_chain(chain.writable.iter().map(|b| &**b));
+        let mut iov = trim_desc_chain(chain.writable.iter_mut().map(|b| &mut **b));
+        if iov.is_empty() {
+            return error::InvalidBuffer.fail();
+        }
         let size = iov.iter().map(|s| s.iov_len).sum();
         let mut packets = VmPktDesc {
             vm_pkt_size: size,
@@ -394,28 +414,45 @@ fn read_from_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain)
             vm_flags: 0,
         };
         let mut pktcnt = 1;
-        let ret = unsafe { vmnet_read(interface, &mut packets, &mut pktcnt) };
+        let ret = read_pkt(&mut packets, &mut pktcnt);
         check_ret(ret)?;
 
-        if pktcnt == 0 {
+        if pktcnt <= 0 {
             return Ok(Status::Break);
         }
+        if packets.vm_pkt_size > size {
+            return error::InvalidBuffer.fail();
+        }
+        let Some(len) = packets
+            .vm_pkt_size
+            .checked_add(size_of::<VirtioNetHdr>())
+            .and_then(|n| u32::try_from(n).ok())
+        else {
+            return error::InvalidBuffer.fail();
+        };
 
         let hdr = VirtioNetHdr {
             num_buffers: 1,
             ..Default::default()
         };
-        let _ = hdr.as_bytes().read_vectored(&mut chain.writable);
+        write_header(&hdr, &mut chain.writable);
 
-        Ok(Status::Done {
-            len: (packets.vm_pkt_size + size_of::<VirtioNetHdr>()) as u32,
-        })
+        Ok(Status::Done { len })
     }
 }
 
-fn write_to_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) -> Result<Status> {
+fn read_from_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) -> Result<Status> {
+    read_from_vmnet_with(move |packets, pktcnt| unsafe { vmnet_read(interface, packets, pktcnt) })
+}
+
+fn write_to_vmnet_with(
+    mut write_pkt: impl FnMut(&mut VmPktDesc, &mut i32) -> VmnetReturn,
+) -> impl FnMut(&mut DescChain) -> Result<Status> {
     move |chain: &mut DescChain| {
         let mut iov = trim_desc_chain(chain.readable.iter().map(|b| &**b));
+        if iov.is_empty() {
+            return error::InvalidBuffer.fail();
+        }
         let size = iov.iter().map(|s| s.iov_len).sum();
         let mut packets = VmPktDesc {
             vm_pkt_size: size,
@@ -424,14 +461,18 @@ fn write_to_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) 
             vm_flags: 0,
         };
         let mut pktcnt = 1;
-        let ret = unsafe { vmnet_write(interface, &mut packets, &mut pktcnt) };
+        let ret = write_pkt(&mut packets, &mut pktcnt);
         check_ret(ret)?;
 
-        if pktcnt == 0 {
+        if pktcnt <= 0 {
             return Ok(Status::Break);
         }
         Ok(Status::Done { len: 0 })
     }
+}
+
+fn write_to_vmnet(interface: *mut VmnetInterface) -> impl FnMut(&mut DescChain) -> Result<Status> {
+    write_to_vmnet_with(move |packets, pktcnt| unsafe { vmnet_write(interface, packets, pktcnt) })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Help)]
@@ -448,28 +489,67 @@ impl DevSpec for VmnetSpec {
     }
 }
 
-fn trim_desc_chain<'m>(bufs: impl Iterator<Item = &'m [u8]>) -> Vec<libc::iovec> {
+trait BufSlice: Sized {
+    fn len(&self) -> usize;
+    fn split_at_checked(self, mid: usize) -> Option<(Self, Self)>;
+    fn into_iov(self) -> iovec;
+}
+
+impl BufSlice for &[u8] {
+    fn len(&self) -> usize {
+        <[u8]>::len(self)
+    }
+
+    fn split_at_checked(self, mid: usize) -> Option<(Self, Self)> {
+        <[u8]>::split_at_checked(self, mid)
+    }
+
+    fn into_iov(self) -> iovec {
+        iovec {
+            iov_base: self.as_ptr() as *mut c_void,
+            iov_len: self.len(),
+        }
+    }
+}
+
+impl BufSlice for &mut [u8] {
+    fn len(&self) -> usize {
+        <[u8]>::len(self)
+    }
+
+    fn split_at_checked(self, mid: usize) -> Option<(Self, Self)> {
+        <[u8]>::split_at_mut_checked(self, mid)
+    }
+
+    fn into_iov(self) -> iovec {
+        iovec {
+            iov_base: self.as_mut_ptr() as *mut c_void,
+            iov_len: self.len(),
+        }
+    }
+}
+
+fn trim_desc_chain<B>(bufs: impl IntoIterator<Item = B>) -> Vec<iovec>
+where
+    B: BufSlice,
+{
     let mut iov = Vec::new();
     let mut trim_len = size_of::<VirtioNetHdr>();
 
     for buf in bufs {
-        let b = if trim_len > 0 {
-            if let Some((_, tail)) = buf.split_at_checked(trim_len)
-                && !tail.is_empty()
-            {
-                trim_len = 0;
-                tail
-            } else {
-                trim_len -= buf.len();
-                continue;
-            }
-        } else {
-            buf
+        let len = buf.len();
+        let Some((_, tail)) = buf.split_at_checked(trim_len) else {
+            trim_len -= len;
+            continue;
         };
-        iov.push(libc::iovec {
-            iov_base: b.as_ptr() as *mut c_void,
-            iov_len: b.len(),
-        });
+        trim_len = 0;
+        if tail.len() > 0 {
+            iov.push(tail.into_iov());
+        }
     }
     iov
 }
+
+#[cfg(test)]
+#[path = "vmnet_test.rs"]
+mod tests;
