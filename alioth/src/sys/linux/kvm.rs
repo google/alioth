@@ -97,6 +97,13 @@ bitflags! {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone)]
+pub struct KvmMsrList<const N: usize> {
+    pub nmsrs: u32,
+    pub indices: [u32; N],
+}
+
+#[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
 pub struct KvmMsrEntry {
     pub index: u32,
@@ -276,6 +283,14 @@ consts! {
         SHUTDOWN = 8;
         SYSTEM_EVENT = 24;
         MEMORY_FAULT = 39;
+    }
+}
+
+consts! {
+    pub struct KvmMpState(u32) {
+        RUNNABLE = 0;
+        UNINITIALIZED = 1;
+        HALTED = 3;
     }
 }
 
@@ -503,11 +518,13 @@ pub struct KvmMsi {
 consts! {
     pub struct KvmCap(u32) {
         IRQFD = 32;
+        XCRS = 56;
         KVMCLOCK_CTRL = 76;
         SIGNAL_MSI = 77;
         ARM_PSCI_0_2 = 102;
         SPLIT_IRQCHIP = 121;
         X2APIC_API = 129;
+        NESTED_STATE = 157;
         EXIT_HYPERCALL = 201;
         // GUEST_MEMFD = 234;
         // VM_TYPES = 235;
@@ -575,6 +592,181 @@ pub struct KvmXsave {
 #[derive(Debug, Clone, FromBytes, KnownLayout, Immutable, IntoBytes)]
 pub struct KvmLapicState {
     pub regs: [u32; 0x100],
+}
+
+pub const KVM_MAX_XCRS: usize = 16;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmXcr {
+    pub xcr: u32,
+    pub reserved: u32,
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmXcrs {
+    pub nr_xcrs: u32,
+    pub flags: u32,
+    pub xcrs: [KvmXcr; KVM_MAX_XCRS],
+    pub padding: [u64; 16],
+}
+
+bitflags! {
+    pub struct KvmVcpuEventValid(u32) {
+        NMI_PENDING = 1 << 0;
+        SIPI_VECTOR = 1 << 1;
+        SHADOW = 1 << 2;
+        SMM = 1 << 3;
+        PAYLOAD = 1 << 4;
+        TRIPLE_FAULT = 1 << 5;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEventsException {
+    pub injected: u8,
+    pub nr: u8,
+    pub has_error_code: u8,
+    pub pending: u8,
+    pub error_code: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEventsInterrupt {
+    pub injected: u8,
+    pub nr: u8,
+    pub soft: u8,
+    pub shadow: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEventsNmi {
+    pub injected: u8,
+    pub pending: u8,
+    pub masked: u8,
+    pub pad: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEventsSmi {
+    pub smm: u8,
+    pub pending: u8,
+    pub smm_inside_nmi: u8,
+    pub latched_init: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEventsTripleFault {
+    pub pending: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVcpuEvents {
+    pub exception: KvmVcpuEventsException,
+    pub interrupt: KvmVcpuEventsInterrupt,
+    pub nmi: KvmVcpuEventsNmi,
+    pub sipi_vector: u32,
+    pub flags: KvmVcpuEventValid,
+    pub smi: KvmVcpuEventsSmi,
+    pub triple_fault: KvmVcpuEventsTripleFault,
+    pub reserved: [u8; 26],
+    pub exception_has_payload: u8,
+    pub exception_payload: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmDebugregs {
+    pub db: [u64; 4],
+    pub dr6: u64,
+    pub dr7: u64,
+    pub flags: u64,
+    pub reserved: [u64; 9],
+}
+
+consts! {
+    pub struct KvmNestedStateFormat(u16) {
+        VMX = 0;
+        SVM = 1;
+    }
+}
+
+bitflags! {
+    pub struct KvmNestedStateFlag(u16) {
+        GUEST_MODE = 1 << 0;
+        RUN_PENDING = 1 << 1;
+        EVMCS = 1 << 2;
+        MTF_PENDING = 1 << 3;
+        GIF_SET = 1 << 8;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmVmxNestedStateHdr {
+    pub vmxon_pa: u64,
+    pub vmcs12_pa: u64,
+    pub smm_flags: u16,
+    pub pad: u16,
+    pub flags: u32,
+    pub preemption_timer_deadline: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct KvmSvmNestedStateHdr {
+    pub vmcb_pa: u64,
+    pub gpat: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union KvmNestedStateHdr {
+    pub vmx: KvmVmxNestedStateHdr,
+    pub svm: KvmSvmNestedStateHdr,
+    pub pad: [u8; 120],
+}
+
+impl Default for KvmNestedStateHdr {
+    fn default() -> Self {
+        Self { pad: [0; 120] }
+    }
+}
+
+/// `struct kvm_nested_state` without the variable-length data region, which is
+/// empty when the vCPU is not in nested guest mode.
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct KvmNestedState {
+    pub flags: KvmNestedStateFlag,
+    pub format: KvmNestedStateFormat,
+    pub size: u32,
+    pub hdr: KvmNestedStateHdr,
+}
+
+const _: () = assert!(size_of::<KvmNestedState>() == 128);
+
+impl Debug for KvmNestedState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        let mut s = f.debug_struct("KvmNestedState");
+        s.field("flags", &self.flags);
+        s.field("format", &self.format);
+        s.field("size", &self.size);
+        match self.format {
+            KvmNestedStateFormat::VMX => s.field("vmx", unsafe { &self.hdr.vmx }),
+            KvmNestedStateFormat::SVM => s.field("svm", unsafe { &self.hdr.svm }),
+            _ => s.field("pad", unsafe { &self.hdr.pad }),
+        };
+        s.finish()
+    }
 }
 
 #[repr(C)]
@@ -670,6 +862,7 @@ bitflags! {
 
 ioctl_none!(kvm_get_api_version, KVMIO, 0x00);
 ioctl_write_val!(kvm_create_vm, KVMIO, 0x01, KvmVmType);
+ioctl_writeread_buf!(kvm_get_msr_index_list, KVMIO, 0x02, KvmMsrList);
 ioctl_write_val!(kvm_check_extension, KVMIO, 0x03, KvmCap);
 ioctl_none!(kvm_get_vcpu_mmap_size, KVMIO, 0x04);
 ioctl_writeread_buf!(kvm_get_supported_cpuid, KVMIO, 0x05, KvmCpuid2);
@@ -701,6 +894,7 @@ ioctl_read!(kvm_get_regs, KVMIO, 0x81, KvmRegs);
 ioctl_write_ptr!(kvm_set_regs, KVMIO, 0x82, KvmRegs);
 ioctl_read!(kvm_get_sregs, KVMIO, 0x83, KvmSregs);
 ioctl_write_ptr!(kvm_set_sregs, KVMIO, 0x84, KvmSregs);
+ioctl_writeread_buf!(kvm_get_msrs, KVMIO, 0x88, KvmMsrs);
 ioctl_write_buf!(kvm_set_msrs, KVMIO, 0x89, KvmMsrs);
 ioctl_writeread!(
     kvm_get_lapic,
@@ -709,12 +903,20 @@ ioctl_writeread!(
 );
 ioctl_write_ptr!(kvm_set_lapic, KVMIO, 0x8f, KvmLapicState);
 ioctl_write_buf!(kvm_set_cpuid2, KVMIO, 0x90, KvmCpuid2);
+ioctl_read!(kvm_get_mp_state, KVMIO, 0x98, KvmMpState);
+ioctl_write_ptr!(kvm_set_mp_state, KVMIO, 0x99, KvmMpState);
+ioctl_read!(kvm_get_vcpu_events, KVMIO, 0x9f, KvmVcpuEvents);
+ioctl_write_ptr!(kvm_set_vcpu_events, KVMIO, 0xa0, KvmVcpuEvents);
+ioctl_read!(kvm_get_debugregs, KVMIO, 0xa1, KvmDebugregs);
+ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, KvmDebugregs);
 
 ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, KvmEnableCap);
 ioctl_write_ptr!(kvm_signal_msi, KVMIO, 0xa5, KvmMsi);
 
 ioctl_writeread!(kvm_get_xsave, ioctl_ior::<KvmXsave>(KVMIO, 0xa4), KvmXsave);
 ioctl_write_ptr!(kvm_set_xsave, KVMIO, 0xa5, KvmXsave);
+ioctl_read!(kvm_get_xcrs, KVMIO, 0xa6, KvmXcrs);
+ioctl_write_ptr!(kvm_set_xcrs, KVMIO, 0xa7, KvmXcrs);
 
 ioctl_write_ptr!(kvm_get_one_reg, KVMIO, 0xab, KvmOneReg);
 ioctl_write_ptr!(kvm_set_one_reg, KVMIO, 0xac, KvmOneReg);
@@ -737,6 +939,9 @@ ioctl_write_ptr!(
     ioctl_ior::<KvmEncRegion>(KVMIO, 0xbc),
     KvmEncRegion
 );
+
+ioctl_writeread!(kvm_get_nested_state, KVMIO, 0xbe, KvmNestedState);
+ioctl_write_ptr!(kvm_set_nested_state, KVMIO, 0xbf, KvmNestedState);
 
 ioctl_read!(kvm_get_sregs2, KVMIO, 0xcc, KvmSregs2);
 ioctl_write_ptr!(kvm_set_sregs2, KVMIO, 0xcd, KvmSregs2);
