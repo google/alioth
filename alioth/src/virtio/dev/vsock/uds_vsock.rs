@@ -221,6 +221,7 @@ impl UdsVsock {
             writer: BufWriter::new(writer),
             buf_alloc: buf_size as u32,
             eof: false,
+            pending: Vec::new(),
         };
         self.connections.insert((host_port, port), conn);
         let count = self.host_ports.entry(host_port).or_default();
@@ -453,6 +454,7 @@ impl UdsVsock {
             writer: BufWriter::new(writer),
             buf_alloc: buf_size as u32,
             eof: false,
+            pending: Vec::new(),
             state: ConnState::Established {
                 fwd_cnt: Wrapping(0),
             },
@@ -694,6 +696,58 @@ impl UdsVsock {
         Ok(())
     }
 
+    /// Guest -> host: drain a connection's pending output once its socket is
+    /// writable again, and drop the WRITABLE interest when it is empty so the
+    /// poll loop is not woken continuously for a socket that is always ready.
+    ///
+    /// Only reached from a WRITABLE event, so the socket is already registered
+    /// with `READABLE | WRITABLE` (set in [`transfer_tx_data`] on WouldBlock).
+    /// On WouldBlock here bytes remain and we keep that interest unchanged; if
+    /// this were ever called from a path that had not registered WRITABLE, a
+    /// WouldBlock would leave us waiting forever.
+    fn flush_conn_pending<Q, S>(
+        &mut self,
+        host_port: u32,
+        guest_port: u32,
+        registry: &Registry,
+        rx_q: &mut Queue<Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue,
+        S: IrqSender,
+    {
+        let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
+            return Ok(());
+        };
+        match conn.flush_pending() {
+            Ok(()) => {
+                if conn.pending.is_empty() {
+                    let fd = conn.reader.get_ref().as_raw_fd();
+                    registry.reregister(
+                        &mut SourceFd(&fd),
+                        Token(fd as usize),
+                        Interest::READABLE,
+                    )?;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) => {
+                log::debug!(
+                    "{}: vm:{guest_port} -> host:{host_port}: host closed while flushing: {e:?}",
+                    self.name
+                );
+                conn.eof = true;
+            }
+        }
+        // Report whatever we managed to deliver so the guest keeps its window
+        // open as the host drains.
+        if let Err(e) = self.send_credit_update(host_port, guest_port, rx_q, irq_sender) {
+            log::debug!("{}: credit update deferred: {e:?}", self.name);
+        }
+        Ok(())
+    }
+
     fn flush_rx_data<Q, S>(
         &mut self,
         registry: &Registry,
@@ -738,43 +792,6 @@ impl UdsVsock {
         Q: VirtQueue,
         S: IrqSender,
     {
-        fn copy_to_conn(
-            buf: &[u8],
-            conn: &mut BufWriter<UnixStream>,
-            remain: &mut usize,
-        ) -> io::Result<()> {
-            if let Some(b) = buf.get(..*remain) {
-                conn.write_all(b)?;
-                *remain = 0;
-            } else {
-                conn.write_all(buf)?;
-                *remain -= buf.len();
-            }
-            Ok(())
-        }
-
-        /// Writes up to `len` bytes of `body` and `buffers` to `conn`,
-        /// returning the number of bytes that were not covered by the input.
-        fn write_to_conn(
-            conn: &mut BufWriter<UnixStream>,
-            body: &[u8],
-            buffers: &[IoSlice],
-            len: usize,
-        ) -> io::Result<usize> {
-            let mut remain = len;
-            if !body.is_empty() {
-                copy_to_conn(body, conn, &mut remain)?;
-            }
-            for buf in buffers {
-                if remain == 0 {
-                    break;
-                }
-                copy_to_conn(buf, conn, &mut remain)?;
-            }
-            conn.flush()?;
-            Ok(remain)
-        }
-
         let host_port = hdr.dst_port;
         let guest_port = hdr.src_port;
         let Some(conn) = self.connections.get_mut(&(host_port, guest_port)) else {
@@ -784,16 +801,40 @@ impl UdsVsock {
             );
             return Ok(());
         };
-        let ConnState::Established { fwd_cnt } = &mut conn.state else {
+        let ConnState::Established { .. } = &conn.state else {
             log::warn!("{}: invalid connection state {:?}", self.name, conn.state);
             return Ok(());
         };
-        match write_to_conn(&mut conn.writer, body, buffers, hdr.len as usize) {
-            Ok(0) => {}
-            Ok(remain) => {
-                log::error!("{}: missing {remain} bytes", self.name);
-                return error::InvalidBuffer.fail();
+
+        // Append this descriptor's payload to whatever is still waiting for the
+        // host socket to drain, then try to flush it right away so the common
+        // path (a socket that accepts the write) delivers with no extra latency.
+        // The host side is a non-blocking UnixStream, so a full send buffer (a
+        // slow reader on the other end) is normal and must be retried later,
+        // never turned into a device error.  `fwd_cnt` is only advanced for bytes
+        // actually written by `flush_pending`, so the guest's window stays shut
+        // while this buffer is full and it cannot overrun us.
+        let mut remain = hdr.len as usize;
+        if !body.is_empty() {
+            let n = remain.min(body.len());
+            conn.pending.extend_from_slice(&body[..n]);
+            remain -= n;
+        }
+        for buf in buffers {
+            if remain == 0 {
+                break;
             }
+            let n = remain.min(buf.len());
+            conn.pending.extend_from_slice(&buf[..n]);
+            remain -= n;
+        }
+        if remain != 0 {
+            log::error!("{}: missing {remain} bytes", self.name);
+            return error::InvalidBuffer.fail();
+        }
+
+        match conn.flush_pending() {
+            Ok(()) => {}
             // The host hung up. Reset this connection only, the rest of the
             // device keeps running.
             Err(e) if is_conn_lost(&e) => {
@@ -804,15 +845,64 @@ impl UdsVsock {
                 conn.eof = true;
                 return self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender);
             }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                // Socket send buffer is full: ask to be woken when it drains.
+                let fd = conn.reader.get_ref().as_raw_fd();
+                registry.reregister(
+                    &mut SourceFd(&fd),
+                    Token(fd as usize),
+                    Interest::READABLE | Interest::WRITABLE,
+                )?;
+            }
             Err(e) => return Err(e.into()),
         }
-        *fwd_cnt += hdr.len;
         log::trace!(
             "{}: vm:{guest_port} -> host:{host_port}: transferred {} bytes",
             self.name,
             hdr.len
         );
+        // Tell the guest how many bytes we have actually consumed so it can
+        // send more.  Without this the guest stops once it fills the window
+        // advertised in the RESPONSE (buf_alloc) and never resumes -- the
+        // classic virtio-vsock credit deadlock.  Best effort: a missing RX
+        // buffer must not fail the data descriptor that triggered it.
+        if let Err(e) = self.send_credit_update(host_port, guest_port, rx_q, irq_sender) {
+            log::debug!("{}: credit update deferred: {e:?}", self.name);
+        }
         Ok(())
+    }
+
+    /// Advertise the connection's current `fwd_cnt`/`buf_alloc` to the guest,
+    /// reopening the send window after we consumed its bytes.
+    fn send_credit_update<Q, S>(
+        &self,
+        host_port: u32,
+        guest_port: u32,
+        rx_q: &mut Queue<Q>,
+        irq_sender: &S,
+    ) -> Result<()>
+    where
+        Q: VirtQueue,
+        S: IrqSender,
+    {
+        let Some(conn) = self.connections.get(&(host_port, guest_port)) else {
+            return Ok(());
+        };
+        let ConnState::Established { fwd_cnt } = conn.state else {
+            return Ok(());
+        };
+        let hdr = VsockHeader {
+            src_cid: VSOCK_CID_HOST,
+            dst_cid: self.config.guest_cid,
+            src_port: host_port,
+            dst_port: guest_port,
+            type_: SOCKET_TYPE,
+            op: VsockOp::CREDIT_UPDATE,
+            fwd_cnt,
+            buf_alloc: conn.buf_alloc,
+            ..Default::default()
+        };
+        self.respond(&hdr, irq_sender, rx_q)
     }
 }
 
@@ -833,6 +923,11 @@ impl Drop for UdsVsock {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConnState {
     Requested,
+    /// `fwd_cnt` is how many guest -> host bytes have actually been handed to
+    /// the host socket ("consumed").  It is what we report back to the guest
+    /// in CREDIT_UPDATE; bytes still queued in [`Connection::pending`] are not
+    /// counted, so the guest's send window stays closed while the host side is
+    /// slow.  That is the receiver's half of virtio-vsock flow control.
     Established { fwd_cnt: Wrapping<u32> },
     Shutdown { flags: ShutdownFlag },
 }
@@ -844,6 +939,34 @@ pub struct Connection {
     writer: BufWriter<UnixStream>,
     buf_alloc: u32,
     eof: bool,
+    /// Guest -> host bytes that could not be written to the (non-blocking)
+    /// host socket yet because its send buffer was full.  Flushed when the
+    /// socket becomes writable; drained by `Connection::flush_pending`.
+    pending: Vec<u8>,
+}
+
+impl Connection {
+    /// Write as much of `pending` to the host socket as the kernel accepts
+    /// right now, then drop the written prefix and credit those bytes to the
+    /// guest (`fwd_cnt`).  Returns `WouldBlock` when the send buffer is full
+    /// and bytes remain (the caller then waits for writability); the data stays
+    /// buffered, so nothing is lost.  Bytes that were not written do not count
+    /// toward `fwd_cnt`, keeping the guest's window shut while the host lags.
+    fn flush_pending(&mut self) -> io::Result<()> {
+        while !self.pending.is_empty() {
+            // Bypass the BufWriter so we see exactly how many bytes the
+            // socket took; a full send buffer is a normal, retryable event.
+            let n = self.writer.get_mut().write(&self.pending)?;
+            if n == 0 {
+                return Err(ErrorKind::WriteZero.into());
+            }
+            self.pending.drain(..n);
+            if let ConnState::Established { fwd_cnt } = &mut self.state {
+                *fwd_cnt += n as u32;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl UdsVsock {
@@ -937,7 +1060,17 @@ impl VirtioMio for UdsVsock {
             self.handle_conn_request(token, pending, registry, rx_q, irq_sender)
         } else if let Some(port_pair) = self.ports.get(&token) {
             let (host_port, guest_port) = port_pair.to_owned();
-            self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)
+            // A writable event means we registered for it after a guest -> host
+            // write hit a full send buffer: drain what is buffered, then stop
+            // asking for writability.  Always also try the read side, since the
+            // same socket can have both pending.
+            if event.is_writable() {
+                self.flush_conn_pending(host_port, guest_port, registry, rx_q, irq_sender)?;
+            }
+            if event.is_readable() || event.is_writable() {
+                self.process_rx_data(host_port, guest_port, registry, rx_q, irq_sender)?;
+            }
+            Ok(())
         } else {
             log::error!("{}: invalid token: {token:#x?}", self.name);
             Ok(())
