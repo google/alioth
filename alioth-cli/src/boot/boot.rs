@@ -399,8 +399,9 @@ fn create<H: Hypervisor>(hypervisor: &H, spec: VmSpec) -> Result<Machine<H>, ali
     }
 
     #[cfg(target_arch = "x86_64")]
+    vm.add_cmos()?;
+    #[cfg(target_arch = "x86_64")]
     if spec.payload.firmware.is_some() {
-        vm.add_cmos()?;
         vm.add_fw_dbg()?;
     }
 

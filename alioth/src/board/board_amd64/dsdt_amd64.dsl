@@ -32,6 +32,20 @@ DefinitionBlock ("dsdt.aml", "DSDT", 2, "ALIOTH", "ALIOTHVM", 0x00000001)
         })
     }
 
+    Device (_SB.RTC0)
+    {
+        Name (_HID, EisaId ("PNP0B00") )
+        Name (_CRS, ResourceTemplate ()
+        {
+            IO (Decode16,
+                0x0070,
+                0x0070,
+                0x00,
+                0x02,
+                )
+        })
+    }
+
     Name (_S5, Package (0x01)
     {
         0x05
