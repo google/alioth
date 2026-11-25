@@ -545,6 +545,26 @@ fn vsock_conn_request_eof_test() {
 }
 
 #[test]
+fn vsock_allocate_port_advances_test() {
+    let ram_bus = Arc::new(fixture_ram_bus());
+    let ram = ram_bus.load();
+    let mut t = VsockTest::new(&ram_bus, &ram);
+
+    const GUEST_PORT: u32 = 1024;
+    let (stream1, host_port1) = t.request_conn(GUEST_PORT);
+    assert!(host_port1 >= 1024);
+    drop(stream1);
+
+    // Closing the first connection and reconnecting must advance to a fresh
+    // ephemeral host port rather than immediately reusing `host_port1`.
+    t.send_to_tx(&guest_hdr(VsockOp::RST, GUEST_PORT, host_port1), &[], false);
+    let (_stream2, host_port2) = t.request_conn(GUEST_PORT);
+    assert_ne!(host_port2, host_port1);
+
+    t.shutdown();
+}
+
+#[test]
 fn vsock_conn_request_close_test() {
     let ram_bus = Arc::new(fixture_ram_bus());
     let ram = ram_bus.load();

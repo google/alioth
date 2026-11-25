@@ -117,7 +117,9 @@ impl UdsVsock {
         if count == u32::MAX as u64 {
             None
         } else {
-            Some(self.next_port)
+            let port = self.next_port;
+            self.next_port = self.next_port.wrapping_add(1);
+            Some(port)
         }
     }
 
