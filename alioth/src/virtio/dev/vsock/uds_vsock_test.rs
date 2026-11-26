@@ -240,13 +240,24 @@ impl<'m> VsockTest<'m> {
             })
             .unwrap();
         self.notifier.notify().unwrap();
-        if expect_rx {
-            self.wait_rx_irq();
+        // Both queues can signal for one wake: RX for traffic/credit updates,
+        // TX for the descriptor we just made available.  Their order is not
+        // guaranteed, so collect signals until both expected ones arrive.
+        // This expects the device to emit exactly one RX irq (if expect_rx)
+        // per TX descriptor; a fix that makes it emit two for one TX would
+        // leave a stale irq for the next call and need a rethink here.
+        let mut got_rx = false;
+        let mut got_tx = false;
+        while !got_tx || (expect_rx && !got_rx) {
+            let irq = self.irq_rx.recv_timeout(TIMEOUT).unwrap();
+            if irq == VsockVirtq::RX.raw() {
+                got_rx = true;
+            } else if irq == VsockVirtq::TX.raw() {
+                got_tx = true;
+            } else {
+                panic!("unexpected irq for queue {irq}");
+            }
         }
-        assert_eq!(
-            self.irq_rx.recv_timeout(TIMEOUT).unwrap(),
-            VsockVirtq::TX.raw()
-        );
         let used = self.tx_q.get_used().unwrap();
         assert_eq!(used.id, buf_id);
         assert_eq!(used.len, 0);
@@ -354,10 +365,21 @@ fn vsock_conn_test() {
         len: g2h_data.len() as u32,
         ..guest_hdr(VsockOp::RW, H2G_GUEST_PORT, h2g_host_port)
     };
-    t.send_to_tx(&g2h_hdr, g2h_data.as_bytes(), false);
+    // The device answers guest -> host data with a CREDIT_UPDATE so the guest
+    // knows it may keep sending; offer an RX buffer to receive it.
+    let credit_buf_id = t.add_rx_desc();
+    t.notify_rx();
+    t.send_to_tx(&g2h_hdr, g2h_data.as_bytes(), true);
     let mut g2h_read_buf = vec![0; g2h_data.len()];
     let _ = h2g_stream.read(&mut g2h_read_buf).unwrap();
     assert_eq!(String::from_utf8_lossy(&g2h_read_buf), g2h_data);
+    let credit_hdr = t.take_rx_hdr(credit_buf_id);
+    assert_eq!(credit_hdr.op, VsockOp::CREDIT_UPDATE);
+    assert_eq!(credit_hdr.src_port, h2g_host_port);
+    assert_eq!(credit_hdr.dst_port, H2G_GUEST_PORT);
+    // fwd_cnt advances by the bytes consumed from the guest, reopening its
+    // send window (without this the guest stalls once buf_alloc is used up).
+    assert_eq!(credit_hdr.fwd_cnt.0, g2h_data.len() as u32);
 
     // 3. Shutdown host-initiated connection
     // 3.1 Send ShutdownFlag::RECEIVE
